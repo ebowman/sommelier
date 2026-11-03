@@ -9,7 +9,8 @@ let args = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
     FileHandle.standardError.write(Data("""
-    usage: mbprobe list [--json] [--include-self] [--timing] [--debug] [--fast] [--repeat N]
+    usage: mbprobe keys <ownerKey|bundleID>
+           mbprobe list [--json] [--include-self] [--timing] [--debug] [--fast] [--repeat N]
            mbprobe set-position <bundleID> <autosaveName> <number> [--host] [--store legacy|agent]
            mbprobe watch [--seconds N]
            mbprobe agent-restart
@@ -28,11 +29,12 @@ func clip(_ s: String, _ n: Int) -> String {
     return one.count > n ? String(one.prefix(n - 1)) + "…" : one
 }
 
-func row(_ idx: Int, _ i: MenuBarItem) -> String {
+func row(_ idx: Int, _ r: ResolvedItem) -> String {
+    let i = r.item
     let label = (i.stale ? "(stale) " : "") + [i.title, i.axDescription, i.axIdentifier].map { clip($0, 36) }.joined(separator: " | ")
     let pad = { (s: String, n: Int) in s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
     return "\(pad(String(idx), 3)) x=\(pad(String(Int(i.frame.minX)), 6)) w=\(pad(String(Int(i.frame.width)), 4)) "
-        + "\(pad(clip(i.ownerName, 28), 28)) \(pad(i.ownerBundleID ?? "-", 40)) \(label)  [\(i.source.rawValue)]"
+        + "\(pad(clip(i.ownerName, 28), 28)) \(pad(i.ownerBundleID ?? "-", 40)) \(r.confidence.marker) \(pad(r.key.description, 78)) \(label)  [\(i.source.rawValue)]"
 }
 
 func runList(_ rawFlags: [String]) {
@@ -66,21 +68,67 @@ func runList(_ rawFlags: [String]) {
         elapsed = Date().timeIntervalSince(t)
         FileHandle.standardError.write(Data(String(format: "scan %d: %.0f ms\n", n, elapsed * 1000).utf8))
     }
+    let resolved = IdentityResolver().resolve(snapshot: snap)
     if flags.contains("--json") {
+        // `keys` / `keyConfidence` are parallel to `items`.
+        struct Out: Encodable {
+            var items: [MenuBarItem]; var capturedAt: Date; var keys: [String]; var keyConfidence: [String]
+        }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
-        print(String(decoding: try! enc.encode(snap), as: UTF8.self))
+        let out = Out(items: snap.items, capturedAt: snap.capturedAt,
+                      keys: resolved.map { $0.key.description }, keyConfidence: resolved.map { $0.confidence.rawValue })
+        print(String(decoding: try! enc.encode(out), as: UTF8.self))
     } else {
-        print("on bar (left to right):")
-        for (n, i) in snap.onBarLeftToRight.enumerated() { print(row(n, i)) }
+        // resolved is in snap.items order: on-bar items first (left to right), then parked.
+        let onCount = snap.onBarLeftToRight.count
+        print("on bar (left to right):   [key marker: = exact, ~ inferred, ? heuristic]")
+        for (n, r) in resolved.prefix(onCount).enumerated() { print(row(n, r)) }
         print("\nparked / off-bar:")
-        for (n, i) in snap.parked.enumerated() { print(row(n, i)) }
+        for (n, r) in resolved.dropFirst(onCount).enumerated() { print(row(n, r)) }
+        let counts = Dictionary(grouping: resolved, by: \.confidence).mapValues(\.count)
+        print("\nkeys: \(counts[.exact] ?? 0) exact, \(counts[.inferred] ?? 0) inferred, \(counts[.heuristic] ?? 0) heuristic")
     }
     if flags.contains("--timing") {
         let msg = String(format: "scan time: %.0f ms (%@)\n", elapsed * 1000, fast ? "fast" : "full")
         FileHandle.standardError.write(Data(msg.utf8))
     }
+}
+
+func runKeys(_ a: [String]) {
+    guard a.count == 1 else { usage() }
+    let arg = a[0]
+    let prefs = LivePreferenceReader()
+    let store = prefs.storeEntriesByOwner()
+    // Owner keys to show: the argument itself plus every candidate of running apps whose bundle id / name matches.
+    var owners: [String] = [arg]
+    var legacyDomain: String? = nil   // legacy NSStatusItem keys live in the app's bundle-id domain
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier == arg || app.localizedName == arg {
+        if let info = OwnerAppInfo.live(pid: app.processIdentifier) {
+            legacyDomain = legacyDomain ?? info.bundleID
+            print("running: pid \(app.processIdentifier) \(info.executablePath ?? "-")")
+            owners += OwnerKeyRule.candidates(for: info)
+        }
+    }
+    var seen = Set<String>()
+    owners = owners.filter { seen.insert($0).inserted }
+    var shown = false
+    for o in owners {
+        let entries = prefs.autosaveEntries(ownerKey: o, legacyDomain: legacyDomain ?? o)
+        guard !entries.isEmpty else { continue }
+        shown = true
+        let inStore = store[o] != nil
+        print("owner key \"\(o)\"  (order store: \(inStore ? "yes" : "no"))")
+        let pad = { (s: String, n: Int) in s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
+        print("  \(pad("autosaveName", 52)) \(pad("store", 8)) \(pad("legacyPos", 10)) legacyVisible")
+        func fmt(_ v: Double?) -> String { v.map { $0 == $0.rounded() ? String(Int($0)) : String($0) } ?? "-" }
+        for e in entries.sorted(by: { ($0.storeValue ?? $0.legacyPosition ?? -1) > ($1.storeValue ?? $1.legacyPosition ?? -1) }) {
+            print("  \(pad(e.name, 52)) \(pad(fmt(e.storeValue), 8)) \(pad(fmt(e.legacyPosition), 10)) \(fmt(e.legacyVisible))")
+        }
+    }
+    if !shown { print("no autosave names found for \(owners.map { "\"\($0)\"" }.joined(separator: ", "))"); exit(1) }
 }
 
 func fail(_ m: String) -> Never {
@@ -375,6 +423,7 @@ case "press": runPress(Array(args.dropFirst()))
 case "set-position": runSetPosition(Array(args.dropFirst()))
 case "watch": runWatch(Array(args.dropFirst()))
 case "agent-restart": runAgentRestart()
+case "keys": runKeys(Array(args.dropFirst()))
 case "list": runList(Array(args.dropFirst()))
 default: usage()
 }
