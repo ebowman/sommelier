@@ -31,6 +31,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
             if removalAllowed { item.behavior = [.removalAllowed] }
             item.autosaveName = "Dummy-\(letter)"
             item.button?.title = "D\(letter)"
+            // Distinct AX identity so scanners join app-side and agent-hosted elements by identifier, not by frame
+            // (app-side frames lag after a reorder, which swapped labels in gdu.7).
+            item.button?.setAccessibilityIdentifier("Dummy-\(letter)")
+            item.button?.setAccessibilityLabel("Dummy \(letter)")
             items.append(item)
         }
     }

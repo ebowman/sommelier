@@ -1,0 +1,10 @@
+C1-out rc=0 verified=yes confirm_scan_ms=1665 visible_ms=1728 settled_ms=unsettled | after2.5s: x=1008 B x=1038 A x=1068 info.marcel-dierkes.KeepingYouAwake 
+C1-back rc=0 verified=yes confirm_scan_ms=266 visible_ms=778 settled_ms=2021 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+C2-out rc=0 verified=yes confirm_scan_ms=852 visible_ms=671 settled_ms=unsettled | after2.5s: x=1008 B x=1038 A x=1068 info.marcel-dierkes.KeepingYouAwake 
+C2-back rc=0 verified=yes confirm_scan_ms=1691 visible_ms=1944 settled_ms=2251 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+C3-out rc=0 verified=yes confirm_scan_ms=1725 visible_ms=4089 settled_ms=unsettled | after2.5s: x=1008 B x=1038 A x=1068 info.marcel-dierkes.KeepingYouAwake 
+C3-back rc=0 verified=yes confirm_scan_ms=272 visible_ms=673 settled_ms=2224 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+C4-out rc=0 verified=yes confirm_scan_ms=1732 visible_ms=1842 settled_ms=unsettled | after2.5s: x=1008 B x=1038 A x=1068 info.marcel-dierkes.KeepingYouAwake 
+C4-back rc=0 verified=yes confirm_scan_ms=265 visible_ms=786 settled_ms=2027 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+C5-out rc=0 verified=yes confirm_scan_ms=1036 visible_ms=1069 settled_ms=unsettled | after2.5s: x=1008 B x=1038 A x=1068 info.marcel-dierkes.KeepingYouAwake 
+C5-back rc=0 verified=yes confirm_scan_ms=267 visible_ms=856 settled_ms=2025 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 

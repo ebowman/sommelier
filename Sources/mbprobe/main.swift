@@ -2,6 +2,7 @@ import Foundation
 import SommelierCore
 import ApplicationServices
 import CoreGraphics
+import AppKit
 
 // Hand-rolled argument parsing.
 let args = Array(CommandLine.arguments.dropFirst())
@@ -15,6 +16,7 @@ func usage() -> Never {
            mbprobe set-visible <bundleID> <autosaveName> <0|1> [--host]
            mbprobe cc-allowed list
            mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc]
+           mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
 
     """.utf8))
@@ -269,7 +271,104 @@ func runPress(_ a: [String]) {
     }
 }
 
+func runDrag(_ a: [String]) {
+    var pos: [String] = []
+    var relation: DragRelation? = nil
+    var targetQuery: String? = nil
+    var steps = 10, holdMS = 100.0, stepMS = 15.0
+    var quiet = false, trace = false, fullPoll = false
+    var i = 0
+    func val() -> String { i += 1; guard i < a.count else { usage() }; return a[i] }
+    while i < a.count {
+        switch a[i] {
+        case "--before": targetQuery = val(); relation = .before(targetQuery!)
+        case "--after": targetQuery = val(); relation = .after(targetQuery!)
+        case "--to-x": guard let x = Double(val()) else { usage() }; relation = .toX(CGFloat(x))
+        case "--steps": guard let n = Int(val()), n > 0 else { usage() }; steps = n
+        case "--hold-ms": guard let n = Double(val()), n >= 0 else { usage() }; holdMS = n
+        case "--step-ms": guard let n = Double(val()), n >= 0 else { usage() }; stepMS = n
+        case "--quiet": quiet = true
+        case "--trace": trace = true
+        case "--full": fullPoll = true
+        default: if a[i].hasPrefix("--") { usage() }; pos.append(a[i])
+        }
+        i += 1
+    }
+    guard pos.count == 1, let relation else { usage() }
+    if NSEvent.pressedMouseButtons != 0 { fail("a mouse button is pressed (user is using the mouse); aborting") }
+    let scanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL)
+    var snap = scanner.scan()
+
+    func pick(_ q: String, _ snap: MenuBarSnapshot) -> MenuBarItem {
+        switch ItemResolver.resolve(q, in: snap.items) {
+        case .match(let m): return m
+        case .none: fail("no on-bar item matches '\(q)'")
+        case .ambiguous(let c):
+            FileHandle.standardError.write(Data("mbprobe: '\(q)' is ambiguous; candidates:\n".utf8))
+            for m in c { FileHandle.standardError.write(Data("  \(m.ownerBundleID ?? m.ownerName)::\(m.axIdentifier.isEmpty ? m.axDescription : m.axIdentifier)\n".utf8)) }
+            exit(1)
+        }
+    }
+    var moved = pick(pos[0], snap)
+    var target: MenuBarItem? = targetQuery.map { pick($0, snap) }
+    // Re-scan until both items have fresh (non-stale) frames.
+    for _ in 0..<4 where moved.stale || (target?.stale ?? false) {
+        snap = scanner.scan()
+        moved = pick(pos[0], snap); target = targetQuery.map { pick($0, snap) }
+    }
+    if moved.stale || (target?.stale ?? false) { fail("item frames are stale after rescans; refusing to drag") }
+    if ItemResolver.protected(moved) || (target.map(ItemResolver.protected) ?? false) { fail("refusing to drag Control Center/clock/system module items") }
+    // Relation by resolved key (not the user's query string)
+    var keyRelation = relation
+    if let t = target { switch relation { case .before: keyRelation = .before(ItemResolver.key(t)); case .after: keyRelation = .after(ItemResolver.key(t)); default: break } }
+    guard let dropX = DragTarget.dropX(for: relation, moved: moved, target: target, bar: snap.onBarLeftToRight) else { fail("no drop x") }
+    let movedKey = ItemResolver.key(moved)
+    let before = snap.onBarLeftToRight.map(ItemResolver.key)
+    if DragTarget.holds(keyRelation, moved: movedKey, order: before) { print("verified: yes (already satisfied; no drag performed)"); exit(0) }
+
+    let mover = DragMover(steps: steps, stepDelay: stepMS / 1000, holdTime: holdMS / 1000)
+    let upAt: Date
+    do { upAt = try mover.move(itemFrame: moved.frame, toX: dropX) } catch { fail("\(error)") }
+
+    // Poll until two consecutive scans agree (max 3 s).
+    var prevSig: [String]? = nil
+    var cur = snap
+    var firstChangeMS: Int? = nil
+    var settledMS: Int? = nil
+    var history: [(Int, [String])] = []
+    while Date().timeIntervalSince(upAt) < 4.0 {
+        cur = fullPoll ? scanner.scan() : scanner.scanVisible()
+        let fresh = cur.onBarLeftToRight.filter { !$0.stale || $0.ownerBundleID == moved.ownerBundleID }
+        let sig = fresh.map(ItemResolver.key)
+        let ms = Int(Date().timeIntervalSince(upAt) * 1000)
+        if trace { let m = cur.onBarLeftToRight.first { ItemResolver.key($0) == movedKey }; let mx = m.map { String(Int($0.frame.minX)) } ?? "-"; print("  t=\(ms)ms moved x=\(mx) stale=\(m?.stale ?? false)") }
+        history.append((ms, sig))
+        if !trace, ms >= 2000, let p = prevSig, p == sig, fresh.contains(where: { ItemResolver.key($0) == movedKey && !$0.stale }) { settledMS = ms; break }
+        prevSig = sig
+    }
+    // visible latency: first poll from which every later poll equals the final signature
+    if let last = history.last?.1, let k = history.lastIndex(where: { $0.1 != last }) { firstChangeMS = k + 1 < history.count ? history[k + 1].0 : nil } else { firstChangeMS = history.first?.0 }
+    // Final authoritative check: the fast scan can mis-join identifier-less items right after a move
+    // (app-side frame lags the hosted frame), so confirm with one full scan.
+    let confirmStart = Date()
+    cur = scanner.scan()
+    let confirmMS = Int(Date().timeIntervalSince(confirmStart) * 1000)
+    let now = cur.onBarLeftToRight
+    let order = now.map(ItemResolver.key)
+    let movedNow = now.first { ItemResolver.key($0) == movedKey && !$0.stale }
+    let ok = DragTarget.holds(keyRelation, moved: movedKey, order: order, movedMidX: movedNow?.frame.midX)
+    if !quiet {
+        print("order after drag:")
+        for (n, it) in now.enumerated() { print("  \(n) x=\(Int(it.frame.minX)) \(ItemResolver.key(it))\(it.stale ? " (stale)" : "")") }
+    }
+    print(String(format: "mouse_up_epoch=%.3f", upAt.timeIntervalSince1970))
+    print("dropX=\(Int(dropX)) confirm_scan_ms=\(confirmMS) visible_ms=\(firstChangeMS.map(String.init) ?? "none") settled_ms=\(settledMS.map(String.init) ?? "unsettled")")
+    print("verified: \(ok ? "yes" : "no")")
+    if !ok { exit(3) }
+}
+
 switch args.first {
+case "drag": runDrag(Array(args.dropFirst()))
 case "set-visible": runSetVisible(Array(args.dropFirst()))
 case "cc-allowed": runCCAllowed(Array(args.dropFirst()))
 case "press": runPress(Array(args.dropFirst()))

@@ -1,0 +1,1171 @@
+{
+  "capturedAt" : "2026-11-03T21:32:50Z",
+  "items" : [
+    {
+      "axDescription" : "Wi‑Fi, connected, 3 bars",
+      "axIdentifier" : "com.apple.menuextra.wifi",
+      "frame" : [
+        [
+          1017,
+          4
+        ],
+        [
+          22,
+          22
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.MenuBarAgent",
+      "ownerName" : "Wi‑Fi, connected, 3 bars",
+      "ownerPID" : 65533,
+      "source" : "agentHostedOnly",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1046,
+          3
+        ],
+        [
+          32,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "ie.boboco.mbdummy",
+      "ownerName" : "MBDummy",
+      "ownerPID" : 13318,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : "DA"
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1076,
+          3
+        ],
+        [
+          32,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "ie.boboco.mbdummy",
+      "ownerName" : "MBDummy",
+      "ownerPID" : 13318,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : "DB"
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1140,
+          4
+        ],
+        [
+          22,
+          22
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.systemuiserver",
+      "ownerName" : "SystemUIServer",
+      "ownerPID" : 825,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Focus",
+      "axIdentifier" : "com.apple.menuextra.focusmode",
+      "frame" : [
+        [
+          1173,
+          4
+        ],
+        [
+          22,
+          22
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.MenuBarAgent",
+      "ownerName" : "Focus",
+      "ownerPID" : 65533,
+      "source" : "agentHostedOnly",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Audio and Video Controls",
+      "axIdentifier" : "com.apple.menuextra.audiovideo",
+      "frame" : [
+        [
+          1217,
+          4
+        ],
+        [
+          21,
+          22
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.MenuBarAgent",
+      "ownerName" : "Audio and Video Controls",
+      "ownerPID" : 65533,
+      "source" : "agentHostedOnly",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Show Emoji & Symbols",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1251,
+          3
+        ],
+        [
+          28,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.TextInputMenuAgent",
+      "ownerName" : "TextInputMenuAgent",
+      "ownerPID" : 1831,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1277,
+          3
+        ],
+        [
+          30,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "info.marcel-dierkes.KeepingYouAwake",
+      "ownerName" : "KeepingYouAwake",
+      "ownerPID" : 1980,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Weather",
+      "axIdentifier" : "com.bjango.istatmenus.weather",
+      "frame" : [
+        [
+          1278,
+          3
+        ],
+        [
+          41,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Network",
+      "axIdentifier" : "com.bjango.istatmenus.network",
+      "frame" : [
+        [
+          1323,
+          3
+        ],
+        [
+          45,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Disks",
+      "axIdentifier" : "com.bjango.istatmenus.disks",
+      "frame" : [
+        [
+          1372,
+          3
+        ],
+        [
+          14,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Battery",
+      "axIdentifier" : "com.bjango.istatmenus.battery",
+      "frame" : [
+        [
+          1390,
+          3
+        ],
+        [
+          21,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Sensors",
+      "axIdentifier" : "com.bjango.istatmenus.sensors",
+      "frame" : [
+        [
+          1415,
+          3
+        ],
+        [
+          38,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Memory",
+      "axIdentifier" : "com.bjango.istatmenus.memory",
+      "frame" : [
+        [
+          1485,
+          3
+        ],
+        [
+          14,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "GateOpener — click to open the gate",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1487,
+          3
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "ie.boboco.GateOpener",
+      "ownerName" : "GateOpener",
+      "ownerPID" : 1936,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus CPU",
+      "axIdentifier" : "com.bjango.istatmenus.cpu",
+      "frame" : [
+        [
+          1503,
+          3
+        ],
+        [
+          44,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1578,
+          3
+        ],
+        [
+          61,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "signal",
+      "ownerName" : "WiFi Signal",
+      "ownerPID" : 1897,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : " \n 65%"
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1641,
+          3
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.corsair.ControlCenter",
+      "ownerName" : "ControlCenter",
+      "ownerPID" : 59267,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1667,
+          3
+        ],
+        [
+          25,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "ie.boboco.vpnswitch",
+      "ownerName" : "VPN Switch",
+      "ownerPID" : 92664,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : "Shield Lefthalf Filled With A Checkmark Badge"
+    },
+    {
+      "axDescription" : "MCP Maestro",
+      "axIdentifier" : "maestro.status",
+      "frame" : [
+        [
+          1693,
+          3
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.king.cto.mcpmaestro",
+      "ownerName" : "MCP Maestro",
+      "ownerPID" : 1845,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "iStat Menus Time",
+      "axIdentifier" : "com.bjango.istatmenus.time",
+      "frame" : [
+        [
+          1721,
+          3
+        ],
+        [
+          54,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.bjango.istatmenus.status",
+      "ownerName" : "iStat Menus Menubar",
+      "ownerPID" : 43316,
+      "source" : "appExtras",
+      "stale" : true,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "FlöTile",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1722,
+          3
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "ie.boboco.FloTile",
+      "ownerName" : "FlöTile",
+      "ownerPID" : 86110,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Airmail2Hookmark",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          1806,
+          3
+        ],
+        [
+          27,
+          24
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.airmail2hookmark.app",
+      "ownerName" : "Airmail2Hookmark",
+      "ownerPID" : 1863,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Control Center",
+      "axIdentifier" : "com.apple.menuextra.controlcenter",
+      "frame" : [
+        [
+          1840,
+          4
+        ],
+        [
+          26,
+          22
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.MenuBarAgent",
+      "ownerName" : "Control Center",
+      "ownerPID" : 65533,
+      "source" : "agentHostedOnly",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Clock",
+      "axIdentifier" : "com.apple.menuextra.clock",
+      "frame" : [
+        [
+          1878,
+          4
+        ],
+        [
+          18,
+          22
+        ]
+      ],
+      "isOnMenuBar" : true,
+      "ownerBundleID" : "com.apple.MenuBarAgent",
+      "ownerName" : "Clock",
+      "ownerPID" : 65533,
+      "source" : "agentHostedOnly",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          98,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.devon-technologies.think",
+      "ownerName" : "DEVONthink",
+      "ownerPID" : 765,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : "DEVONthink"
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.1password.1password",
+      "ownerName" : "1Password",
+      "ownerPID" : 775,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.iconfactory.Tot",
+      "ownerName" : "Tot",
+      "ownerPID" : 808,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "BoltAI",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "co.podzim.boltai-mobile",
+      "ownerName" : "BoltAI",
+      "ownerPID" : 812,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "3. November 2026",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1203
+        ],
+        [
+          24,
+          26
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "85C27NK92C.com.flexibits.fantastical2.mac.helper",
+      "ownerName" : "Fantastical Helper",
+      "ownerPID" : 1348,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : "Fantastical"
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          26,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "86Z3GCJ4MF.com.noodlesoft.HazelHelper",
+      "ownerName" : "Hazel Helper",
+      "ownerPID" : 1562,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "AppleScript scroll document, filled",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          22,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.apple.ScriptMenuApp",
+      "ownerName" : "Script Menu",
+      "ownerPID" : 1836,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          23,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.pilotmoon.popclip",
+      "ownerName" : "PopClip",
+      "ownerPID" : 1868,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.houdah.HoudahSpot4.HoudahSpotHelper",
+      "ownerName" : "HoudahSpotHelper",
+      "ownerPID" : 1800,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          33,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.runningwithcrayons.Alfred",
+      "ownerName" : "Alfred",
+      "ownerPID" : 1872,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          25
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "io.tailscale.ipn.macsys",
+      "ownerName" : "Tailscale",
+      "ownerPID" : 1875,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "at.EternalStorms.Yoink",
+      "ownerName" : "Yoink",
+      "ownerPID" : 1877,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          30,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.valerijs.boguckis.store.TextSniper",
+      "ownerName" : "TextSniper",
+      "ownerPID" : 1878,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          26,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.choosyosx.Choosy",
+      "ownerName" : "Choosy",
+      "ownerPID" : 1879,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "menubar image",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.cogsciapps.hook",
+      "ownerName" : "Hookmark",
+      "ownerPID" : 1883,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          29,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.robinlu.mac.Tooth-Fairy",
+      "ownerName" : "ToothFairy",
+      "ownerPID" : 1889,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Eric’s AirPods Pro #2",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          29,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.robinlu.mac.Tooth-Fairy",
+      "ownerName" : "ToothFairy",
+      "ownerPID" : 1889,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.rescuetime.RescueTime",
+      "ownerName" : "RescueTime",
+      "ownerPID" : 1912,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1203
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.stairways.keyboardmaestro.engine",
+      "ownerName" : "Keyboard Maestro Engine",
+      "ownerPID" : 1979,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Micro Snitch, no microphone or camera is active",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          28,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "at.obdev.MicroSnitch",
+      "ownerName" : "Micro Snitch",
+      "ownerPID" : 1983,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.devon-technologies.sphereexpress",
+      "ownerName" : "DEVONsphere Express",
+      "ownerPID" : 1984,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.crowdcafe.windowmagnet",
+      "ownerName" : "Magnet",
+      "ownerPID" : 1986,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          2,
+          1204
+        ],
+        [
+          18,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.manytricks.Moom",
+      "ownerName" : "Moom",
+      "ownerPID" : 1989,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          57,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "at.obdev.littlesnitch.agent",
+      "ownerName" : "Little Snitch Agent",
+      "ownerPID" : 1807,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1204
+        ],
+        [
+          30,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.getdropbox.dropbox",
+      "ownerName" : "Dropbox",
+      "ownerPID" : 44800,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          3,
+          1188
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.p5sys.jump.connect",
+      "ownerName" : "Jump Desktop Connect",
+      "ownerPID" : 50159,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "Google Drive",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1188
+        ],
+        [
+          26,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.google.drivefs",
+      "ownerName" : "Google Drive",
+      "ownerPID" : 14927,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    },
+    {
+      "axDescription" : "",
+      "axIdentifier" : "",
+      "frame" : [
+        [
+          -1,
+          1188
+        ],
+        [
+          26,
+          24
+        ]
+      ],
+      "isOnMenuBar" : false,
+      "ownerBundleID" : "com.grammarly.ProjectLlama",
+      "ownerName" : "Grammarly Desktop",
+      "ownerPID" : 22384,
+      "source" : "appExtras",
+      "stale" : false,
+      "staleCount" : 0,
+      "title" : ""
+    }
+  ]
+}

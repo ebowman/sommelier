@@ -1,0 +1,36 @@
+B-h0-s5-n1-back rc=3 verified=no visible_ms=1046 settled_ms=2283 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s5-n1-right rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s5-n2-back rc=0 verified=yes visible_ms=673 settled_ms=2227 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s5-n2-right rc=3 verified=no visible_ms=357 settled_ms=2202 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s10-n1-back rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s10-n1-right rc=0 verified=yes visible_ms=665 settled_ms=2226 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s10-n2-back rc=0 verified=yes visible_ms=1819 settled_ms=2128 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s10-n2-right rc=0 verified=yes visible_ms=670 settled_ms=2228 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s20-n1-back rc=0 verified=yes visible_ms=1935 settled_ms=2004 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s20-n1-right rc=0 verified=yes visible_ms=1439 settled_ms=2057 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s20-n2-back rc=0 verified=yes visible_ms=673 settled_ms=2233 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h0-s20-n2-right rc=0 verified=yes visible_ms=2089 settled_ms=2156 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s5-n1-back rc=3 verified=no visible_ms=964 settled_ms=2053 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s5-n1-right rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s5-n2-back rc=3 verified=no visible_ms=1654 settled_ms=2272 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s5-n2-right rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s10-n1-back rc=0 verified=yes visible_ms=1596 settled_ms=2219 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s10-n1-right rc=0 verified=yes visible_ms=667 settled_ms=2216 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s10-n2-back rc=0 verified=yes visible_ms=668 settled_ms=2207 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s10-n2-right rc=0 verified=yes visible_ms=674 settled_ms=2223 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s20-n1-back rc=0 verified=yes visible_ms=2031 settled_ms=2099 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s20-n1-right rc=0 verified=yes visible_ms=2137 settled_ms=2444 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s20-n2-back rc=0 verified=yes visible_ms=679 settled_ms=2230 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h100-s20-n2-right rc=0 verified=yes visible_ms=677 settled_ms=2221 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s5-n1-back rc=3 verified=no visible_ms=1671 settled_ms=2021 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s5-n1-right rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s5-n2-back rc=3 verified=no visible_ms=1856 settled_ms=2162 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s5-n2-right rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s10-n1-back rc=0 verified=yes visible_ms=1286 settled_ms=2212 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s10-n1-right rc=0 verified=yes visible_ms=661 settled_ms=2199 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s10-n2-back rc=0 verified=yes visible_ms=2208 settled_ms=2517 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s10-n2-right rc=0 verified=yes visible_ms=2148 settled_ms=2215 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s20-n1-back rc=0 verified=yes visible_ms=1282 settled_ms=2209 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s20-n1-right rc=0 verified=yes visible_ms=671 settled_ms=2217 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s20-n2-back rc=0 verified=yes visible_ms=672 settled_ms=2226 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+B-h250-s20-n2-right rc=0 verified=yes visible_ms=954 settled_ms=2039 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 

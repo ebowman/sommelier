@@ -1,0 +1,21 @@
+A1-toRight rc=0 verified=yes (already satisfied; no drag performed)  | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A1-back rc=0 verified=yes visible_ms=978 settled_ms=2022 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A2-toRight rc=0 verified=yes visible_ms=1708 settled_ms=2021 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A2-back rc=0 verified=yes visible_ms=362 settled_ms=2225 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A3-toRight rc=0 verified=yes visible_ms=1298 settled_ms=2227 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A3-back rc=0 verified=yes visible_ms=863 settled_ms=2049 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A4-toRight rc=0 verified=yes visible_ms=1231 settled_ms=2152 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A4-back rc=0 verified=yes visible_ms=365 settled_ms=2231 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A5-toRight rc=0 verified=yes visible_ms=1463 settled_ms=2084 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A5-back rc=0 verified=yes visible_ms=1579 settled_ms=2199 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A6-toRight rc=0 verified=yes visible_ms=677 settled_ms=2220 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A6-back rc=0 verified=yes visible_ms=672 settled_ms=2221 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A7-toRight rc=0 verified=yes visible_ms=670 settled_ms=2221 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A7-back rc=0 verified=yes visible_ms=2024 settled_ms=2094 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A8-toRight rc=0 verified=yes visible_ms=1248 settled_ms=2179 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A8-back rc=0 verified=yes visible_ms=665 settled_ms=2213 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A9-toRight rc=0 verified=yes visible_ms=667 settled_ms=2215 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A9-back rc=0 verified=yes visible_ms=1068 settled_ms=2007 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A10-toRight rc=0 verified=yes visible_ms=1385 settled_ms=2306 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
+A10-back rc=0 verified=yes visible_ms=670 settled_ms=2219 | after2.5s: x=1008 A x=1038 B x=1277 info.marcel-dierkes.KeepingYouAwake 
+A11-toRight rc=0 verified=yes visible_ms=1609 settled_ms=2224 | after2.5s: x=1008 B x=1038 A x=1277 info.marcel-dierkes.KeepingYouAwake 
