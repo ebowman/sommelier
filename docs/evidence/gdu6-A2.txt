@@ -1,0 +1,5 @@
+# A2: killall MenuBarAgent
+20:38:09
+hosted before=149 after=131 elapsed=11958 ms recovered=false
++0s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++2s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]

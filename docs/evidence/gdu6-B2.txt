@@ -1,0 +1,10 @@
+# B2: after relaunch with Visible=0 pre-written: DA gone and key migrated to 'VisibleCC'. Live toggle VisibleCC
+20:43:30
++0s on-bar=24 [('DB', 'x=1076 y=3', 'bar')]
++3s on-bar=24 [('DB', 'x=1076 y=3', 'bar')]
+# B2b set VisibleCC false live
++0s on-bar=24 [('DB', 'x=1076 y=3', 'bar')]
++5s on-bar=24 [('DB', 'x=1076 y=3', 'bar')]
+{
+    "NSStatusItem VisibleCC Dummy-A" = 0;
+}

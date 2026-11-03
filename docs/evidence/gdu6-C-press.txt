@@ -1,0 +1,11 @@
+# Experiment C: AXPress on Bartender-hidden parked items (Bartender running)
+## Yoink (run 1,2)
+target: Yoink  frame=(2.0, 1204.0, 24.0, 24.0) onBar=false
+AXPress -> AXError -25204 in 255 ms
+child role=AXMenu pos=(-5.0, 34.0)
+escape sent
+## Tot
+target: Tot  frame=(2.0, 1204.0, 24.0, 24.0) onBar=false
+AXPress -> AXError 0 in 73 ms
+child role=AXPopover pos=(710.0, 30.0)
+escape sent

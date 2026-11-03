@@ -1,0 +1,12 @@
+# A4: agent restart with isAllowed=1 (unhide)
+hosted before=132 after=29 elapsed=11689 ms recovered=false
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++3s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+# A5: set 0 then restart only system ControlCenter
+cc-allowed: ie.boboco.mbdummy isAllowed=false
+killed system ControlCenter
+20:39:56
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++5s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++7s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++11s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]

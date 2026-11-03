@@ -1,0 +1,13 @@
+# A7: --create. Remove dummy entry by python, restart agent, see if agent recreates it
+146 -> 144
+0
+mbprobe: malformed: unknown entry ie.boboco.mbdummy (pass --create to add)
+hosted before=28 after=134 elapsed=1003 ms recovered=true
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+# unknown key refusal / create
+mbprobe: malformed: unknown entry ie.boboco.mbdummy (pass --create to add)
+cc-allowed: ie.boboco.mbdummy isAllowed=false
+hosted before=134 after=149 elapsed=5657 ms recovered=true
+1 ie.boboco.mbdummy  items=["file:///Users/ebowman/src/sommelier/build/MBDummy.app/Contents/MacOS/MBDummy"]
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++2s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]

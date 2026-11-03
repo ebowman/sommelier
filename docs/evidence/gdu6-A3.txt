@@ -1,0 +1,16 @@
+# A3: set true, no restart, observe; then killall ControlCenter
+cc-allowed: ie.boboco.mbdummy isAllowed=true
++0s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++3s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++7s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++9s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
+-- killall ControlCenter at 20:38:49
+823 ControlCenter
+1892 ControlCenter
+9267 ControlCenterSe
+9267 ControlCenterSe
+58933 ControlCenter
++0s on-bar=22 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++5s on-bar=22 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++10s on-bar=22 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++11s on-bar=22 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]

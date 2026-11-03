@@ -1,5 +1,7 @@
 import Foundation
 import SommelierCore
+import ApplicationServices
+import CoreGraphics
 
 // Hand-rolled argument parsing.
 let args = Array(CommandLine.arguments.dropFirst())
@@ -10,6 +12,10 @@ func usage() -> Never {
            mbprobe set-position <bundleID> <autosaveName> <number> [--host] [--store legacy|agent]
            mbprobe watch [--seconds N]
            mbprobe agent-restart
+           mbprobe set-visible <bundleID> <autosaveName> <0|1> [--host]
+           mbprobe cc-allowed list
+           mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc]
+           mbprobe press <bundleID-or-key> [--escape-after SECONDS]
 
     """.utf8))
     exit(2)
@@ -136,7 +142,117 @@ func runAgentRestart() {
     if !r.recovered { exit(1) }
 }
 
+func runSetVisible(_ a: [String]) {
+    let host = a.contains("--host")
+    let pos = a.filter { $0 != "--host" }
+    guard pos.count == 3, !pos[0].hasPrefix("--"), ["0", "1"].contains(pos[2]) else { usage() }
+    let key = "NSStatusItem Visible \(pos[1])"
+    let v = pos[2] == "1"
+    let ok: Bool
+    if host {
+        CFPreferencesSetValue(key as CFString, v as CFBoolean, pos[0] as CFString, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+        ok = CFPreferencesSynchronize(pos[0] as CFString, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+    } else {
+        CFPreferencesSetAppValue(key as CFString, v as CFBoolean, pos[0] as CFString)
+        ok = CFPreferencesAppSynchronize(pos[0] as CFString)
+    }
+    print("legacy: \(key) = \(v) in \(pos[0]) (\(host ? "current host" : "any host")) synchronize=\(ok)")
+    if !ok { exit(1) }
+}
+
+func killall(_ name: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+    p.arguments = [name]
+    try? p.run(); p.waitUntilExit()
+}
+
+func runCCAllowed(_ a: [String]) {
+    guard let sub = a.first else { usage() }
+    var store = ControlCenterTrackedAppsStore()
+    switch sub {
+    case "list":
+        do {
+            for e in try store.entries() {
+                print("\(e.isAllowed ? "1" : "0") \(e.key)" + (e.menuItemKeys == [e.key] ? "" : "  items=\(e.menuItemKeys)"))
+            }
+        } catch { fail("\(error)") }
+    case "set":
+        let flags = Set(a.filter { $0.hasPrefix("--") })
+        guard flags.isSubset(of: ["--restart", "--create", "--restart-cc"]) else { usage() }
+        let pos = a.dropFirst().filter { !$0.hasPrefix("--") }
+        guard pos.count == 2, ["0", "1"].contains(pos[1]) else { usage() }
+        do { try store.setAllowed(pos[0], pos[1] == "1", create: flags.contains("--create")) } catch { fail("\(error)") }
+        print("cc-allowed: \(pos[0]) isAllowed=\(pos[1] == "1")")
+        if flags.contains("--restart") { runAgentRestart() }
+        if flags.contains("--restart-cc") {
+            // NOT killall: third-party apps (e.g. Elgato Control Center) are also named "ControlCenter".
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            p.arguments = ["-f", "^/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter$"]
+            try? p.run(); p.waitUntilExit(); print("killed system ControlCenter")
+        }
+    default: usage()
+    }
+}
+
+func runPress(_ a: [String]) {
+    var pos: [String] = []
+    var escapeAfter: Double? = nil
+    var i = 0
+    while i < a.count {
+        if a[i] == "--escape-after" {
+            i += 1
+            guard i < a.count, let n = Double(a[i]) else { usage() }
+            escapeAfter = n
+        } else if a[i].hasPrefix("--") { usage() } else { pos.append(a[i]) }
+        i += 1
+    }
+    guard pos.count == 1 else { usage() }
+    let snap = MenuBarScanner().scan()
+    guard let item = snap.items.first(where: {
+        $0.source == .appExtras && ($0.ownerBundleID == pos[0] || $0.axIdentifier == pos[0] || "\($0.ownerBundleID ?? "")::\($0.axIdentifier)" == pos[0])
+    }), let el = item.axElement else { fail("no app-side item matches \(pos[0])") }
+    print("target: \(item.ownerName) \(item.axIdentifier) frame=\(item.frame) onBar=\(item.isOnMenuBar)")
+    let t0 = Date()
+    let err = AXUIElementPerformAction(el, kAXPressAction as CFString)
+    print("AXPress -> AXError \(err.rawValue) in \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+    Thread.sleep(forTimeInterval: 0.7)
+    var ch: CFTypeRef?
+    AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &ch)
+    for c in (ch as? [AXUIElement]) ?? [] {
+        var r: CFTypeRef?; AXUIElementCopyAttributeValue(c, kAXRoleAttribute as CFString, &r)
+        var p: CFTypeRef?; AXUIElementCopyAttributeValue(c, kAXPositionAttribute as CFString, &p)
+        var pt = CGPoint.zero
+        if let p, CFGetTypeID(p) == AXValueGetTypeID() { AXValueGetValue(p as! AXValue, .cgPoint, &pt) }
+        print("child role=\(r as? String ?? "?") pos=\(pt)")
+    }
+    var pid: pid_t = 0; AXUIElementGetPid(el, &pid)
+    var wins: CFTypeRef?
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, 1)
+    AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &wins)
+    for w in (wins as? [AXUIElement]) ?? [] {
+        var r: CFTypeRef?; AXUIElementCopyAttributeValue(w, kAXRoleAttribute as CFString, &r)
+        var p: CFTypeRef?; AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &p)
+        var sz: CFTypeRef?; AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sz)
+        var pt = CGPoint.zero, s = CGSize.zero
+        if let p, CFGetTypeID(p) == AXValueGetTypeID() { AXValueGetValue(p as! AXValue, .cgPoint, &pt) }
+        if let sz, CFGetTypeID(sz) == AXValueGetTypeID() { AXValueGetValue(sz as! AXValue, .cgSize, &s) }
+        print("window role=\(r as? String ?? "?") pos=\(pt) size=\(s)")
+    }
+    if let e = escapeAfter {
+        Thread.sleep(forTimeInterval: e)
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap)
+        }
+        print("escape sent")
+    }
+}
+
 switch args.first {
+case "set-visible": runSetVisible(Array(args.dropFirst()))
+case "cc-allowed": runCCAllowed(Array(args.dropFirst()))
+case "press": runPress(Array(args.dropFirst()))
 case "set-position": runSetPosition(Array(args.dropFirst()))
 case "watch": runWatch(Array(args.dropFirst()))
 case "agent-restart": runAgentRestart()

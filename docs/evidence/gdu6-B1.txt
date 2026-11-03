@@ -1,0 +1,14 @@
+# B1: no removalAllowed; Visible Dummy-A=0 (live)
+legacy: NSStatusItem Visible Dummy-A = false in ie.boboco.mbdummy (any host) synchronize=true
++0s on-bar=26 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++4s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++9s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+# B1b: + killall MenuBarAgent
+hosted before=28 after=149 elapsed=9689 ms recovered=true
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++2s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+# B1c: + relaunch dummy
++1s on-bar=24 [('DB', 'x=1076 y=3', 'bar')]
+{
+    "NSStatusItem VisibleCC Dummy-A" = 0;
+}

@@ -1,0 +1,24 @@
+# B3: VisibleCC true + relaunch (no removalAllowed)
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++2s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+{
+    "NSStatusItem VisibleCC Dummy-A" = 1;
+}
+# B4: --removal-allowed: live Visible=0 write
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+legacy: NSStatusItem Visible Dummy-A = false in ie.boboco.mbdummy (any host) synchronize=true
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++4s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+{
+    "NSStatusItem Visible Dummy-A" = 0;
+    "NSStatusItem VisibleCC Dummy-A" = 1;
+}
+# B4b agent restart
+hosted before=133 after=133 elapsed=12322 ms recovered=true
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
+# B5: removal-allowed relaunch with Visible=0 pre-written
+legacy: NSStatusItem Visible Dummy-A = false in ie.boboco.mbdummy (any host) synchronize=true
++0s on-bar=24 [('DB', 'x=1076 y=3', 'bar')]
+{
+    "NSStatusItem VisibleCC Dummy-A" = 0;
+}

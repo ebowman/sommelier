@@ -1,0 +1,7 @@
+# A1: set ie.boboco.mbdummy isAllowed=0, no restart, 15s
+20:37:51
+cc-allowed: ie.boboco.mbdummy isAllowed=false
+20:37:51
++0s on-bar=25 [('DB', 'x=1048 y=3', 'bar'), ('DA', 'x=1078 y=3', 'bar')]
++2s on-bar=25 [('DB', 'x=1048 y=3', 'bar'), ('DA', 'x=1078 y=3', 'bar')]
++8s on-bar=25 [('DB', 'x=1048 y=3', 'bar'), ('DA', 'x=1078 y=3', 'bar')]

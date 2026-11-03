@@ -1,0 +1,10 @@
+# A6: agent restart (hide applies after ControlCenter-only restart failed)
+20:40:18
+hosted before=29 after=102 elapsed=959 ms recovered=true
++0s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
++3s on-bar=23 [('DA', 'x=-1 y=1203', 'PARKED'), ('DB', 'x=-1 y=1203', 'PARKED')]
+# unhide again: set 1 + restart
+cc-allowed: ie.boboco.mbdummy isAllowed=true
+hosted before=102 after=29 elapsed=11491 ms recovered=false
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++2s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]

@@ -1,0 +1,8 @@
+# A8: --create retry: remove entry, restart system ControlCenter (drop in-memory), create 0, restart agent
+0
+cc-allowed: ie.boboco.mbdummy isAllowed=false
+0 ie.boboco.mbdummy
+hosted before=149 after=28 elapsed=11582 ms recovered=false
+1 ie.boboco.mbdummy  items=["file:///Users/ebowman/src/sommelier/build/MBDummy.app/Contents/MacOS/MBDummy"]
++0s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]
++2s on-bar=25 [('DB', 'x=1046 y=3', 'bar'), ('DA', 'x=1076 y=3', 'bar')]

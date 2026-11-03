@@ -23,8 +23,18 @@ Open-source menu bar item manager for macOS 26+ (work in progress).
         group-container plist (atomic write). Takes effect after `mbprobe agent-restart`. Larger = further left.
     mbprobe watch [--seconds N]     poll the scanner every ~2 s, print order diffs (default 60 s)
     mbprobe agent-restart           killall MenuBarAgent, wait until the hosted item count recovers (10 s timeout), print elapsed ms
+    mbprobe cc-allowed list         every tracked app with its "Allow in the Menu Bar" flag (1/0) from the Control Center plist
+    mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc]
+        edits `isAllowed` inside the `trackedApplications` blob of group.com.apple.controlcenter.plist (atomic write, mode kept).
+        appKey = bundle id (or the file URL for adhocBinary entries). Unknown keys are refused unless --create; `module:` and
+        `com.apple.*` are always refused. 0 = hidden (parked), 1 = shown. Takes effect after `--restart` (killall MenuBarAgent);
+        --restart-cc (kill system ControlCenter only) does NOT apply it.
+    mbprobe set-visible <bundleID> <autosaveName> <0|1> [--host]
+        legacy `NSStatusItem Visible <autosave>` write. Only honored when the owning app (re)launches; see docs/findings-visibility.md.
+    mbprobe press <bundleID-or-key> [--escape-after SECONDS]
+        AXPress on an app-side AXMenuExtra (works on parked items), prints resulting AXMenu/AXPopover child and windows.
 
-See docs/findings-positioning.md.
+See docs/findings-positioning.md and docs/findings-visibility.md.
 
 Accessibility permission for `build/Sommelier.app` must be granted by the human in
 System Settings > Privacy & Security > Accessibility. Ad-hoc re-signing may require re-granting.
