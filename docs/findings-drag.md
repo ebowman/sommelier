@@ -43,7 +43,7 @@ min 0.36 s, median 1.0 s, max 2.0 s. Settle (two agreeing scans, floor 2.0 s): m
 | 250 | 0/2 | 4/4 | 4/4 |
 
 (The tool printed `verified=no` for step-5 failures and the truth column agrees: item did not move.)
-Step count matters: 5 steps fails (~1/7); >=10 steps is 23/23. Hold time had no measurable effect for >=10 steps.
+Step count matters: 5 steps mostly fails (1/7 succeed, 6/7 fail); >=10 steps is 23/23. Hold time had no measurable effect for >=10 steps.
 Best/recommended: **steps 10, step delay 15 ms, hold 100 ms** (a 0 ms hold also worked but was not distinguishable;
 100 ms is the conservative default). Total synthesized-drag duration ~0.3 s.
 
@@ -72,7 +72,7 @@ visible/confirmed by full scan (265-1730 ms). Escape was never needed.
 - Not observed: menu opening, wrong slot, stuck mouse.
 
 ## Conclusion
-Reliability: **100% (53/53 real drags at >=10 steps: 20 Dummy, 23 sweep, 10 KeepingYouAwake; only 5-step drags fail, 1/7)**
+Reliability: **100% (53/53 real drags at >=10 steps: 20 Dummy, 23 sweep, 10 KeepingYouAwake; only 5-step drags fail, 6/7)**
 with steps >=10 and the midpoint-crossing drop rule. Recommendation for T07: **use Cmd+drag as the primary flicker-free
 reorder (closed loop: drag, wait >=2 s, full-scan confirm, retry once with the next drop point on failure), keep plist
 write + `killall MenuBarAgent` only as the fallback** for failed verification or when the user is using the mouse.
