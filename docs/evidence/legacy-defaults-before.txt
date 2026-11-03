@@ -1,0 +1,23 @@
+== at.EternalStorms.Yoink
+    "NSStatusItem Preferred Position Item-0" = 5900;
+== com.iconfactory.Tot
+    "NSStatusItem Preferred Position Item-0" = 6389;
+== info.marcel-dierkes.KeepingYouAwake
+    "NSStatusItem Preferred Position Item-0" = 338;
+== ie.boboco.vpnswitch
+    "NSStatusItem Preferred Position Item-0" = 179;
+== ie.boboco.FloTile
+== com.goodsnooze.MacWhisper
+    "NSStatusItem Preferred Position com.goodsnooze.MacWhisper.statusBarItem" = 11711;
+    "NSStatusItem VisibleCC Item-0" = 1;
+== com.parallels.desktop.console
+    "NSStatusItem Preferred Position Item-1" = 11628;
+    "NSStatusItem VisibleCC Item-1" = 0;
+== org.videolan.vlc
+    "NSStatusItem Preferred Position statusBarItem" = 11479;
+== io.tailscale.ipn.macos
+    "NSStatusItem Preferred Position Item-0" = 6435;
+== com.red-sweater.fastscripts3
+== com.apple.Spotlight
+    "NSStatusItem Preferred Position Item-0" = 5687;
+    "NSStatusItem VisibleCC Item-0" = 1;

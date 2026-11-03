@@ -1,0 +1,62 @@
+3c3
+<     "module:AudioVideoModule" => 604
+---
+>     "module:AudioVideoModule" => 657
+17c17
+<     "status:com.airmail2hookmark.app::Item-0" => 31
+---
+>     "status:com.airmail2hookmark.app::Item-0" => 44
+23,24c23,24
+<     "status:com.apple.systemuiserver::com.apple.menuextra.TimeMachine" => 625
+<     "status:com.apple.TextInputMenuAgent::Item-0" => 579
+---
+>     "status:com.apple.systemuiserver::com.apple.menuextra.TimeMachine" => 678
+>     "status:com.apple.TextInputMenuAgent::Item-0" => 603
+26,33c26,33
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.battery" => 414
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.cpu" => 271
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.disks" => 439
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.memory" => 326
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.network" => 457
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.sensors" => 372
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.time" => 74
+<     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.weather" => 506
+---
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.battery" => 466
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.cpu" => 323
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.disks" => 491
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.memory" => 378
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.network" => 509
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.sensors" => 424
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.time" => 99
+>     "status:com.bjango.istatmenus.status::com.bjango.istatmenus.weather" => 558
+36c36
+<     "status:com.corsair.ControlCenter::Item-0" => 184
+---
+>     "status:com.corsair.ControlCenter::Item-0" => 236
+50c50
+<     "status:com.king.cto.mcpmaestro::Item-0" => 135
+---
+>     "status:com.king.cto.mcpmaestro::Item-0" => 187
+67c67
+<     "status:com.surteesstudios.Bartender::GoldenGateBar" => 44
+---
+>     "status:com.surteesstudios.Bartender::GoldenGateBar" => 69
+73,76c73,76
+<     "status:GateOpener::Item-0" => 344
+<     "status:ie.boboco.FloTile::Item-0" => 89
+<     "status:ie.boboco.vpnswitch::Item-0" => 163
+<     "status:info.marcel-dierkes.KeepingYouAwake::Item-0" => 551
+---
+>     "status:GateOpener::Item-0" => 396
+>     "status:ie.boboco.FloTile::Item-0" => 157
+>     "status:ie.boboco.vpnswitch::Item-0" => 215
+>     "status:info.marcel-dierkes.KeepingYouAwake::Item-0" => 629
+87c87
+<     "status:Item-0" => 653
+---
+>     "status:Item-0" => 706
+89c89
+<     "status:signal::Item-0" => 212
+---
+>     "status:signal::Item-0" => 264

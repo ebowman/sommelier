@@ -1,0 +1,143 @@
+<class 'list'> 142
+{'bundle': {'_0': 'org.pqrs.Karabiner-Menu'}}
+{'location': {'bundle': {'_0': 'org.pqrs.Karabiner-Menu'}}, 'menuItemLocations': [{'bundle': {'_0': 'org.pqrs.Karabiner-Menu'}}], 'isAllowed': True}
+{'adhocBinary': {'_0': {'relative': 'file:///Applications/ChatGPT.app/Contents/Resources/ChatGPTHelper'}}}
+{'location': {'adhocBinary': {'_0': {'relative': 'file:///Applications/ChatGPT.app/Contents/Resources/ChatGPTHelper'}}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Applications/ChatGPT.app/Contents/Resources/ChatGPTHelper'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.crowdcafe.windowmagnet'}}
+{'location': {'bundle': {'_0': 'com.crowdcafe.windowmagnet'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.crowdcafe.windowmagnet'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.kamban.elephas'}}
+{'location': {'bundle': {'_0': 'com.kamban.elephas'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.kamban.elephas'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.flexibits.fantastical2.mac'}}
+{'location': {'bundle': {'_0': 'com.flexibits.fantastical2.mac'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.flexibits.fantastical2.mac'}}, {'bundle': {'_0': '85C27NK92C.com.flexibits.fantastical2.mac.helper'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.red-sweater.fastscripts3'}}
+{'location': {'bundle': {'_0': 'com.red-sweater.fastscripts3'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.red-sweater.fastscripts3'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.anthropic.claudefordesktop'}}
+{'location': {'bundle': {'_0': 'com.anthropic.claudefordesktop'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.anthropic.claudefordesktop'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.bjango.istatmenus.status'}}
+{'location': {'bundle': {'_0': 'com.bjango.istatmenus.status'}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/Library/Application%20Support/iStat%20Menus%207/iStat%20Menus%20Menubar.app/Contents/MacOS/iStat%20Menus%20Menubar'}}}], 'isAllowed': True}
+{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/arm64-apple-macosx/debug/GateOpener'}}}
+{'location': {'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/arm64-apple-macosx/debug/GateOpener'}}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/arm64-apple-macosx/debug/GateOpener'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.nordvpn.macos'}}
+{'location': {'bundle': {'_0': 'com.nordvpn.macos'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.nordvpn.macos'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.corsair.ControlCenter'}}
+{'location': {'bundle': {'_0': 'com.corsair.ControlCenter'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.corsair.ControlCenter'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.airmail2hookmark.app'}}
+{'location': {'bundle': {'_0': 'com.airmail2hookmark.app'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.airmail2hookmark.app'}}], 'isAllowed': True}
+{'bundle': {'_0': 'co.podzim.boltai-mobile'}}
+{'location': {'bundle': {'_0': 'co.podzim.boltai-mobile'}}, 'menuItemLocations': [{'bundle': {'_0': 'co.podzim.boltai-mobile'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.google.drivefs'}}
+{'location': {'bundle': {'_0': 'com.google.drivefs'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.google.drivefs'}}], 'isAllowed': False}
+{'bundle': {'_0': 'at.obdev.MicroSnitch'}}
+{'location': {'bundle': {'_0': 'at.obdev.MicroSnitch'}}, 'menuItemLocations': [{'bundle': {'_0': 'at.obdev.MicroSnitch'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.valerijs.boguckis.store.TextSniper'}}
+{'location': {'bundle': {'_0': 'com.valerijs.boguckis.store.TextSniper'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.valerijs.boguckis.store.TextSniper'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.googlecode.iterm2'}}
+{'location': {'bundle': {'_0': 'com.googlecode.iterm2'}}, 'menuItemLocations': [{'bundle': {'_0': 'ie.boboco.vpnswitch'}}, {'bundle': {'_0': 'ie.boboco.GateOpener'}}, {'bundle': {'_0': 'com.flodo.app'}}], 'isAllowed': True}
+{'bundle': {'_0': 'ie.boboco.vpnswitch'}}
+{'location': {'bundle': {'_0': 'ie.boboco.vpnswitch'}}, 'menuItemLocations': [{'bundle': {'_0': 'ie.boboco.vpnswitch'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.manytricks.Moom'}}
+{'location': {'bundle': {'_0': 'com.manytricks.Moom'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.manytricks.Moom'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.granola.app'}}
+{'location': {'bundle': {'_0': 'com.granola.app'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.granola.app'}}], 'isAllowed': False}
+{'bundle': {'_0': 'fr.arievanboxel.FMail2'}}
+{'location': {'bundle': {'_0': 'fr.arievanboxel.FMail2'}}, 'menuItemLocations': [{'bundle': {'_0': 'fr.arievanboxel.FMail2'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.devon-technologies.think'}}
+{'location': {'bundle': {'_0': 'com.devon-technologies.think'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.devon-technologies.think'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.apple.ScriptMenuApp'}}
+{'location': {'bundle': {'_0': 'com.apple.ScriptMenuApp'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.apple.ScriptMenuApp'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.fieldy.desktop'}}
+{'location': {'bundle': {'_0': 'com.fieldy.desktop'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.fieldy.desktop'}}], 'isAllowed': True}
+{'bundle': {'_0': 'ie.boboco.FloTile'}}
+{'location': {'bundle': {'_0': 'ie.boboco.FloTile'}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/Flo%CC%88Tile/.build/xcode/Build/Products/Debug/FloTile.app/Contents/MacOS/FloTile'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.surteesstudios.Bartender'}}
+{'location': {'bundle': {'_0': 'com.surteesstudios.Bartender'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.surteesstudios.Bartender'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.robinlu.mac.Tooth-Fairy'}}
+{'location': {'bundle': {'_0': 'com.robinlu.mac.Tooth-Fairy'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.robinlu.mac.Tooth-Fairy'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.goodsnooze.MacWhisper'}}
+{'location': {'bundle': {'_0': 'com.goodsnooze.MacWhisper'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.goodsnooze.MacWhisper'}}], 'isAllowed': True}
+{'bundle': {'_0': 'io.tailscale.ipn.macsys'}}
+{'location': {'bundle': {'_0': 'io.tailscale.ipn.macsys'}}, 'menuItemLocations': [{'bundle': {'_0': 'io.tailscale.ipn.macsys'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.cogsciapps.hook'}}
+{'location': {'bundle': {'_0': 'com.cogsciapps.hook'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.cogsciapps.hook'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.runningwithcrayons.Alfred'}}
+{'location': {'bundle': {'_0': 'com.runningwithcrayons.Alfred'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.runningwithcrayons.Alfred'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.houdah.HoudahSpot4'}}
+{'location': {'bundle': {'_0': 'com.houdah.HoudahSpot4'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.houdah.HoudahSpot4'}}, {'bundle': {'_0': 'com.houdah.HoudahSpot4.HoudahSpotHelper'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.apple.ScriptMonitor'}}
+{'location': {'bundle': {'_0': 'com.apple.ScriptMonitor'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.apple.ScriptMonitor'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.electron.ollama'}}
+{'location': {'bundle': {'_0': 'com.electron.ollama'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.electron.ollama'}}], 'isAllowed': True}
+{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/arm64-apple-macosx/release/GateOpener'}}}
+{'location': {'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/arm64-apple-macosx/release/GateOpener'}}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/arm64-apple-macosx/release/GateOpener'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.openai.sky.CUAService'}}
+{'location': {'bundle': {'_0': 'com.openai.sky.CUAService'}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/.codex/computer-use/Codex%20Computer%20Use.app/Contents/MacOS/SkyComputerUseService'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.stairways.keyboardmaestro.editor'}}
+{'location': {'bundle': {'_0': 'com.stairways.keyboardmaestro.editor'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.stairways.keyboardmaestro.engine'}}, {'bundle': {'_0': 'com.stairways.keyboardmaestro.editor'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.openai.codex'}}
+{'location': {'bundle': {'_0': 'com.openai.codex'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.openai.sky.CUAService'}}, {'bundle': {'_0': 'com.openai.codex'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.choosyosx.Choosy'}}
+{'location': {'bundle': {'_0': 'com.choosyosx.Choosy'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.choosyosx.Choosy'}}], 'isAllowed': False}
+{'bundle': {'_0': 'ie.boboco.GateOpener'}}
+{'location': {'bundle': {'_0': 'ie.boboco.GateOpener'}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/GateOpener.app/Contents/MacOS/GateOpener'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.noodlesoft.Hazel'}}
+{'location': {'bundle': {'_0': 'com.noodlesoft.Hazel'}}, 'menuItemLocations': [{'bundle': {'_0': '86Z3GCJ4MF.com.noodlesoft.HazelHelper'}}, {'bundle': {'_0': 'com.noodlesoft.Hazel'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.king.cto.mcpmaestro'}}
+{'location': {'bundle': {'_0': 'com.king.cto.mcpmaestro'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.king.cto.mcpmaestro'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.iconfactory.Tot'}}
+{'location': {'bundle': {'_0': 'com.iconfactory.Tot'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.iconfactory.Tot'}}], 'isAllowed': False}
+{'bundle': {'_0': 'at.EternalStorms.Yoink'}}
+{'location': {'bundle': {'_0': 'at.EternalStorms.Yoink'}}, 'menuItemLocations': [{'bundle': {'_0': 'at.EternalStorms.Yoink'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.friend-app-with-wearable.ios12'}}
+{'location': {'bundle': {'_0': 'com.friend-app-with-wearable.ios12'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.friend-app-with-wearable.ios12'}}], 'isAllowed': True}
+{'bundle': {'_0': 'at.obdev.littlesnitch'}}
+{'location': {'bundle': {'_0': 'at.obdev.littlesnitch'}}, 'menuItemLocations': [{'bundle': {'_0': 'at.obdev.littlesnitch.agent'}}, {'bundle': {'_0': 'at.obdev.littlesnitch'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.devon-technologies.sphereexpress'}}
+{'location': {'bundle': {'_0': 'com.devon-technologies.sphereexpress'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.devon-technologies.sphereexpress'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.freron.MailMate'}}
+{'location': {'bundle': {'_0': 'com.freron.MailMate'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.freron.MailMate'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.memoryvault.MemoryVault'}}
+{'location': {'bundle': {'_0': 'com.memoryvault.MemoryVault'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.memoryvault.MemoryVault'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.parallels.desktop.console'}}
+{'location': {'bundle': {'_0': 'com.parallels.desktop.console'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.parallels.desktop.console'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.1password.1password'}}
+{'location': {'bundle': {'_0': 'com.1password.1password'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.1password.1password'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.pilotmoon.popclip'}}
+{'location': {'bundle': {'_0': 'com.pilotmoon.popclip'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.pilotmoon.popclip'}}], 'isAllowed': False}
+{'bundle': {'_0': 'signal'}}
+{'location': {'bundle': {'_0': 'signal'}}, 'menuItemLocations': [{'bundle': {'_0': 'signal'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.bjango.istatmenus'}}
+{'location': {'bundle': {'_0': 'com.bjango.istatmenus'}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///private/var/folders/2v/c77rk6hn79x4mnjbfgn2wg600000gn/T/AppTranslocation/D5AB82EC-BED7-4051-8DC7-97B191AE9543/d/iStat%20Menus.app/Contents/MacOS/iStat%20Menus'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.abhishek.Clocker'}}
+{'location': {'bundle': {'_0': 'com.abhishek.Clocker'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.abhishek.Clocker'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.macpaw.CleanMyMac5'}}
+{'location': {'bundle': {'_0': 'com.macpaw.CleanMyMac5'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.macpaw.CleanMyMac5'}}, {'bundle': {'_0': 'com.macpaw.CleanMyMac5.Menu'}}], 'isAllowed': False}
+{'bundle': {'_0': 'info.marcel-dierkes.KeepingYouAwake'}}
+{'location': {'bundle': {'_0': 'info.marcel-dierkes.KeepingYouAwake'}}, 'menuItemLocations': [{'bundle': {'_0': 'info.marcel-dierkes.KeepingYouAwake'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.github.Squirrel'}}
+{'location': {'bundle': {'_0': 'com.github.Squirrel'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.electron.ollama'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.flodo.app'}}
+{'location': {'bundle': {'_0': 'com.flodo.app'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.flodo.app'}}], 'isAllowed': True}
+{'bundle': {'_0': 'io.tailscale.ipn.macos'}}
+{'location': {'bundle': {'_0': 'io.tailscale.ipn.macos'}}, 'menuItemLocations': [{'bundle': {'_0': 'io.tailscale.ipn.macos'}}], 'isAllowed': True}
+{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/out/Products/Debug/GateOpener'}}}
+{'location': {'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/out/Products/Debug/GateOpener'}}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/gateopener/.build/out/Products/Debug/GateOpener'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.grammarly.ProjectLlama'}}
+{'location': {'bundle': {'_0': 'com.grammarly.ProjectLlama'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.grammarly.ProjectLlama'}}], 'isAllowed': False}
+{'bundle': {'_0': 'org.videolan.vlc'}}
+{'location': {'bundle': {'_0': 'org.videolan.vlc'}}, 'menuItemLocations': [{'bundle': {'_0': 'org.videolan.vlc'}}], 'isAllowed': False}
+{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/airmail2hook/.build/arm64-apple-macosx/debug/Airmail2Hookmark'}}}
+{'location': {'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/airmail2hook/.build/arm64-apple-macosx/debug/Airmail2Hookmark'}}}, 'menuItemLocations': [{'adhocBinary': {'_0': {'relative': 'file:///Users/ebowman/src/airmail2hook/.build/arm64-apple-macosx/debug/Airmail2Hookmark'}}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.linguee.DeepLCopyTranslator'}}
+{'location': {'bundle': {'_0': 'com.linguee.DeepLCopyTranslator'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.linguee.DeepLCopyTranslator'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.hegenberg.BetterSnapTool'}}
+{'location': {'bundle': {'_0': 'com.hegenberg.BetterSnapTool'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.hegenberg.BetterSnapTool'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.rescuetime.RescueTime'}}
+{'location': {'bundle': {'_0': 'com.rescuetime.RescueTime'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.rescuetime.RescueTime'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.ideasoncanvas.mindnode.macos'}}
+{'location': {'bundle': {'_0': 'com.ideasoncanvas.mindnode.macos'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.ideasoncanvas.mindnode.macos'}}, {'bundle': {'_0': 'com.ideasoncanvas.mindnode.macos.quickentry'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.p5sys.jump.connect'}}
+{'location': {'bundle': {'_0': 'com.p5sys.jump.connect'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.p5sys.jump.connect'}}], 'isAllowed': False}
+{'bundle': {'_0': 'com.bloombuilt.dayone-mac'}}
+{'location': {'bundle': {'_0': 'com.bloombuilt.dayone-mac'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.bloombuilt.dayone-mac'}}, {'bundle': {'_0': 'com.bloombuilt.dayone-mac-agent'}}], 'isAllowed': True}
+{'bundle': {'_0': 'com.getdropbox.dropbox'}}
+{'location': {'bundle': {'_0': 'com.getdropbox.dropbox'}}, 'menuItemLocations': [{'bundle': {'_0': 'com.getdropbox.dropbox'}}], 'isAllowed': False}

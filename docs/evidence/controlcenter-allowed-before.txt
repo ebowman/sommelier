@@ -1,0 +1,71 @@
+True ['org.pqrs.Karabiner-Menu'] org.pqrs.Karabiner-Menu
+True ['adhoc'] adhoc
+False ['com.crowdcafe.windowmagnet'] com.crowdcafe.windowmagnet
+True ['com.kamban.elephas'] com.kamban.elephas
+False ['com.flexibits.fantastical2.mac', '85C27NK92C.com.flexibits.fantastical2.mac.helper'] com.flexibits.fantastical2.mac
+True ['com.red-sweater.fastscripts3'] com.red-sweater.fastscripts3
+False ['com.anthropic.claudefordesktop'] com.anthropic.claudefordesktop
+True ['adhoc'] com.bjango.istatmenus.status
+True ['adhoc'] adhoc
+False ['com.nordvpn.macos'] com.nordvpn.macos
+True ['com.corsair.ControlCenter'] com.corsair.ControlCenter
+True ['com.airmail2hookmark.app'] com.airmail2hookmark.app
+False ['co.podzim.boltai-mobile'] co.podzim.boltai-mobile
+False ['com.google.drivefs'] com.google.drivefs
+False ['at.obdev.MicroSnitch'] at.obdev.MicroSnitch
+False ['com.valerijs.boguckis.store.TextSniper'] com.valerijs.boguckis.store.TextSniper
+True ['ie.boboco.vpnswitch', 'ie.boboco.GateOpener', 'com.flodo.app'] com.googlecode.iterm2
+True ['ie.boboco.vpnswitch'] ie.boboco.vpnswitch
+False ['com.manytricks.Moom'] com.manytricks.Moom
+False ['com.granola.app'] com.granola.app
+True ['fr.arievanboxel.FMail2'] fr.arievanboxel.FMail2
+False ['com.devon-technologies.think'] com.devon-technologies.think
+False ['com.apple.ScriptMenuApp'] com.apple.ScriptMenuApp
+True ['com.fieldy.desktop'] com.fieldy.desktop
+True ['adhoc'] ie.boboco.FloTile
+True ['com.surteesstudios.Bartender'] com.surteesstudios.Bartender
+False ['com.robinlu.mac.Tooth-Fairy'] com.robinlu.mac.Tooth-Fairy
+True ['com.goodsnooze.MacWhisper'] com.goodsnooze.MacWhisper
+False ['io.tailscale.ipn.macsys'] io.tailscale.ipn.macsys
+False ['com.cogsciapps.hook'] com.cogsciapps.hook
+False ['com.runningwithcrayons.Alfred'] com.runningwithcrayons.Alfred
+False ['com.houdah.HoudahSpot4', 'com.houdah.HoudahSpot4.HoudahSpotHelper'] com.houdah.HoudahSpot4
+True ['com.apple.ScriptMonitor'] com.apple.ScriptMonitor
+True ['com.electron.ollama'] com.electron.ollama
+True ['adhoc'] adhoc
+True ['adhoc'] com.openai.sky.CUAService
+False ['com.stairways.keyboardmaestro.engine', 'com.stairways.keyboardmaestro.editor'] com.stairways.keyboardmaestro.editor
+False ['com.openai.sky.CUAService', 'com.openai.codex'] com.openai.codex
+False ['com.choosyosx.Choosy'] com.choosyosx.Choosy
+True ['adhoc'] ie.boboco.GateOpener
+False ['86Z3GCJ4MF.com.noodlesoft.HazelHelper', 'com.noodlesoft.Hazel'] com.noodlesoft.Hazel
+True ['com.king.cto.mcpmaestro'] com.king.cto.mcpmaestro
+False ['com.iconfactory.Tot'] com.iconfactory.Tot
+False ['at.EternalStorms.Yoink'] at.EternalStorms.Yoink
+True ['com.friend-app-with-wearable.ios12'] com.friend-app-with-wearable.ios12
+False ['at.obdev.littlesnitch.agent', 'at.obdev.littlesnitch'] at.obdev.littlesnitch
+False ['com.devon-technologies.sphereexpress'] com.devon-technologies.sphereexpress
+True ['com.freron.MailMate'] com.freron.MailMate
+True ['com.memoryvault.MemoryVault'] com.memoryvault.MemoryVault
+True ['com.parallels.desktop.console'] com.parallels.desktop.console
+False ['com.1password.1password'] com.1password.1password
+False ['com.pilotmoon.popclip'] com.pilotmoon.popclip
+True ['signal'] signal
+True ['adhoc'] com.bjango.istatmenus
+True ['com.abhishek.Clocker'] com.abhishek.Clocker
+False ['com.macpaw.CleanMyMac5', 'com.macpaw.CleanMyMac5.Menu'] com.macpaw.CleanMyMac5
+True ['info.marcel-dierkes.KeepingYouAwake'] info.marcel-dierkes.KeepingYouAwake
+True ['com.electron.ollama'] com.github.Squirrel
+True ['com.flodo.app'] com.flodo.app
+True ['io.tailscale.ipn.macos'] io.tailscale.ipn.macos
+True ['adhoc'] adhoc
+False ['com.grammarly.ProjectLlama'] com.grammarly.ProjectLlama
+False ['org.videolan.vlc'] org.videolan.vlc
+True ['adhoc'] adhoc
+True ['com.linguee.DeepLCopyTranslator'] com.linguee.DeepLCopyTranslator
+False ['com.hegenberg.BetterSnapTool'] com.hegenberg.BetterSnapTool
+False ['com.rescuetime.RescueTime'] com.rescuetime.RescueTime
+False ['com.ideasoncanvas.mindnode.macos', 'com.ideasoncanvas.mindnode.macos.quickentry'] com.ideasoncanvas.mindnode.macos
+False ['com.p5sys.jump.connect'] com.p5sys.jump.connect
+True ['com.bloombuilt.dayone-mac', 'com.bloombuilt.dayone-mac-agent'] com.bloombuilt.dayone-mac
+False ['com.getdropbox.dropbox'] com.getdropbox.dropbox

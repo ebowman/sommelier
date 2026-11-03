@@ -1,0 +1,6 @@
+{
+  "remoteLiveActivityApplications" => {length = 96, bytes = 0x62706c6973743030d101025f1013636f ... 000000000000003a}
+  "showSpotlight" => true
+  "showTimeMachine" => true
+  "trackedApplications" => {length = 8359, bytes = 0x62706c6973743030af108e0001000600 ... 0000000000001b07}
+}
