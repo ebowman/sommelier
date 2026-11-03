@@ -4,3 +4,9 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# SwiftPM / build
+.build/
+build/
+*.xcodeproj
+.DS_Store
