@@ -8,7 +8,7 @@ let args = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
     FileHandle.standardError.write(Data("""
-    usage: mbprobe list [--json] [--include-self] [--timing] [--debug]
+    usage: mbprobe list [--json] [--include-self] [--timing] [--debug] [--fast] [--repeat N]
            mbprobe set-position <bundleID> <autosaveName> <number> [--host] [--store legacy|agent]
            mbprobe watch [--seconds N]
            mbprobe agent-restart
@@ -27,22 +27,43 @@ func clip(_ s: String, _ n: Int) -> String {
 }
 
 func row(_ idx: Int, _ i: MenuBarItem) -> String {
-    let label = [i.title, i.axDescription, i.axIdentifier].map { clip($0, 36) }.joined(separator: " | ")
+    let label = (i.stale ? "(stale) " : "") + [i.title, i.axDescription, i.axIdentifier].map { clip($0, 36) }.joined(separator: " | ")
     let pad = { (s: String, n: Int) in s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
     return "\(pad(String(idx), 3)) x=\(pad(String(Int(i.frame.minX)), 6)) w=\(pad(String(Int(i.frame.width)), 4)) "
         + "\(pad(clip(i.ownerName, 28), 28)) \(pad(i.ownerBundleID ?? "-", 40)) \(label)  [\(i.source.rawValue)]"
 }
 
-func runList(_ flags: [String]) {
-    let known: Set<String> = ["--json", "--include-self", "--timing", "--debug"]
+func runList(_ rawFlags: [String]) {
+    // --repeat N: scan N times with one scanner (shows warm-cache speedups); only the last result is printed.
+    var flags = rawFlags
+    var repeats = 1
+    if let i = flags.firstIndex(of: "--repeat") {
+        guard i + 1 < flags.count, let n = Int(flags[i + 1]), n > 0 else { usage() }
+        repeats = n
+        flags.removeSubrange(i...(i + 1))
+    }
+    let known: Set<String> = ["--json", "--include-self", "--timing", "--debug", "--fast"]
     guard flags.allSatisfy(known.contains) else { usage() }
     let start = Date()
     let debug = flags.contains("--debug")
     let logger: @Sendable (String) -> Void = { msg in
         if debug { FileHandle.standardError.write(Data(("debug: " + msg + "\n").utf8)) }
     }
-    let snap = MenuBarScanner(includeSelf: flags.contains("--include-self"), log: logger).scan()
-    let elapsed = Date().timeIntervalSince(start)
+    let scanner = MenuBarScanner(includeSelf: flags.contains("--include-self"),
+                                 cacheURL: MenuBarScanner.defaultCacheURL, log: logger)
+    var fast = flags.contains("--fast")
+    if fast && !scanner.isWarm {
+        FileHandle.standardError.write(Data("mbprobe: no scan cache yet; doing one full scan to populate it\n".utf8))
+        fast = false
+    }
+    var snap = fast ? scanner.scanVisible() : scanner.scan()
+    var elapsed = Date().timeIntervalSince(start)
+    for n in 2...max(2, repeats) where repeats > 1 {
+        let t = Date()
+        snap = fast ? scanner.scanVisible() : scanner.scan()
+        elapsed = Date().timeIntervalSince(t)
+        FileHandle.standardError.write(Data(String(format: "scan %d: %.0f ms\n", n, elapsed * 1000).utf8))
+    }
     if flags.contains("--json") {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -55,7 +76,7 @@ func runList(_ flags: [String]) {
         for (n, i) in snap.parked.enumerated() { print(row(n, i)) }
     }
     if flags.contains("--timing") {
-        let msg = String(format: "scan time: %.0f ms\n", elapsed * 1000)
+        let msg = String(format: "scan time: %.0f ms (%@)\n", elapsed * 1000, fast ? "fast" : "full")
         FileHandle.standardError.write(Data(msg.utf8))
     }
 }
@@ -95,7 +116,12 @@ func runSetPosition(_ a: [String]) {
 }
 
 func signature(_ s: MenuBarSnapshot) -> [String] {
-    s.onBarLeftToRight.map { "\($0.ownerBundleID ?? $0.ownerName)|\([$0.axIdentifier, $0.axDescription, $0.title].first { !$0.isEmpty } ?? "")" }
+    s.onBarLeftToRight.map { i in
+        // A title-only item can be a live readout ("64%"): digits are masked so it does not look like a change.
+        let label = !i.axIdentifier.isEmpty ? i.axIdentifier : !i.axDescription.isEmpty ? i.axDescription
+            : String(i.title.map { $0.isNumber ? "#" : $0 })
+        return "\(i.ownerBundleID ?? i.ownerName)|\(label)"
+    }
 }
 
 func runWatch(_ a: [String]) {
@@ -106,8 +132,9 @@ func runWatch(_ a: [String]) {
     }
     let start = Date()
     var last: [String]? = nil
+    let scanner = MenuBarScanner()  // one instance: element and extras caches persist between iterations
     while true {
-        let snap = MenuBarScanner().scan()
+        let snap = scanner.scan()
         let sig = signature(snap)
         let stamp = String(format: "[+%.1fs]", Date().timeIntervalSince(start))
         if let l = last {
@@ -158,13 +185,6 @@ func runSetVisible(_ a: [String]) {
     }
     print("legacy: \(key) = \(v) in \(pos[0]) (\(host ? "current host" : "any host")) synchronize=\(ok)")
     if !ok { exit(1) }
-}
-
-func killall(_ name: String) {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-    p.arguments = [name]
-    try? p.run(); p.waitUntilExit()
 }
 
 func runCCAllowed(_ a: [String]) {
@@ -223,7 +243,7 @@ func runPress(_ a: [String]) {
         var r: CFTypeRef?; AXUIElementCopyAttributeValue(c, kAXRoleAttribute as CFString, &r)
         var p: CFTypeRef?; AXUIElementCopyAttributeValue(c, kAXPositionAttribute as CFString, &p)
         var pt = CGPoint.zero
-        if let p, CFGetTypeID(p) == AXValueGetTypeID() { AXValueGetValue(p as! AXValue, .cgPoint, &pt) }
+        if let p, CFGetTypeID(p) == AXValueGetTypeID() { AXValueGetValue(unsafeBitCast(p, to: AXValue.self), .cgPoint, &pt) }
         print("child role=\(r as? String ?? "?") pos=\(pt)")
     }
     var pid: pid_t = 0; AXUIElementGetPid(el, &pid)
@@ -236,8 +256,8 @@ func runPress(_ a: [String]) {
         var p: CFTypeRef?; AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &p)
         var sz: CFTypeRef?; AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sz)
         var pt = CGPoint.zero, s = CGSize.zero
-        if let p, CFGetTypeID(p) == AXValueGetTypeID() { AXValueGetValue(p as! AXValue, .cgPoint, &pt) }
-        if let sz, CFGetTypeID(sz) == AXValueGetTypeID() { AXValueGetValue(sz as! AXValue, .cgSize, &s) }
+        if let p, CFGetTypeID(p) == AXValueGetTypeID() { AXValueGetValue(unsafeBitCast(p, to: AXValue.self), .cgPoint, &pt) }
+        if let sz, CFGetTypeID(sz) == AXValueGetTypeID() { AXValueGetValue(unsafeBitCast(sz, to: AXValue.self), .cgSize, &s) }
         print("window role=\(r as? String ?? "?") pos=\(pt) size=\(s)")
     }
     if let e = escapeAfter {

@@ -128,16 +128,17 @@ public struct MenuBarOrderStore {
 
 /// Restarts MenuBarAgent (launchd respawns it) and measures time until the hosted item count recovers.
 public enum MenuBarAgentControl {
-    public static func hostedCount(source: any AccessibilitySource = LiveAccessibilitySource()) -> Int {
-        guard let agent = source.runningApps().first(where: { $0.bundleID == menuBarAgentBundleID }) else { return 0 }
-        return source.agentHostedTree(for: agent).elements.count
+    /// Number of fresh (non-carried-forward) hosted items, read with the fast path.
+    public static func hostedCount(scanner: MenuBarScanner) -> Int {
+        scanner.scanVisible().items.filter { !$0.stale }.count
     }
 
     public struct RestartResult { public var before: Int; public var after: Int; public var elapsedMS: Int; public var recovered: Bool }
 
     public static func restart(timeout: TimeInterval = 10) -> RestartResult {
-        let source = LiveAccessibilitySource()
-        let before = hostedCount(source: source)
+        // One scanner (no cache file) for the whole call: the fast path reads only the agent tree.
+        let scanner = MenuBarScanner(source: LiveAccessibilitySource())
+        let before = hostedCount(scanner: scanner)
         // The AX hosted count is noisy (+-10%: occasional read timeouts), so accept 90% of the pre-kill count.
         let threshold = before - before / 10
         let start = Date()
@@ -147,7 +148,7 @@ public enum MenuBarAgentControl {
         try? p.run(); p.waitUntilExit()
         var after = 0
         while Date().timeIntervalSince(start) < timeout {
-            after = hostedCount(source: source)
+            after = hostedCount(scanner: scanner)
             if after > 0 && after >= threshold { break }
             // NSWorkspace.runningApplications only refreshes while the run loop spins.
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))

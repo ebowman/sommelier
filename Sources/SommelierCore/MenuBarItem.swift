@@ -24,12 +24,16 @@ public struct MenuBarItem: @unchecked Sendable {
     public var isOnMenuBar: Bool
     /// Opaque handle for later AX actions. Never serialized.
     public var axElement: AXUIElement?
+    /// True when this item was carried forward from an earlier scan because a fresh read failed or missed its budget.
+    public var stale: Bool
+    /// Consecutive scans this item has been carried forward (0 when fresh).
+    public var staleCount: Int
 
     public init(
         ownerPID: pid_t, ownerBundleID: String?, ownerName: String,
         title: String, axDescription: String, axIdentifier: String,
         frame: CGRect, source: MenuBarItemSource, isOnMenuBar: Bool,
-        axElement: AXUIElement? = nil
+        axElement: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0
     ) {
         self.ownerPID = ownerPID
         self.ownerBundleID = ownerBundleID
@@ -41,13 +45,15 @@ public struct MenuBarItem: @unchecked Sendable {
         self.source = source
         self.isOnMenuBar = isOnMenuBar
         self.axElement = axElement
+        self.stale = stale
+        self.staleCount = staleCount
     }
 }
 
 extension MenuBarItem: Codable {
     private enum CodingKeys: String, CodingKey {
         case ownerPID, ownerBundleID, ownerName, title, axDescription, axIdentifier
-        case frame, source, isOnMenuBar
+        case frame, source, isOnMenuBar, stale, staleCount
     }
 
     public init(from decoder: Decoder) throws {
@@ -62,7 +68,9 @@ extension MenuBarItem: Codable {
             frame: try c.decode(CGRect.self, forKey: .frame),
             source: try c.decode(MenuBarItemSource.self, forKey: .source),
             isOnMenuBar: try c.decode(Bool.self, forKey: .isOnMenuBar),
-            axElement: nil)
+            axElement: nil,
+            stale: try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false,
+            staleCount: try c.decodeIfPresent(Int.self, forKey: .staleCount) ?? 0)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -76,6 +84,8 @@ extension MenuBarItem: Codable {
         try c.encode(frame, forKey: .frame)
         try c.encode(source, forKey: .source)
         try c.encode(isOnMenuBar, forKey: .isOnMenuBar)
+        try c.encode(stale, forKey: .stale)
+        try c.encode(staleCount, forKey: .staleCount)
     }
 }
 
