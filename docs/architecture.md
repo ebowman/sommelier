@@ -118,6 +118,21 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   a missing file loads as `Layout.empty`.
 - Dev tool: `mbprobe layout show|init-from-current|move|remove [--file PATH]`.
 
+### Reconciler
+
+`Reconciler.plan(observed:layout:capabilities:showHiddenSection:)` (`Reconciler.swift`) is pure: observed `ObservedOrder`
+(on-bar left to right + parked; stale and width<=1 items excluded) and a `Layout` in, a `Plan` out. The engine loops observe -> plan -> act -> verify.
+- Phases: `.membership` returns only hides then shows (one batch; MenuBarAgent picks where a shown item lands, so order cannot
+  be planned yet); `.order` returns only moves; `.converged` returns nothing. Expect at most 3 plans.
+- Anchors never move: `canMove == false` items and items that should be hidden but have `canHide == false` (reported in `skipped`).
+  The target order keeps each anchor in its observed slot and fills the other slots with the desired order.
+- Unknown keys (not in the layout) follow `newItemPolicy` and are returned in `newItems` (the planner never mutates the layout);
+  unknown parked keys are never shown. Layout keys not observed are listed in `absent` and ignored.
+- Minimality: per gap between anchors, a longest increasing subsequence stays put; moves == misplaced items. Moves are emitted
+  left to right in target order, preferring `.after(left neighbour)`, then `.before(right)`, and `.leftmost`/`.rightmost` only as a last resort.
+- `PlanSimulator.apply` replays actions on an `ObservedOrder` (show slot injectable); `ReconcilerRandomTests` uses it for seeded convergence checks.
+- Dev tool: `mbprobe plan [--show-hidden] [--file PATH] [--json]` prints the plan and executes nothing.
+
 ## (e) What cannot be done, and how the UI shows it
 
 | Limit | Evidence | UI |

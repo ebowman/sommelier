@@ -24,6 +24,7 @@ func usage() -> Never {
            mbprobe layout init-from-current [--file PATH] [--force]
            mbprobe layout move <key> <visible|hidden|always> [index(1-based)] [--file PATH]
            mbprobe layout remove <key> [--file PATH]
+           mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
 
     """.utf8))
@@ -490,6 +491,104 @@ func runHideShow(_ a: [String], hide: Bool) async {
     exit(out.result.isVerified ? 0 : 1)
 }
 
+/// Polls full scans until two consecutive fresh scans agree (same on-bar order, same parked set), or gives up.
+/// Returns the agreed resolved items and the number of scans performed.
+func agreedResolvedScanCounting(maxScans: Int, deadline: Date) -> (items: [ResolvedItem]?, scans: Int) {
+    let scanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL)
+    func signature(_ r: [ResolvedItem]) -> String {
+        let on = r.filter { $0.item.isOnMenuBar }.map { $0.key.description }.joined(separator: "\n")
+        let off = r.filter { !$0.item.isOnMenuBar }.map { $0.key.description }.sorted().joined(separator: "\n")
+        return on + "\n--\n" + off
+    }
+    var scans = 0
+    var prevSig: String? = nil
+    var agreed: [ResolvedItem]? = nil
+    while scans < maxScans, Date() < deadline {
+        let snap = scanner.scan()
+        scans += 1
+        let res = IdentityResolver().resolve(snapshot: snap)
+        let stale = res.contains { $0.item.stale }
+        let sig = signature(res)
+        if !stale, !snap.onBarLeftToRight.isEmpty, sig == prevSig { agreed = res; break }
+        prevSig = stale ? nil : sig
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+    return (agreed, scans)
+}
+
+func agreedResolvedScan(maxScans: Int, deadline: Date) -> [ResolvedItem]? {
+    agreedResolvedScanCounting(maxScans: maxScans, deadline: deadline).items
+}
+
+func runPlan(_ a: [String]) {
+    var file = FileLayoutStore.defaultURL()
+    var showHidden = false, json = false
+    var i = 0
+    while i < a.count {
+        switch a[i] {
+        case "--show-hidden": showHidden = true
+        case "--json": json = true
+        case "--file": i += 1; guard i < a.count else { usage() }; file = URL(fileURLWithPath: a[i])
+        default: usage()
+        }
+        i += 1
+    }
+    guard FileManager.default.fileExists(atPath: file.path) else {
+        FileHandle.standardError.write(Data("no layout; run `mbprobe layout init-from-current`\n".utf8))
+        exit(1)
+    }
+    let layout: Layout
+    do { layout = try FileLayoutStore(url: file).load() } catch { fail("cannot load \(file.path): \(error)") }
+    guard let res = agreedResolvedScan(maxScans: 6, deadline: Date().addingTimeInterval(15)) else {
+        fail("scans did not agree; not planning")
+    }
+    let observed = ObservedOrder(resolved: res)
+    // Read-only: a key is hideable only if Control Center tracks its app.
+    let tracked: Set<String>? = (try? ControlCenterTrackedAppsStore().entries())?.map(\.key).reduce(into: Set<String>()) { $0.insert($1) }
+    let rules = CapabilityRules(hasTrackedEntry: { key in
+        guard let tracked else { return true }
+        if case .status(let owner, _) = key { return tracked.contains(owner) }
+        return false
+    })
+    let plan = Reconciler().plan(observed: observed, layout: layout, capabilities: { rules.capability(for: $0) },
+                                 showHiddenSection: showHidden)
+    func act(_ x: PlannedAction) -> String {
+        switch x {
+        case .hide(let k): return "hide \(k)"
+        case .show(let k): return "show \(k)"
+        case .move(let k, let r):
+            switch r {
+            case .before(let t): return "move \(k) before \(t)"
+            case .after(let t): return "move \(k) after \(t)"
+            case .leftmost: return "move \(k) leftmost"
+            case .rightmost: return "move \(k) rightmost"
+            }
+        }
+    }
+    if json {
+        let obj: [String: Any] = [
+            "phase": "\(plan.phase)", "actions": plan.actions.map(act),
+            "newItems": plan.newItems.map { "\($0.key) -> \($0.section.rawValue)" },
+            "absent": plan.absent.map(\.description),
+            "skipped": plan.skipped.map { "\($0.key): \($0.reason)" },
+            "desiredOnBar": plan.desiredOnBar.map(\.description),
+        ]
+        let d = try! JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+        print(String(decoding: d, as: UTF8.self))
+        return
+    }
+    print("phase: \(plan.phase)  (observed \(observed.onBar.count) on bar, \(observed.parked.count) parked; showHidden=\(showHidden))")
+    print("actions (\(plan.actions.count)):")
+    for (n, x) in plan.actions.enumerated() { print("  \(n + 1). \(act(x))") }
+    print("newItems (\(plan.newItems.count)):")
+    for n in plan.newItems { print("  \(n.key) -> \(n.section.rawValue)") }
+    print("absent: \(plan.absent.count)" + (plan.absent.isEmpty ? "" : " (first 5: " + plan.absent.prefix(5).map(\.description).joined(separator: ", ") + ")"))
+    print("skipped (\(plan.skipped.count)):")
+    for s in plan.skipped { print("  \(s.key): \(s.reason)") }
+    print("desiredOnBar (\(plan.desiredOnBar.count)):")
+    for (n, k) in plan.desiredOnBar.enumerated() { print("  \(n + 1). \(k)") }
+}
+
 func runLayout(_ a: [String]) {
     var a = a
     var file: URL = FileLayoutStore.defaultURL()
@@ -543,27 +642,7 @@ func runLayout(_ a: [String]) {
         if !force, FileManager.default.fileExists(atPath: file.path), !load().allKeys.isEmpty {
             fail("\(file.path) already has a non-empty layout; use --force to overwrite")
         }
-        let scanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL)
-        let maxScans = 6
-        let deadline = Date().addingTimeInterval(15)
-        func signature(_ r: [ResolvedItem]) -> String {
-            let on = r.filter { $0.item.isOnMenuBar }.map { $0.key.description }.joined(separator: "\n")
-            let off = r.filter { !$0.item.isOnMenuBar }.map { $0.key.description }.sorted().joined(separator: "\n")
-            return on + "\n--\n" + off
-        }
-        var scans = 0
-        var prevSig: String? = nil
-        var agreed: [ResolvedItem]? = nil
-        while scans < maxScans, Date() < deadline {
-            let snap = scanner.scan()
-            scans += 1
-            let res = IdentityResolver().resolve(snapshot: snap)
-            let stale = res.contains { $0.item.stale }
-            let sig = signature(res)
-            if !stale, !snap.onBarLeftToRight.isEmpty, sig == prevSig { agreed = res; break }
-            prevSig = stale ? nil : sig
-            Thread.sleep(forTimeInterval: 0.3)
-        }
+        let (agreed, scans) = agreedResolvedScanCounting(maxScans: 6, deadline: Date().addingTimeInterval(15))
         guard let res = agreed else {
             fail("scans did not agree after \(scans) attempts; not writing")
         }
@@ -604,6 +683,7 @@ func runLayout(_ a: [String]) {
 
 switch args.first {
 case "layout": runLayout(Array(args.dropFirst()))
+case "plan": runPlan(Array(args.dropFirst()))
 case "move": await runMove(Array(args.dropFirst()))
 case "hide": await runHideShow(Array(args.dropFirst()), hide: true)
 case "show": await runHideShow(Array(args.dropFirst()), hide: false)
