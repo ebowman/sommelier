@@ -1,13 +1,95 @@
 # Sommelier
 
-Open-source menu bar item manager for macOS 26+ (work in progress).
+An open-source menu bar item manager for macOS 26+, built as a Bartender alternative that does not lie.
 
-## Build and test
+Bartender's recurring failure mode is that it says it moved or hid an item and the item did not move, or the
+order silently changed. Sommelier is built around one rule: **nothing is shown as done until the real menu bar
+confirms it.** The UI renders observed state; what you asked for is shown separately as pending, moving or failed.
+
+![Screenshot placeholder: overflow panel](docs/images/panel.png)
+![Screenshot placeholder: Arrange window](docs/images/arrange.png)
+
+## Status
+
+Alpha (0.1.x). macOS 26 or later only. Developed and tested on macOS 27.0.1 (Xcode 27.1, Swift 6.4); macOS 26 is
+assumed to behave the same but has not been verified. Single display only; multi-display is untested.
+
+## Requirements
+
+- macOS 26 or later.
+- **Accessibility permission (required).** Sommelier reads and arranges items through the Accessibility API.
+- Screen Recording is **not** required. It only enables live item images in the overflow panel, and denying it is not an error.
+- Sommelier is deliberately not sandboxed.
+
+## Install
+
+1. Download `Sommelier-<version>.dmg` from the GitHub Releases page. It is signed with a Developer ID and notarized by Apple.
+2. Open the DMG and drag Sommelier to Applications.
+3. Launch it from Applications. macOS shows the usual "downloaded from the internet" confirmation; click Open.
+4. Sommelier opens an onboarding window until Accessibility is granted. Grant it in System Settings > Privacy & Security >
+   Accessibility (on macOS 27 the pane is called "Device Control and Data Access"). It starts working without a relaunch.
+5. Quit Bartender (or any other menu bar manager) first: the engine pauses while another manager runs, because they fight each other.
+
+## Usage
+
+- **Left-click** the Sommelier menu bar item: opens the overflow panel listing the hidden items. Click an entry to open
+  that item's real menu; the item is hidden again after the menu closes.
+- **Right-click** menu: Arrange..., Settings..., Start at login, Quit.
+- **Arrange window**: three strips, Visible, Hidden and Always hidden. Drag and drop capsules within and across strips.
+  The Visible strip mirrors the real bar and updates only when the bar has confirmed the move. Each capsule has a badge:
+  - in place: the real bar matches the layout;
+  - moving: the change is in flight;
+  - failed: the move did not verify; hover for the error, "Retry" is in the context menu;
+  - cannot move or hide: the item is greyed (for example system items, Apple apps);
+  - does not fit: the item is hidden because there is no room for it on the bar.
+- **Always hidden**: items placed there stay hidden, including when the Hidden section is revealed.
+- **Hide what does not fit**: when the bar is too crowded (for example on a notched display), items that would be pushed into
+  macOS's own overflow are hidden by Sommelier instead, so you decide which ones go.
+- **Per-app caveat**: macOS hides all status items of one app together. If an app has two items, they share one visibility setting.
+
+## How it works
+
+Sommelier scans the menu bar through Accessibility, reading the tree hosted by macOS's `MenuBarAgent` process (menu bar items
+are no longer separate per-app windows on macOS 26+) and each app's `AXExtrasMenuBar`. Hiding and showing is done live through
+the Control Center preference domain (the per-app "Allow in the Menu Bar" flag), notified through cfprefsd without restarting
+the agent; this needs the `group.com.apple.controlcenter` app-group entitlement, which the release build carries. Reordering
+uses Cmd+drag with real mouse events, and every move is re-observed and compared with the intended order (closed loop) before
+the UI marks it done. A failure is surfaced, never swallowed.
+
+The design, the actuator strategy and the measurements behind it are in [docs/architecture.md](docs/architecture.md) and the
+findings: [positioning](docs/findings-positioning.md), [visibility](docs/findings-visibility.md),
+[live trigger](docs/findings-live-trigger.md), [drag](docs/findings-drag.md), [identity](docs/findings-identity.md),
+[preference store](docs/findings-prefstore.md), [restart collateral](docs/findings-restart-collateral.md).
+
+## Known limitations
+
+- System items cannot be moved past Control Center and the clock.
+- Apple apps' items cannot be hidden.
+- Apps without a "Allow in the Menu Bar" entry in Control Center cannot be hidden yet.
+- Reordering takes about 6-11 s because it uses real drags; hide/show takes 1-5 s, bounded by scan time.
+- Items that macOS has pushed into its own overflow cannot be dragged.
+- Multi-display is untested.
+- macOS 25 and earlier are not supported.
+- Rebuilding from source changes the ad-hoc signature, so Accessibility must be granted again (see Troubleshooting).
+  The notarized release keeps a stable identity across versions.
+
+## Troubleshooting
+
+- Not working after a rebuild, or Accessibility looks granted but is not effective:
+  `tccutil reset Accessibility ie.boboco.sommelier`, relaunch, and grant again.
+- `mbprobe list` prints what the scanner sees (use `make probe ARGS="list"` from a source checkout);
+  `mbprobe permissions` prints the Accessibility and Screen Recording state and `live hide/show: available|unavailable`.
+- Logs: a development run (`make app-run`) writes `build/sommelier.log`; look for `launch trusted=true`.
+- The engine does nothing while Bartender is running; quit it.
+
+## Building from source
 
     make build     # swift build
     make test      # swift test
     make app       # assemble and ad-hoc sign build/Sommelier.app
-    make run       # build and open build/Sommelier.app
+    make run       # build and open build/Sommelier.app (no Accessibility trust; prefer app-run)
+    make app-run   # run the bundle binary directly so it inherits the terminal's Accessibility trust
+    make release VERSION=x.y.z   # Developer ID signed + DMG in dist/ (see CONTRIBUTING.md)
     make probe ARGS="..."   # build (signs mbprobe with the app-group entitlement), then run the bin-path mbprobe
     make dummy [ARGS="--count 3 --removal-allowed"]   # build/MBDummy.app test status items
     make dummy-stop
@@ -36,18 +118,13 @@ Open-source menu bar item manager for macOS 26+ (work in progress).
 
 See docs/findings-positioning.md and docs/findings-visibility.md.
 
-## Permissions
+## Permissions (reference)
 
-- **Accessibility (required)**: needed to read and arrange menu bar items. Grant it in System Settings > Privacy & Security > Accessibility
-  (`x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`). Sommelier opens an onboarding window until it is granted,
-  and starts working without relaunch once it is.
-- **Screen Recording (optional)**: only enables live item images in the overflow panel
-  (`x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`). Denied is not an error.
-- After rebuilding, the ad-hoc signature changes and macOS may require granting again. Fix:
-  `tccutil reset Accessibility ie.boboco.sommelier`, relaunch, and re-grant.
-- `mbprobe permissions [--prompt]` prints both states. `SOMMELIER_SHOW_ONBOARDING=1` forces the onboarding window at launch.
-
-The app is deliberately not sandboxed. License: MIT.
+- **Accessibility (required)**: System Settings > Privacy & Security > Accessibility
+  (`x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`).
+- **Screen Recording (optional)**: live item images in the overflow panel
+  (`x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`).
+- `SOMMELIER_SHOW_ONBOARDING=1` forces the onboarding window at launch.
 
 ## Developing
 
@@ -66,3 +143,7 @@ engine has observed; the index is 0-based among MOVABLE items, modules do not co
 system block; `mbprobe layout move` indexes are 1-based and unclamped; chain moves with `;`, space them with `SOMMELIER_ARRANGE_MOVE_INTERVAL=<seconds>`).
 **`SOMMELIER_LAYOUT_FILE=<path>`** makes the app use that file instead of `~/Library/Application Support/Sommelier/layout.json`:
 set it for every development run, so experiments never touch your real layout (the file is created on first launch from the current bar).
+
+## License
+
+MIT, Copyright (c) 2026 Eric Bowman. See [LICENSE](LICENSE). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).

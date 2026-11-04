@@ -1,4 +1,4 @@
-.PHONY: build test app run app-run probe dummy dummy-stop clean
+.PHONY: build test app run app-run probe dummy dummy-stop clean release notarize publish
 
 APP := build/Sommelier.app
 DUMMY := build/MBDummy.app
@@ -60,3 +60,18 @@ dummy-stop:
 clean:
 	swift package clean
 	rm -rf build
+
+# Release pipeline (Developer ID, hardened runtime, notarized, stapled DMG). See CONTRIBUTING.md.
+# VERSION defaults to the VERSION file; override with `make release VERSION=x.y.z`.
+release:
+	scripts/make-dmg.sh
+	@v="$$(scripts/read-app-version.sh short)"; \
+	  echo "==> dist/Sommelier-$$v.dmg"; shasum -a 256 "dist/Sommelier-$$v.dmg"
+
+notarize:
+	scripts/notarize-dmg.sh
+
+# OPERATOR-INVOKED ONLY: creates a real public GitHub release. Refuses unless CONFIRM_PUBLISH=1.
+publish:
+	@[ "$$CONFIRM_PUBLISH" = "1" ] || { echo "refusing: run CONFIRM_PUBLISH=1 make publish"; exit 1; }
+	scripts/publish-release.sh

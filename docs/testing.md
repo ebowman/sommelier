@@ -1,5 +1,15 @@
 # Manual testing
 
+## QA run (ordered)
+Run the sections below in this order for a full pass; each links to its checklist.
+1. First launch: [Developer launch trick](#developer-launch-trick)
+2. Permissions: onboarding and Accessibility grant (README "Permissions"; `mbprobe permissions`)
+3. Panel: [Overflow panel](#overflow-panel), [Live hide detection](#live-hide-detection), [Live hide/show](#live-hideshow)
+4. Arrange: [Layout import mirrors the bar](#layout-import-mirrors-the-bar), [System overflow](#system-overflow), [Arrange window](#arrange-window)
+5. Click-forwarding: [Click-forwarding](#click-forwarding)
+6. Robustness: [Robustness (gdu.21)](#robustness-gdu21)
+7. Release smoke: [Release smoke (reviewer/human)](#release-smoke-reviewerhuman)
+
 ## Developer launch trick
 Run the app binary from a shell that has Accessibility trust, not via `open`:
 
@@ -289,3 +299,22 @@ wake` before sleep, `didWake: reconcile in 3 seconds`, then `pass started ... af
 on wake additionally logs `agent restarted: pid A -> B`; the pass waits out its 2 s settle).
 Also check by hand: launch a new third-party menu bar app that is not in the layout: Arrange status line shows `New item: <name> placed in Visible` (or Hidden per
 the policy) for ~10 s and the log has the same text.
+
+## Release smoke (reviewer/human)
+Status: **not yet run.** The pipeline (build, sign, DMG, notarize, staple, spctl) was run by the release bead, but the notarized
+.app was never launched there (live menu-bar experiments were in progress). This is also the first test of the unproven .app-bundle
+case in docs/findings-live-trigger.md section 8 (does the app-group entitlement keep live hide/show in a Developer ID .app?).
+Quit Bartender first; relaunch it afterwards.
+1. `make release VERSION=0.1.0 && make notarize` (or use an existing `dist/Sommelier-0.1.0.dmg`). Check
+   `spctl -a -vv -t install dist/Sommelier-0.1.0.dmg` and `spctl -a -vv -t exec dist/Sommelier.app` say "accepted, source=Notarized Developer ID".
+2. Mount the DMG (`open dist/Sommelier-0.1.0.dmg`), drag Sommelier to /Applications (or run it from `dist/`).
+   Use `SOMMELIER_LAYOUT_FILE` only for the terminal-started variant; a Finder launch uses the real layout, so back it up first.
+3. Launch from Finder (double-click). Expected Gatekeeper dialog: "Apple checked it for malicious software and none was found" with an Open button. Click Open.
+4. The onboarding window appears. Grant Accessibility in System Settings (macOS 27: "Device Control and Data Access"); Sommelier should start working without a relaunch.
+5. Confirm the app's own result (`mbprobe permissions` checks mbprobe, not the app): the onboarding/Settings state shows trusted, and the app log
+   (`log show --last 2m --predicate 'process == "Sommelier"'`) shows `launch trusted=true` with live hide/show available ("permissions" reporting
+   "live hide/show: available" in the notarized bundle). Record the exact evidence. If unavailable, the entitlement is not honored in the .app bundle: record that as the finding.
+6. Start a dummy (`make dummy ARGS="--count 2"`), hide one dummy via the app (Arrange window or panel) with the live mechanism, verify with `make probe ARGS="list"` that it left the bar
+   within 1-5 s and no MenuBarAgent restart happened, then show it again and verify.
+7. Quit Sommelier, `make dummy-stop`, relaunch Bartender.
+Record results (pass/fail, timings, Gatekeeper dialog text) here.
