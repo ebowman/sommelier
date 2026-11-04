@@ -222,7 +222,12 @@ public actor LayoutEngine {
     }
 
     private func makePlan(_ obs: ObservedOrder) -> Plan {
-        Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden)
+        var p = Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden)
+        // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
+        // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
+        // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
+        if !transientReveals.isEmpty { p.actions = []; p.newItems = []; p.phase = .converged }
+        return p
     }
 
     /// Keys of units under a transient reveal are invisible to the planner: it neither hides nor orders them.

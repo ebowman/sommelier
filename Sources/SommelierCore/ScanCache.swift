@@ -12,6 +12,9 @@ struct CachedApp {
 struct AssumedHidden: Codable, Equatable {
     var pid: Int32
     var bundleID: String?
+    /// Control Center tracked key of the owner (for the `isAllowed` readback); nil when unknown.
+    var trackedKey: String?
+    /// When we recorded it (the hard safety expiry counts from here).
     var at: Date
     /// Complete hosted count right after the hide (nil when unknown).
     var hostedAfter: Int?
@@ -41,6 +44,10 @@ final class ScanState: @unchecked Sendable {
     /// Owners whose identifier-less items we hid ourselves (live write) and a hosted-count drop confirmed (of7). Keyed by
     /// pid because the unit is the owner and the items' own keys are frame-based (volatile). Persisted.
     var assumedHidden: [pid_t: AssumedHidden] = [:]
+    /// Last complete hosted tree (attributed by the join) and when it was read (in-memory only).
+    var lastCompleteLayout: (entries: [HostedEntry], at: Date)?
+    /// When the Control Center `isAllowed` readback of an assumed-hidden owner was last done (in-memory only).
+    var assumedCheckedAt: [pid_t: Date] = [:]
     private var lastSaved: Data?
     /// Consecutive fast scans each unverified cached item has been shown as stale (in-memory only).
     var unverifiedCount: [String: Int] = [:]

@@ -77,6 +77,18 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
         if writes.last?.values.contains(false) == true, let c = countAfterHide { return c }
         return 10
     }
+    /// Hosted tree: 10 elements; +1 (the revealed item) while shown. `treeAfterHide` replaces the post-hide tree (ambiguity).
+    var treeAfterHide: [HostedEntry]?
+    var layoutKnown = true
+    func tree(_ n: Int, shifted: Bool = false) -> [HostedEntry] {
+        (0..<n).map { HostedEntry(sig: $0 == 5 && n == 11 ? "" : "e\($0)", minX: CGFloat($0 * 30) + (shifted ? 1 : 0), width: 24) }
+    }
+    func hostedLayout() async -> [HostedEntry]? {
+        guard layoutKnown, countKnown else { return nil }
+        if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return tree(11) }
+        if writes.last?.values.contains(false) == true, let t = treeAfterHide { return t }
+        return tree(10)
+    }
     var recorded: [(owners: [AssumedHiddenOwner], after: Int?)] = []
     var cleared: [Set<pid_t>] = []
     func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { recorded.append((owners, hostedAfter)) }
@@ -130,12 +142,12 @@ private actor FakeHold: TransientRevealing {
         guard case .opened = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
         #expect(p.cleared == [[42]])                                   // the show voided any earlier assumption
         #expect(p.recorded.count == 1)
-        #expect(p.recorded.first?.owners == [AssumedHiddenOwner(pid: 42, bundleID: nil, items: 1)])
+        #expect(p.recorded.first?.owners == [AssumedHiddenOwner(pid: 42, bundleID: nil, items: 1, trackedKey: "com.x.tool")])
         #expect(p.recorded.first?.after == 10)
     }
 
     @Test func rehideDoesNotRecordWhenTheHostedCountDoesNotReturn() async {
-        let p = FakeActivation(); p.countAfterHide = 12
+        let p = FakeActivation(); p.treeAfterHide = p.tree(10).enumerated().map { var e = $1; if $0 == 3 { e.sig = "other" }; return e }   // same count, one element differs
         guard case .opened = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
         #expect(p.recorded.isEmpty)
     }

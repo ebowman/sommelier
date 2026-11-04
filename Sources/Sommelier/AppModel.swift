@@ -51,8 +51,8 @@ final class AppModel {
     func activate(_ key: ItemKey, button: ClickButton) async -> ActivationResult {
         guard let engine else { return .failed(.unavailable("Sommelier is not running yet")) }
         if activator == nil {
-            let ph = LivePlatform()
-            let live = LiveActivationPlatform(platform: ph, closeMonitor: NSEventCloseMonitor(),
+            // The engine's own platform: one scanner and one ScanState, so assumed-hidden records are shared and never overwritten.
+            let live = LiveActivationPlatform(platform: platform, closeMonitor: NSEventCloseMonitor(),
                                               filter: { EngineFactory.dropSelf($0, bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
             activator = ItemActivator(platform: live, hold: engine, log: { NSLog("[Sommelier] activator: %@", $0) })
         }

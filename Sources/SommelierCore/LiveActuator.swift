@@ -426,7 +426,7 @@ public actor LiveActuator: MenuBarActuator {
                     if !want { showPIDs.insert(r.item.ownerPID); continue }
                     guard ActuationVerifier.onBar(r), !r.item.stale else { continue }
                     if let i = unnamedOwners.firstIndex(where: { $0.pid == r.item.ownerPID }) { unnamedOwners[i].items += 1 }
-                    else { unnamedOwners.append(AssumedHiddenOwner(pid: r.item.ownerPID, bundleID: r.item.ownerBundleID, items: 1)) }
+                    else { unnamedOwners.append(AssumedHiddenOwner(pid: r.item.ownerPID, bundleID: r.item.ownerBundleID, items: 1, trackedKey: t)) }
                 }
                 // Owners with at least one identifier-less on-bar item; their count (all on-bar items of the owner) is recorded.
                 let unnamedPIDs = Set(resolved.filter { r in
@@ -434,10 +434,24 @@ public actor LiveActuator: MenuBarActuator {
                     return r.item.axIdentifier.isEmpty && r.item.axDescription.isEmpty
                 }.map(\.item.ownerPID))
                 unnamedOwners = unnamedOwners.filter { unnamedPIDs.contains($0.pid) }
-                var baseline: Int?
-                if !unnamedOwners.isEmpty {
-                    for _ in 0..<2 { baseline = await platform.hostedBarCount(); if baseline != nil { break } }
-                    if baseline == nil { note("live: no complete hosted baseline before the write; no count evidence for identifier-less items") }
+                // Evidence = WHICH hosted elements vanished (not how many): the pre-write hosted tree minus exactly the unit's
+                // elements must equal the post-write tree, in order. Only for pure hides; a batch that also shows items cannot
+                // predict the tree, so it keeps the complete-read poll alone.
+                var baseline: [HostedEntry]?
+                if !unnamedOwners.isEmpty, showPIDs.isEmpty {
+                    var from = ""
+                    if snap.hostedReadComplete != false, let l = snap.hostedLayout, !l.isEmpty {
+                        baseline = l; from = "pre-write full scan"
+                    }
+                    let limit = platform.now().addingTimeInterval(4)
+                    while baseline == nil, platform.now() < limit {
+                        let s = await platform.scan()
+                        if s.hostedReadComplete != false, let l = s.hostedLayout, !l.isEmpty { baseline = l; from = "retried full scan"; break }
+                        await platform.sleep(0.2)
+                    }
+                    if baseline == nil, let l = platform.recentCompleteHostedLayout(maxAge: 10) { baseline = l; from = "scanner cache (<= 10 s old)" }
+                    if let baseline { note("live: baseline = \(from), \(baseline.count) hosted elements, unit owns \(baseline.filter { $0.ownerPID.map(members.contains) ?? false }.count)") }
+                    else { note("live: no complete hosted baseline (scan, 4 s of retries, cache); no element evidence for identifier-less items") }
                 }
                 var wrote = false
                 do { try platform.setAllowedLive(wantByApp.mapValues { !$0 }); wrote = true }
@@ -446,18 +460,19 @@ public actor LiveActuator: MenuBarActuator {
                 if wrote {
                     // A show by us ends any assumed-hidden state of that owner before the verification scans read it.
                     if !showPIDs.isEmpty { platform.clearAssumedHidden(pids: showPIDs) }
-                    if let baseline, !unnamedOwners.isEmpty, expectedChange < 0 {
-                        var waited = 0.0
-                        for at in [0.3, 0.8, 1.5] {
-                            await platform.sleep(at - waited); waited = at
-                            guard let c = await platform.hostedBarCount() else { continue }
-                            if c == baseline + expectedChange {
-                                evidence = "hosted-count drop \(-expectedChange) (\(baseline) -> \(c))"
-                                platform.recordAssumedHidden(unnamedOwners, hostedAfter: c)
-                                note("live: evidence at \(Int(at * 1000))ms: \(evidence!)")
+                    if let baseline {
+                        let tw = platform.now()
+                        for at in [0.3, 0.8, 1.5, 2.5, 4.0, 6.0] {
+                            let due = at - platform.now().timeIntervalSince(tw); if due > 0 { await platform.sleep(due) }
+                            guard let after = await platform.hostedLayout() else { note("live: probe @\(Int(at * 1000))ms incomplete"); continue }
+                            if HostedEvidence.removedExactly(before: baseline, after: after, unitPIDs: members) {
+                                let n = baseline.count - after.count
+                                evidence = "hosted-element evidence: exactly the unit's \(n) element(s) vanished (\(baseline.count) -> \(after.count))"
+                                platform.recordAssumedHidden(unnamedOwners, hostedAfter: after.count)
+                                note("live: \(evidence!) at \(Int(at * 1000))ms")
                                 break
                             }
-                            note("live: hosted count \(c) at \(Int(at * 1000))ms, expected \(baseline + expectedChange); ambiguous")
+                            note("live: probe @\(Int(at * 1000))ms: ambiguous: \(HostedEvidence.mismatch(before: baseline, after: after, unitPIDs: members) ?? "?")")
                         }
                     }
                 }
@@ -474,6 +489,26 @@ public actor LiveActuator: MenuBarActuator {
                         if !(s.hostedReadComplete == false || s.onBarLeftToRight.isEmpty) {
                             complete += 1
                             let v = verdicts(platform.resolve(s))
+                            // The poll's own complete scans carry the attributed hosted tree: the same element evidence applies when the
+                            // timed probes were incomplete or too early. Record, then read once more with the flag in effect.
+                            if evidence == nil, let baseline, let after = s.hostedLayout,
+                               HostedEvidence.removedExactly(before: baseline, after: after, unitPIDs: members) {
+                                evidence = "hosted-element evidence (poll scan #\(polls)): exactly the unit's \(baseline.count - after.count) element(s) vanished (\(baseline.count) -> \(after.count))"
+                                platform.recordAssumedHidden(unnamedOwners, hostedAfter: after.count)
+                                note("live: \(evidence!)")
+                                complete -= 1
+                                continue
+                            }
+                            // (c) no other app-side item may have left the bar (only checked when we rely on element evidence).
+                            let nowResolved = platform.resolve(s)
+                            let leftBar = evidence == nil ? [] : before.filter { $0.value && expectations[$0.key] == nil }.compactMap { k, _ -> ItemKey? in
+                                nowResolved.first { $0.key == k }.flatMap { !$0.item.stale && !ActuationVerifier.onBar($0) ? k : nil }
+                            }
+                            if v.values.allSatisfy(\.ok), !leftBar.isEmpty {
+                                note("live: element evidence rejected, \(leftBar.map(\.description).sorted().joined(separator: ", ")) also left the bar")
+                                platform.clearAssumedHidden(pids: Set(unnamedOwners.map(\.pid))); evidence = nil
+                                ended = "collateral"; break
+                            }
                             if v.values.allSatisfy(\.ok) {
                                 let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
                                 let via = evidence.map { "live: verified by \($0); " } ?? ""

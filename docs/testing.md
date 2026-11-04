@@ -229,25 +229,7 @@ a not-running Tot refreshed the entries (entry gone, log `failed: the app is not
 outline run. `mbprobe activate` refuses while a Sommelier process runs (no engine hold) unless `--force`.
 
 
-### Identifier-less live hide: hosted-count evidence (of7)
-Unit tests: `LiveActuatorTests` (count drop -> live verified + assumed recorded; ambiguous count -> nothing recorded, one respawn; show clears),
-`MenuBarScannerFastPathTests` (assumed hidden on full and fast scans, never without evidence, contradiction clears, count-not-back keeps, quit/expiry
-prune, persistence), `ItemActivatorTests` (re-hide records / does not record). `make test` 369 tests.
+### Identifier-less live hide: hosted-element evidence (of7)
+Unit tests: `LiveActuatorTests` (exact elements vanished -> live + assumed recorded + show clears; a coincidental vanish with a matching count -> ambiguous, no record, one respawn; another item leaving the bar rejects the evidence; incomplete baseline -> retried scan / scanner cache; poll-scan evidence when the timed probes fail), `MenuBarScannerFastPathTests` (assumed hidden on full and fast scans, never without evidence, contradiction clears, count-not-back keeps, quit/2 h expiry/readback/pid-reuse, persistence, attributed hosted layout, `HostedEvidence`), `ItemActivatorTests` (re-hide records when the tree is restored, not on a same-count different tree), `LayoutEngineTests` (a hold plans nothing and records no new item). `make test` 377 tests.
 
-Live 2026-11-04 (Bartender 7 quit, `mbprobe` ad-hoc signed, Moom + Tot, MenuBarAgent pid 74173 throughout, never restarted):
-
-| op | mechanism | evidence | ms (write->verified) |
-|---|---|---|---|
-| hide Moom | live | hosted-count drop 1 (28 -> 27), probe at 800 ms (300 ms read still 28) | 3372 |
-| show Moom | live | frame rule | 1979 |
-| show Tot | live | frame rule | 6867 |
-| hide Tot | live | hosted-count drop 1 (29 -> 28) at 800 ms | 7650 |
-| Moom cycles 1-3 hide | live x3 | drop 1 at 800/800/1500 ms | 5731 / 3710 / 5624 |
-| Moom cycles 2-3 show (cycle 1 show was a no-op) | live x2 | frame rule | 682 / 1761 |
-| extra show/hide Moom | live x2 | drop 1 | 9945 / 2382 |
-
-After each hide `mbprobe list --json` reports `hidden=assumedNotHosted` (Moom, Tot); 5 consecutive `list --json` scans flag exactly those two (no
-other item hidden except the 28 parked ones), 23 on-bar items. App run (`SOMMELIER_ACTIVATE=<Tot key>`, Escape after ~8 s): `unit hidden again`,
-`re-hide verified by hosted-count drop 1 (-> 28); recorded as assumed-hidden`, then every engine pass `phase=converged actions=0`, no "falling back
-to respawn", pid unchanged. End state: Moom/Tot parked with `isAllowed` blob identical to the backup, third-party on-bar order identical, Bartender
-relaunched.
+Live 2026-11-04 (Bartender 7 quit, `mbprobe` ad-hoc signed, Moom + Yoink, MenuBarAgent never restarted by us; `/private/tmp/.../scratchpad/of7/live3.txt`): show+hide x5 each = 20/20 ops live (hide trace `baseline = pre-write full scan|retried full scan`, then `exactly the unit's 1 element(s) vanished (23 -> 22)` at 800-2500 ms or from a poll scan), pid constant (58992), 0 "no baseline". Write to verified: Moom hides 5729/4274/5655/3360/1830 ms, shows 731/3258/5539/2972/3007 ms; Yoink hides 3785/4987/5437/5154/4608 ms, shows 933/3511/4902/3271/910 ms. `list --json` after every hide: `assumedNotHosted`. 5 consecutive scans flag only Moom and Yoink (23 on-bar items). App run (`SOMMELIER_ACTIVATE=<Yoink key>`, Escape ~6.5 s after launch): engine plans `converged actions=0` during the hold and after, `re-hide verified by hosted-element evidence (tree restored, 23 elements); recorded as assumed-hidden`, pid unchanged, no move/drag/hide planned. An earlier pass of the same loop (count-based width rule, jittering iStat widths) respawned 5 of 20 times; that is why named widths are not compared. End state: Moom/Yoink/Tot parked, `isAllowed` blob equal to the backup, third-party order identical, Bartender relaunched.

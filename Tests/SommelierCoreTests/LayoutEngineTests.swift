@@ -508,6 +508,18 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.hidden == [k("B")])
     }
 
+    @Test func duringAHoldTheEnginePlansNothingAtAllAndRecordsNoNewItem() async throws {
+        // The revealed element can appear as an unknown heuristic item (the engine once dragged it while its menu was open),
+        // and another unit that should be hidden is on the bar: with a hold active, zero actions and no persisted new item.
+        let h = try #require(ItemKey(storeKey: "heuristic:com.apple.MenuBarAgent::#0"))
+        let r = await rig(order: [k("A"), k("B"), h], layout: Layout(visible: [k("B")], hidden: [k("A")]))
+        #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged && rep.actionCount == 0)
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(try !r.store.load().allKeys.contains(h))
+    }
+
     @Test func heldUnitShowsAsPendingAndSecondHoldIsRefused() async {
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
         _ = await r.engine.reconcileOnce()   // learns the items

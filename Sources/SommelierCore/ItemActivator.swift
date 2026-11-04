@@ -99,8 +99,10 @@ public struct ActivationTarget: @unchecked Sendable {
     /// Control Center says the app is hidden (`isAllowed == false`). The scanner can still report such an item as on
     /// the bar (live-hidden items keep a stale app-side frame), so this, not `isOnBar`, decides whether it is drawn.
     public var hiddenInControlCenter: Bool
+    public var bundleID: String?
     public init(key: ItemKey, ownerPID: pid_t, trackedKey: String?, frame: CGRect, isOnBar: Bool, systemOverflow: Bool,
-                element: AXUIElement? = nil, hiddenInControlCenter: Bool = false) {
+                element: AXUIElement? = nil, hiddenInControlCenter: Bool = false, bundleID: String? = nil) {
+        self.bundleID = bundleID
         self.hiddenInControlCenter = hiddenInControlCenter
         self.key = key; self.ownerPID = ownerPID; self.trackedKey = trackedKey; self.frame = frame; self.isOnBar = isOnBar
         self.systemOverflow = systemOverflow; self.element = element
@@ -134,6 +136,8 @@ public protocol ActivationPlatform: Sendable {
     /// incomplete. A live-hidden item keeps its stale on-bar app-side frame (docs/findings-live-trigger.md), so the
     /// frame alone cannot say that a reveal has landed: the count rising above its pre-reveal value does.
     func hostedBarCount() async -> Int?
+    /// The hosted tree right now (complete read only), left to right; nil when incomplete or unsupported (of7).
+    func hostedLayout() async -> [HostedEntry]?
     /// Of7: records the owner as assumed live-hidden (our own re-hide write, confirmed by a hosted-count drop) / forgets it.
     func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?)
     func clearAssumedHidden(pids: Set<pid_t>)
@@ -145,6 +149,7 @@ public protocol ActivationPlatform: Sendable {
 }
 
 extension ActivationPlatform {
+    public func hostedLayout() async -> [HostedEntry]? { nil }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
     public func clearAssumedHidden(pids: Set<pid_t>) {}
 }
@@ -180,7 +185,7 @@ public actor ItemActivator {
     private let log: @Sendable (String) -> Void
     private var inFlight = false
     /// Of7: set while a unit is revealed: owner, complete hosted count before the reveal, items the reveal added.
-    private var reveal: (pid: pid_t, before: Int, items: Int)?
+    private var reveal: (pid: pid_t, bundleID: String?, before: Int, items: Int, layout: [HostedEntry]?)?
 
     public init(platform: any ActivationPlatform, hold: any TransientRevealing, config: Config = Config(),
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -233,8 +238,10 @@ public actor ItemActivator {
         // The pre-reveal hosted count, read right before the show write (after the hold). Without a complete baseline a
         // landed reveal cannot be told from a stale on-bar frame: do not reveal, press in place instead.
         var hostedBefore: Int?
+        var layoutBefore: [HostedEntry]?
         for _ in 0..<config.baselineAttempts {
-            hostedBefore = await platform.hostedBarCount()
+            if let l = await platform.hostedLayout() { layoutBefore = l; hostedBefore = l.count }
+            else { hostedBefore = await platform.hostedBarCount() }
             if hostedBefore != nil || Task.isCancelled { break }
         }
         guard let hostedBefore else {
@@ -244,7 +251,7 @@ public actor ItemActivator {
             return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: false, say: say)
         }
         platform.clearAssumedHidden(pids: [target.ownerPID])   // we are showing it: any assumed-hidden state is void
-        reveal = (target.ownerPID, hostedBefore, 1)
+        reveal = (target.ownerPID, target.bundleID, hostedBefore, 1, layoutBefore)
         do { try platform.setAllowedLive([tracked: true]) }
         catch {
             await hold.endTransientReveal(unit)
@@ -409,20 +416,20 @@ public actor ItemActivator {
         reveal = nil
         do {
             try platform.setAllowedLive([tracked: false]); say("unit hidden again (write done)")
-            // Of7: identifier-less items keep a stale on-bar frame after this live hide. If the complete hosted count returns
-            // to its pre-reveal value, record the owner as assumed-hidden (still under the hold) so the engine's next pass
-            // reads the unit as hidden instead of planning a hide that ends in a respawn.
-            if let info {
-                var waited = 0.0
-                for at in [0.3, 0.8, 1.5] {
-                    await platform.sleep(at - waited); waited = at
-                    guard let c = await platform.hostedBarCount() else { continue }
-                    if c == info.before {
-                        platform.recordAssumedHidden([AssumedHiddenOwner(pid: info.pid, bundleID: nil, items: max(1, info.items))], hostedAfter: c)
-                        say("re-hide verified by hosted-count drop \(info.items) (-> \(c)); recorded as assumed-hidden")
+            // Of7: identifier-less items keep a stale on-bar frame after this live hide. If the hosted tree is again exactly
+            // what it was before the reveal (same elements, same order), record the owner as assumed-hidden (still under the
+            // hold) so the engine's next pass reads the unit as hidden instead of planning a hide that ends in a respawn.
+            if let info, let layout = info.layout {
+                let tw = platform.now()
+                for at in [0.3, 0.8, 1.5, 2.5, 4.0, 6.0] {
+                    let due = at - platform.now().timeIntervalSince(tw); if due > 0 { await platform.sleep(due) }
+                    guard let after = await platform.hostedLayout() else { say("re-hide: probe @\(Int(at * 1000))ms incomplete"); continue }
+                    if HostedEvidence.restored(before: layout, after: after) {
+                        platform.recordAssumedHidden([AssumedHiddenOwner(pid: info.pid, bundleID: info.bundleID, items: max(1, info.items), trackedKey: tracked)], hostedAfter: after.count)
+                        say("re-hide verified by hosted-element evidence (tree restored, \(after.count) elements); recorded as assumed-hidden")
                         break
                     }
-                    say("re-hide: hosted count \(c) at \(Int(at * 1000))ms, expected \(info.before); not recorded")
+                    say("re-hide: probe @\(Int(at * 1000))ms: not restored: \(HostedEvidence.restoredMismatch(before: layout, after: after) ?? "?")")
                 }
             }
         }
@@ -465,7 +472,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
         }
         return .found(ActivationTarget(key: key, ownerPID: r.item.ownerPID, trackedKey: tracked,
                                        frame: r.item.frame, isOnBar: r.item.isOnMenuBar, systemOverflow: r.item.systemOverflow,
-                                       element: r.item.axElement, hiddenInControlCenter: allowed == false))
+                                       element: r.item.axElement, hiddenInControlCenter: allowed == false, bundleID: r.item.ownerBundleID))
     }
 
     static func ownerRunning(_ key: ItemKey) -> Bool {
@@ -477,6 +484,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     }
 
     public func hostedBarCount() async -> Int? { await platform.hostedBarCount() }
+    public func hostedLayout() async -> [HostedEntry]? { await platform.hostedLayout() }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { platform.recordAssumedHidden(owners, hostedAfter: hostedAfter) }
     public func clearAssumedHidden(pids: Set<pid_t>) { platform.clearAssumedHidden(pids: pids) }
 

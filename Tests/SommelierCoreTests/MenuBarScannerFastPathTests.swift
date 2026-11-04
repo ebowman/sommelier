@@ -500,7 +500,9 @@ private func itemB(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ow
     _ = scanner.scan()
     scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-601))
     scanner.source = world(trees: [hostedWithoutB()])
-    #expect(itemB(scanner.scan())?.isOnMenuBar == true)             // expired: back to the frame rule
+    #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)   // 10 minutes is no longer an expiry (of7 corrective)
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-2 * 3600 - 5))
+    #expect(itemB(scanner.scan())?.isOnMenuBar == true)             // 2 h hard safety expiry: back to the frame rule
     #expect(scanner.assumedHiddenPIDs.isEmpty)
 }
 
@@ -517,4 +519,62 @@ private func itemB(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ow
     scanner.source = world(trees: [hostedWithoutB()])
     #expect(itemB(scanner.scan())?.isOnMenuBar == true)
     fresh.source = world()
+}
+
+@Test func controlCenterReadbackClearsAnAssumptionSomeoneElseEnded() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    let allowed = Locked(false)
+    scanner.allowedReadback = { k in k == "c.d" ? allowed.value : nil }
+    scanner.source = world(trees: [hostedWithoutB()])
+    // Recorded 61 s ago: the readback is due; isAllowed is still false -> stays hidden.
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", trackedKey: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-61))
+    #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)
+    // Checked just now: not due again within 60 s even if the answer changed.
+    allowed.value = true
+    #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", trackedKey: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-61))
+    #expect(itemB(scanner.scan())?.isOnMenuBar == true)             // someone else showed it
+    #expect(scanner.assumedHiddenPIDs.isEmpty)
+}
+
+@Test func pidReuseWithAnotherBundleDropsTheRecord() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "other.app", items: 1, hostedAfter: 2)
+    scanner.source = world(trees: [hostedWithoutB()])
+    #expect(itemB(scanner.scan())?.isOnMenuBar == true)
+    #expect(scanner.assumedHiddenPIDs.isEmpty)
+}
+
+@Test func fullScanExposesTheAttributedHostedLayout() {
+    let scanner = MenuBarScanner(source: world())
+    let layout = scanner.scan().hostedLayout ?? []
+    #expect(layout.map(\.minX) == [200, 300, 900])
+    #expect(layout.map(\.ownerPID) == [11, 10, nil])               // Clock is a module: unattributed
+    #expect(layout.map(\.sig) == ["", "a1", "clock"])
+    #expect(scanner.recentCompleteHostedLayout(maxAge: 10)?.count == 3)
+}
+
+@Test func hostedEvidenceRequiresExactlyTheUnitsElements() {
+    let before = [HostedEntry(sig: "a", minX: 10, width: 20, ownerPID: 1), HostedEntry(sig: "", minX: 40, width: 24, ownerPID: 2),
+                  HostedEntry(sig: "clock", minX: 80, width: 30)]
+    let shifted = [HostedEntry(sig: "a", minX: 34, width: 20), HostedEntry(sig: "clock", minX: 104, width: 33)]   // unit gone, left items shifted, module wider
+    #expect(HostedEvidence.removedExactly(before: before, after: shifted, unitPIDs: [2]))
+    #expect(!HostedEvidence.removedExactly(before: before, after: shifted, unitPIDs: [9]))                        // unit owned nothing
+    var swapped = shifted; swapped[0].sig = "z"
+    #expect(!HostedEvidence.removedExactly(before: before, after: swapped, unitPIDs: [2]))                       // coincidental: same count, other element
+    #expect(!HostedEvidence.removedExactly(before: before, after: Array(shifted.dropFirst()), unitPIDs: [2]))   // another element vanished too
+    var jitter = shifted; jitter[0].width = 30
+    #expect(HostedEvidence.removedExactly(before: before, after: jitter, unitPIDs: [2]))                         // named readouts change width on their own
+    let un = [HostedEntry(sig: "", minX: 10, width: 20, ownerPID: 1), HostedEntry(sig: "", minX: 40, width: 24, ownerPID: 2)]
+    #expect(HostedEvidence.removedExactly(before: un, after: [HostedEntry(sig: "", minX: 34, width: 21)], unitPIDs: [2]))
+    #expect(!HostedEvidence.removedExactly(before: un, after: [HostedEntry(sig: "", minX: 34, width: 30)], unitPIDs: [2]))   // an unnamed element of another width
+    #expect(HostedEvidence.restored(before: before, after: before))
+}
+
+private final class Locked: @unchecked Sendable {
+    private let l = NSLock(); private var v: Bool
+    init(_ v: Bool) { self.v = v }
+    var value: Bool { get { l.lock(); defer { l.unlock() }; return v } set { l.lock(); v = newValue; l.unlock() } }
 }

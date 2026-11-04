@@ -48,6 +48,10 @@ public protocol ActuatorPlatform: SnapshotScanning {
     func now() -> Date
     /// Number of items MenuBarAgent hosts on the strip right now; nil when the read was incomplete (of7 write-time evidence).
     func hostedBarCount() async -> Int?
+    /// The hosted tree right now (complete read only, retrying), left to right, unattributed; nil when no complete read.
+    func hostedLayout() async -> [HostedEntry]?
+    /// The scanner's last complete attributed hosted tree if it is at most `maxAge` seconds old.
+    func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]?
     /// Records that these owners' identifier-less items were live-hidden by us and confirmed by a hosted-count drop.
     func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?)
     /// Forgets the assumed-hidden state of these owners (show, respawn, failed attempt).
@@ -59,11 +63,17 @@ public struct AssumedHiddenOwner: Equatable, Sendable {
     public var bundleID: String?
     /// Number of the owner's items that were on the bar before the hide.
     public var items: Int
-    public init(pid: pid_t, bundleID: String?, items: Int) { self.pid = pid; self.bundleID = bundleID; self.items = items }
+    /// Control Center tracked key of the unit (for the `isAllowed` readback that detects a show by someone else).
+    public var trackedKey: String?
+    public init(pid: pid_t, bundleID: String?, items: Int, trackedKey: String? = nil) {
+        self.pid = pid; self.bundleID = bundleID; self.items = items; self.trackedKey = trackedKey
+    }
 }
 
 extension ActuatorPlatform {
     public func hostedBarCount() async -> Int? { nil }
+    public func hostedLayout() async -> [HostedEntry]? { nil }
+    public func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? { nil }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
     public func clearAssumedHidden(pids: Set<pid_t>) {}
 }
@@ -202,12 +212,17 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public func now() -> Date { Date() }
 
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {
-        for o in owners { scanner.recordAssumedHidden(pid: o.pid, bundleID: o.bundleID, items: o.items, hostedAfter: hostedAfter) }
+        for o in owners {
+            scanner.recordAssumedHidden(pid: o.pid, bundleID: o.bundleID, trackedKey: o.trackedKey, items: o.items, hostedAfter: hostedAfter)
+        }
     }
 
     public func clearAssumedHidden(pids: Set<pid_t>) { scanner.clearAssumedHidden(pids: pids) }
 
-    public func hostedBarCount() async -> Int? {
+    public func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? { scanner.recentCompleteHostedLayout(maxAge: maxAge) }
+
+    /// One bounded (2.5 s wall clock) complete read of the agent's hosted tree: strip elements, nil when incomplete.
+    private func hostedTreeRead() async -> [AXElementInfo]? {
         // Bounded by wall clock: an AX read can stall while the agent is re-registering scenes right after a hide/show.
         final class Once: @unchecked Sendable {
             let lock = NSLock(); var done = false
@@ -217,16 +232,27 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
             let once = Once()
             DispatchQueue.global(qos: .userInitiated).async {
                 let src = LiveAccessibilitySource()
-                var out: Int?
+                var out: [AXElementInfo]?
                 if let agent = src.runningApps().first(where: { $0.bundleID == menuBarAgentBundleID }) {
                     let tree = src.agentHostedTree(for: agent, retry: true)
                     if tree.failedReads == 0, tree.unnamedTimeouts == 0, !tree.elements.isEmpty {
-                        out = tree.elements.filter { !$0.stale && $0.frame.width > 1 && $0.frame.midY < 30 }.count
+                        var uniq: [AXElementInfo] = []
+                        for e in tree.elements where !e.stale && e.frame.width > 1 && e.frame.midY < 30
+                            && !uniq.contains(where: { $0.frame == e.frame && $0.identifier == e.identifier && $0.axDescription == e.axDescription && $0.title == e.title }) {
+                            uniq.append(e)
+                        }
+                        out = uniq
                     }
                 }
                 if once.take() { c.resume(returning: out) }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.6) { if once.take() { c.resume(returning: nil) } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2.5) { if once.take() { c.resume(returning: nil) } }
         }
+    }
+
+    public func hostedBarCount() async -> Int? { await hostedTreeRead()?.count }
+
+    public func hostedLayout() async -> [HostedEntry]? {
+        await hostedTreeRead()?.map { HostedEntry(sig: $0.identifier.isEmpty ? $0.axDescription : $0.identifier, minX: $0.frame.minX, width: $0.frame.width) }
     }
 }

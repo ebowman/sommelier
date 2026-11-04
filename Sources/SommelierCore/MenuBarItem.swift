@@ -135,7 +135,65 @@ extension MenuBarItem: Codable {
     }
 }
 
+/// One element of MenuBarAgent's hosted tree on the strip (non-stale, width > 1), as read by one scan (of7).
+public struct HostedEntry: Equatable, Sendable {
+    /// Identifier, else description, else "" (identifier-less items).
+    public var sig: String
+    public var minX: CGFloat
+    public var width: CGFloat
+    /// Owner pid when the scanner attributed the element to an app item (join or prefix); nil for modules / agent-only /
+    /// unattributed elements and for raw tree reads.
+    public var ownerPID: pid_t?
+    public init(sig: String, minX: CGFloat, width: CGFloat, ownerPID: pid_t? = nil) {
+        self.sig = sig; self.minX = minX; self.width = width; self.ownerPID = ownerPID
+    }
+}
+
+/// Element-level evidence that a live write hid (or restored) exactly a unit's hosted elements (of7). Counts alone are
+/// coincidence-prone (another item vanishing while one appears); the ordered element sequence is not.
+public enum HostedEvidence {
+    static let widthTolerance: CGFloat = 2
+
+    /// `after` is `before` minus exactly the elements owned by `unitPIDs`: nothing else vanished or appeared, in the same order.
+    /// Elements the scanner attributed to no app (modules) must still be present and in place, but their width is not compared.
+    public static func removedExactly(before: [HostedEntry], after: [HostedEntry], unitPIDs: Set<pid_t>) -> Bool {
+        mismatch(before: before, after: after, unitPIDs: unitPIDs) == nil
+    }
+
+    /// nil when `after` is `before` minus exactly the unit's elements; otherwise a short description of the first difference.
+    public static func mismatch(before: [HostedEntry], after: [HostedEntry], unitPIDs: Set<pid_t>) -> String? {
+        let b = before.sorted { $0.minX < $1.minX }
+        let removed = b.filter { $0.ownerPID.map(unitPIDs.contains) ?? false }
+        guard !removed.isEmpty else { return "the unit owned no joined hosted element" }
+        return sequenceMismatch(b.filter { !($0.ownerPID.map(unitPIDs.contains) ?? false) }, after)
+    }
+
+    /// `after` is `before` again (a reveal followed by the re-hide).
+    public static func restored(before: [HostedEntry], after: [HostedEntry]) -> Bool { restoredMismatch(before: before, after: after) == nil }
+    public static func restoredMismatch(before: [HostedEntry], after: [HostedEntry]) -> String? {
+        sequenceMismatch(before.sorted { $0.minX < $1.minX }, after)
+    }
+
+    /// Widths are compared only for identifier-less elements: named items (iStat readouts) change width on their own, while
+    /// an unnamed element is distinguishable from another one only by its width.
+    private static func sequenceMismatch(_ expected: [HostedEntry], _ after: [HostedEntry]) -> String? {
+        let a = after.sorted { $0.minX < $1.minX }
+        guard expected.count == a.count else { return "\(a.count) elements, expected \(expected.count)" }
+        for (i, (e, x)) in zip(expected, a).enumerated() {
+            if e.sig != x.sig { return "element \(i) is '\(x.sig)' (w\(Int(x.width))), expected '\(e.sig)' (w\(Int(e.width)))" }
+            if e.sig.isEmpty, e.ownerPID != nil || x.ownerPID != nil, abs(e.width - x.width) > widthTolerance {
+                return "element \(i) unnamed width \(Int(x.width)), expected \(Int(e.width))"
+            }
+        }
+        return nil
+    }
+}
+
 public struct MenuBarSnapshot: Codable, Sendable {
+    private enum CodingKeys: String, CodingKey { case items, capturedAt, hostedReadComplete }
+    /// The hosted tree of this scan, left to right (set by the scanner; not serialized). nil on hand-built snapshots.
+    public var hostedLayout: [HostedEntry]? = nil
+
     /// All items: on-bar left-to-right first, then parked.
     public var items: [MenuBarItem]
     public var capturedAt: Date
@@ -143,7 +201,8 @@ public struct MenuBarSnapshot: Codable, Sendable {
     /// report a live-hidden item (docs/findings-live-trigger.md section 4). nil = not a full scan / unknown (treated as complete).
     public var hostedReadComplete: Bool?
 
-    public init(items: [MenuBarItem], capturedAt: Date, hostedReadComplete: Bool? = nil) {
+    public init(items: [MenuBarItem], capturedAt: Date, hostedReadComplete: Bool? = nil, hostedLayout: [HostedEntry]? = nil) {
+        self.hostedLayout = hostedLayout
         self.items = items
         self.capturedAt = capturedAt
         self.hostedReadComplete = hostedReadComplete

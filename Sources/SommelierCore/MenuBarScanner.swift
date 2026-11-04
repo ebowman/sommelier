@@ -16,6 +16,8 @@ public struct MenuBarScanner {
     public var emptyTTL: TimeInterval
     /// Overall deadline (seconds) of the fast path's agent-tree read.
     public var fastDeadline: TimeInterval = 0.3
+    /// Control Center `isAllowed` readback for a tracked key (nil = unreadable); injectable for tests.
+    public var allowedReadback: @Sendable (String) -> Bool? = { k in (try? ControlCenterTrackedAppsStore.allowedLive([k]))?[k] }
     private let state: ScanState
 
     /// - Parameter cacheURL: when set, the scan cache is loaded from / saved to this file, so a new process starts warm.
@@ -43,17 +45,27 @@ public struct MenuBarScanner {
 
     static let maxConcurrency = 8
 
-    /// How long an assumed-hidden record is believed without us touching the owner again (of7).
-    static let assumedHiddenTTL: TimeInterval = 600
+    /// Hard safety expiry of an assumed-hidden record (counted from when we recorded it).
+    static let assumedHiddenHardExpiry: TimeInterval = 2 * 3600
+    /// Minimum interval between Control Center `isAllowed` readbacks per assumed-hidden owner.
+    static let assumedReadbackInterval: TimeInterval = 60
 
-    /// Records that WE hid `pid`'s identifier-less items with a live write and a complete hosted-count drop confirmed it
-    /// (`LiveActuator`, `ItemActivator`). Until contradicted (see `assemble`) such an owner's on-bar-framed, identifier-less
-    /// candidates are reported hidden (`HiddenReason.assumedNotHosted`). Called ONLY with write-time evidence, never from frames.
-    public func recordAssumedHidden(pid: pid_t, bundleID: String?, items: Int, hostedAfter: Int?, at: Date = Date()) {
+    /// Records that WE hid `pid`'s identifier-less items with a live write and the hosted tree lost exactly that unit's
+    /// elements (`LiveActuator`, `ItemActivator`). Until contradicted (see `assemble`) such an owner's on-bar-framed,
+    /// identifier-less candidates are reported hidden (`HiddenReason.assumedNotHosted`). Called ONLY with write-time
+    /// evidence, never from frames.
+    public func recordAssumedHidden(pid: pid_t, bundleID: String?, trackedKey: String? = nil, items: Int, hostedAfter: Int?, at: Date = Date()) {
         state.loadIfNeeded()
-        state.assumedHidden[pid] = AssumedHidden(pid: pid, bundleID: bundleID, at: at, hostedAfter: hostedAfter, items: items)
+        state.assumedHidden[pid] = AssumedHidden(pid: pid, bundleID: bundleID, trackedKey: trackedKey, at: at, hostedAfter: hostedAfter, items: items)
+        state.assumedCheckedAt[pid] = at
         log("assumed-hidden: recorded pid \(pid) (\(items) item(s), hosted after \(hostedAfter.map(String.init) ?? "?"))")
         state.save()
+    }
+
+    /// The last complete (attributed) hosted tree, if at most `maxAge` seconds old.
+    public func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? {
+        guard let l = state.lastCompleteLayout, Date().timeIntervalSince(l.at) <= maxAge else { return nil }
+        return l.entries
     }
 
     /// Forgets the assumed-hidden state of these owners (a show by us, a respawn, a failed attempt).
@@ -300,9 +312,21 @@ public struct MenuBarScanner {
         // behaviour (reported on-bar, respawn fallback).
         let nowT = Date()
         for (pid, rec) in state.assumedHidden {
-            if !running.contains(pid) { state.assumedHidden[pid] = nil; log("assumed-hidden: pid \(pid) quit; dropped") }
-            else if nowT.timeIntervalSince(rec.at) > Self.assumedHiddenTTL {
-                state.assumedHidden[pid] = nil; log("assumed-hidden: pid \(pid) expired after \(Int(nowT.timeIntervalSince(rec.at))) s; dropped")
+            func drop(_ why: String) { state.assumedHidden[pid] = nil; state.assumedCheckedAt[pid] = nil; log("assumed-hidden: pid \(pid) \(why); dropped") }
+            if !running.contains(pid) { drop("quit"); continue }
+            // Pid reuse guard: the owner must still be the app we recorded.
+            if let b = rec.bundleID, let c = candidates.first(where: { $0.app.pid == pid }), let cb = c.app.bundleID, cb != b {
+                drop("is now \(cb), recorded for \(b)"); continue
+            }
+            if nowT.timeIntervalSince(rec.at) > Self.assumedHiddenHardExpiry {
+                drop("hit the \(Int(Self.assumedHiddenHardExpiry / 3600)) h safety expiry"); continue
+            }
+            // Someone else showed it: Control Center says isAllowed (checked at most every 60 s).
+            if let tk = rec.trackedKey, nowT.timeIntervalSince(state.assumedCheckedAt[pid] ?? rec.at) >= Self.assumedReadbackInterval {
+                state.assumedCheckedAt[pid] = nowT
+                let r = allowedReadback(tk)
+                log("assumed-hidden: Control Center readback \(tk) isAllowed=\(r.map(String.init(describing:)) ?? "unreadable")")
+                if r == true { drop("is allowed again in Control Center (\(tk))") }
             }
         }
         var assumedIdx = Set<Int>()
@@ -315,12 +339,13 @@ public struct MenuBarScanner {
         // Join: identifier, then description, then frame intersection. Each app item matches at most once.
         var matchedCandidates: [Int: AXElementInfo] = [:]
         var matchedHosted = Set<Int>()
+        var hostedOwner: [Int: pid_t] = [:]
         func pass(_ matches: (AXElementInfo, AXElementInfo) -> Bool) {
             for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) {
                 if let ci = candidates.indices.first(where: {
                     matchedCandidates[$0] == nil && !assumedIdx.contains($0) && matches(h, candidates[$0].info)
                 }) {
-                    matchedHosted.insert(hi); matchedCandidates[ci] = h
+                    matchedHosted.insert(hi); matchedCandidates[ci] = h; hostedOwner[hi] = candidates[ci].app.pid
                 }
             }
         }
@@ -348,7 +373,7 @@ public struct MenuBarScanner {
                         return !matchedHosted.contains($0) && !hosted[$0].stale && onBar(hf) && abs(hf.width - cf.width) <= 1
                             && !i.isNull && i.width > 0 && i.height > 0
                     }) {
-                        matchedHosted.insert(hi); matchedCandidates[ci] = hosted[hi]; cleared.insert(pid); break
+                        matchedHosted.insert(hi); matchedCandidates[ci] = hosted[hi]; hostedOwner[hi] = pid; cleared.insert(pid); break
                     }
                 }
             }
@@ -376,6 +401,7 @@ public struct MenuBarScanner {
             }
             if let owner = owners.max(by: { ($0.bundleID?.count ?? 0) < ($1.bundleID?.count ?? 0) }) {
                 matchedHosted.insert(hi)
+                hostedOwner[hi] = owner.pid
                 attributed.append((hi, owner))
             }
         }
@@ -498,6 +524,11 @@ public struct MenuBarScanner {
             state.hiddenKeys = state.hiddenKeys.filter(alive)
             state.seenHostedKeys = state.seenHostedKeys.filter(alive)
         }
+        let layout: [HostedEntry] = hosted.enumerated().filter { !$0.element.stale && $0.element.frame.width > 1 && onBar($0.element.frame) }
+            .map { HostedEntry(sig: $0.element.identifier.isEmpty ? $0.element.axDescription : $0.element.identifier,
+                               minX: $0.element.frame.minX, width: $0.element.frame.width, ownerPID: hostedOwner[$0.offset]) }
+            .sorted { $0.minX < $1.minX }
+        if hostedComplete { state.lastCompleteLayout = (layout, Date()) }
         state.save()   // writes only if the cache content changed
 
         // Stable partition: on-bar sorted by minX (ties keep discovery order), parked in discovery order.
@@ -508,7 +539,7 @@ public struct MenuBarScanner {
         // Apple's own overflow (gdu.45): items left of the chevron, or stacked on one another, are reported on the bar but
         // not drawn. Flagged here, once, so every consumer (resolver, planner, verifier, UI) reads the same truth.
         let marked = SystemOverflow.mark((on + off).map(\.element))
-        return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete)
+        return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout)
     }
 }
 

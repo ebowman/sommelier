@@ -120,11 +120,24 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var unnamed: Set<String> = []
     var liveInstant = false
     var ghosts: Set<String> = []
-    var hostedSkew = 0                       // added to hosted counts read after the live write (ambiguity scripting)
+    var hostedTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to hosted layouts read after the live write
+    var preScansIncomplete = 0               // the first N full scans report an incomplete hosted read
+    var probeOnlyTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to raw probes only (poll scans stay right)
+    var cachedLayout: [HostedEntry]?         // what the scanner cache offers as a recent complete layout
     var hostedReads = 0
+    var dropAfterWrite = ""                  // after the live write this item reads as parked app-side (hosted tree unchanged)
     var assumedPIDs: Set<pid_t> = [], assumedRecords: [(owners: [AssumedHiddenOwner], after: Int?)] = [], clearedPIDs: [Set<pid_t>] = []
     func pidOf(_ n: String) -> pid_t { item(n, x: 0).ownerPID }
-    func hostedBarCount() async -> Int? { hostedReads += 1; return order.count + (liveWrites.isEmpty ? 0 : hostedSkew) }
+    func layout(attributed: Bool) -> [HostedEntry] {
+        order.enumerated().map { HostedEntry(sig: unnamed.contains($1) ? "" : $1, minX: 100 + CGFloat($0) * 40, width: 30, ownerPID: attributed ? pidOf($1) : nil) }
+    }
+    func hostedLayout() async -> [HostedEntry]? {
+        hostedReads += 1
+        var l = layout(attributed: false)
+        if !liveWrites.isEmpty { hostedTamper?(&l); probeOnlyTamper?(&l) }
+        return l
+    }
+    func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? { cachedLayout }
     func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {
         assumedRecords.append((owners, hostedAfter)); for o in owners { assumedPIDs.insert(o.pid) }
     }
@@ -135,6 +148,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func setAllowedLive(_ c: [String: Bool]) throws {
         if liveThrows { throw PreferenceWriterError.writeFailed("injected live failure") }
         liveWrites.append(c)
+        if !dropAfterWrite.isEmpty { flickerName = dropAfterWrite; flickerScans = 5 }
         if liveInstant {
             let before = Set(order)
             applyLive(c)
@@ -183,6 +197,10 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
             else if let n = liveApplyAfterScans, liveScanCount >= n { applyLive(p); livePending = nil }
         }
         var s = snapshot()
+        var lay = layout(attributed: true)
+        if !liveWrites.isEmpty { hostedTamper?(&lay) }
+        s.hostedLayout = lay
+        if preScansIncomplete > 0 { preScansIncomplete -= 1; incomplete = true }
         if incomplete { s.hostedReadComplete = false }
         return s
     }
@@ -960,9 +978,9 @@ private final class FakePrefs: @unchecked Sendable {
     #expect(ActuationVerifier.overflowed([a, s, c]) == [key("A"), key("B")])
 }
 
-// MARK: - identifier-less items: write-time hosted-count evidence (of7)
+// MARK: - identifier-less items: write-time hosted-element evidence (of7)
 
-@Test func unnamedLiveHideIsVerifiedByHostedCountDrop() async {
+@Test func unnamedLiveHideIsVerifiedByExactElementEvidence() async {
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]
     let a = liveActuator(w)
@@ -970,27 +988,68 @@ private final class FakePrefs: @unchecked Sendable {
     #expect(out.result.isVerified && out.mechanism == .live)
     #expect(w.restarts == 0 && w.allowedWrites.isEmpty)
     #expect(w.assumedPIDs == [w.pidOf("B")])
-    #expect(w.assumedRecords.first?.owners == [AssumedHiddenOwner(pid: w.pidOf("B"), bundleID: "app.B", items: 1)])
+    #expect(w.assumedRecords.first?.owners == [AssumedHiddenOwner(pid: w.pidOf("B"), bundleID: "app.B", items: 1, trackedKey: "tracked.B")])
     #expect(w.assumedRecords.first?.after == 2)
-    #expect(await a.trace.contains { $0.contains("verified by hosted-count drop 1") })
-    // A show by us clears the state before the verification scans.
+    let trace = await a.trace
+    #expect(trace.contains { $0.contains("baseline = pre-write full scan") })
+    #expect(trace.contains { $0.contains("verified by hosted-element evidence") })
+    // A show by us clears the state before the verification scans read it.
     let back = await a.applyHiddenBatchDetailed([key("B"): false])
     #expect(back.result.isVerified && back.mechanism == .live && w.restarts == 0)
     #expect(w.assumedPIDs.isEmpty && w.clearedPIDs.contains([w.pidOf("B")]))
 }
 
-@Test func unnamedWithoutTheEvidenceDoesNotAssumeAnything() async {
-    // Another item vanished at the same time: the count drops by 2, not 1 -> ambiguous -> nothing recorded, ghost stays on-bar,
-    // the complete-read poll cannot confirm it and the pre-existing respawn runs once.
+@Test func coincidentalVanishWithAMatchingCountIsAmbiguous() async {
+    // B vanishes as expected, but ANOTHER element is replaced at the same time (count identical): not the unit's elements
+    // only -> nothing recorded, the ghost stays on-bar, the poll cannot confirm and the pre-existing respawn runs once.
     let w = World(["A", "B", "C"])
-    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]; w.hostedSkew = -1
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]
+    w.hostedTamper = { $0[1].sig = "someone-else" }
     let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
     #expect(w.assumedRecords.isEmpty && w.assumedPIDs.isEmpty)
     #expect(out.mechanism == .respawn && w.restarts == 1)
     #expect(out.result.isVerified)
 }
 
-@Test func namedItemsNeverReadTheHostedCount() async {
+@Test func pollScanEvidenceCoversIncompleteOrEarlyProbes() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]
+    w.probeOnlyTamper = { $0.removeAll() }          // every timed probe is unusable
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .live && w.restarts == 0)
+    #expect(w.assumedPIDs == [w.pidOf("B")])
+    #expect(await a.trace.contains { $0.contains("hosted-element evidence (poll scan #1)") })
+}
+
+@Test func anotherItemLeavingTheBarRejectsTheEvidence() async {
+    // The hosted tree matches, but a different app-side item also left the bar (c): evidence rejected, assumption cleared.
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]
+    w.dropAfterWrite = "C"
+    let a = liveActuator(w)
+    _ = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(await a.trace.contains { $0.contains("element evidence rejected") })
+    #expect(w.assumedPIDs.isEmpty)
+}
+
+@Test func incompleteBaselineScanIsRetriedWithinFourSecondsThenCache() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]; w.preScansIncomplete = 2
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .live && w.restarts == 0)
+    #expect(await a.trace.contains { $0.contains("baseline = retried full scan") })
+
+    let v = World(["A", "B", "C"])
+    v.liveAvailable = true; v.liveInstant = true; v.unnamed = ["B"]; v.preScansIncomplete = 1000
+    v.cachedLayout = v.layout(attributed: true)
+    let b = liveActuator(v)
+    _ = await b.applyHiddenBatchDetailed([key("B"): true])
+    #expect(await b.trace.contains { $0.contains("baseline = scanner cache") })
+}
+
+@Test func namedItemsNeverReadTheHostedTree() async {
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.liveApplyAfterScans = 1
     let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
