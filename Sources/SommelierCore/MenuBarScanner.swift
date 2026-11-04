@@ -235,13 +235,17 @@ public struct MenuBarScanner {
         if let extras = ownExtras?() {
             for a in spApps {
                 guard let infos = extras[a.pid], let rec = state.selfPositioningGroups[a.pid] else { continue }
+                // `readExtras` reports success even when single children timed out (they come back without an identifier), and an
+                // empty result may be a failed read: neither is proof that a group was removed.
+                if infos.isEmpty || infos.contains(where: { $0.identifier.isEmpty }) { continue }
                 let listed = Set(infos.map(\.identifier).filter { !$0.isEmpty })
                 let kept = rec.filter { listed.contains($0.identifier) }
                 if kept.count != rec.count {
                     let gone = rec.filter { !listed.contains($0.identifier) }.map(\.key)
                     prunedKeys.formUnion(gone)
                     log("self-positioning groups: pid \(a.pid) extras no longer list \(gone.joined(separator: ", ")); pruned from the record")
-                    state.selfPositioningGroups[a.pid] = kept.isEmpty ? nil : kept
+                    if kept.isEmpty { state.selfPositioningGroups[a.pid] = nil; state.selfPositioningBundles[a.pid] = nil; state.selfPositioningRefreshed[a.pid] = nil }
+                    else { state.selfPositioningGroups[a.pid] = kept }
                 }
             }
         }

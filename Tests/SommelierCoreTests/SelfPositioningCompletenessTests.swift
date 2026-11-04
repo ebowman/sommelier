@@ -466,3 +466,15 @@ private func sourceWithDisk(_ trees: [AgentHostedTree], istatExtras: [AXElementI
     #expect(r.completeness == .incomplete)
     #expect(r.completenessReason?.hasPrefix("named timeout not self-positioning") == true)
 }
+
+@Test func partlyFailedOrEmptyExtrasDoNotPruneTheRecord() {
+    let full3 = tree([dummyEl, otherEl, cpu, mem, disk])
+    let streak3 = tree([dummyEl, otherEl], failed: 3, unnamed: 3)
+    let timedOutChild = AXElementInfo(frame: bar(580))          // a child read that timed out: no identifier
+    for extras in [[cpu, mem, timedOutChild], []] {
+        var scanner = MenuBarScanner(source: sourceWithDisk([full3], istatExtras: [cpu, mem, disk]))
+        _ = scanner.scan()
+        scanner.source = sourceWithDisk([streak3], istatExtras: extras)
+        #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    }
+}
