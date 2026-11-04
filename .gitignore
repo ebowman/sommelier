@@ -10,3 +10,7 @@
 build/
 *.xcodeproj
 .DS_Store
+
+# Notarization credentials (App Store Connect API key ids), never committed
+.env
+.env.*
