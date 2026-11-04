@@ -203,6 +203,8 @@ public struct MenuBarSnapshot: Codable, Sendable {
     /// True when the read was incomplete ONLY because of self-positioning owners' stale items (see `ReadCompleteness`; set by
     /// the scanner, not serialized).
     public var incompleteOnlyForSelfPositioning = false
+    /// Why a full scan is not `.complete` (nil when complete or unknown); for logs, `mbprobe list` and the live-verify trace.
+    public var completenessReason: String?
 
     /// `hostedReadComplete` stays true only for `.complete` (compatibility); membership consumers use this level.
     public var completeness: ReadCompleteness {

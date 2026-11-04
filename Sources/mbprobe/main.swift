@@ -83,20 +83,24 @@ func runList(_ rawFlags: [String]) {
         FileHandle.standardError.write(Data(String(format: "scan %d: %.0f ms\n", n, elapsed * 1000).utf8))
     }
     let resolved = IdentityResolver().resolve(snapshot: snap)
+    if debug, let r = snap.completenessReason { FileHandle.standardError.write(Data("debug: incomplete: \(r)\n".utf8)) }
     if flags.contains("--json") {
         // `keys` / `keyConfidence` are parallel to `items`.
         struct Out: Encodable {
             var items: [MenuBarItem]; var capturedAt: Date; var keys: [String]; var keyConfidence: [String]
+            var completeness: String; var completenessReason: String?
         }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
         let out = Out(items: snap.items, capturedAt: snap.capturedAt,
-                      keys: resolved.map { $0.key.description }, keyConfidence: resolved.map { $0.confidence.rawValue })
+                      keys: resolved.map { $0.key.description }, keyConfidence: resolved.map { $0.confidence.rawValue },
+                      completeness: levelName(snap.completeness), completenessReason: snap.completenessReason)
         print(String(decoding: try! enc.encode(out), as: UTF8.self))
     } else {
         // resolved is in snap.items order: on-bar items first (left to right), then parked.
         let onCount = snap.onBarLeftToRight.count
+        print("level=\(levelName(snap.completeness))\(snap.completenessReason.map { " (\($0))" } ?? "")")
         print("on bar (left to right):   [key marker: = exact, ~ inferred, ? heuristic]")
         for (n, r) in resolved.prefix(onCount).enumerated() { print(row(n, r)) }
         print("\nparked / off-bar:")
@@ -109,6 +113,8 @@ func runList(_ rawFlags: [String]) {
         FileHandle.standardError.write(Data(msg.utf8))
     }
 }
+
+func levelName(_ c: ReadCompleteness) -> String { c.displayName }
 
 func runKeys(_ a: [String]) {
     guard a.count == 1 else { usage() }

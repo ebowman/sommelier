@@ -11,6 +11,9 @@ public enum ReadCompleteness: String, Codable, Sendable {
     case complete, completeExceptSelfPositioning, incomplete
 
     /// Usable for membership evidence of a unit that is not self-positioning.
+    /// Name used by `mbprobe list` (`level=...` and the json `completeness` field).
+    public var displayName: String { self == .completeExceptSelfPositioning ? "exceptSelfPositioning" : rawValue }
+
     public var membershipUsable: Bool { self != .incomplete }
 }
 

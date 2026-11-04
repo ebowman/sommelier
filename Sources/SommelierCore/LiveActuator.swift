@@ -534,6 +534,9 @@ public actor LiveActuator: MenuBarActuator {
                         await platform.sleep(config.liveVerifyInterval)
                         let s = await platform.scan()
                         polls += 1
+                        if !usable(s) {
+                            note("live: scan \(polls): \(s.completeness.rawValue)\(s.completenessReason.map { " (\($0))" } ?? "")")
+                        }
                         if usable(s), !s.onBarLeftToRight.isEmpty {
                             complete += 1
                             let v = verdicts(platform.resolve(s))

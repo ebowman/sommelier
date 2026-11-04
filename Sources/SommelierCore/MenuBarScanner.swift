@@ -189,6 +189,14 @@ public struct MenuBarScanner {
             attributable = tree.unnamedTimeouts == 0 || (spMiss.count >= tree.unnamedTimeouts && spMiss.count == miss.count)
         }
         tree.failuresAreSelfPositioning = attributable
+        if tree.failedReads > 0, !attributable {
+            if tree.topFailures > 0 || (tree.timedOut.isEmpty && tree.unnamedTimeouts == 0) { tree.incompleteReason = "top-level failure" }
+            else if let t = tree.timedOut.first(where: { !isSP($0) }) { tree.incompleteReason = "named timeout not self-positioning (\(t.identityKey))" }
+            else if tree.unnamedTimeouts > 0, spMiss.count < tree.unnamedTimeouts {
+                tree.incompleteReason = "\(tree.unnamedTimeouts) unnamed timeouts, only \(spMiss.count) self-positioning groups absent"
+            } else if let m = miss.first(where: { !isSP($0) }) { tree.incompleteReason = "non-self-positioning element missing (\(m.identityKey))" }
+            else { tree.incompleteReason = "failed reads not attributable to self-positioning owners" }
+        }
         if retry { source.noteUnresolvedGroups(selfPositioning: attributable) }
         if tree.unnamedTimeouts > 0 { candidatesToCarry += attributable ? spMiss : miss }
         for t in candidatesToCarry where !freshKeys.contains(t.identityKey) && seen.insert(t.identityKey).inserted {
@@ -354,6 +362,7 @@ public struct MenuBarScanner {
         // every failed read. `hostedReadComplete` itself stays strict (== hostedComplete).
         let spOwners = selfPositioningOwners
         var spOnly = false
+        var reason: String?
         if !verifiedOnly, !hostedComplete, agent != nil, tree.topFailures == 0, tree.failedReads > 0, tree.failuresAreSelfPositioning,
            hosted.contains(where: { !$0.stale }) {
             let staleHosted = hosted.filter(\.stale)
@@ -361,7 +370,17 @@ public struct MenuBarScanner {
             spOnly = (!staleHosted.isEmpty || !staleCands.isEmpty)
                 && staleHosted.allSatisfy { SelfPositioning.matches(identifier: $0.identifier, owners: spOwners) }
                 && staleCands.allSatisfy { SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: spOwners) }
+            if !spOnly {
+                if let c = staleCands.first(where: { !SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: spOwners) }) {
+                    reason = "stale app-side item of \(c.app.bundleID ?? c.app.name)"
+                } else if let h = staleHosted.first(where: { !SelfPositioning.matches(identifier: $0.identifier, owners: spOwners) }) {
+                    reason = "stale hosted element not self-positioning (\(h.identityKey))"
+                } else { reason = "no stale self-positioning item" }
+            }
+        } else if !verifiedOnly, !hostedComplete {
+            reason = tree.incompleteReason ?? (agent == nil ? "no MenuBarAgent" : hosted.isEmpty ? "empty hosted tree" : tree.failedReads == 0 ? "unnamed or failed read without a count" : "no fresh hosted data")
         }
+        if reason == nil, !verifiedOnly, !hostedComplete, !spOnly { reason = tree.incompleteReason }
 
         // Assumed-hidden state (of7). Identifier-less items (Tot, Yoink, Moom) cannot be judged by name, so after a live
         // hide their stale on-bar app-side frame looks "on the bar". When WE hid such an owner (live write confirmed by
@@ -575,8 +594,17 @@ public struct MenuBarScanner {
         // Our own hosted status item is counted in `hostedLayout` (evidence) but is not an item to report (unless asked for).
         let reported = (on + off).map(\.element).filter { includeSelf || $0.axIdentifier != Self.ownStatusItemIdentifier }
         let marked = SystemOverflow.mark(reported)
-        return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
-                               incompleteOnlyForSelfPositioning: spOnly)
+        var snapshot = MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
+                                       incompleteOnlyForSelfPositioning: spOnly)
+        snapshot.completenessReason = hostedComplete || spOnly ? nil : reason
+        // One line per incomplete full scan that has a stale self-positioning item (identical consecutive reasons: once per 10 s).
+        if let r = snapshot.completenessReason, marked.contains(where: { $0.stale && SelfPositioning.matches($0, owners: spOwners) }) {
+            let line = "incomplete: " + r
+            if state.lastIncompleteLog?.reason != line || Date().timeIntervalSince(state.lastIncompleteLog!.at) >= 10 {
+                state.lastIncompleteLog = (line, Date()); log(line)
+            }
+        }
+        return snapshot
     }
 }
 

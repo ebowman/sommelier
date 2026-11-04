@@ -70,6 +70,8 @@ public struct AgentHostedTree: Sendable {
     /// Set by the scanner (never by a source): every failed/timed-out group is attributable BY IDENTITY to a self-positioning
     /// owner (gdu.51), so the read is complete for everyone else.
     public var failuresAreSelfPositioning = false
+    /// Set by the scanner when failures exist and are NOT attributable to self-positioning owners: why (gdu.51 diagnosability).
+    public var incompleteReason: String?
     public init(stripFrame: CGRect?, elements: [AXElementInfo], failedReads: Int = 0, timedOut: [AXElementInfo] = [],
                 unnamedTimeouts: Int = 0, topFailures: Int = 0) {
         self.stripFrame = stripFrame; self.elements = elements; self.failedReads = failedReads; self.timedOut = timedOut

@@ -164,3 +164,59 @@ private let full = tree([dummyEl, otherEl, cpu, mem])
     cache.noteUnresolvedAttribution(selfPositioning: false)
     #expect(!cache.isCapped(slowOther))
 }
+
+// MARK: - gdu.51 diagnosability: reason strings
+
+private func reason(_ second: AgentHostedTree, failing: Set<pid_t> = [], log: (@Sendable (String) -> Void)? = nil) -> MenuBarSnapshot {
+    var scanner = MenuBarScanner(source: source([full]), log: log ?? { _ in })
+    _ = scanner.scan()
+    scanner.source = source([second], failing: failing)
+    return scanner.scan()
+}
+
+@Test func reasonTopLevelFailure() {
+    let r = reason(tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], top: 1))
+    #expect(r.completeness == .incomplete && r.completenessReason == "top-level failure")
+}
+
+@Test func reasonNamedTimeoutNotSelfPositioning() {
+    let r = reason(tree([dummyEl, cpu, mem], failed: 1, timedOut: [stale(otherEl)]))
+    #expect(r.completenessReason == "named timeout not self-positioning (\(otherEl.identityKey))")
+}
+
+@Test func reasonUnnamedTimeoutsNotCovered() {
+    let r = reason(tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], unnamed: 1))
+    #expect(r.completenessReason == "1 unnamed timeouts, only 0 self-positioning groups absent")
+}
+
+@Test func reasonNonSelfPositioningElementMissing() {
+    let r = reason(tree([dummyEl], failed: 1, unnamed: 1))
+    #expect(r.completenessReason == "non-self-positioning element missing (\(otherEl.identityKey))")
+}
+
+@Test func reasonStaleAppSideItem() {
+    let r = reason(tree([dummyEl, otherEl], failed: 2, timedOut: [stale(cpu), stale(mem)]), failing: [11])
+    #expect(r.completenessReason == "stale app-side item of ie.test.other")
+}
+
+@Test func noReasonWhenCompleteOrMiddleLevel() {
+    #expect(reason(full).completenessReason == nil)
+    let m = reason(tree([dummyEl, otherEl], failed: 2, timedOut: [stale(cpu), stale(mem)]))
+    #expect(m.completeness == .completeExceptSelfPositioning && m.completenessReason == nil)
+}
+
+private final class Lines: @unchecked Sendable { let l = NSLock(); var v: [String] = []; func add(_ s: String) { l.lock(); v.append(s); l.unlock() } }
+
+@Test func incompleteReasonIsLoggedOncePerTenSeconds() {
+    let lines = Lines()
+    let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], unnamed: 1)
+    let scanner = MenuBarScanner(source: source([full, t, t, t]), log: { lines.add($0) })
+    for _ in 0..<4 { _ = scanner.scan() }
+    #expect(lines.v.filter { $0.hasPrefix("incomplete: ") } == ["incomplete: 1 unnamed timeouts, only 0 self-positioning groups absent"])
+}
+
+@Test func levelDisplayNamesForJson() {
+    #expect(ReadCompleteness.complete.displayName == "complete")
+    #expect(ReadCompleteness.completeExceptSelfPositioning.displayName == "exceptSelfPositioning")
+    #expect(ReadCompleteness.incomplete.displayName == "incomplete")
+}

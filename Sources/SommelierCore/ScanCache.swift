@@ -51,6 +51,8 @@ final class ScanState: @unchecked Sendable {
     private var lastSaved: Data?
     /// Consecutive fast scans each unverified cached item has been shown as stale (in-memory only).
     var unverifiedCount: [String: Int] = [:]
+    /// Last logged incomplete reason and when (rate limit: identical consecutive reasons log once per 10 s).
+    var lastIncompleteLog: (reason: String, at: Date)?
     private var loaded = false
     let url: URL?
 
