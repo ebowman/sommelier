@@ -35,12 +35,52 @@ struct SettingsView: View {
             OnboardingView(model: model.permissions)
                 .tabItem { Text("Permissions") }
 
-            Text("Coming soon (gdu.20)")
-                .padding()
+            SpacingTab()
                 .tabItem { Text("Spacing") }
         }
         .frame(width: 480, height: 320)
         .onAppear { login = LoginItem.isEnabled }
+    }
+}
+
+/// Spacing tab (gdu.20). Writes on slider release only; never restarts the menu bar (gdu.55).
+struct SpacingTab: View {
+    static let statusText = "Each app picks up a change when it is relaunched; apps that are already running keep their old spacing. Nothing restarts the menu bar for you. Padding only changes the highlight around an item."
+    private let settings = SpacingSettings()
+    @State private var spacing: Double = 8
+    @State private var padding: Double = 8
+    @State private var spacingSet = false
+    @State private var paddingSet = false
+
+    var body: some View {
+        Form {
+            row("Item spacing", value: $spacing, isSet: spacingSet) { settings.set(spacing: $0); reload() }
+            row("Selection padding", value: $padding, isSet: paddingSet) { settings.set(padding: $0); reload() }
+            Button("Reset to system default") { settings.reset(); reload() }
+            Text(Self.statusText).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding()
+        .onAppear { reload() }
+    }
+
+    private func row(_ title: String, value: Binding<Double>, isSet: Bool, commit: @escaping (Int) -> Void) -> some View {
+        HStack {
+            Text(title).frame(width: 120, alignment: .leading)
+            Slider(value: value, in: 0...24, step: 1) { editing in
+                if !editing { commit(Int(value.wrappedValue)) }
+            }
+            TextField("", value: Binding(get: { Int(value.wrappedValue) }, set: { value.wrappedValue = Double(SpacingSettings.clamp($0)) }),
+                      format: .number)
+                .frame(width: 44)
+                .onSubmit { commit(Int(value.wrappedValue)) }
+            Text(isSet ? "set" : "default").font(.caption).foregroundStyle(.secondary).frame(width: 48)
+        }
+    }
+
+    private func reload() {
+        let c = settings.current()
+        spacingSet = c.spacing != nil; paddingSet = c.padding != nil
+        spacing = Double(c.spacing ?? 8); padding = Double(c.padding ?? 8)
     }
 }
 

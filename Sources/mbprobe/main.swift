@@ -29,6 +29,7 @@ func usage() -> Never {
            mbprobe layout remove <key> [--file PATH]
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
            mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback] [--allow-agent-restart]      (ONE engine pass: executes the plan)
+           mbprobe spacing get | set <spacing|-> <padding|-> | reset      (global current-host NSStatusItemSpacing / NSStatusItemSelectionPadding, 0...24; '-' leaves that key unchanged)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
            mbprobe activate <key> [--right] [--ax-press] [--escape-after SECONDS] [--force]      (ItemActivator: reveal + click, or AXPress; waits for the menu to close)
 
@@ -857,6 +858,34 @@ func runActivate(_ a: [String]) async {
     }
 }
 
+
+func runSpacing(_ a: [String]) {
+    let s = SpacingSettings()
+    func show() {
+        let c = s.current()
+        for (k, v) in [(SpacingSettings.spacingKey, c.spacing), (SpacingSettings.paddingKey, c.padding)] {
+            let shell = Process(); shell.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+            shell.arguments = ["-currentHost", "read", "-globalDomain", k]
+            let pipe = Pipe(); shell.standardOutput = pipe; shell.standardError = pipe
+            try? shell.run(); shell.waitUntilExit()
+            let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            print("\(k) = \(v.map(String.init) ?? "(unset)")    defaults -currentHost read -globalDomain \(k): \(out)")
+        }
+    }
+    switch a.first {
+    case "get": show()
+    case "set":
+        guard a.count == 3, a[1] == "-" || Int(a[1]) != nil, a[2] == "-" || Int(a[2]) != nil else { usage() }
+        if !s.set(spacing: Int(a[1]), padding: Int(a[2])) { print("warning: synchronize failed") }
+        show()
+    case "reset":
+        if !s.reset() { print("warning: synchronize failed") }
+        show()
+    default: usage()
+    }
+}
+
 switch args.first {
 case "activate": await runActivate(Array(args.dropFirst()))
 case "permissions": runPermissions(Array(args.dropFirst()))
@@ -869,6 +898,7 @@ case "show": await runHideShow(Array(args.dropFirst()), hide: false)
 case "drag": runDrag(Array(args.dropFirst()))
 case "set-visible": runSetVisible(Array(args.dropFirst()))
 case "cc-allowed": runCCAllowed(Array(args.dropFirst()))
+case "spacing": runSpacing(Array(args.dropFirst()))
 case "press": runPress(Array(args.dropFirst()))
 case "set-position": runSetPosition(Array(args.dropFirst()))
 case "watch": runWatch(Array(args.dropFirst()))

@@ -473,3 +473,6 @@ means AXPress, never a believed stale frame). A click that opens no menu within 
 a cancelled task re-hides and releases too.
 Debug: `SOMMELIER_ACTIVATE="<storeKey>[|right]"` (3 s after launch, result in `build/sommelier.log`); `mbprobe activate <key> [--right]
 [--ax-press] [--escape-after S]`.
+
+## Spacing (gdu.20)
+`SpacingSettings` (Core) reads/writes `NSStatusItemSpacing` and `NSStatusItemSelectionPadding` in the global domain, current user, current host (same store as `defaults -currentHost write -globalDomain`), clamped to 0...24, behind an injectable backend for tests. Measured on macOS 27: a change applies to each app when it relaunches, not to running apps, and no MenuBarAgent restart is needed (details in `docs/findings-spacing.md`). The Settings Spacing tab writes on slider release, offers "Reset to system default" (removes both keys) and never restarts the agent itself (gdu.55). `mbprobe spacing get|set|reset` is the CLI surface.

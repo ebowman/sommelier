@@ -397,3 +397,11 @@ Live (reviewer only, MBDummy items only, Bartender quit; NOT run by the implemen
 5. `scripts/soak-events.sh` phase R: 0 own-fallback respawns.
 6. Settings > General shows "Allow menu bar restart as a last resort"; with the entitlement it is OFF by default (`defaults read ie.boboco.sommelier allowAgentRestart` unset or 0).
 7. Arrange window: a `liveUnverified` hide shows a faded check mark with an orange dot (tooltip "Applied; confirmation pending") that becomes the plain check mark after the next settled complete read.
+
+## Spacing (gdu.20)
+Human checklist (Settings > Spacing):
+1. Drag the Item spacing slider; the value is written only on release (`mbprobe spacing get` or `defaults -currentHost read -globalDomain NSStatusItemSpacing` shows it). Typing a number and pressing Return also writes; values clamp to 0...24.
+2. Relaunch an app (or `make dummy-stop && make dummy`): its item width changes (about 24 + spacing). Running apps do not change; the menu bar is not restarted.
+3. Selection padding: set 0 and 8, relaunch an app, click its item and compare the highlight size by eye (not measurable headlessly).
+4. "Reset to system default": both keys are removed (`defaults ... read` says the key does not exist) and the labels show "default".
+5. Confirm no menu bar flash happens at any point.
