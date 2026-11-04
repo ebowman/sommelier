@@ -19,7 +19,10 @@
 #    lines stamped at or after the soak's start (an own-fallback line from an earlier run can never excuse a foreign respawn).
 # Safety: the app is never stopped while the engine acts. Every stop (restart between phases, exit handler) first waits, up to 60 s,
 #    for the app log to show the latest pass reaching `plan: phase=converged` after the last request, with no new actuator output for
-#    2 s; on timeout it says so and leaves the app RUNNING instead of killing a batch or drag.
+#    2 s; on timeout it says so and leaves the app RUNNING instead of killing a batch or drag. The idle check is repeated after that quiet
+#    period: if a new `pass started` line appeared after the last converged plan, it waits for that pass's plan too (same 60 s bound).
+#    Only the Sommelier this script launched is ever stopped, and by pid (never by name); a Sommelier that was already running makes the
+#    script exit 2 before it touches Bartender or any dummy.
 #    The baseline is captured BEFORE the app starts and compared in full (exact equality of the non-dummy key list).
 # Respawn rule: a MenuBarAgent pid change the app log attributes to Sommelier's own fallback (`agent restarted by Sommelier (expected)` or
 #    `falling back to respawn`) makes that phase INCONCLUSIVE ("own fallback respawn (slow reads)"); a change with no such line is a FAIL
@@ -150,6 +153,10 @@ stop_app() {
   return 0
 }
 
+# A Sommelier that is already running is the user's: refuse BEFORE the exit handler exists or Bartender is touched, so this early exit quits
+# nothing (the handler's `make dummy-stop` quits every MBDummy by bundle id).
+pgrep -x Sommelier >/dev/null && { echo "Sommelier is already running; stop it first (and let it finish)" >&2; exit 2; }
+
 cleanup() {
   local rc=$?
   if ! stop_app; then echo "WARNING: Sommelier was left running (engine not idle)"; [ "$rc" = 0 ] && rc=1; fi
@@ -170,7 +177,6 @@ if pgrep -x "Bartender 7" >/dev/null; then
   pgrep -x "Bartender 7" >/dev/null && { log "Bartender 7 did not quit"; exit 2; }
   sleep 3
 fi
-pgrep -x Sommelier >/dev/null && { echo "Sommelier is already running; stop it first (and let it finish)" >&2; exit 2; }
 
 "$PROBE" cc-allowed list | grep -q '^1 ie.boboco.mbdummy\( \|$\)' \
   || { log "no ALLOWED Control Center entry for ie.boboco.mbdummy (mbprobe cc-allowed list); create it once with 'mbprobe cc-allowed set ie.boboco.mbdummy 1 --create --restart' (respawns the agent)"; exit 2; }
