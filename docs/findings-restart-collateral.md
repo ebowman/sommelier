@@ -123,3 +123,31 @@ the repair does not notice. The soak's restore check compares fresh items by fra
   20/20; a manual `mbprobe drag --to-x` sweep (dx 0/6/14/24, 3 trials each) at that spot gave 0/3, 1/3, 0/3, 0/3, i.e. parameter
   independent. No cause was found (the earlier gdu.7 experiments at x~1077 were 53/53). The actuator reports these honestly as
   `notVerified` after the retry and the fallback.
+
+## Scan agreement noise, gdu.46
+
+Why: in 2 of 7 launches the engine never obtained an agreed observation for 3+ minutes ("scans did not agree after 6 attempts").
+Study 2026-11-04, Bartender 7 running, MBDummy not running, 15 x `mbprobe list --json --debug` (one process each, ~2 s apart;
+raw files were in the session scratchpad). Consecutive pairs: on-bar ORDER of the keys present in both scans differed in 0 of 14
+pairs; the SET of on-bar keys differed in 8 of 14. Three scans (3/15) had an incomplete hosted read (8 failed reads, 24-28 elements
+instead of 32-36), all with the 8 iStat items carried forward as stale.
+
+| key | kind of flicker | frequency (15 scans) | root cause |
+|---|---|---|---|
+| `module:WiFi` | whole item present/absent; x 1074 -> 1044 when it is present | present 6/15 (absent in all of scans 7-15) | the agent's hosted tree drops the leftmost system modules between reads (32 elements instead of 35-36, no read error); the bar position moves ~30 pt when Bartender's `GoldenGateBar` / Focus come and go |
+| `module:com.apple.menuextra.focusmode` | whole item present/absent | present 4/15 | same as Wi-Fi (heuristic-confidence key) |
+| 8 x `status:com.bjango.istatmenus.status::*` | all eight stale on the bar together | 3/15 | iStat's AX read times out (`AX read failed for iStat Menus Menubar ... timed out`, 6/15; its hosted group too), so the scanner carries the previous items forward as stale (`maxStaleScans` 3). Order and widths did not change in this study |
+| `status:com.surteesstudios.Bartender::GoldenGateBar` | appears/disappears | 14/15 | Bartender's own item |
+| `status:com.apple.systemuiserver::...TimeMachine` | stale once | 1/15 | one timed-out SystemUIServer read |
+| `module:WiFi`, `module:com.apple.menuextra.focusmode`, `module:AudioVideoModule` | the same key listed TWICE in one scan | 0/15 in `mbprobe`; seen once in ~40 engine passes (launch 4 of the first 10-launch run: first scan after a complete one, with the 8 iStat items stale) | NOT confirmed. Hosted dedupe in `MenuBarScanner.assemble` only collapses elements with identical frame, identifier, description AND title, so a group read and a button read of one module that differ in any of them both survive; the `missing(tree)` carry-forward in `readHosted` (previous element not found by `identityKey`) is the other candidate. Harmless now: `AgreedScanObserver` collapses duplicate keys (first by position, fresh over stale) and logs the copies |
+| identifier-less items (signal, GateOpener, ToothFairy) | swap places | not seen in these 15 scans | frame-join attribution (findings-drag gdu.25 section); excluded from the ORDER part of the signature, still counted for presence |
+
+Consequences. (1) The old signature (on-bar order + parked set, any stale item blocks) could only agree while Wi-Fi/Focus kept their
+state AND iStat's read did not time out in either of two consecutive scans; a full scan with an iStat timeout takes ~2.6 s (a clean
+one 0.6-1.5 s), so a run of stale scans alone costs 8-10 s. (2) Nothing in the data is an ORDER flicker of identified third-party items.
+(3) The first observation is dominated by iStat read time: in 10 launches the first scan was complete 7 times; in 3 launches the first
+2-4 scans were incomplete.
+
+Rule now (`AgreedScanObserver`, docs/architecture.md "Observer"): order of identified, non-heuristic, non-self-positioning keys; presence
+of everything else; Wi-Fi and Focus exempt altogether; on-bar stale still blocks; stale parked items are compared as a set;
+duplicates collapsed. After `maxScans`/`deadline` the latest COMPLETE read is returned unsettled instead of an error.

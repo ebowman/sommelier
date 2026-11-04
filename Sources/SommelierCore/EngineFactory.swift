@@ -20,6 +20,14 @@ public struct RecordingObserver: MenuBarObserver {
         self.inner = inner; self.ids = ids; self.transform = transform
     }
     public func observe() async throws -> [ResolvedItem] { let r = transform(try await inner.observe()); ids.record(r); return r }
+    public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        let t = transform
+        var wrapped: (@Sendable ([ResolvedItem]) -> Void)?
+        if let progress { wrapped = { @Sendable items in progress(t(items)) } }
+        var o = try await inner.observeDetailed(progress: wrapped)
+        o.items = t(o.items); ids.record(o.items)
+        return o
+    }
 }
 
 /// Shared live wiring used by the app and `mbprobe apply`. Always drag-only (`allowFallback = false`).
@@ -32,9 +40,9 @@ public enum EngineFactory {
         }
     }
 
-    public static func makeObserver(platform: LivePlatform) -> AgreedScanObserver {
+    public static func makeObserver(platform: LivePlatform, log: @escaping @Sendable (String) -> Void = { _ in }) -> AgreedScanObserver {
         AgreedScanObserver(scanner: platform, resolve: { platform.resolve($0) }, maxScans: 6, deadline: 15,
-                           accessibilityTrusted: { platform.accessibilityTrusted() })
+                           accessibilityTrusted: { platform.accessibilityTrusted() }, log: log)
     }
 
     /// Control Center tracked entries decide hideability (read-only).
@@ -63,7 +71,7 @@ public enum EngineFactory {
         var lc = LiveActuator.Config()
         lc.allowFallback = false
         let actuator = LiveActuator(platform: platform, config: lc, log: { log("actuator: " + $0) })
-        return LayoutEngine(observer: RecordingObserver(inner: makeObserver(platform: platform), ids: ids, transform: filter), actuator: actuator,
+        return LayoutEngine(observer: RecordingObserver(inner: makeObserver(platform: platform, log: { log("observer: " + $0) }), ids: ids, transform: filter), actuator: actuator,
                             store: store, capabilities: rules, state: state,
                             busy: { platform.pressedMouseButtons() != 0 },
                             resolveSnapshot: { filter(platform.resolve($0)) }, log: log, config: config)

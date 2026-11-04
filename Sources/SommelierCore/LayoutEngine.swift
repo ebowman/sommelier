@@ -7,6 +7,10 @@ public struct PassReport: Equatable, Sendable {
         case incomplete
         case skippedBusy
         case observeFailed
+        /// The scans never agreed: the latest complete read was published but nothing was planned or done.
+        case unsettled
+        /// Abandoned during observation because a newer request (setLayout) needs a pass; the next pass starts at once.
+        case superseded
         case permissionDenied
         /// Stopped (permission denied earlier, corrupt layout) and not resumed by `clearFailures()`.
         case stopped
@@ -62,6 +66,14 @@ public actor LayoutEngine {
     private var busyRetried = false
     private var chained = 0
     private var lastStart: ContinuousClock.Instant?
+    /// The running observation of the current pass; cancelled by an explicit request (`setLayout`) so the new pass starts at once.
+    private var observeTask: Task<Result<(ObservedOrder, Bool), ObserveError>, Never>?
+    /// True once any observation (settled or provisional) has been published.
+    private var hasObservation = false
+    /// When the oldest unserved request arrived, for the "pass delayed" log.
+    private var requestedAt: ContinuousClock.Instant?
+    private var requestReason = "request"
+    private var requestedDuringPass = false
 
     public init(observer: any MenuBarObserver, actuator: any MenuBarActuator, store: any LayoutStore,
                 capabilities: any CapabilityProvider, state: EngineState,
@@ -106,13 +118,13 @@ public actor LayoutEngine {
         do { try store.save(new) } catch { log("cannot save layout: \(error)") }
         await publish { $0.layout = new }
         await clearFailures()
-        requestReconcile()
+        requestReconcile(supersede: true, reason: "setLayout")
     }
 
     public func setShowHiddenSection(_ on: Bool) async {
         showHidden = on
         await publish { $0.showHiddenSection = on }
-        requestReconcile()
+        requestReconcile(supersede: true, reason: "setShowHiddenSection")
     }
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
@@ -130,10 +142,17 @@ public actor LayoutEngine {
     }
 
     /// External trigger. Concurrent triggers coalesce: at most one further pass runs after the current one.
-    public func requestReconcile() {
+    /// `supersede` (explicit user actions only, never the poll): an observation still in progress is abandoned so the
+    /// pass for this request starts at once instead of after up to `AgreedScanObserver.deadline` seconds.
+    public func requestReconcile(supersede: Bool = false, reason: String = "trigger") {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
         guard !stopped else { return }
+        if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
         pending = true
+        if supersede, let t = observeTask {
+            log("\(reason): abandoning the observation in progress")
+            t.cancel()
+        }
         kick()
     }
 
@@ -165,11 +184,24 @@ public actor LayoutEngine {
                 let wait = config.minPassInterval - last.duration(to: .now)
                 if wait > .zero { await sleep(wait) }
             }
+            let t0 = ContinuousClock.now
             while inPass { await Task.yield(); await sleep(.milliseconds(10)) }
+            noteDelay("previous pass still running", since: t0)
             pending = false
             _ = await runPass(scheduled: true)
         }
         draining = false
+    }
+
+    /// Logs a wait of more than 2 s, with its reason.
+    private func noteDelay(_ reason: String, since t0: ContinuousClock.Instant) {
+        let ms = Self.ms(t0.duration(to: .now))
+        if ms > 2000 { log("pass delayed: \(reason) \(ms) ms") }
+    }
+
+    private static func ms(_ d: Duration) -> Int {
+        let c = d.components
+        return Int(c.seconds) * 1000 + Int(c.attoseconds / 1_000_000_000_000_000)
     }
 
     // MARK: One pass
@@ -233,7 +265,8 @@ public actor LayoutEngine {
     private func publishObserved(_ obs: ObservedOrder, _ plan: Plan? = nil) async {
         let st = plan.map { statuses(obs, $0) }
         let info = itemInfo
-        await publish { s in s.observed = obs; s.items = info; if let st { s.perItem = st } }
+        hasObservation = true
+        await publish { s in s.observed = obs; s.items = info; s.observationSettled = true; if let st { s.perItem = st } }
     }
 
     private func setStatus(_ k: ItemKey, _ st: ItemStatus, inFlight: PlannedAction?) async {
@@ -248,18 +281,41 @@ public actor LayoutEngine {
         return report
     }
 
-    private func observeOnce() async -> Result<ObservedOrder, ObserveError> {
+    /// `allowUnsettled`: accept the latest complete read although two scans did not agree (the pass shows it, never acts on it).
+    private func observeOnce(allowUnsettled: Bool = false, provisional: Bool = false) async -> Result<(ObservedOrder, Bool), ObserveError> {
+        var progress: (@Sendable ([ResolvedItem]) -> Void)?
+        if provisional {
+            progress = { @Sendable [weak self] items in
+                Task { await self?.publishProvisional(items) }
+            }
+        }
         do {
-            let r = try await observer.observe()
-            let o = ObservedOrder(resolved: r)
+            let r = try await observer.observeDetailed(progress: progress)
+            let o = ObservedOrder(resolved: r.items)
             if o.onBar.isEmpty { return .failure(.empty) }
-            itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r))
-            return .success(o)
+            if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
+            itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items))
+            return .success((o, r.settled))
         } catch let e as ObserveError {
             return .failure(e)
         } catch {
             return .failure(.noAgreement(scans: 0))
         }
+    }
+
+    /// The first complete scan of a pass, published before agreement so the Arrange window has a bar to show. Only when
+    /// nothing has been observed yet; never replaces a settled observation.
+    public func showProvisional(_ items: [ResolvedItem]) async { await publishProvisional(items) }
+
+    private func publishProvisional(_ items: [ResolvedItem]) async {
+        guard !hasObservation else { return }
+        let o = ObservedOrder(resolved: items)
+        guard !o.onBar.isEmpty else { return }
+        hasObservation = true
+        itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: items))
+        let info = itemInfo
+        log("first observation published (provisional, unsettled)")
+        await publish { s in s.observed = o; s.items = info; s.observationSettled = false }
     }
 
     /// Updates `obs` from an actuation result; false when no trustworthy observation could be obtained.
@@ -273,11 +329,58 @@ public actor LayoutEngine {
             }
         }
         switch await observeOnce() {
-        case .success(let o): obs = o; return true
+        case .success(let (o, _)): obs = o; return true
         case .failure(let e):
             if e == .permissionDenied { stopped = true; await publish { $0.lastError = .permissionDenied } }
             else { let m = e.description; await publish { $0.lastError = .observe(m) } }
             return false
+        }
+    }
+
+    private enum PassObservation { case settled(ObservedOrder), end(PassReport) }
+
+    /// Observes for a pass. Unsettled and failed observations end the pass here (published, nothing planned).
+    private func observeForPass() async -> PassObservation {
+        let provisional = !hasObservation
+        let task = Task { await self.observeOnce(allowUnsettled: true, provisional: provisional) }
+        observeTask = task
+        let t0 = ContinuousClock.now
+        let result = await task.value
+        observeTask = nil
+        let took = Self.ms(t0.duration(to: .now))
+        switch result {
+        case .success(let (o, settled)):
+            if settled { return .settled(o) }
+            hasObservation = true
+            let info = itemInfo
+            log("observation unsettled; not actuating (\(took) ms)")
+            await publish { s in
+                s.observed = o; s.items = info; s.observationSettled = false
+                if case .observe? = s.lastError { s.lastError = nil }
+            }
+            if draining { pending = true }
+            let r = PassReport(outcome: .unsettled)
+            _ = await finish(r, converged: false)
+            return .end(r)
+        case .failure(let e):
+            if e == .superseded {
+                log("observation abandoned after \(took) ms for a newer request")
+                if draining { pending = true }
+                let r = PassReport(outcome: .superseded)
+                _ = await finish(r, converged: false)
+                return .end(r)
+            }
+            if e == .permissionDenied {
+                stopped = true
+                pending = false
+                await publish { $0.lastError = .permissionDenied }
+                _ = await finish(PassReport(outcome: .permissionDenied), converged: false)
+                return .end(PassReport(outcome: .permissionDenied))
+            }
+            let msg = e.description
+            await publish { $0.lastError = .observe(msg) }
+            _ = await finish(PassReport(outcome: .observeFailed), converged: false)
+            return .end(PassReport(outcome: .observeFailed))
         }
     }
 
@@ -288,39 +391,44 @@ public actor LayoutEngine {
         var actionCount = 0
         await publish { $0.passesStarted += 1 }
 
-        // (a) busy pause
+        if let r = requestedAt {
+            requestedAt = nil
+            let ms = Self.ms(r.duration(to: .now))
+            log("pass started \(ms) ms after \(requestReason)")
+            if ms > 2000 {
+                log("pass delayed: \(requestedDuringPass ? "a pass was already running when the request arrived" : "scheduling (min interval or busy wait)") \(ms) ms")
+            }
+        }
+
+        // (a) observe. Observation moves nothing, so it proceeds even while the user is busy; only actuation waits.
+        var obs: ObservedOrder
+        switch await observeForPass() {
+        case .settled(let o): obs = o
+        case .end(let r): return r
+        }
+
+        // (b) busy pause (actuation only; unchanged semantics). A wait makes the observation old, so it is repeated.
         if busy() {
             var waited = Duration.zero
+            let t0 = ContinuousClock.now
             while busy(), waited < config.busyWait {
                 await sleep(config.busyPoll)
                 waited += config.busyPoll
             }
+            noteDelay("user busy", since: t0)
             if busy() {
                 if scheduled, !busyRetried { busyRetried = true; pending = true }
                 log("user is busy; pass skipped")
                 await publish { $0.passSequence += 1 }
                 return PassReport(outcome: .skippedBusy)
             }
+            switch await observeForPass() {
+            case .settled(let o): obs = o
+            case .end(let r): return r
+            }
         }
         busyRetried = false
 
-        // (b) observe
-        var obs: ObservedOrder
-        switch await observeOnce() {
-        case .success(let o): obs = o
-        case .failure(let e):
-            if e == .permissionDenied {
-                stopped = true
-                pending = false
-                await publish { $0.lastError = .permissionDenied }
-                _ = await finish(PassReport(outcome: .permissionDenied), converged: false)
-                return PassReport(outcome: .permissionDenied)
-            }
-            let msg = e.description
-            await publish { $0.lastError = .observe(msg) }
-            _ = await finish(PassReport(outcome: .observeFailed), converged: false)
-            return PassReport(outcome: .observeFailed)
-        }
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
         pruneFailures(obs)
 
@@ -418,6 +526,12 @@ public actor LayoutEngine {
         // (h) order phase
         var lastAction: PlannedAction?
         while plan.phase == .order {
+            // Every iteration re-plans from the CURRENT layout, so a setLayout that arrived during a drag is acted on at the
+            // next iteration (the rest of the running drag cannot be taken back); log when that happens.
+            if let r = requestedAt, requestedDuringPass {
+                requestedAt = nil
+                log("\(requestReason) picked up by the running pass at its next re-plan, \(Self.ms(r.duration(to: .now))) ms after the request")
+            }
             if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
             guard actionCount < config.maxActionsPerPass else {
                 log("maxActionsPerPass reached")

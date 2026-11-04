@@ -77,7 +77,8 @@ final class ArrangeViewModel {
     var hasNotFitting: Bool { !state.observed.systemOverflow.isEmpty }
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
-                                   inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count)
+                                   inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
+                                   observationSettled: state.observationSettled)
     }
     var isPaused: Bool { model.isPaused }
     /// Capability only from the engine's own data; a key without `ItemInfo` is unknown, hence allowed (engine decides).

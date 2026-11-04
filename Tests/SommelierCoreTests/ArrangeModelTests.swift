@@ -358,6 +358,18 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     #expect(l.newItemPolicy == .hidden && l.isValid)
 }
 
+@Test func unsettledObservationIsShownAsObservedButUnsettled() {
+    #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: false, inFlight: false, observationSettled: false) == "Observing (unsettled)")
+    #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, observationSettled: true) == "Converged")
+    // An error still wins over the unsettled note.
+    #expect(ArrangeSections.statusLine(perItem: [:], lastError: .permissionDenied, isConverged: false, inFlight: false, observationSettled: false) == "Accessibility required")
+    // With no lastError (an unsettled observation clears it) the capsules render instead of the placeholder.
+    let o = ObservedOrder(onBar: [k("a"), k("b")], parked: [])
+    let c = ArrangeSections.make(observed: o, layout: Layout(visible: [k("a"), k("b")]), items: [:], perItem: [:], capabilities: { _ in Capability(canMove: true, canHide: true) },
+                                 observationProblem: ArrangeSections.observationProblem(lastError: nil))
+    #expect(c.observedAvailable && c.visiblePlaceholder == nil)
+}
+
 @Test func statusLineCountsPendingAndFailures() {
     func s(_ p: [ItemKey: ItemStatus], err: EngineError? = nil, conv: Bool = true, await n: Int = 0) -> String {
         ArrangeSections.statusLine(perItem: p, lastError: err, isConverged: conv, inFlight: false, pendingAwaiting: n)

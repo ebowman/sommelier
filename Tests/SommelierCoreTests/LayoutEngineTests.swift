@@ -49,6 +49,39 @@ private actor GateObserver: MenuBarObserver {
     func release() { released = true; gate?.resume(); gate = nil }
 }
 
+/// `observeDetailed` hands the first scan to `progress`, then waits for `release()` before settling.
+private actor ProgressGate: MenuBarObserver {
+    let items: [ResolvedItem]
+    private var released = false
+    init(items: [ResolvedItem]) { self.items = items }
+    func release() { released = true }
+    func observe() async throws -> [ResolvedItem] { items }
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        progress?(items)
+        while !released { try? await Task.sleep(for: .milliseconds(5)) }
+        return BarObservation(items: items, settled: true)
+    }
+}
+
+/// The first observation never ends on its own: it waits to be cancelled (as a superseded observation is) and throws
+/// `superseded`; later ones return at once, following the fake actuator-independent fixed bar.
+private actor SlowFirstObserver: MenuBarObserver {
+    let items: [ResolvedItem]
+    private(set) var calls = 0
+    private(set) var cancelledCalls = 0
+    init(items: [ResolvedItem]) { self.items = items }
+    func observe() async throws -> [ResolvedItem] { try await observeDetailed(progress: nil).items }
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        calls += 1
+        if calls == 1 {
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+            cancelledCalls += 1
+            throw ObserveError.superseded
+        }
+        return BarObservation(items: items, settled: true)
+    }
+}
+
 private struct Rig {
     let engine: LayoutEngine
     let state: EngineState
@@ -155,6 +188,67 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(rep.outcome == .skippedBusy)
         #expect(await r.actuator.calls.isEmpty)
         #expect(r.sleeps.all.count == 30)
+    }
+
+    // MARK: gdu.46 unsettled observations and pass latency
+
+    @Test func unsettledObservationIsPublishedAndNothingIsPlanned() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+                          observer: FixtureObserver(unsettled: FakeMenuBar.resolved(onBar: ["A", "B"].map(k))))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .unsettled)
+        #expect(r.state.observed.onBar == ["A", "B"].map(k))
+        #expect(!r.state.observationSettled)
+        #expect(r.state.lastError == nil)
+        #expect(await r.actuator.calls.isEmpty)   // would have needed one move on a settled observation
+    }
+
+    @Test func settledObservationActsAndClearsTheFlag() async {
+        let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+                          observer: FixtureObserver(steps: [.unsettled(items), .items(items)]))
+        #expect(await r.engine.reconcileOnce().outcome == .unsettled)
+        #expect(await r.actuator.calls.isEmpty)
+        let second = await r.engine.reconcileOnce()
+        #expect(second.actionCount == 1)
+        #expect(r.state.observationSettled)
+        #expect(await r.actuator.calls.count == 1)
+    }
+
+    @Test func unsettledObservationClearsAnEarlierObserveError() async {
+        let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)),
+                          observer: FixtureObserver(steps: [.failure(.noAgreement(scans: 6)), .unsettled(items)]))
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastError == .observe("scans did not agree after 6 attempts"))
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastError == nil && !r.state.observationSettled)
+    }
+
+    @Test func firstCompleteScanIsPublishedBeforeAgreement() async {
+        let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
+        let gate = ProgressGate(items: items)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)), observer: gate)
+        await r.engine.requestReconcile()
+        #expect(await waitUntil { await MainActor.run { r.state.observed.onBar == ["A", "B"].map(k) } })
+        #expect(await MainActor.run { !r.state.observationSettled })
+        await gate.release()
+        #expect(await waitUntil { await MainActor.run { r.state.observationSettled && r.state.isConverged } })
+    }
+
+    @Test func setLayoutAbandonsAnObservationInProgressAndStartsAPassAtOnce() async {
+        let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
+        let slow = SlowFirstObserver(items: items)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)), observer: slow)
+        await r.engine.requestReconcile()                       // a poll-style pass starts observing and blocks
+        #expect(await waitUntil { await slow.calls == 1 })
+        await r.engine.requestReconcile()                       // a plain trigger must NOT abandon it
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(await slow.calls == 1)
+        await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))   // the user's drop abandons it
+        #expect(await waitUntil { await MainActor.run { r.state.isConverged && r.state.observed.onBar == ["B", "A"].map(k) } })
+        #expect(await slow.calls >= 2)
+        #expect(await slow.cancelledCalls == 1)
     }
 
     @Test func permissionDeniedStopsUntilCleared() async {

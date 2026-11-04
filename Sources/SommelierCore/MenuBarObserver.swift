@@ -6,22 +6,62 @@ public enum ObserveError: Error, Equatable, Sendable, CustomStringConvertible {
     case noAgreement(scans: Int)
     /// The bar had no on-bar item in any scan: a failed read, never a state.
     case empty
+    /// The observation was abandoned because a newer request (a layout change) needs a pass now.
+    case superseded
 
     public var description: String {
         switch self {
         case .permissionDenied: return "Accessibility permission is not granted"
         case .noAgreement(let n): return "scans did not agree after \(n) attempts"
         case .empty: return "the menu bar scan returned no items"
+        case .superseded: return "observation superseded by a newer request"
         }
     }
 }
 
-/// Produces the observed, resolved menu bar. Implementations must only return data they trust (no stale items).
-public protocol MenuBarObserver: Sendable {
-    func observe() async throws -> [ResolvedItem]
+/// One observation of the bar: the items of the best full scan and whether two scans agreed on them.
+public struct BarObservation: Sendable {
+    public var items: [ResolvedItem]
+    /// True when two consecutive full scans agreed (see `AgreedScanObserver`). False = the latest COMPLETE read, shown to
+    /// the user but never acted on (gdu.46).
+    public var settled: Bool
+    public var scans: Int
+    public init(items: [ResolvedItem], settled: Bool = true, scans: Int = 1) {
+        self.items = items; self.settled = settled; self.scans = scans
+    }
 }
 
-/// Polls full scans until two consecutive fresh scans agree (same on-bar order, same parked set), or gives up.
+/// Produces the observed, resolved menu bar. Implementations must only return data they trust (no stale items) from `observe()`.
+public protocol MenuBarObserver: Sendable {
+    /// Strict: returns only a settled observation, throws otherwise.
+    func observe() async throws -> [ResolvedItem]
+    /// Lenient: may return an unsettled observation instead of throwing `noAgreement`. `progress` is called once, with the
+    /// first complete scan, so a caller can show something before agreement is reached.
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation
+}
+
+public extension MenuBarObserver {
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        BarObservation(items: try await observe(), settled: true)
+    }
+}
+
+/// Polls full scans until two consecutive fresh scans agree, or gives up (gdu.46).
+///
+/// Agreement rule (`signature`): the two scans must show the same
+///  1. ORDER of the on-bar identified keys: status/module items that carry an AX identifier, are not heuristic keys, are not
+///     owned by a self-positioning app (iStat: it re-lays its own items out and changes their widths) and are not in
+///     `volatileKeys`;
+///  2. PRESENCE (sorted set) of every other on-bar key (identifier-less items and iStat count for presence, not for order:
+///     identifier-less items such as signal/GateOpener swap places because they are attributed by frame join);
+///  3. set of parked keys, and set of stale parked keys.
+/// `volatileKeys` (`module:WiFi`, `module:com.apple.menuextra.focusmode`) are exempt altogether: the agent's hosted tree
+/// drops/re-adds those leftmost system modules between reads (docs/findings-restart-collateral.md, gdu.46), which made
+/// agreement impossible for minutes. A stale item ON THE BAR still blocks agreement. A key never appears twice in a result.
+/// Width <= 1 items (main-menu entries) are ignored.
+///
+/// When the budget (`maxScans`/`deadline`) is exhausted the latest complete read (hosted tree read without failures) is
+/// returned with `settled == false`; `progress` additionally gets the first non-empty scan, complete or not.
 public struct AgreedScanObserver: MenuBarObserver {
     public var scanner: any SnapshotScanning
     public var resolve: @Sendable (MenuBarSnapshot) -> [ResolvedItem]
@@ -30,51 +70,119 @@ public struct AgreedScanObserver: MenuBarObserver {
     public var deadline: TimeInterval
     public var accessibilityTrusted: @Sendable () -> Bool
     public var sleep: @Sendable (Duration) async -> Void
+    public var selfPositioningOwners: Set<String>
+    public var volatileKeys: Set<ItemKey>
+    public var log: @Sendable (String) -> Void
+
+    public static let defaultVolatileKeys: Set<ItemKey> = [.module(name: "WiFi"), .module(name: "com.apple.menuextra.focusmode")]
 
     public init(scanner: any SnapshotScanning,
                 resolve: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],
                 maxScans: Int = 6, deadline: TimeInterval = 15,
+                selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners,
+                volatileKeys: Set<ItemKey> = AgreedScanObserver.defaultVolatileKeys,
                 accessibilityTrusted: @escaping @Sendable () -> Bool,
-                sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
+                sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+                log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.scanner = scanner; self.resolve = resolve; self.maxScans = maxScans; self.deadline = deadline
-        self.accessibilityTrusted = accessibilityTrusted; self.sleep = sleep
+        self.selfPositioningOwners = selfPositioningOwners; self.volatileKeys = volatileKeys
+        self.accessibilityTrusted = accessibilityTrusted; self.sleep = sleep; self.log = log
     }
 
-    /// Stale items and items with width <= 1 (the frontmost app's main-menu entries, which change on app switches)
-    /// are excluded: they are not part of what the planner sees (`ObservedOrder(resolved:)`), so they must not decide
-    /// agreement either.
-    static func signature(_ all: [ResolvedItem]) -> String {
-        let r = all.filter { !$0.item.stale && $0.item.frame.width > 1 }
-        let on = r.filter { $0.item.isOnMenuBar }.map { $0.key.description }.joined(separator: "\n")
-        let off = r.filter { !$0.item.isOnMenuBar }.map { $0.key.description }.sorted().joined(separator: "\n")
-        return on + "\n--\n" + off
+    /// Keeps one item per key: the first by array order (on-bar left to right, then parked), preferring a fresh one over a
+    /// stale one. Returns the keys that were duplicated.
+    static func dedupe(_ all: [ResolvedItem]) -> (items: [ResolvedItem], duplicated: [ItemKey]) {
+        var first: [ItemKey: Int] = [:]
+        var dup: [ItemKey] = []
+        var out: [ResolvedItem] = []
+        for r in all {
+            if let i = first[r.key] {
+                if !dup.contains(r.key) { dup.append(r.key) }
+                if out[i].item.stale, !r.item.stale { out[i] = r }
+            } else { first[r.key] = out.count; out.append(r) }
+        }
+        return (out, dup)
     }
 
+    private func orderable(_ r: ResolvedItem) -> Bool {
+        if volatileKeys.contains(r.key) || r.confidence == .heuristic || r.item.axIdentifier.isEmpty { return false }
+        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return false }
+        return true
+    }
+
+    /// nil = this scan cannot be used for agreement (a stale item is on the bar).
+    func signature(_ all: [ResolvedItem]) -> String? {
+        let r = all.filter { $0.item.frame.width > 1 && !volatileKeys.contains($0.key) }
+        if r.contains(where: { $0.item.stale && $0.item.isOnMenuBar }) { return nil }
+        let bar = r.filter { $0.item.isOnMenuBar }
+        let order = bar.filter(orderable).map { $0.key.description }.joined(separator: "\n")
+        let presence = bar.map { $0.key.description }.sorted().joined(separator: "\n")
+        let off = r.filter { !$0.item.isOnMenuBar }
+        let parked = off.filter { !$0.item.stale }.map { $0.key.description }.sorted().joined(separator: "\n")
+        let staleParked = off.filter { $0.item.stale }.map { $0.key.description }.sorted().joined(separator: "\n")
+        return [order, presence, parked, staleParked].joined(separator: "\n--\n")
+    }
+
+    /// Strict: throws `noAgreement` when the scans never agreed.
     public func observe() async throws -> [ResolvedItem] { try await observeCounting().items }
 
-    /// Like `observe()`, also returning the number of full scans taken.
+    /// Strict, also returning the number of full scans taken.
     public func observeCounting() async throws -> (items: [ResolvedItem], scans: Int) {
+        let o = try await observeDetailed(progress: nil)
+        guard o.settled else { throw ObserveError.noAgreement(scans: o.scans) }
+        return (o.items, o.scans)
+    }
+
+    public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
         let limit = Date().addingTimeInterval(deadline)
         var scans = 0
         var prevSig: String?
         var sawNonEmpty = false
+        var sentProgress = false
+        // Latest complete read; a read without a stale item on the bar is preferred over one with.
+        var best: [ResolvedItem]?
+        var bestClean = false
         while scans < maxScans, Date() < limit {
+            if Task.isCancelled { throw ObserveError.superseded }
             let snap = await scanner.scan()
             scans += 1
-            let res = resolve(snap)
-            let stale = res.contains { $0.item.stale }
+            let raw = resolve(snap)
+            let (res, dups) = Self.dedupe(raw)
+            if !dups.isEmpty {
+                // Which copies existed (so the cause is visible in the log): x, size, stale flag, source, identifier.
+                let detail = dups.map { k in
+                    k.description + " = " + raw.filter { $0.key == k }.map {
+                        "[x=\(Int($0.item.frame.minX)) w=\(Int($0.item.frame.width)) \($0.item.stale ? "stale" : "fresh") \($0.item.source.rawValue) id=\($0.item.axIdentifier) desc=\($0.item.axDescription)]"
+                    }.joined(separator: " ")
+                }
+                log("observe scan \(scans): duplicate key(s) collapsed: " + detail.joined(separator: "; "))
+            }
             let empty = snap.onBarLeftToRight.isEmpty
             if !empty { sawNonEmpty = true }
-            let sig = Self.signature(res)
+            let sig = signature(res)
+            let onBarStale = res.filter { $0.item.stale && $0.item.isOnMenuBar }.map { $0.key.description }
+            log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") items=\(res.count) onBarStale=\(onBarStale.count) agree=\(sig != nil && sig == prevSig)")
             if ProcessInfo.processInfo.environment["SOMMELIER_DEBUG_OBSERVE"] != nil {
-                FileHandle.standardError.write(Data("observe scan \(scans): stale=\(res.filter { $0.item.stale }.map { $0.key.description }) agree=\(sig == prevSig) \(sig.count)\n".utf8))
+                FileHandle.standardError.write(Data("observe scan \(scans): blocked=\(sig == nil) agree=\(sig != nil && sig == prevSig) \(sig?.count ?? 0)\n".utf8))
             }
-            if !stale, !empty, sig == prevSig { return (res, scans) }
-            prevSig = stale ? nil : sig
+            // The first scan with anything on the bar is shown at once as provisional, even when the hosted read was incomplete
+            // (a slow iStat read leaves its items stale, and a pass would otherwise show nothing for 10+ s); only a COMPLETE
+            // read may be returned as the unsettled result.
+            if !empty, !sentProgress { sentProgress = true; progress?(res) }
+            if !empty, snap.hostedReadComplete != false {
+                if sig != nil || !bestClean { best = res; bestClean = sig != nil }
+            }
+            if !empty, let sig, sig == prevSig { return BarObservation(items: res, settled: true, scans: scans) }
+            prevSig = sig
             await sleep(.milliseconds(300))
         }
+        if Task.isCancelled { throw ObserveError.superseded }
         if scans > 0, !sawNonEmpty { throw ObserveError.empty }
+        if let best {
+            log("scans did not agree after \(scans) attempts; returning the latest complete read, unsettled")
+            return BarObservation(items: best, settled: false, scans: scans)
+        }
         throw ObserveError.noAgreement(scans: scans)
     }
 }
@@ -84,6 +192,8 @@ public struct AgreedScanObserver: MenuBarObserver {
 public final class FixtureObserver: MenuBarObserver, @unchecked Sendable {
     public enum Step: Sendable {
         case items([ResolvedItem])
+        /// Returned by `observeDetailed` as an unsettled observation; `observe()` (strict) throws `noAgreement` for it.
+        case unsettled([ResolvedItem])
         case failure(ObserveError)
     }
     private let lock = NSLock()
@@ -94,9 +204,16 @@ public final class FixtureObserver: MenuBarObserver, @unchecked Sendable {
 
     public init(steps: [Step]) { precondition(!steps.isEmpty); self.steps = steps }
     public convenience init(_ items: [[ResolvedItem]]) { self.init(steps: items.map { .items($0) }) }
+    public convenience init(unsettled items: [ResolvedItem]) { self.init(steps: [.unsettled(items)]) }
     public convenience init(throwing e: ObserveError) { self.init(steps: [.failure(e)]) }
 
     public func observe() async throws -> [ResolvedItem] {
+        let o = try await observeDetailed(progress: nil)
+        guard o.settled else { throw ObserveError.noAgreement(scans: o.scans) }
+        return o.items
+    }
+
+    public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
         let step: Step = {
             lock.lock(); defer { lock.unlock() }
             _calls += 1
@@ -105,7 +222,8 @@ public final class FixtureObserver: MenuBarObserver, @unchecked Sendable {
             return s
         }()
         switch step {
-        case .items(let r): return r
+        case .items(let r): return BarObservation(items: r, settled: true)
+        case .unsettled(let r): progress?(r); return BarObservation(items: r, settled: false)
         case .failure(let e): throw e
         }
     }

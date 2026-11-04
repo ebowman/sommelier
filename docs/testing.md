@@ -151,3 +151,34 @@ capsules (log `arrange rows: V[]`, screenshot burst2.png), Hidden renders from t
 apart (`hidden`, then `visible|0`): capsules stayed "⟳" until a pass that started after the second drop reported; that pass FAILED
 ("not verified: expected membership change, saw unchanged") and both capsules showed "⚠" with that text (an engine-level result of
 overlapping layouts, shown honestly). Stall detector now logs timer lateness > 100 ms; none seen.
+
+## Launch latency (gdu.46)
+
+Bartender quit, no dummies, `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json`, 22 s per launch, `pkill -x Sommelier` between launches; times from
+`build/sommelier.log`-style output (`launch trusted=true` = 0). "first" = `first observation published (provisional, unsettled)`
+(or the first settled `plan:` line if earlier); "settled" = first `engine: plan:` line (two agreeing scans). Launches 1 and 6 start
+without a layout file (first-launch layout creation path).
+
+| launch | first observation (s) | first settled (s) | "scans did not agree" |
+|---|---|---|---|
+| 1 (no layout file) | 2.5 | 4.6 | no |
+| 2 | 2.5 | 5.1 | no |
+| 3 | 0.8 | 5.4 | no |
+| 4 | 0.8 | 6.1 | no |
+| 5 | 1.6 | 6.7 | no |
+| 6 (no layout file) | 0.7 | 6.4 | no |
+| 7 | 1.7 | 5.9 | no |
+| 8 | 0.8 | 1.4 | no |
+| 9 | 0.9 | 1.3 | no |
+| 10 | 2.6 | 7.1 | no |
+
+All 10 publish within 10 s (worst 2.6 s) and all 10 settle within 10 s (worst 7.1 s). Before the change (same machine, same day, first 10-launch run of the pre-fix
+provisional rule): launches 3 and 4 published nothing for 15+ s (first pass: 5-6 consecutive incomplete scans), and a first-launch (no layout file) start published
+only after 12.5 s because the strict layout-creation read blocked the engine. setLayout -> pass start: 0 ms idle (4 of 4 idle samples), 464-499 ms when it
+abandoned an observation, 1.4 s until the running pass re-planned during a drag (the drag in flight finishes first).
+
+Reading the log: `engine: observer: observe scan N: hostedComplete=... onBarStale=... agree=...` per scan (a scan with iStat's read timing out
+takes ~2.6 s and has `hostedComplete=false onBarStale=8`); `engine: pass started N ms after setLayout|trigger`; `engine: pass delayed: ...`;
+`engine: observation unsettled; not actuating`; `engine: setLayout: abandoning the observation in progress`. setLayout latency check with
+MBDummy only: `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dummy-A|visible|0;status:MBDummy::Dummy-A|visible|6" SOMMELIER_ARRANGE_MOVE_INTERVAL=22`
+(a hide of MBDummy is rejected without a Control Center entry; use visible-to-visible moves), then grep `after setLayout|picked up|abandoning`.

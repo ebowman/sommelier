@@ -43,6 +43,8 @@ public final class EngineState {
     /// only by such a pass; a pass already in flight when the action happened never counts).
     public var passesStarted: Int = 0
     public var passSequence: Int = 0
+    /// False while `observed` is the latest complete read that two scans did not agree on (gdu.46): shown, never acted on.
+    public var observationSettled: Bool = true
 
     public init(observed: ObservedOrder = ObservedOrder(onBar: [], parked: []), layout: Layout = .empty,
                 showHiddenSection: Bool = false) {

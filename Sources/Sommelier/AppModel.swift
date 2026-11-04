@@ -97,7 +97,15 @@ final class AppModel {
             let observer = RecordingObserver(inner: EngineFactory.makeObserver(platform: platform), ids: BundleIDs(),
                                            transform: { EngineFactory.dropSelf($0, bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
             do {
-                let resolved = try await observer.observe()
+                // The first scan is shown at once (unsettled); the layout itself is only written from a settled read.
+                let reading = try await observer.observeDetailed(progress: { items in Task { await engine.showProvisional(items) } })
+                guard reading.settled else {
+                    // Two scans never agreed (gdu.46): do not persist a layout from a guess; the engine's pass adopts new items
+                    // visible at the end in observed order once an observation settles.
+                    NSLog("[Sommelier] first-launch scan unsettled after \(reading.scans) scans; layout left empty")
+                    throw ObserveError.noAgreement(scans: reading.scans)
+                }
+                let resolved = reading.items
                 let (layout, excluded) = LayoutBuilder.build(from: resolved)
                 await engine.setLayout(layout)
                 NSLog("[Sommelier] initialized layout from current order (\(layout.keys(in: .visible).count + layout.keys(in: .hidden).count) keys; excluded \(excluded.count))")
