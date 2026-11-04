@@ -242,9 +242,10 @@ final class ArrangeViewModel {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
         let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true)
         pending.submit(l)
+        let base = state.layoutRevision   // `l` was composed over effective(state.layout): it contains every engine addition up to here (gdu.52)
         ensureTimer()
         Task { [weak self] in   // never block the main actor on the engine
-            let stamp = await engine.setLayout(l)
+            let stamp = await engine.setLayout(l, basedOn: base)
             self?.published(stamp, ticket: ticket)
         }
     }

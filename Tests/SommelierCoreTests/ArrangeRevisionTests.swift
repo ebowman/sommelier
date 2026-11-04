@@ -218,4 +218,61 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         let blind = ArrangeCapabilities.rules(items: [:], tracked: ["ie.boboco.mbdummy"])
         #expect(!blind.capability(for: dummy).canHide)
     }
+
+    // MARK: 5. engine-side merge of engine additions (gdu.52)
+
+    @Test func anItemTheEngineAppendedAfterComposeSurvivesTheSubmittedDrop() async {
+        let logs = Logs()
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)), logs: logs)
+        let base = r.state.layoutRevision                      // the drop is composed here
+        let drop = Layout(visible: ["B", "A"].map(k))
+        _ = await r.engine.reconcileOnce()                     // the engine appends N (new revision) before the drop arrives
+        #expect(r.state.layoutRevision == base + 1)
+        _ = await r.engine.setLayout(drop, basedOn: base)
+        #expect(r.state.layout.visible == ["B", "A", "N"].map(k))
+        #expect(logs.all.filter { $0.contains("setLayout merged 1 engine-added key(s) composed on revision \(base)") }.count == 1)
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.reconcileOnce()
+        #expect(logs.all.filter { $0.hasPrefix("New item") || $0.contains("New item:") }.count == 1)   // no second notice
+        #expect(r.state.layout.allKeys.filter { $0 == k("N") }.count == 1)
+        #expect(((try? r.store.load()) ?? .empty).allKeys.contains(k("N")))
+    }
+
+    @Test func aKeyTheUserPlacedExplicitlyKeepsTheUsersPosition() async {
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let base = r.state.layoutRevision
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.setLayout(Layout(visible: ["A"].map(k), hidden: ["N", "B"].map(k)), basedOn: base)
+        #expect(r.state.layout.hidden == ["N", "B"].map(k) && r.state.layout.visible == [k("A")])
+    }
+
+    @Test func withoutABaseRevisionTheLayoutIsReplacedWholesale() async {
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))
+        #expect(r.state.layout.visible == ["B", "A"].map(k))
+    }
+
+    @Test func aDropComposedOnTheCurrentRevisionAddsNothing() async {
+        let logs = Logs()
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)), logs: logs)
+        _ = await r.engine.reconcileOnce()
+        let base = r.state.layoutRevision
+        _ = await r.engine.setLayout(Layout(visible: ["B", "A", "N"].map(k)), basedOn: base)
+        #expect(!logs.all.contains { $0.contains("setLayout merged") })
+    }
+
+    @Test func aFailureRecordedInThisPassIsKeptAndUnsupportedIsNotTouchedByClearing() async {
+        let order = [k("A"), k("B"), ItemKey.module(name: "clock")]
+        let r = await rig(order: order, layout: Layout(visible: [k("B"), k("A"), .module(name: "clock")]),
+                          failOn: (1...9).map { ($0, ActuationError.mechanismFailed("boom")) })
+        _ = await r.engine.reconcileOnce()
+        let failed = r.state.perItem.filter { if case .failed = $0.value { return true }; return false }.keys
+        #expect(!failed.isEmpty)                                 // recorded in the pass that just ran: still failed after it
+        let r2 = await rig(order: [.module(name: "clock"), k("A")], layout: Layout(visible: [k("A")], hidden: [.module(name: "clock")]))
+        _ = await r2.engine.reconcileOnce()
+        _ = await r2.engine.reconcileOnce()
+        let unsupported = r2.state.perItem.values.filter { if case .unsupported = $0 { return true }; return false }
+        #expect(!unsupported.isEmpty)                            // a capability skip stays .unsupported across passes
+    }
 }

@@ -174,11 +174,38 @@ public actor LayoutEngine {
         await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.lastNormalization = mv; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
     }
 
+    /// Keys the engine itself appended (new-item policy) with the layout revision that added them and their engine-chosen
+    /// position, newest last, capped at `maxEngineAdditions` (gdu.52). `setLayout(_:basedOn:)` re-adds those newer than the
+    /// revision a drop was composed on, so a drop never discards an item the engine appended in between.
+    private var engineAdditions: [(revision: Int, key: ItemKey, section: LayoutSection, index: Int)] = []
+    private static let maxEngineAdditions = 50
+
+    /// Re-adds engine additions newer than `revision` that `l` lacks (user placement in `l` wins). Returns the count re-added.
+    private func mergeEngineAdditions(into l: inout Layout, since revision: Int) -> Int {
+        var n = 0
+        for a in engineAdditions where a.revision > revision && l.section(of: a.key) == nil {
+            // A sibling of the same hide unit already in `l` decides the section (units stay whole).
+            let sibling = l.allKeys.first { $0 != a.key && $0.hideUnit == a.key.hideUnit }
+            let sec = sibling.flatMap { l.section(of: $0) } ?? a.section
+            l.reorder(a.key, in: sec, toIndex: a.index)
+            n += 1
+        }
+        return n
+    }
+
     /// Adopts `new`, publishes it with a new revision stamp (`layoutRevision`, `passesStartedAtRevision`) and returns that stamp:
     /// the caller judges its change only by passes started after it.
     @discardableResult
-    public func setLayout(_ requested: Layout) async -> LayoutRevision {
+    /// `revision`: the layout revision the caller composed `requested` on. When given, keys the engine appended since then
+    /// that `requested` lacks are re-added at their engine positions (log `setLayout merged ...`); a key `requested` already
+    /// places keeps the user's placement. `nil` (mbprobe, `apply`): `requested` replaces the layout wholesale.
+    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil) async -> LayoutRevision {
         noteUserAction()
+        var requested = requested
+        if let revision {
+            let n = mergeEngineAdditions(into: &requested, since: revision)
+            if n > 0 { log("setLayout merged \(n) engine-added key(s) composed on revision \(revision)") }
+        }
         // Hide units are all-or-nothing: a split unit can never converge, so it is normalized (and reported) here too (gdu.44).
         let (new, moved) = requested.normalizedHideUnits()
         if !moved.isEmpty {
@@ -776,7 +803,12 @@ public actor LayoutEngine {
             for n in plan.newItems { layout.append(n.key, to: n.section) }
             await noteNewItems(plan.newItems)
             do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
-            await publishLayout(layout)   // a new revision: the engine itself changed the layout (gdu.48)
+            let stamp = await publishLayout(layout)   // a new revision: the engine itself changed the layout (gdu.48)
+            for n in plan.newItems {
+                guard let sec = layout.section(of: n.key), let i = layout.keys(in: sec).firstIndex(of: n.key) else { continue }
+                engineAdditions.append((stamp.revision, n.key, sec, i))
+            }
+            if engineAdditions.count > Self.maxEngineAdditions { engineAdditions.removeFirst(engineAdditions.count - Self.maxEngineAdditions) }
             plan = makePlan(obs)
         }
         log(Self.describe(plan))
