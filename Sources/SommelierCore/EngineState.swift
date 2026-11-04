@@ -7,6 +7,9 @@ public enum ItemStatus: Equatable, Sendable {
     case moving
     case failed(ActuationError)
     case unsupported(String)
+    /// macOS moved it into its own overflow (behind the chevron): reported on the bar but not drawn, so it cannot be
+    /// dragged. Otherwise in place (gdu.45).
+    case notFitting
 }
 
 public enum EngineError: Equatable, Sendable {

@@ -165,3 +165,26 @@ unique value and leaves every other key alone when it can:
    are never written. One write, one respawn, then the usual full-scan verification.
 The fallback is still refused when `allowFallback == false` (also with `forceFallback`). Seven planner tests plus actuator tests with
 a fixture store (duplicates elsewhere -> single midpoint write; equal neighbours -> only the run is re-based; fallback disallowed).
+
+### The overflow chevron (gdu.45, observed 2026-11-04, macOS 27.0.1, AppleLanguages en-US, en-DE, de-DE)
+Dumped with a scratch AX script while MBDummy (31-60 items) filled the bar. The chevron is a hosted element of MenuBarAgent:
+- `AXRole = AXButton`, no `AXSubrole`, `AXTitle = ""`, `AXIdentifier` absent, `AXHelp` absent, `AXDescription = "Show Hidden Menu Bar Items"`
+  (localized text; the system language here is English, so the German string was NOT observed), `AXRoleDescription = button`.
+- Frame `y=1 h=27 w=18`, while real items are `y=3 h=24`. It carries `AXImageData` (PNG of the `<<` glyph) and `AXCustomActions`, and has
+  NO actions (real items have `AXPress`). It appears twice (group + button) with an identical frame.
+- Structure: it is a DIRECT child of the agent's `AXWindow`. Every status item sits one level deeper, inside an `AXMenuBar` group.
+- Position: it is the first drawn element; everything to its left is clipped and stacked at x ~ 557-570 (widths 32-40, a few px apart),
+  e.g. 14 dummies at `x=560..568` then the chevron at `x=582`, then the first drawn item at `x=606`.
+Locale-independent signal chosen (`AXElementInfo.isOverflowChevron`): AXButton + direct window child + empty identifier + empty title.
+The English description is only a fallback. The chevron key stays `module:Show Hidden Menu Bar Items` under every locale (set by
+`IdentityResolver` from the structural match, not from the description). The chevron can be missing from a single scan (partial
+read); the stacked-frame rules (identical x/width, overlap > 2 pt, leftmost-prefix closure) then still flag the overflow.
+
+#### False-positive incident and what was removed (gdu.45 review)
+First version also flagged without a chevron: (2) identical x/width or > 2 pt overlap between fresh items, (3) closure of everything
+left of a flagged item, (4) an overlap pass. Review: on a NORMAL bar (no chevron) 2 of 13 scans hit one coincidental identical-frame
+pair far right (iStat Time + VPN Switch both at (1664,25); another time WiFi Signal + ControlCenter at (1608,24)) and the prefix
+closure then flagged 19-20 of 25 items; on a full bar two DRAWN items right of the chevron (iStat CPU + ControlCenter at x=1516) were
+flagged. Identical frames occur by chance, so rules 2-4 were removed from the scanner: it flags only fresh items left of a fresh
+chevron of the same read; a partial scan that misses the chevron flags nothing. The identical-frame test survives only as the
+actuator's local pre-drag guard (it names just that pair, as in gdu.25).

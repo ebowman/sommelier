@@ -11,9 +11,12 @@ public struct ItemInfo: Equatable, Sendable {
     public var ownerName: String
     public var width: CGFloat
     public var isOnBar: Bool
+    /// macOS moved it into its own overflow behind the chevron: reported on the bar, but not drawn (gdu.45).
+    public var systemOverflow: Bool
 
     public init(key: ItemKey, title: String, axDescription: String, ownerPID: pid_t, ownerBundleID: String?,
-                ownerName: String, width: CGFloat, isOnBar: Bool) {
+                ownerName: String, width: CGFloat, isOnBar: Bool, systemOverflow: Bool = false) {
+        self.systemOverflow = systemOverflow
         self.key = key; self.title = title; self.axDescription = axDescription; self.ownerPID = ownerPID
         self.ownerBundleID = ownerBundleID; self.ownerName = ownerName; self.width = width; self.isOnBar = isOnBar
     }
@@ -25,7 +28,7 @@ public struct ItemInfo: Equatable, Sendable {
             let i = r.item
             out[r.key] = ItemInfo(key: r.key, title: i.title, axDescription: i.axDescription, ownerPID: i.ownerPID,
                                   ownerBundleID: i.ownerBundleID, ownerName: i.ownerName, width: i.frame.width,
-                                  isOnBar: i.isOnMenuBar)
+                                  isOnBar: i.isOnMenuBar, systemOverflow: i.systemOverflow)
         }
         return out
     }

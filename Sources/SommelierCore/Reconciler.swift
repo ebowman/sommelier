@@ -4,9 +4,15 @@ import Foundation
 public struct ObservedOrder: Equatable, Sendable {
     public var onBar: [ItemKey]
     public var parked: [ItemKey]
-    public init(onBar: [ItemKey], parked: [ItemKey]) {
+    /// Keys in `onBar` that macOS pushed into its own overflow (gdu.45): reported on the bar, not drawn, undraggable.
+    public var systemOverflow: Set<ItemKey>
+    /// The overflow chevron when it is on the bar: the hard left boundary of everything that may be dragged (gdu.45).
+    public var overflowChevron: ItemKey?
+    public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil) {
         self.onBar = onBar
         self.parked = parked
+        self.systemOverflow = systemOverflow
+        self.overflowChevron = overflowChevron
     }
 
     /// Builds the observed order from a resolved scan. Fresh on-bar items (width > 1) in frame order become `onBar`;
@@ -17,13 +23,19 @@ public struct ObservedOrder: Equatable, Sendable {
         var seen = Set<ItemKey>()
         var bar: [(CGFloat, ItemKey)] = []
         var off: [ItemKey] = []
+        var ovf = Set<ItemKey>()
+        var chevron: ItemKey?
         for r in resolved where !r.item.stale && r.item.frame.width > 1 {
             guard seen.insert(r.key).inserted else { continue }
-            if r.item.isOnMenuBar { bar.append((r.item.frame.minX, r.key)) } else { off.append(r.key) }
+            if r.item.isOnMenuBar {
+                bar.append((r.item.frame.minX, r.key))
+                if r.item.systemOverflow { ovf.insert(r.key) }
+                if r.item.isOverflowChevron { chevron = chevron ?? r.key }
+            } else { off.append(r.key) }
         }
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
-        self.init(onBar: ordered.map(\.element.1), parked: off)
+        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron)
     }
 }
 
@@ -71,6 +83,9 @@ public struct Plan: Equatable, Sendable {
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).
 public struct Reconciler: Sendable {
     public init() {}
+
+    /// Reason reported for a requested change that involves an item macOS moved into its own overflow.
+    public static let notFittingReason = "does not fit: macOS moved it into its own overflow"
 
     public func plan(observed: ObservedOrder, layout: Layout, capabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false) -> Plan {
@@ -159,8 +174,32 @@ public struct Reconciler: Sendable {
 
         // Base sequence the order is planned on: the bar after the hides, shown items appended.
         let hideSet = Set(hides)
-        let base = onBar.filter { !hideSet.contains($0) } + shows
-        let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
+        // Items in macOS's own overflow are not drawn and cannot be dragged, and the chevron is the hard left boundary of
+        // the drawn bar: the order is planned on the drawn items right of it only, so no move has an overflowed item or the
+        // chevron as subject or relation target, and none lands left of the chevron (`.leftmost` is rewritten, see `moves`).
+        let ovf = observed.systemOverflow.intersection(onBarSet)
+        let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }
+        let ovfKept = onBar.filter { ovf.contains($0) && wantOnBar.contains($0) && !hideSet.contains($0) }
+        var held = Set<ItemKey>()
+        if let chevron { desired = desired.filter { $0 != chevron } }
+        if !ovf.isEmpty {
+            // The overflow run comes from the OBSERVED order (every on-bar key left of the chevron). A change is requested
+            // only when the layout puts an overflowed key right of a drawn on-bar key, or a drawn key left of an overflowed
+            // one (inside the run). Wanted-but-parked keys are not drawn and decide nothing. Order among overflowed items
+            // is ignored (stacked frames carry none). Such a drawn key is reported and left where it is.
+            let drawn = Set(onBar.filter { !ovf.contains($0) && $0 != chevron && wantOnBar.contains($0) && !hideSet.contains($0) })
+            for (i, k) in desired.enumerated() {
+                if ovf.contains(k) {
+                    if desired[..<i].contains(where: drawn.contains) { skipped.append(SkippedAction(k, Self.notFittingReason)) }
+                } else if drawn.contains(k), desired[(i + 1)...].contains(where: ovf.contains) {
+                    skipped.append(SkippedAction(k, Self.notFittingReason))
+                    held.insert(k)
+                }
+            }
+            desired = desired.filter { !ovf.contains($0) && !held.contains($0) }
+        }
+        let base = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron } + shows
+        let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) || held.contains($0) })
         var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
         // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
         // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.
@@ -198,12 +237,28 @@ public struct Reconciler: Sendable {
         if !actions.isEmpty {
             phase = .membership
         } else {
-            actions = Self.moves(from: base, to: target, anchors: anchors)
+            actions = Self.moves(from: base, to: target, anchors: anchors, boundary: chevron != nil)
+            assert(Self.overflowViolations(actions, forbidden: ovf.union(chevron.map { [$0] } ?? []), boundary: chevron != nil).isEmpty,
+                   "planned a move of or into macOS's overflow area")
             assert(Self.violations(actions, target: target, anchors: anchors, blockStart: blockStart).isEmpty,
                    "planned a move of or into the trailing system block")
             phase = actions.isEmpty ? .converged : .order
         }
-        return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: target)
+        return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target)
+    }
+
+    /// Post-condition (gdu.45): a move whose subject or relation target is overflowed or the chevron, or (with a chevron)
+    /// that drops at the far left of the bar, i.e. left of the chevron.
+    static func overflowViolations(_ actions: [PlannedAction], forbidden: Set<ItemKey>, boundary: Bool) -> [PlannedAction] {
+        actions.filter {
+            guard case .move(let k, let rel) = $0 else { return false }
+            if forbidden.contains(k) { return true }
+            switch rel {
+            case .before(let t), .after(let t): return forbidden.contains(t)
+            case .leftmost: return boundary
+            case .rightmost: return false
+            }
+        }
     }
 
     /// Index in `base` where the trailing run of anchors starts (`base.count` when the last item is movable).
@@ -231,7 +286,7 @@ public struct Reconciler: Sendable {
     }
 
     /// Minimal moves turning `current` into `target` (same key set) with `anchors` never moved.
-    static func moves(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>) -> [PlannedAction] {
+    static func moves(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>, boundary: Bool = false) -> [PlannedAction] {
         guard current != target, current.count == target.count else { return [] }
         var tIndex: [ItemKey: Int] = [:]
         for (i, k) in target.enumerated() { tIndex[k] = i }
@@ -245,7 +300,14 @@ public struct Reconciler: Sendable {
             let relation: Relation
             if let l = left, inPlace.contains(l) { relation = .after(l) }
             else if let r = right, inPlace.contains(r) { relation = .before(r) }
-            else if i == 0 { relation = .leftmost }
+            else if i == 0 {
+                // With a chevron, "leftmost" would drop the item left of it (inside the overflow area): drop before the
+                // first other drawn item instead (nothing has been moved yet at index 0).
+                if boundary {
+                    guard let f = current.first(where: { $0 != k }) else { inPlace.insert(k); continue }
+                    relation = .before(f)
+                } else { relation = .leftmost }
+            }
             else { relation = .rightmost }   // only reachable for the last index; left is always placed before it
             out.append(.move(k, relation))
             inPlace.insert(k)

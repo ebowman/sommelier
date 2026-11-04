@@ -255,6 +255,26 @@ restore afterwards).
 - Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
   re-grant calls `clearFailures()` and restarts.
 
+### System overflow (gdu.45)
+When the bar is full macOS (MenuBarAgent) hosts a chevron ("<<") and pushes the leftmost items behind it. They stay in the
+hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they are not drawn and a drag on them is a no-op.
+- The scanner sets `MenuBarItem.systemOverflow` (`SystemOverflow.mark`) for exactly one case: a fresh on-bar item whose frame
+  lies left of a FRESH chevron (`isOverflowChevron`, found structurally, see docs/findings-drag.md) in the same read. No
+  chevron, or a stale one, flags nothing (conservative). Stacked or identical frames never feed the flag. They are only a local
+  pre-drag guard in `ActuationVerifier.overflowed`, which also reads the flag. `ObservedOrder.systemOverflow` /
+  `overflowChevron`, `ItemInfo.systemOverflow` and `ItemStatus.notFitting` carry it to the planner and UI.
+- The chevron is the hard left boundary for drags. `Reconciler.plan` plans the order on the drawn items right of it only: no
+  move has an overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost`
+  drop is rewritten to `.before(first drawn item)`); `overflowViolations` asserts this. The overflow run is the OBSERVED set
+  (every on-bar key left of the chevron). A skip ("does not fit: macOS moved it into its own overflow") is emitted only when
+  the layout puts an overflowed key right of a drawn on-bar key, or a drawn key left of an overflowed one; that drawn key is
+  left where it is. Wanted-but-parked keys decide nothing, and the order among overflowed items is ignored. Hiding an
+  overflowed item is still allowed (it frees room).
+- Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
+  warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. A future one-click
+  "Hide what does not fit" in the Arrange window (gdu.19) calls `Layout.hideNotFitting(_:)` (already implemented and tested,
+  wired to nothing) to move that tail to `hidden`.
+
 ## Overflow panel
 - `EngineState.items` (`ItemInfo`, SommelierCore) carries display metadata (title, description, owner, width) for every
   currently known item; the engine refreshes it whenever it adopts a scan (`ItemInfo.merge` keeps the last known

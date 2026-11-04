@@ -16,8 +16,16 @@ public struct OverflowEntry: Equatable, Sendable {
     public var unitSize: Int
     /// A `hidden` item whose app also has an `alwaysHidden` item: "reveal hidden" never shows it. The UI marks it.
     public var pinnedHidden: Bool
+    public enum Kind: Equatable, Sendable {
+        /// Hidden by Sommelier (the layout's hidden section).
+        case hiddenByUs
+        /// macOS moved it into its own overflow because the bar is full (gdu.45); shown after the hidden-by-us entries.
+        case notFitting
+    }
+    public var kind: Kind
     public init(key: ItemKey, displayName: String, ownerBundleID: String?, ownerPID: pid_t, width: CGFloat, isOnBar: Bool,
-                unit: HideUnit? = nil, unitSize: Int = 1, pinnedHidden: Bool = false) {
+                unit: HideUnit? = nil, unitSize: Int = 1, pinnedHidden: Bool = false, kind: Kind = .hiddenByUs) {
+        self.kind = kind
         self.pinnedHidden = pinnedHidden
         self.unit = unit ?? key.hideUnit; self.unitSize = unitSize
         self.key = key; self.displayName = displayName; self.ownerBundleID = ownerBundleID
@@ -40,11 +48,23 @@ public enum OverflowEntries {
         }
         let pinnedUnits = Set(layout.alwaysHidden.map(\.hideUnit))
         out = out.map { var e = $0; e.pinnedHidden = layout.hidden.contains(e.key) && pinnedUnits.contains(e.key.hideUnit); return e }
-        // Keep the keys of a unit adjacent, stable by first appearance, and record the unit size.
+        // Items macOS pushed into its own overflow are "the rest" too: after the ones we hid, in bar (layout) order.
+        let hiddenKeys = Set(out.map(\.key))
+        var rest: [OverflowEntry] = []
+        for k in layout.visible where !hiddenKeys.contains(k) && seen.insert(k).inserted {
+            guard let i = items[k], i.systemOverflow else { continue }
+            rest.append(OverflowEntry(key: k, displayName: displayName(i), ownerBundleID: i.ownerBundleID,
+                                      ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar, kind: .notFitting))
+        }
+        return grouped(out) + grouped(rest)
+    }
+
+    /// Keeps the keys of a unit adjacent, stable by first appearance, and records the unit size.
+    private static func grouped(_ entries: [OverflowEntry]) -> [OverflowEntry] {
         var grouped: [OverflowEntry] = []
-        for g in hideUnits(out.map(\.key)) {
+        for g in hideUnits(entries.map(\.key)) {
             for k in g.keys {
-                guard var e = out.first(where: { $0.key == k }) else { continue }
+                guard var e = entries.first(where: { $0.key == k }) else { continue }
                 e.unit = g.unit; e.unitSize = g.keys.count
                 grouped.append(e)
             }

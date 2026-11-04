@@ -197,9 +197,13 @@ public actor LayoutEngine {
 
     private func statuses(_ obs: ObservedOrder, _ plan: Plan) -> [ItemKey: ItemStatus] {
         var out: [ItemKey: ItemStatus] = [:]
-        for k in obs.onBar + obs.parked { out[k] = .inPlace }
+        for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
-        for s in plan.skipped where failures[s.key] == nil { out[s.key] = .unsupported(s.reason) }
+        for s in plan.skipped where failures[s.key] == nil {
+            // An overflowed item the layout wants elsewhere stays "does not fit", not "unsupported".
+            if s.reason == Reconciler.notFittingReason && obs.systemOverflow.contains(s.key) { continue }
+            out[s.key] = .unsupported(s.reason)
+        }
         for (k, e) in failures where out[k] != nil { out[k] = .failed(e) }
         return out
     }

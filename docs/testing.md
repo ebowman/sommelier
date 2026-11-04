@@ -93,3 +93,16 @@ Result 2026-11-04 (22 identified items, widths > 1): on-bar and `visible` sequen
 18 Bartender::GoldenGateBar, 19 airmail2hookmark, 20 module:com.apple.menuextra.controlcenter, 21 module:Clock`.
 Before the fix the same bar produced `... 19 airmail2hookmark, module:Clock, module:com.apple.menuextra.controlcenter, module:AudioVideoModule,
 module:com.apple.menuextra.focusmode, module:WiFi` (all modules appended, in reverse). `plan` on the fresh file: converged, 0 actions, 0 skipped.
+
+## System overflow
+Read-only, 2026-11-04. Normal bar (no chevron): 5 x `mbprobe list --json` -> 0 `"systemOverflow" : true`.
+Full bar (MBDummy `--count 31`): 14 items flagged `overflow`, all left of the `chevron` row; none right of it.
+NOTE the bar churns with dummies: between scans a dummy can flip parked/on-bar, so `newItems` or a `show` action can appear
+and `scans did not agree` can occur; plans were retried until the scans agreed. One converged run:
+```
+$ mbprobe layout init-from-current --file gdu45/layout.json; mbprobe plan --file gdu45/layout.json
+phase: converged  (observed 53 on bar, 28 parked; showHidden=false)  systemOverflow=14 / actions (0) / skipped (0)
+```
+TimeMachine moved to visible index 1 (inside the overflow run): converged, 0 actions, skipped (15) "does not fit: macOS moved it into
+its own overflow". ControlCenter moved to index 16: `phase: order`, 1 action `move ... ControlCenter before ...Dummy-O`
+(first drawn item); no action names the chevron. `list --json` carries `systemOverflow`. No `apply`; real layout.json untouched.

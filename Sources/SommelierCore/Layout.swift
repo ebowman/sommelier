@@ -107,6 +107,19 @@ public struct Layout: Codable, Equatable, Sendable {
         return group
     }
 
+    /// "Hide what does not fit" (gdu.45; called by the Arrange window, gdu.19; wired to nothing yet): moves each key, with its
+    /// hide-unit siblings, to the end of `hidden`, in the order given. Keys not in the layout or already hidden/always
+    /// hidden are ignored. Returns every key that actually moved (siblings included), in the order moved.
+    @discardableResult
+    public mutating func hideNotFitting(_ keys: [ItemKey]) -> [ItemKey] {
+        var moved: [ItemKey] = []
+        for k in keys {
+            guard let s = section(of: k), s == .visible else { continue }
+            for m in move(k, to: .hidden) where !moved.contains(m) { moved.append(m) }
+        }
+        return moved
+    }
+
     /// Single-key placement, no sibling handling (used by builders and in-section reordering).
     private mutating func insert(_ group: [ItemKey], into section: LayoutSection, at index: Int?) {
         var ks = keys(in: section)

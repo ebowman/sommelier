@@ -47,6 +47,7 @@ func row(_ idx: Int, _ r: ResolvedItem) -> String {
     return "\(pad(String(idx), 3)) x=\(pad(String(Int(i.frame.minX)), 6)) w=\(pad(String(Int(i.frame.width)), 4)) "
         + "\(pad(clip(i.ownerName, 28), 28)) \(pad(i.ownerBundleID ?? "-", 40)) \(r.confidence.marker) \(pad(r.key.description, 78)) \(label)  [\(i.source.rawValue)]"
         + (i.hiddenReason.map { " hidden=\($0.rawValue)" } ?? "")
+        + (i.systemOverflow ? " overflow" : "") + (i.isOverflowChevron ? " chevron" : "")
 }
 
 func runList(_ rawFlags: [String]) {
@@ -586,7 +587,8 @@ func runPlan(_ a: [String]) async {
         print(String(decoding: d, as: UTF8.self))
         return
     }
-    print("phase: \(plan.phase)  (observed \(observed.onBar.count) on bar, \(observed.parked.count) parked; showHidden=\(showHidden))")
+    print("phase: \(plan.phase)  (observed \(observed.onBar.count) on bar, \(observed.parked.count) parked; showHidden=\(showHidden))"
+          + (observed.systemOverflow.isEmpty ? "" : "  systemOverflow=\(observed.systemOverflow.count)"))
     print("actions (\(plan.actions.count)):")
     for (n, x) in plan.actions.enumerated() { print("  \(n + 1). \(act(x))") }
     print("newItems (\(plan.newItems.count)):")
@@ -665,6 +667,7 @@ func runApply(_ a: [String]) async {
         case .moving: print("> \(k)")
         case .failed(let e): print("x \(k) failed(\(e))")
         case .unsupported(let r): print("! \(k) unsupported(\(r))")
+        case .notFitting: print("o \(k) notFitting (macOS overflow)")
         }
     }
     if let e = state.lastError { print("error: \(e)") }

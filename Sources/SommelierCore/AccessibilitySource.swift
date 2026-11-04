@@ -24,11 +24,23 @@ public struct AXElementInfo: @unchecked Sendable {
     public var stale: Bool
     /// Consecutive scans this element has been carried forward instead of read.
     public var staleCount: Int
+    /// True when the element sits directly under the agent's window, not inside a per-app AXMenuBar group. Only the
+    /// agent's own controls do (the overflow chevron, gdu.45); every hosted status item is wrapped in an AXMenuBar.
+    public var directWindowChild: Bool
     public init(title: String = "", axDescription: String = "", identifier: String = "",
-                frame: CGRect, element: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0) {
+                frame: CGRect, element: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0,
+                directWindowChild: Bool = false) {
         self.title = title; self.axDescription = axDescription
         self.identifier = identifier; self.frame = frame; self.element = element
-        self.stale = stale; self.staleCount = staleCount
+        self.stale = stale; self.staleCount = staleCount; self.directWindowChild = directWindowChild
+    }
+
+    /// The agent's overflow chevron. Locale-independent signal first: an AXButton that is a direct child of the agent
+    /// window with no identifier and no title (docs/findings-drag.md, "The overflow chevron"). The English
+    /// description is only a fallback for trees that do not report the nesting.
+    public var isOverflowChevron: Bool {
+        if directWindowChild && identifier.isEmpty && title.isEmpty && frame.width > 0 { return true }
+        return axDescription == MenuBarItem.overflowChevronName
     }
 
     /// Identity across scans (frames move): identifier, else description, else frame.
@@ -311,7 +323,9 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         if r.role == "AXWindow" {
             if c.strip == nil, r.info.frame.width > 0 { c.strip = r.info.frame }
         } else if hostedRoles.contains(r.role) {
-            c.found.append(r.info)
+            var info = r.info
+            info.directWindowChild = depth == 1 && r.role == "AXButton"
+            c.found.append(info)
         }
         guard depth < 4 else { return }
         guard let kids = children(e, attempts: 1) else {

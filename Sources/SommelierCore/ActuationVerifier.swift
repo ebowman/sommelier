@@ -18,18 +18,20 @@ public enum ActuationVerifier {
         return bar.sorted { ($0.element.item.frame.minX, $0.offset) < ($1.element.item.frame.minX, $1.offset) }.map(\.element)
     }
 
-    /// macOS's own name for the overflow control (the chevron) the agent hosts when the bar is full.
-    static let overflowChevron = ItemKey.module(name: "Show Hidden Menu Bar Items")
+    /// Legacy chevron key (hand-built items that carry no `isOverflowChevron` flag).
+    static let overflowChevron = ItemKey.module(name: MenuBarItem.overflowChevronName)
 
-    /// Items macOS itself hides because the bar is full (gdu.25): the agent still reports them as hosted, with frames
-    /// clipped and stacked at the left edge of the usable area, but nothing is drawn there, so a drag cannot reach them.
-    /// Rule: every on-bar item ordered before the overflow chevron; and, whether or not the chevron was read, any
-    /// fresh on-bar items sharing an identical frame x and width (a real bar never draws two items on top of each other).
+    /// Items the actuator must not try to drag (gdu.25, gdu.45). Sources: the scanner's `systemOverflow` flag (fresh items
+    /// left of a fresh chevron), the same chevron rule re-run on hand-built items, and a LOCAL guard: an item that shares an
+    /// identical frame x and width with another fresh on-bar item (a real bar never draws two items on top of each other,
+    /// and a drag there is a no-op). The guard only names the items of such a pair; it never cascades to others and never
+    /// feeds the scanner flag.
     public static func overflowed(_ resolved: [ResolvedItem]) -> Set<ItemKey> {
         let order = barOrder(resolved)
-        var out = Set<ItemKey>()
-        if let c = order.firstIndex(where: { $0.key == overflowChevron }) { for r in order[..<c] { out.insert(r.key) } }
-        let fresh = order.filter { !$0.item.stale }
+        var out = Set(order.filter(\.item.systemOverflow).map(\.key))
+        let entries = order.map { SystemOverflow.Entry(frame: $0.item.frame, stale: $0.item.stale, isChevron: $0.item.isOverflowChevron || $0.key == overflowChevron) }
+        for i in SystemOverflow.indices(order: entries) { out.insert(order[i].key) }
+        let fresh = order.filter { !$0.item.stale && !$0.item.isOverflowChevron && $0.key != overflowChevron }
         for (i, a) in fresh.enumerated() {
             for b in fresh[(i + 1)...] where abs(a.item.frame.minX - b.item.frame.minX) < 0.5 && abs(a.item.frame.width - b.item.frame.width) < 0.5 {
                 out.insert(a.key); out.insert(b.key)

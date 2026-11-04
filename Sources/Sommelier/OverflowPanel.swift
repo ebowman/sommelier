@@ -199,7 +199,7 @@ struct OverflowBarView: View {
     private func row(_ entries: [OverflowEntry]) -> some View {
         HStack(spacing: 6) {
             ForEach(Array(entries.enumerated()), id: \.element.key) { i, e in
-                if i > 0, entries[i - 1].unit != e.unit { Divider().frame(height: 16) }
+                if i > 0, entries[i - 1].unit != e.unit || entries[i - 1].kind != e.kind { Divider().frame(height: 16) }
                 OverflowEntryView(entry: e, showName: showNames,
                                   together: e.unitSize > 1 ? entries.filter { $0.unit == e.unit }.map(\.displayName) : [])
             }
@@ -218,6 +218,9 @@ struct OverflowEntryView: View {
         HStack(spacing: 5) {
             icon.frame(width: 18, height: 18)
             if showName { Text(entry.displayName).font(.system(size: 12)).lineLimit(1) }
+            if entry.kind == .notFitting {
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
             if entry.pinnedHidden {
                 Image(systemName: "eye.slash").font(.system(size: 9)).foregroundStyle(.secondary)
             }
@@ -232,7 +235,7 @@ struct OverflowEntryView: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { NSLog("[Sommelier] overflow click %@", "\(entry.key)") }
-        .help(entry.pinnedHidden ? "Kept hidden (always-hidden sibling): " + (together.isEmpty ? entry.displayName : together.joined(separator: ", ")) : together.isEmpty ? entry.displayName : "Hidden together: " + together.joined(separator: ", "))
+        .help(entry.kind == .notFitting ? "Does not fit; macOS moved it into its overflow" : entry.pinnedHidden ? "Kept hidden (always-hidden sibling): " + (together.isEmpty ? entry.displayName : together.joined(separator: ", ")) : together.isEmpty ? entry.displayName : "Hidden together: " + together.joined(separator: ", "))
     }
 
     @ViewBuilder private var icon: some View {

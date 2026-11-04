@@ -402,7 +402,7 @@ public struct MenuBarScanner {
                     ownerName: h.axDescription.isEmpty ? "System item" : h.axDescription,
                     title: h.title, axDescription: h.axDescription, axIdentifier: h.identifier,
                     frame: h.frame, source: .agentHostedOnly, isOnMenuBar: onBar(h.frame),
-                    axElement: h.element, stale: h.stale, staleCount: h.staleCount))
+                    axElement: h.element, stale: h.stale, staleCount: h.staleCount, isOverflowChevron: h.isOverflowChevron))
             }
         }
 
@@ -429,7 +429,10 @@ public struct MenuBarScanner {
         let on = indexed.filter { $0.element.isOnMenuBar }
             .sorted { ($0.element.frame.minX, $0.offset) < ($1.element.frame.minX, $1.offset) }
         let off = indexed.filter { !$0.element.isOnMenuBar }
-        return MenuBarSnapshot(items: (on + off).map(\.element), capturedAt: Date(), hostedReadComplete: hostedComplete)
+        // Apple's own overflow (gdu.45): items left of the chevron, or stacked on one another, are reported on the bar but
+        // not drawn. Flagged here, once, so every consumer (resolver, planner, verifier, UI) reads the same truth.
+        let marked = SystemOverflow.mark((on + off).map(\.element))
+        return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete)
     }
 }
 

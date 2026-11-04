@@ -104,6 +104,11 @@ public struct IdentityResolver: Sendable {
             let it = snapshot.items[i]
             // `_NS:<n>` identifiers are per-launch AppKit numbering of the frontmost app's MENUS (File, Edit, ...),
             // not status items; never use them as a module name.
+            if it.isOverflowChevron {
+                // Stable under every locale: keyed by the English name whatever the localized description says.
+                results[i] = ResolvedItem(item: it, key: .module(name: MenuBarItem.overflowChevronName), confidence: .inferred)
+                continue
+            }
             let ident = it.axIdentifier.hasPrefix("_NS:") ? "" : it.axIdentifier
             let name = !ident.isEmpty ? ident : it.axDescription
             if !name.isEmpty {
