@@ -1,6 +1,9 @@
 import CoreGraphics
 import Foundation
 
+/// One hidden item in the overflow panel. `unit`/`unitSize` expose the hide unit (all items of an app hide or show
+/// together): the panel draws a divider between units and a badge when `unitSize > 1`. The future Arrange window
+/// (gdu.19) should group by the same `unit` field.
 public struct OverflowEntry: Equatable, Sendable {
     public var key: ItemKey
     public var displayName: String
@@ -8,7 +11,15 @@ public struct OverflowEntry: Equatable, Sendable {
     public var ownerPID: pid_t
     public var width: CGFloat
     public var isOnBar: Bool
-    public init(key: ItemKey, displayName: String, ownerBundleID: String?, ownerPID: pid_t, width: CGFloat, isOnBar: Bool) {
+    public var unit: HideUnit
+    /// Number of entries in the panel that belong to `unit` (including this one).
+    public var unitSize: Int
+    /// A `hidden` item whose app also has an `alwaysHidden` item: "reveal hidden" never shows it. The UI marks it.
+    public var pinnedHidden: Bool
+    public init(key: ItemKey, displayName: String, ownerBundleID: String?, ownerPID: pid_t, width: CGFloat, isOnBar: Bool,
+                unit: HideUnit? = nil, unitSize: Int = 1, pinnedHidden: Bool = false) {
+        self.pinnedHidden = pinnedHidden
+        self.unit = unit ?? key.hideUnit; self.unitSize = unitSize
         self.key = key; self.displayName = displayName; self.ownerBundleID = ownerBundleID
         self.ownerPID = ownerPID; self.width = width; self.isOnBar = isOnBar
     }
@@ -27,7 +38,18 @@ public enum OverflowEntries {
             out.append(OverflowEntry(key: k, displayName: displayName(i), ownerBundleID: i.ownerBundleID,
                                      ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar))
         }
-        return out
+        let pinnedUnits = Set(layout.alwaysHidden.map(\.hideUnit))
+        out = out.map { var e = $0; e.pinnedHidden = layout.hidden.contains(e.key) && pinnedUnits.contains(e.key.hideUnit); return e }
+        // Keep the keys of a unit adjacent, stable by first appearance, and record the unit size.
+        var grouped: [OverflowEntry] = []
+        for g in hideUnits(out.map(\.key)) {
+            for k in g.keys {
+                guard var e = out.first(where: { $0.key == k }) else { continue }
+                e.unit = g.unit; e.unitSize = g.keys.count
+                grouped.append(e)
+            }
+        }
+        return grouped
     }
 
     public static func displayName(_ i: ItemInfo) -> String {

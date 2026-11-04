@@ -198,8 +198,10 @@ struct OverflowBarView: View {
 
     private func row(_ entries: [OverflowEntry]) -> some View {
         HStack(spacing: 6) {
-            ForEach(entries, id: \.key) { e in
-                OverflowEntryView(entry: e, showName: showNames)
+            ForEach(Array(entries.enumerated()), id: \.element.key) { i, e in
+                if i > 0, entries[i - 1].unit != e.unit { Divider().frame(height: 16) }
+                OverflowEntryView(entry: e, showName: showNames,
+                                  together: e.unitSize > 1 ? entries.filter { $0.unit == e.unit }.map(\.displayName) : [])
             }
         }
     }
@@ -208,12 +210,21 @@ struct OverflowBarView: View {
 struct OverflowEntryView: View {
     let entry: OverflowEntry
     let showName: Bool
+    /// Display names of every item hidden with this one (empty when the app has a single item).
+    var together: [String] = []
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 5) {
             icon.frame(width: 18, height: 18)
             if showName { Text(entry.displayName).font(.system(size: 12)).lineLimit(1) }
+            if entry.pinnedHidden {
+                Image(systemName: "eye.slash").font(.system(size: 9)).foregroundStyle(.secondary)
+            }
+            if entry.unitSize > 1 {
+                Text("\(entry.unitSize)").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 3).background(Capsule().fill(Color.primary.opacity(0.1)))
+            }
         }
         .frame(minWidth: entry.width)
         .padding(.vertical, 3).padding(.horizontal, 4)
@@ -221,7 +232,7 @@ struct OverflowEntryView: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { NSLog("[Sommelier] overflow click %@", "\(entry.key)") }
-        .help(entry.displayName)
+        .help(entry.pinnedHidden ? "Kept hidden (always-hidden sibling): " + (together.isEmpty ? entry.displayName : together.joined(separator: ", ")) : together.isEmpty ? entry.displayName : "Hidden together: " + together.joined(separator: ", "))
     }
 
     @ViewBuilder private var icon: some View {

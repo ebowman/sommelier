@@ -82,7 +82,12 @@ public actor LayoutEngine {
     /// Does not start a pass; call `requestReconcile()`.
     public func start() async {
         do {
-            layout = try store.load()
+            let (l0, moved) = try store.load().validatedReportingNormalization()
+            layout = l0
+            if !moved.isEmpty {
+                NSLog("[Sommelier] layout: all items of an app hide or show at once; moved to visible: %@",
+                      moved.map(\.description).joined(separator: ", "))
+            }
             loaded = true
             stopped = false
         } catch {

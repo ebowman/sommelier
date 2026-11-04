@@ -111,6 +111,14 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   `ItemKey.description` strings (`status:owner::name`, `module:Name`, `heuristic:...`).
 - Sections: `visible`, `hidden`, `alwaysHidden` (ordered); a key lives in at most one section. Mutators (`move`, `remove`,
   `append`, `reorder`) enforce this; `validated()` dedups keeping the first occurrence (visible, hidden, alwaysHidden).
+- Hide unit (`HideUnit`, `ItemKey.hideUnit`, `hideUnits(_:)` in `ItemKey.swift`): Control Center hides per app, so the unit is the
+  `ownerKey` for status items, `module:<Name>` for each module (independent), the bundle id for heuristic keys. A unit is hidden
+  only if ALL its items are in `hidden`/`alwaysHidden` (a `hidden`+`alwaysHidden` split is fine). `Layout.normalizedHideUnits()`
+  moves the hidden-section keys of a unit that also has a `visible` key to `visible` (before the trailing system block, original
+  order); `validated()` applies it after `dedup()`, `validatedReportingNormalization()` also returns the moved keys (no hidden state
+  on `Layout`), and `Layout.decode` adds a warning, so the load path reports it once (mbprobe prints it, the engine `NSLog`s it).
+  `Layout.move(key, to:index:)` moves the WHOLE unit (key at the index, siblings right after it) and returns every moved key, `key`
+  first (`mbprobe layout move` prints "also moved: ..."). `append`/`reorder` place only the given key (builders, in-section order).
 - `newItemPolicy`: `visibleAtEnd` (default) or `hidden`, applied by the planner to keys not yet in the layout.
 - Keys of apps that are not running stay in the file untouched (absent is not unknown).
 - Schema: `schemaVersion` (currently 1). Lenient decode (missing fields default; duplicates dropped with warnings via
@@ -138,6 +146,13 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   as subject or a destination in the block (asserted after `moves`). Non-trailing anchors (e.g. `module:WiFi` mid-bar) are unaffected.
   Correspondingly `Layout.move(_, to: .visible, index: nil)` inserts before the trailing run of `.module` keys instead of appending
   (`Layout.trailingSystemBlock`); an explicit index is literal and `mbprobe layout move` warns when it lands in the block.
+- Hide units: membership is decided per unit before any hide/show is computed. A unit is wanted-hidden only if all its observed
+  layout-listed keys are hidden-listed and the hidden section is not being revealed with `showHiddenSection`; a unit with any `alwaysHidden` key stays hidden even while revealing (its `hidden` keys get a "kept hidden together with <key>: an always-hidden item keeps its app hidden" skip, and `OverflowEntry.pinnedHidden` marks them in the panel); otherwise it is wanted
+  on the bar and each hidden-listed key goes into `skipped` ("hidden together with <ownerKey>: all items of an app hide or show at
+  once"). `hides`/`shows` cover every observed key of the unit, so the actuator batch is complete and never conflicts. Unknown items
+  of a listed unit follow the unit; a wholly unknown unit follows `newItemPolicy` only if one of its items is on the bar. If a unit
+  must hide but one item cannot (`canHide == false`), none of it is hidden (all anchored, reported in `skipped`). The overflow panel
+  (`OverflowEntry.unit/unitSize`) keeps a unit adjacent, with a divider between units and a count badge plus "Hidden together" tooltip.
 - Unknown keys (not in the layout) follow `newItemPolicy` and are returned in `newItems` (the planner never mutates the layout);
   unknown parked keys are never shown. Layout keys not observed are listed in `absent` and ignored.
 - Minimality: anchors are always kept; per gap between anchors, a longest increasing subsequence of movables stays put; moves == misplaced items. Moves are emitted

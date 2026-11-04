@@ -81,43 +81,80 @@ public struct Reconciler: Sendable {
         let onBarSet = Set(onBar)
         let observedAll = Set(onBar + parked)
 
-        // Classify.
+        // Classify. Hide granularity is the app (HideUnit): decide per unit, then apply the decision to every observed
+        // key of the unit, so the plan never hides one item of an app and leaves a sibling on the bar.
+        // A unit is hidden only if ALL its layout-listed observed keys are in hidden/alwaysHidden (and the hidden
+        // section is not being revealed); otherwise it is shown. A unit the layout does not list at all follows the
+        // new-item policy, and only when one of its items is on the bar (a parked unknown app is never shown).
+        var skipped: [SkippedAction] = []
+        var unitWantsBar: [HideUnit: Bool] = [:]
+        for (unit, ks) in hideUnits(onBar + parked) {
+            let secs = ks.compactMap { layout.section(of: $0) }
+            if secs.isEmpty {
+                unitWantsBar[unit] = layout.newItemPolicy == .visibleAtEnd && ks.contains { onBarSet.contains($0) }
+                continue
+            }
+            let allHidden = secs.allSatisfy { $0 != .visible }
+            // An always-hidden item keeps its whole app hidden even while the hidden section is revealed: the reveal is
+            // temporary, "never show" is not.
+            let pinned = secs.contains(.alwaysHidden)
+            let revealed = showHiddenSection && secs.contains(.hidden) && !pinned
+            let wants = !allHidden || revealed
+            unitWantsBar[unit] = wants
+            if !wants {
+                if showHiddenSection, allHidden, pinned, let pin = ks.first(where: { layout.section(of: $0) == .alwaysHidden }) {
+                    for k in ks where layout.section(of: k) == .hidden {
+                        skipped.append(SkippedAction(k, "kept hidden together with \(pin): an always-hidden item keeps its app hidden"))
+                    }
+                }
+                continue
+            }
+            if !allHidden, let anchor = ks.first(where: { layout.section(of: $0) == .visible }) {
+                for k in ks {
+                    let s = layout.section(of: k)
+                    if s == .alwaysHidden || (s == .hidden && !showHiddenSection) {
+                        skipped.append(SkippedAction(k, "hidden together with \(anchor.hideUnit.id): all items of an app hide or show at once"))
+                    }
+                }
+            }
+        }
         var newItems: [NewItem] = []
         var wantOnBar = Set<ItemKey>()
         var unknownVisible: [ItemKey] = []
         for k in onBar + parked {
-            let onB = onBarSet.contains(k)
-            if let s = layout.section(of: k) {
-                if s == .visible || (s == .hidden && showHiddenSection) { wantOnBar.insert(k) }
-            } else if onB {
-                if layout.newItemPolicy == .visibleAtEnd {
-                    wantOnBar.insert(k); unknownVisible.append(k); newItems.append(NewItem(k, .visible))
-                } else {
-                    newItems.append(NewItem(k, .hidden))
-                }
-            } else {
-                newItems.append(NewItem(k, .hidden))   // unknown parked: never shown
+            let wants = unitWantsBar[k.hideUnit] ?? false
+            if wants { wantOnBar.insert(k) }
+            if layout.section(of: k) == nil {
+                if wants { unknownVisible.append(k) }
+                newItems.append(NewItem(k, wants ? .visible : .hidden))
             }
         }
         let absent = layout.allKeys.filter { !observedAll.contains($0) }
 
-        // Membership actions.
-        var skipped: [SkippedAction] = []
+        // Membership actions. A unit that must hide but has an unhideable item on the bar is not hidden at all.
         var hides: [ItemKey] = [], shows: [ItemKey] = []
         var unhideable = Set<ItemKey>()
+        var blocker: [HideUnit: ItemKey] = [:]
+        for k in onBar where !wantOnBar.contains(k) && !capabilities(k).canHide {
+            if blocker[k.hideUnit] == nil { blocker[k.hideUnit] = k }
+        }
         for k in onBar where !wantOnBar.contains(k) {
-            let cap = capabilities(k)
-            if cap.canHide { hides.append(k) } else {
+            if let b = blocker[k.hideUnit] {
                 unhideable.insert(k)
-                skipped.append(SkippedAction(k, cap.reason ?? "cannot be hidden"))
+                skipped.append(SkippedAction(k, k == b ? (capabilities(k).reason ?? "cannot be hidden")
+                                                       : "cannot be hidden: \(b) in the same app cannot be hidden"))
+            } else {
+                hides.append(k)
             }
         }
         for k in parked where wantOnBar.contains(k) { shows.append(k) }
 
-        // Desired order of everything that may sit on the bar.
-        let observedWanted = wantOnBar
-        var desired: [ItemKey] = layout.visible.filter { observedWanted.contains($0) }
-        if showHiddenSection { desired += layout.hidden.filter { observedWanted.contains($0) } }
+        // Desired order of everything that may sit on the bar. Hidden-listed keys pulled onto the bar by their unit
+        // follow the visible ones, in layout order.
+        var desired: [ItemKey] = layout.visible.filter { wantOnBar.contains($0) }
+        if showHiddenSection { desired += layout.hidden.filter { wantOnBar.contains($0) } }
+        let placed = Set(desired)
+        desired += (layout.hidden + layout.alwaysHidden).filter { wantOnBar.contains($0) && !placed.contains($0) }
         desired += unknownVisible
 
         // Base sequence the order is planned on: the bar after the hides, shown items appended.

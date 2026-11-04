@@ -147,6 +147,19 @@ struct ReconcilerTests {
 
 // MARK: Randomized convergence
 
+/// Independent statement of the unit rule: which observed keys must end up on the bar.
+private func unitWantSet(layout: Layout, bar: [ItemKey], parked: [ItemKey], showHidden: Bool) -> Set<ItemKey> {
+    var out = Set<ItemKey>()
+    for (_, ks) in hideUnits(bar + parked) {
+        let secs = ks.compactMap { layout.section(of: $0) }
+        let wants: Bool
+        if secs.isEmpty { wants = layout.newItemPolicy == .visibleAtEnd && ks.contains { bar.contains($0) } }
+        else { wants = secs.contains(.visible) || (showHidden && secs.contains(.hidden) && !secs.contains(.alwaysHidden)) }
+        if wants { out.formUnion(ks) }
+    }
+    return out
+}
+
 struct SplitMix64: RandomNumberGenerator {
     var state: UInt64
     init(seed: UInt64) { state = seed }
@@ -180,7 +193,14 @@ struct ReconcilerRandomTests {
             var g = SplitMix64(seed: seed)
             func fail(_ m: String) -> Comment { Comment(rawValue: "seed \(seed): \(m)") }
             let n = Int.random(in: 3...25, using: &g)
-            let keys = (0..<n).map { k("k\($0)") }
+            // Every third owner or so is a multi-item app (2-3 items): hide granularity is the app.
+            var keys: [ItemKey] = []
+            var owner = 0
+            while keys.count < n {
+                let size = Int.random(in: 0..<3, using: &g) == 0 ? Int.random(in: 2...3, using: &g) : 1
+                for j in 0..<size where keys.count < n { keys.append(.status(ownerKey: "com.x.o\(owner)", autosaveName: "i\(j)")) }
+                owner += 1
+            }
             // Layout: a random subset (some absent), random sections; a few unknown observed.
             var layout = Layout(newItemPolicy: Bool.random(using: &g) ? .visibleAtEnd : .hidden)
             var observedKeys: [ItemKey] = []
@@ -205,6 +225,7 @@ struct ReconcilerRandomTests {
             for key in observedKeys where !anchorSet.contains(key) && Int.random(in: 0..<8, using: &g) == 0 { noHide.insert(key) }
             let caps = { (key: ItemKey) in Capability(canMove: !anchorSet.contains(key), canHide: !noHide.contains(key)) }
             let showHidden = Bool.random(using: &g)
+            let want0 = unitWantSet(layout: layout, bar: bar, parked: parked, showHidden: showHidden)
 
             var converged = false
             var plans = 0
@@ -215,13 +236,16 @@ struct ReconcilerRandomTests {
                 if p.phase == .order {
                     // Anchors for the bound: immovable, or unhideable-but-should-be-hidden (unknown under .hidden policy too).
                     var a2 = Set(o.onBar.filter { anchorSet.contains($0) })
-                    for key in o.onBar where noHide.contains(key) && !p.desiredOnBar.isEmpty {
-                        let sec = layout.section(of: key)
-                        let want = sec == .visible || (sec == .hidden && showHidden) || (sec == nil && layout.newItemPolicy == .visibleAtEnd)
-                        if !want { a2.insert(key) }
-                    }
+                    let blocked = Set(o.onBar.filter { noHide.contains($0) && !want0.contains($0) }.map(\.hideUnit))
+                    for key in o.onBar where blocked.contains(key.hideUnit) && !want0.contains(key) { a2.insert(key) }
                     let b = bound(current: o.onBar, target: p.desiredOnBar, anchors: a2)
                     #expect(p.actions.count <= b, fail("moves \(p.actions.count) > bound \(b)"))
+                }
+                // A plan never hides a subset of an app: per unit, either no on-bar key or all of them.
+                let hiddenNow = Set(p.actions.compactMap { a -> ItemKey? in if case .hide(let x) = a { x } else { nil } })
+                for (unit, ks) in hideUnits(o.onBar) {
+                    let n = ks.filter { hiddenNow.contains($0) }.count
+                    #expect(n == 0 || n == ks.count, fail("plan hides \(n) of \(ks.count) items of \(unit)"))
                 }
                 var shown = Int.random(in: 0...1000, using: &g)
                 for a in p.actions {
@@ -254,10 +278,12 @@ struct ReconcilerRandomTests {
             }
             do {   // oracle runs after the final plan whether or not the planner declared convergence
                 // Independent oracle: the layout-derived order of the keys now on the bar.
-                var want = layout.visible + (showHidden ? layout.hidden : [])
-                if layout.newItemPolicy == .visibleAtEnd { want += observedKeys.filter { layout.section(of: $0) == nil } }
+                var want = layout.visible + (showHidden ? layout.hidden : []) + layout.hidden + layout.alwaysHidden
+                want = want.filter { want0.contains($0) && layout.section(of: $0) != nil }
+                var seenW = Set<ItemKey>(); want = want.filter { seenW.insert($0).inserted }
+                let unknownWanted = Set(observedKeys.filter { layout.section(of: $0) == nil && want0.contains($0) })
                 let onFinal = Set(o.onBar)
-                want = want.filter { onFinal.contains($0) }
+                want = want.filter { onFinal.contains($0) } + o.onBar.filter { unknownWanted.contains($0) }
                 let last = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
                 let reachable = last.skipped.allSatisfy { $0.reason != "immovable item is out of layout order" && !$0.reason.hasPrefix("cannot be placed right of the system items") }
                 let movables = o.onBar.filter { !anchorSet.contains($0) && Set(want).contains($0) }

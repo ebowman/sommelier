@@ -72,4 +72,4 @@ only difference is WiFi Signal text 65% vs 64%).
 
 ## Per-app granularity (observed during gdu.12 live check)
 Control Center's `isAllowed` applies per app (tracked key `ie.boboco.mbdummy`), not per status item: hiding Dummy-A also parked Dummy-B (one `applyHiddenBatch`, agent restart ~1-15 s, 19 s end to end for the pass) and showing either one shows both.
-A layout that asks for one item of an app hidden and another visible can therefore never converge; the planner/UI must treat items of one tracked app as a unit (tracked as a follow-up).
+A layout that asks for one item of an app hidden and another visible can therefore never converge; the model treats items of one tracked app as a hide unit: see "Hide unit" in docs/architecture.md (Layout model, Reconciler; bead gdu.31).

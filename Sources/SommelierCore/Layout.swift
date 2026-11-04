@@ -90,12 +90,25 @@ public struct Layout: Codable, Equatable, Sendable {
         return Array(ks[start...])
     }
 
-    /// Moves (or inserts) `key` into `section` at `index` (clamped to 0...count).
+    /// Moves (or inserts) the WHOLE hide unit of `key` into `section` and returns every key that moved, `key` first.
+    /// Control Center hides per app (see `HideUnit`), so siblings (all keys of the same unit currently in the layout)
+    /// come along: the moved key lands at `index` (clamped to 0...count, evaluated after the unit is lifted out) and
+    /// its siblings follow immediately after it, in their previous layout order (visible, hidden, alwaysHidden).
     /// With `index == nil`, `.hidden`/`.alwaysHidden` append; `.visible` inserts immediately BEFORE the trailing run of
     /// `.module` keys (see `trailingSystemBlock`), because anything right of it is unreachable and the engine would
     /// otherwise try to drag real items to realize it. With no such run it appends. An explicit index is taken literally.
-    public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil) {
-        remove(key)
+    @discardableResult
+    public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil) -> [ItemKey] {
+        let unit = key.hideUnit
+        let siblings = allKeys.filter { $0 != key && $0.hideUnit == unit }
+        let group = [key] + siblings
+        for k in group { remove(k) }
+        insert(group, into: section, at: index)
+        return group
+    }
+
+    /// Single-key placement, no sibling handling (used by builders and in-section reordering).
+    private mutating func insert(_ group: [ItemKey], into section: LayoutSection, at index: Int?) {
         var ks = keys(in: section)
         let i: Int
         if let index {
@@ -107,20 +120,50 @@ public struct Layout: Codable, Equatable, Sendable {
         } else {
             i = ks.count
         }
-        ks.insert(key, at: i)
+        ks.insert(contentsOf: group, at: i)
         set(ks, in: section)
     }
 
+    /// Places exactly `key`, leaving its hide-unit siblings where they are. For builders that construct a layout
+    /// (`LayoutBuilder`) and for in-section reordering; use `move` for user-facing hide/show changes.
     public mutating func append(_ key: ItemKey, to section: LayoutSection) {
-        move(key, to: section, index: nil)
+        remove(key)
+        insert([key], into: section, at: nil)
     }
 
     public mutating func reorder(_ key: ItemKey, in section: LayoutSection, toIndex: Int) {
-        move(key, to: section, index: toIndex)
+        remove(key)
+        insert([key], into: section, at: toIndex)
     }
 
-    /// De-duplicates keeping the first occurrence in visible -> hidden -> alwaysHidden order.
-    public func validated() -> Layout { dedup().layout }
+    /// De-duplicates keeping the first occurrence in visible -> hidden -> alwaysHidden order, then normalizes hide
+    /// units (see `normalizedHideUnits`). Silent; use `validatedReportingNormalization()` where the user should hear
+    /// about moved keys.
+    public func validated() -> Layout { validatedReportingNormalization().0 }
+
+    /// Like `validated()` but also returns the keys that normalization moved to `visible`. This is a return value, not
+    /// a stored property, so `Layout` stays a pure value with no hidden state; the load path (store/engine) and
+    /// `mbprobe` print or log the list once when a layout is loaded.
+    public func validatedReportingNormalization() -> (Layout, moved: [ItemKey]) {
+        let n = dedup().layout.normalizedHideUnits()
+        return (n.layout, n.moved)
+    }
+
+    /// Hide units are all-or-nothing. A unit with keys in `visible` AND in a hidden section (`hidden`/`alwaysHidden`)
+    /// can never converge, so its hidden-section keys move to `visible`, inserted before the trailing system block
+    /// (the default `move` rule) in their original relative order (`hidden` first, then `alwaysHidden`). A unit split
+    /// only between `hidden` and `alwaysHidden` is untouched (both are hidden). `moved` lists the keys moved.
+    public func normalizedHideUnits() -> (layout: Layout, moved: [ItemKey]) {
+        let visibleUnits = Set(visible.map(\.hideUnit))
+        let moved = (hidden + alwaysHidden).filter { visibleUnits.contains($0.hideUnit) }
+        guard !moved.isEmpty else { return (self, []) }
+        let movedSet = Set(moved)
+        var out = self
+        out.hidden.removeAll { movedSet.contains($0) }
+        out.alwaysHidden.removeAll { movedSet.contains($0) }
+        out.insert(moved, into: .visible, at: nil)
+        return (out, moved)
+    }
 
     private func dedup() -> (layout: Layout, dropped: [(ItemKey, LayoutSection)]) {
         var seen = Set<ItemKey>()
@@ -165,7 +208,7 @@ public struct Layout: Codable, Equatable, Sendable {
         try c.encode(newItemPolicy, forKey: .newItemPolicy)
     }
 
-    /// Decodes a layout file, reporting duplicates that were dropped. Does not migrate.
+    /// Decodes a layout file, reporting duplicates that were dropped and hide-unit normalization (reported once, here). Does not migrate.
     public static func decode(_ data: Data) throws -> (layout: Layout, warnings: [String]) {
         struct Raw: Decodable {
             var schemaVersion: Int?
@@ -182,7 +225,13 @@ public struct Layout: Codable, Equatable, Sendable {
             alwaysHidden: try (r.alwaysHidden ?? []).map(parse),
             newItemPolicy: r.newItemPolicy ?? .visibleAtEnd)
         let d = raw.dedup()
-        return (d.layout, d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" })
+        let n = d.layout.normalizedHideUnits()
+        var warnings = d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
+        if !n.moved.isEmpty {
+            warnings.append("hide units normalized: " + n.moved.map(\.description).joined(separator: ", ")
+                + " moved to visible (all items of an app hide or show at once)")
+        }
+        return (n.layout, warnings)
     }
 
     /// Schema migration. No transforms exist yet; lower versions are just bumped.
