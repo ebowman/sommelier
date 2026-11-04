@@ -22,6 +22,14 @@ struct AssumedHidden: Codable, Equatable {
     var items: Int
 }
 
+/// A hosted agent group (one status item) last seen for a self-positioning owner (gdu.53).
+struct SPGroup: Codable, Equatable {
+    var key: String
+    var identifier: String
+    var frame: CGRect
+    init(_ e: AXElementInfo) { key = e.identityKey; identifier = e.identifier; frame = e.frame }
+}
+
 /// State kept between scans by one `MenuBarScanner`: per-app extras (for attribution in the fast path and for
 /// budget-miss fallback), the last hosted tree (for stale carry-forward) and the strip frame. Optionally persisted
 /// to disk so a fresh process (e.g. `mbprobe list --fast`) starts warm.
@@ -48,6 +56,11 @@ final class ScanState: @unchecked Sendable {
     var lastCompleteLayout: (entries: [HostedEntry], at: Date)?
     /// When the Control Center `isAllowed` readback of an assumed-hidden owner was last done (in-memory only).
     var assumedCheckedAt: [pid_t: Date] = [:]
+    /// Hosted groups last seen (fresh) for each running self-positioning owner, independent of the 3-scan stale carry-over
+    /// (gdu.53); persisted. Refreshed on complete and attributed (middle-level) reads, pruned when the owner quits.
+    var selfPositioningGroups: [pid_t: [SPGroup]] = [:]
+    /// Bundle id recorded with each pid's groups (pid reuse guard; persisted).
+    var selfPositioningBundles: [pid_t: String] = [:]
     private var lastSaved: Data?
     /// Consecutive fast scans each unverified cached item has been shown as stale (in-memory only).
     var unverifiedCount: [String: Int] = [:]
@@ -62,7 +75,8 @@ final class ScanState: @unchecked Sendable {
         init(_ i: AXElementInfo) { title = i.title; axDescription = i.axDescription; identifier = i.identifier; frame = i.frame }
         var info: AXElementInfo { AXElementInfo(title: title, axDescription: axDescription, identifier: identifier, frame: frame) }
     }
-    private struct File: Codable { var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]?; var hiddenKeys: [String]?; var seenHostedKeys: [String]?; var assumedHidden: [AssumedHidden]? }
+    private struct FileSP: Codable { var pid: Int32; var bundleID: String?; var groups: [SPGroup] }
+    private struct File: Codable { var spGroups: [FileSP]?; var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]?; var hiddenKeys: [String]?; var seenHostedKeys: [String]?; var assumedHidden: [AssumedHidden]? }
 
     func loadIfNeeded() {
         guard !loaded else { return }
@@ -78,12 +92,17 @@ final class ScanState: @unchecked Sendable {
         hiddenKeys = Set(f.hiddenKeys ?? [])
         seenHostedKeys = Set(f.seenHostedKeys ?? [])
         assumedHidden = Dictionary((f.assumedHidden ?? []).map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+        for g in f.spGroups ?? [] {
+            selfPositioningGroups[g.pid] = g.groups
+            if let b = g.bundleID { selfPositioningBundles[g.pid] = b }
+        }
         hasFullScan = !f.apps.isEmpty
     }
 
     func save() {
         guard let url else { return }
-        let f = File(apps: perApp.values.filter { !$0.infos.isEmpty }.sorted { $0.app.pid < $1.app.pid }.map {
+        let sp = selfPositioningGroups.keys.sorted().map { FileSP(pid: $0, bundleID: selfPositioningBundles[$0], groups: selfPositioningGroups[$0] ?? []) }
+        let f = File(spGroups: sp, apps: perApp.values.filter { !$0.infos.isEmpty }.sorted { $0.app.pid < $1.app.pid }.map {
             FileApp(pid: $0.app.pid, bundleID: $0.app.bundleID, name: $0.app.name, infos: $0.infos.map(FileInfo.init))
         }, hosted: lastHosted.filter { !$0.stale }.map(FileInfo.init), strip: lastStrip, chronic: chronic.sorted(), hostedKeys: hostedKeys.sorted(), hiddenKeys: hiddenKeys.sorted(), seenHostedKeys: seenHostedKeys.sorted(), assumedHidden: assumedHidden.values.sorted { $0.pid < $1.pid })
         // Written only when the content changed since the last write by this process.

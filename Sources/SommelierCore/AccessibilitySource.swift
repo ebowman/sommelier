@@ -149,6 +149,8 @@ final class AXElementCache: @unchecked Sendable {
     /// (they become capped) or not (nobody is capped).
     func noteUnresolvedAttribution(selfPositioning: Bool) {
         lock.lock(); defer { lock.unlock() }
+        // Identity persists in the scanner's record, so attribution (and with it the cap) holds for a whole streak; a read
+        // with any unattributed failure caps nobody (gdu.51), and a group leaves the set when a read resolves it (`setSlow`).
         spSlow = selfPositioning ? slow : []
     }
     /// Every 5th full read gives slow groups one attempt with the normal first-pass timeout (still no retry round), so a group
