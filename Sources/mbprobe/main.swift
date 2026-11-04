@@ -19,6 +19,7 @@ func usage() -> Never {
            mbprobe cc-allowed list
            mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc] [--live]
            mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
+                    [--arm-ms N] [--pre-up-ms N] [--max-step-px N] [--drop-x N] [--trace]
            mbprobe move <key> --before <key> | --after <key> | --leftmost | --rightmost [--force-fallback] [--no-fallback]
            mbprobe hide <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
            mbprobe layout show [--json] [--file PATH]
@@ -341,6 +342,9 @@ func runDrag(_ a: [String]) {
     var relation: DragRelation? = nil
     var targetQuery: String? = nil
     var steps = 10, holdMS = 100.0, stepMS = 15.0
+    var armMS = 0.0, preUpMS = 0.0
+    var dropXOverride: CGFloat? = nil
+    var maxStepPx: CGFloat? = nil
     var quiet = false, trace = false, fullPoll = false
     var i = 0
     func val() -> String { i += 1; guard i < a.count else { usage() }; return a[i] }
@@ -352,6 +356,10 @@ func runDrag(_ a: [String]) {
         case "--steps": guard let n = Int(val()), n > 0 else { usage() }; steps = n
         case "--hold-ms": guard let n = Double(val()), n >= 0 else { usage() }; holdMS = n
         case "--step-ms": guard let n = Double(val()), n >= 0 else { usage() }; stepMS = n
+        case "--drop-x": guard let x = Double(val()) else { usage() }; dropXOverride = CGFloat(x)   // keeps the --before/--after check
+        case "--arm-ms": guard let n = Double(val()), n >= 0 else { usage() }; armMS = n
+        case "--pre-up-ms": guard let n = Double(val()), n >= 0 else { usage() }; preUpMS = n
+        case "--max-step-px": guard let n = Double(val()), n > 0 else { usage() }; maxStepPx = CGFloat(n)
         case "--quiet": quiet = true
         case "--trace": trace = true
         case "--full": fullPoll = true
@@ -386,14 +394,30 @@ func runDrag(_ a: [String]) {
     // Relation by resolved key (not the user's query string)
     var keyRelation = relation
     if let t = target { switch relation { case .before: keyRelation = .before(ItemResolver.key(t)); case .after: keyRelation = .after(ItemResolver.key(t)); default: break } }
-    guard let dropX = DragTarget.dropX(for: relation, moved: moved, target: target, bar: snap.onBarLeftToRight) else { fail("no drop x") }
+    guard let dropX = dropXOverride ?? DragTarget.dropX(for: relation, moved: moved, target: target, bar: snap.onBarLeftToRight) else { fail("no drop x") }
     let movedKey = ItemResolver.key(moved)
     let before = snap.onBarLeftToRight.map(ItemResolver.key)
     if DragTarget.holds(keyRelation, moved: movedKey, order: before) { print("verified: yes (already satisfied; no drag performed)"); exit(0) }
 
-    let mover = DragMover(steps: steps, stepDelay: stepMS / 1000, holdTime: holdMS / 1000)
+    let mover = DragMover(steps: steps, stepDelay: stepMS / 1000, holdTime: holdMS / 1000,
+                          armTime: armMS / 1000, preUpHover: preUpMS / 1000, maxStepPx: maxStepPx)
+    // The item under the drop point (the "hovered" neighbour) and an AX sampler that watches it while the drag runs.
+    let hovered = snap.onBarLeftToRight.first { ItemResolver.key($0) != ItemResolver.key(moved) && $0.frame.minX <= dropX && dropX <= $0.frame.maxX }
+    let sampler = trace ? DragAXSampler(moved: moved.axElement, hovered: hovered?.axElement) : nil
+    sampler?.start()
     let upAt: Date
-    do { upAt = try mover.move(itemFrame: moved.frame, toX: dropX) } catch { fail("\(error)") }
+    var dragTrace: [DragTraceEvent] = []
+    do { let r = try mover.moveTraced(itemFrame: moved.frame, toX: dropX); upAt = r.upAt; dragTrace = r.trace } catch { sampler?.stop(); fail("\(error)") }
+    sampler?.stop()
+    if trace {
+        let ins = moved.frame.minX <= dropX && dropX <= moved.frame.maxX
+        print("trace: source frame=\(moved.frame) hovered=\(hovered.map { "\(ItemResolver.key($0)) \($0.frame)" } ?? "none (drop point not over an item)") dropX=\(Int(dropX)) dropInsideSource=\(ins)")
+        print("trace: arm=\(Int(armMS))ms preUp=\(Int(preUpMS))ms steps=\(steps) step=\(Int(stepMS))ms hold=\(Int(holdMS))ms maxStepPx=\(maxStepPx.map { String(Int($0)) } ?? "-")")
+        for e in dragTrace {
+            print(String(format: "trace: %@ planned=(%.0f,%.0f) actual=(%.0f,%.0f) t=%.0fms", "\(e.kind)", e.planned.x, e.planned.y, e.actual.x, e.actual.y, e.tMS))
+        }
+        if let sm = sampler { for l in sm.report() { print("trace: ax-during-drag \(l)") } }
+    }
 
     // Poll until two consecutive scans agree (max 4 s).
     var prevSig: [String]? = nil
@@ -401,12 +425,13 @@ func runDrag(_ a: [String]) {
     var firstChangeMS: Int? = nil
     var settledMS: Int? = nil
     var history: [(Int, [String])] = []
+    var firstAXChange: Int? = nil
     while Date().timeIntervalSince(upAt) < 4.0 {
         cur = fullPoll ? scanner.scan() : scanner.scanVisible()
         let fresh = cur.onBarLeftToRight.filter { !$0.stale || $0.ownerBundleID == moved.ownerBundleID }
         let sig = fresh.map(ItemResolver.key)
         let ms = Int(Date().timeIntervalSince(upAt) * 1000)
-        if trace { let m = cur.onBarLeftToRight.first { ItemResolver.key($0) == movedKey }; let mx = m.map { String(Int($0.frame.minX)) } ?? "-"; print("  t=\(ms)ms moved x=\(mx) stale=\(m?.stale ?? false)") }
+        if trace { let m = cur.onBarLeftToRight.first { ItemResolver.key($0) == movedKey }; let mx = m.map { String(Int($0.frame.minX)) } ?? "-"; print("  t=\(ms)ms moved x=\(mx) stale=\(m?.stale ?? false) complete=\(cur.hostedReadComplete.map(String.init) ?? "n/a")"); if firstAXChange == nil, let m, abs(m.frame.minX - moved.frame.minX) > 1 { firstAXChange = ms } }
         history.append((ms, sig))
         if !trace, ms >= 2000, let p = prevSig, p == sig, fresh.contains(where: { ItemResolver.key($0) == movedKey && !$0.stale }) { settledMS = ms; break }
         prevSig = sig
@@ -418,6 +443,7 @@ func runDrag(_ a: [String]) {
     let confirmStart = Date()
     cur = scanner.scan()
     let confirmMS = Int(Date().timeIntervalSince(confirmStart) * 1000)
+    if trace { print("trace: first-ax-frame-change-after-mouse-up=\(firstAXChange.map { "\($0)ms" } ?? "none") full-scan-complete=\(cur.hostedReadComplete.map(String.init) ?? "n/a")") }
     let now = cur.onBarLeftToRight
     let order = now.map(ItemResolver.key)
     let movedNow = now.first { ItemResolver.key($0) == movedKey && !$0.stale }
@@ -779,4 +805,53 @@ case "agent-restart": runAgentRestart()
 case "keys": runKeys(Array(args.dropFirst()))
 case "list": runList(Array(args.dropFirst()))
 default: usage()
+}
+
+
+/// Samples AX attributes of the dragged and hovered items on a background thread while a synthesized drag runs, and
+/// reports the first change of each (docs/findings-drag.md, gdu.25: "did the hovered item highlight?").
+final class DragAXSampler: @unchecked Sendable {
+    private let moved: AXUIElement?, hovered: AXUIElement?
+    private let lock = NSLock()
+    private var running = false
+    private var lines: [String] = []
+    private var thread: Thread?
+    init(moved: AXUIElement?, hovered: AXUIElement?) { self.moved = moved; self.hovered = hovered }
+
+    private func read(_ el: AXUIElement?) -> String {
+        guard let el else { return "-" }
+        AXUIElementSetMessagingTimeout(el, 0.05)
+        var out: [String] = []
+        for a in ["AXSelected", "AXFocused", "AXPosition"] {
+            var v: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, a as CFString, &v) == .success, let v {
+                if a == "AXPosition", CFGetTypeID(v) == AXValueGetTypeID() {
+                    var p = CGPoint.zero; AXValueGetValue(unsafeDowncast(v as AnyObject, to: AXValue.self), .cgPoint, &p); out.append("pos=\(Int(p.x))")
+                } else { out.append("\(a.dropFirst(2))=\(v)") }
+            }
+        }
+        return out.joined(separator: " ")
+    }
+
+    func start() {
+        running = true
+        let t0 = Date()
+        let th = Thread { [self] in
+            var lastM = "", lastH = ""
+            while true {
+                lock.lock(); let r = running; lock.unlock()
+                if !r { break }
+                let m = read(moved), h = read(hovered)
+                let ms = Int(Date().timeIntervalSince(t0) * 1000)
+                lock.lock()
+                if m != lastM { lines.append("t=\(ms)ms moved: \(m)"); lastM = m }
+                if h != lastH { lines.append("t=\(ms)ms hovered: \(h)"); lastH = h }
+                lock.unlock()
+                Thread.sleep(forTimeInterval: 0.02)
+            }
+        }
+        thread = th; th.start()
+    }
+    func stop() { lock.lock(); running = false; lock.unlock(); Thread.sleep(forTimeInterval: 0.1) }
+    func report() -> [String] { lock.lock(); defer { lock.unlock() }; return lines }
 }

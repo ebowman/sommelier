@@ -224,7 +224,25 @@ public actor LiveActuator: MenuBarActuator {
         var lastSnapshot = plan.snapshot
         var menuOpenedLast = false
 
+        // gdu.25: items macOS has pushed into its menu bar overflow are reported on-bar but are not drawn, so a drag
+        // cannot reach them (1/28 real drags there, 0/24 clean, the one pass confounded by a display change; 50/50 elsewhere). Skip the doomed drags; fail fast and honestly
+        // unless the order-store fallback is allowed.
+        var dragBlocked: String?
         if !config.forceFallback {
+            let ovf = ActuationVerifier.overflowed(plan.resolved)
+            var involved = [plan.subject.key]
+            if let t = plan.target { involved.append(t.key) }
+            if let x = Self.dropX(relation, plan: plan) {
+                involved += ActuationVerifier.barOrder(plan.resolved).filter { $0.item.frame.minX <= x && x <= $0.item.frame.maxX }.map(\.key)
+            }
+            if let hit = involved.first(where: { ovf.contains($0) }) {
+                dragBlocked = "\(hit) is in the menu bar overflow area (hidden by macOS because the bar is full); a drag cannot reach it"
+                note("drag skipped: \(dragBlocked!)")
+                lastError = .mechanismFailed(dragBlocked!)
+            }
+        }
+
+        if !config.forceFallback && dragBlocked == nil {
             for attempt in 1...2 {
                 guard await waitMouseIdle() else { return .failed(.userBusy, lastSnapshot) }
                 guard let x = Self.dropX(relation, plan: plan) else {
@@ -305,13 +323,14 @@ public actor LiveActuator: MenuBarActuator {
             return .failed(.mechanismFailed("fallback needs an order-store entry for \(bad)"), plan.snapshot)
         }
         let participants = keys.filter(inStore)
-        let values = participants.map { store[$0.description]! }.sorted(by: >)   // biggest = leftmost
-        var updates: [String: Double] = [:]
-        for (k, v) in zip(participants, values) where store[k.description] != v { updates[k.description] = v }
-        // The subject's slot must differ from before; equal values would leave the order undetermined.
-        if Set(values).count != values.count {
-            return .failed(.mechanismFailed("fallback: order store has duplicate position values among the items"), plan.snapshot)
-        }
+        // Strict order between the subject and its new neighbours (docs/findings-drag.md, gdu.25): the subject gets the
+        // midpoint between them, or the contiguous run around the slot is re-based when no integer fits. Duplicate
+        // values elsewhere in the store are not our concern; the full scan below verifies the outcome.
+        guard let storePlan = OrderStorePlanner.plan(order: participants.map(\.description), subject: key.description,
+                                                     values: store.filter { $0.key != key.description })
+        else { return .failed(.mechanismFailed("fallback: cannot plan an order-store value for \(key)"), plan.snapshot) }
+        let updates = storePlan.updates
+        note("fallback plan: \(storePlan.rebased ? "re-base" : "midpoint") \(updates.sorted { $0.key < $1.key }.map { "\($0.key)=\(Int($0.value))" }.joined(separator: ", "))")
         await platform.waitForOrderStoreQuiet()
         if !updates.isEmpty {
             do { try platform.writeOrderStore(updates, allowModules: false) } catch { return .failed(.mechanismFailed("fallback: order store write failed: \(error)"), plan.snapshot) }

@@ -354,12 +354,8 @@ private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
     #expect(w.dragCalls.count == 2)
     #expect(w.restarts == 1)
     #expect(w.storeWrites.count == 1)
-    // Only the existing values are permuted: A takes C's slot, B and C shift up one.
-    let v = w.storeWrites[0]
-    #expect(v[key("B").description] == 1000)
-    #expect(v[key("C").description] == 900)
-    #expect(v[key("A").description] == 800)
-    #expect(v[key("D").description] == nil)
+    // gdu.25: only the subject is written, with the midpoint between its new neighbours C (800) and D (700).
+    #expect(w.storeWrites[0] == [key("A").description: 750])
     #expect(w.order == ["B", "C", "A", "D"])
 }
 
@@ -864,4 +860,72 @@ private final class FakePrefs: @unchecked Sendable {
     // Read-back also goes through CFPreferences: with nothing stored there yet, the write must land.
     try s.setAllowedBatchLive(["ie.x": false], access: p.access)
     #expect(try ControlCenterTrackedAppsStore.allowedLive(["ie.x"], access: p.access) == ["ie.x": false])
+}
+
+// MARK: - fallback: duplicate position values (gdu.25)
+
+@Test func fallbackWithDuplicateValuesElsewhereWritesOnlyTheSubjectMidpoint() async {
+    let w = World(["A", "B", "C", "D"])
+    w.store = [key("A").description: 1000, key("B").description: 900, key("C").description: 900, key("D").description: 700]
+    let r = await actuator(w, forceFallback: true).move(key("D"), relation: .before(key("B")))
+    #expect(r.isVerified)
+    #expect(w.order == ["A", "D", "B", "C"])
+    #expect(w.storeWrites == [[key("D").description: 950]])     // one write, one key, midpoint of 1000 and 900
+    #expect(w.restarts == 1)
+}
+
+@Test func fallbackWithEqualNeighbourValuesRebasesOnlyTheRunAndVerifies() async {
+    let w = World(["A", "B", "C", "D"])
+    w.store = [key("A").description: 1000, key("B").description: 1000, key("C").description: 800, key("D").description: 700]
+    let r = await actuator(w, forceFallback: true).move(key("D"), relation: .after(key("A")))
+    #expect(r.isVerified)
+    #expect(w.order == ["A", "D", "B", "C"])
+    #expect(w.storeWrites.count == 1 && w.restarts == 1)
+    #expect(Set(w.storeWrites[0].keys) == [key("A").description, key("D").description])   // B and C untouched
+    #expect(w.store[key("B").description] == 1000 && w.store[key("C").description] == 800)
+}
+
+@Test func fallbackNeverRunsWhenDisallowed() async {
+    let w = World(["A", "B", "C"])
+    w.dragScript = [.noop, .noop]
+    let r = await actuator(w, fallback: false).move(key("A"), relation: .after(key("C")))
+    #expect(!r.isVerified)
+    #expect(w.storeWrites.isEmpty && w.restarts == 0)
+    let w2 = World(["A", "B", "C"])
+    #expect(!(await actuator(w2, fallback: false, forceFallback: true).move(key("A"), relation: .after(key("C")))).isVerified)
+    #expect(w2.storeWrites.isEmpty && w2.restarts == 0 && w2.dragCalls.isEmpty)
+}
+
+// MARK: - overflow area (gdu.25)
+
+@Test func moveOfAnOverflowedItemSkipsDragsAndFailsHonestly() async {
+    let w = World(["A", "B", "Show Hidden Menu Bar Items", "C", "D"])
+    w.modules = ["Show Hidden Menu Bar Items"]
+    let r = await actuator(w, fallback: false).move(key("A"), relation: .after(key("B")))
+    guard case .failed(.mechanismFailed(let why), _)? = Optional(r) else { Issue.record("expected mechanismFailed, got \(r)"); return }
+    #expect(why.contains("overflow"))
+    #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)
+}
+
+@Test func moveToAnOverflowedTargetFallsBackWhenAllowed() async {
+    let w = World(["A", "B", "Show Hidden Menu Bar Items", "C", "D"])
+    w.modules = ["Show Hidden Menu Bar Items"]
+    let r = await actuator(w).move(key("D"), relation: .before(key("B")))
+    #expect(r.isVerified)
+    #expect(w.dragCalls.isEmpty)
+    #expect(w.restarts == 1 && w.storeWrites.count == 1)
+}
+
+@Test func overflowedDetectsItemsBeforeTheChevronAndStackedFrames() {
+    func r(_ n: String, x: CGFloat, w: CGFloat = 30, module: Bool = false) -> ResolvedItem {
+        ResolvedItem(item: item(n, x: x), key: module ? .module(name: n) : key(n), confidence: .exact)
+    }
+    var a = r("A", x: 100), b = r("B", x: 140)
+    a.item.frame.size.width = 30; b.item.frame.size.width = 30
+    let chev = r("Show Hidden Menu Bar Items", x: 200, module: true)
+    let c = r("C", x: 230)
+    #expect(ActuationVerifier.overflowed([a, b, chev, c]) == [key("A"), key("B")])
+    #expect(ActuationVerifier.overflowed([a, b, c]).isEmpty)
+    var s = b; s.item.frame.origin.x = 100                        // B stacked exactly on A, no chevron read
+    #expect(ActuationVerifier.overflowed([a, s, c]) == [key("A"), key("B")])
 }

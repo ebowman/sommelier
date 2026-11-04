@@ -26,6 +26,11 @@ findings-visibility B1-B5).
   restart cost C6 (2.4-2.7 s stable, 4.5-5.8 s in 5 runs; two runs hit the 10 s poll timeout, one completing ~5 s later, i.e. ~15 s) and visibility A2 ("~1-12 s").
   The restart must wait for the order file to be quiescent (poll mtime; drag Exp D: the agent rewrites it 0.85-4 s after mouse-up) or a
   pending agent write can clobber ours.
+  **Value rule (gdu.25, `OrderStorePlanner`):** the fallback never permutes values among keys and never bails on duplicates. The subject
+  gets one unique value strictly between its new neighbours (`floor((L+R)/2)`; `R+2` / `L-2` at an end); when no integer fits (adjacent
+  integers, equal neighbour values, inverted values) the smallest contiguous run around the slot is re-based between two untouched anchors
+  (spacing >= 2, order kept, never a key outside the run, never `module:`). One write, one respawn, full-scan verification. Refused
+  when the engine config has `allowFallback == false`.
 * **Hide with no tracked entry:** no mechanism exists. `Capability.canHide == false` with a reason; the UI greys the control and
   offers "Open System Settings > Menu Bar". Not silently dropped: follow-up bead **sommelier-gdu.24** investigates whether the system
   creates an entry on first launch / after an agent restart and whether we can then hide the item.
@@ -60,7 +65,11 @@ Every `MenuBarActuator` call follows: **precheck -> act -> settle -> verify -> t
 
 **Retry policy.** Drag: attempt 1 with standard drop point; on `.notVerified` retry once with the drop point shifted (+/-6 px more, or 20
 steps); second failure -> fallback (order store + restart, if allowed by the caller) else `.failed`. Never retry after `.userBusy`,
-`.permissionDenied`, `.unsupportedItem`, `.notFound`. Restart-based actions: one retry of the restart if the verifying scan still shows the
+`.permissionDenied`, `.unsupportedItem`, `.notFound`. **Overflow guard (gdu.25):** items macOS has pushed into its menu bar overflow (ordered before the agent's `Show Hidden Menu Bar Items`
+chevron, or stacked with identical frame x/width) are reported on-bar but not drawn; drags there fail 27/28 (the one pass was confounded by a display change; 50/50 elsewhere, findings-drag
+"Intermittent adjacent-drag failures"). If the subject, the target or the item under the drop point is overflowed the drags are skipped:
+straight to the fallback when allowed, else `.failed(.mechanismFailed("... overflow area ..."))`. Drag defaults are unchanged (10 steps, 15 ms, 100 ms hold;
+retry 20 steps), no parameter variant helped. Restart-based actions: one retry of the restart if the verifying scan still shows the
 old state AND the plist write is confirmed to have landed; second failure -> `.failed`.
 
 **Live hide/show path found (gdu.36, `docs/findings-live-trigger.md`):** writing `trackedApplications` through cfprefsd under `group.com.apple.controlcenter` (needs the app-group entitlement) hides/shows with no MenuBarAgent respawn; respawn stays the fallback. Verified in gdu.40 (`docs/findings-live-trigger.md` section 8): a Developer ID + hardened runtime + notarized binary with that entitlement gets the live path on the dev machine (macOS 27.0.1); not proven for an app bundle on a fresh Mac or macOS 26, so the respawn fallback stays.

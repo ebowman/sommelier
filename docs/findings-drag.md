@@ -80,3 +80,88 @@ Caveats: needs a quiet mouse and Accessibility, takes ~2-3 s per move incl. veri
 third-party items (never Control Center/clock).
 
 State at end: Bartender 7 running, MBDummy stopped, on-bar order equals `docs/evidence/gdu7-baseline.json`.
+
+## Intermittent adjacent-drag failures (gdu.25)
+
+Symptom (from the gdu.9 soak): at some bar positions a Cmd+drag between two adjacent items (Dummy-A/Dummy-B) failed on both
+attempts (`mbprobe drag --to-x` sweep 0/3, 1/3, 0/3, 0/3 whatever the drop offset), while the identical plan passed 20/20
+elsewhere. Raw logs: scratchpad `gdu25/*.log` (per drag: source frame, hovered neighbour, drop x, per-event planned and actual
+cursor, AX samples during the drag, first AX change after mouse-up, scan completeness).
+
+### Instrumentation
+`mbprobe drag --trace` now prints, per drag: source frame, the item under the drop point, drop x, whether the drop landed inside
+the source's own frame, every event (planned vs. actual cursor, ms since the first event; "actual" is read right after
+posting, so it trails "planned" by one event), a 20 ms AX sampler on the dragged and hovered item (`AXSelected`,
+`AXFocused`, `AXPosition`), the first fast-scan poll whose frame for the moved item differs from before (ms after mouse-up) and
+whether each poll / the final full scan had a complete hosted read (`hostedReadComplete`). New knobs on `drag`: `--arm-ms`
+(hover on the source before mouse-down), `--pre-up-ms` (hover on the drop point before mouse-up), `--max-step-px`, `--drop-x`
+(overrides the computed drop, keeps the `--before/--after` verdict). `DragMover` has the same fields (defaults 0 = unchanged).
+Observations from the 50 healthy drags: no `AXSelected`/`AXFocused` change on the hovered item ever (0/50; the hover highlight is
+not visible through AX), the dragged item's `AXPosition` follows the cursor from ~220 ms, first AX frame change after mouse-up
+median 729 ms (min 197, max 799), and the final full scan reported an incomplete hosted read in 16/50 (the verifier already
+polls until a complete read, so this only matters for the CLI's single confirm scan).
+
+### Failing-spot search
+Bartender 7 quit, MBDummy items moved only with `mbprobe move ... --force-fallback` (dummy-only order-store writes).
+
+| spot | drags | pass |
+|---|---|---|
+| right of VPN Switch (mid bar, among 24 pt items) | 20 | 20 |
+| right of `signal` (61 pt wide item) | 10 | 10 |
+| right of Airmail2Hookmark, immediately left of Control Center/Clock (trailing block) | 10 | 10 |
+| right of GateOpener, immediately left of the iStat cluster | 10 | 10 |
+| **dummies at their default store values (A=783, B=813)** | 8 | **0** |
+
+Only the last spot fails, deterministically. `mbprobe list` showed Dummy-A and Dummy-B on the bar with IDENTICAL frames
+(x=784 or 791, w=32) among a run of other items with nearly identical x (786, 788, 793, 793, 798), all left of a hosted item
+named `Show Hidden Menu Bar Items`. A screenshot of the bar shows the "<<" chevron (that item) and nothing drawn to its left:
+**the bar is full, macOS moved those items into its own menu bar overflow area, and the agent still hosts them with frames
+clipped and stacked at the left edge of the usable area.** The scanner (correctly, by AX) calls them on-bar. A drag has nothing
+to grab and nothing to drop on, so it is a silent no-op; the item never moves, which the actuator reports honestly as
+`notVerified`. The new-item default position (large store value = far left) is what puts a freshly started dummy there.
+
+### Bounded experiment at the failing spot (28 real drags, <= 40)
+| variant | drags | passes | first AX change |
+|---|---|---|---|
+| baseline: 10 steps, 15 ms, hold 100 ms, drop at the edge+4 (frames equal, so no neighbour) | 8 | 0 | none |
+| (a) hover-arm 150 ms before mouse-down and 150 ms before mouse-up | 8 | 0 | none |
+| (b) drop offset: hovered.midX + w/3 (x=817) / 2 px past the far edge (x=825) | 4 + 4 | 0 | none |
+| (c) 20 steps, 15 ms | 4 | 1 (see note) | 492 ms (the one pass) |
+| (c) 10 steps, 30 ms | - | not measured | - |
+| (d) per-step distance cap (3 px) | - | not measured | - |
+
+Note: during the (c) run the human started using the mouse and the display layout changed (the same bar suddenly had room, the
+items stopped overlapping), so the single pass after three failures is not attributable to 20 steps; the follow-up (c)/(d)
+runs found the order already flipped ("already satisfied") and are void, and the failing spot no longer existed. They were not
+repeated because the pointer was no longer quiet (invariant: stop on mouse activity not caused by the experiment). No variant
+shows any effect on the failing spot (0/24 clean drags across (a), (b), baseline), whereas the healthy spots pass 50/50 with the
+existing defaults, so the cause is not drag parameters. Candidate causes ruled out by the trace: drop inside the source's own
+frame (false on all 50 healthy drags; true only in the degenerate stacked case), item narrower than the step (steps are 2-3 px),
+hover timing (a), drop offset (b); MenuBarAgent pid unchanged during every drag phase.
+
+### Conclusion: reproducible trigger = the item (or the hovered neighbour) is in macOS's menu bar overflow area
+Trigger: the bar is too full for the active display / front app's menus; every item ordered before the agent's
+`Show Hidden Menu Bar Items` chevron is not drawn and reports clipped, stacked frames (identical x and width). Rate: 1/28 real drags (0/24 clean; the single pass, variant (c) 20 steps, coincided with a display change and is not attributable)
+there vs 50/50 elsewhere. No drag parameter fixes it; the item must first get out of the overflow (hide something else, or the
+order-store fallback, which does work there: it moved both dummies out of the overflow area in ~3 s each).
+
+Fix (actuator, not DragMover defaults, which are unchanged: 10 steps, 15 ms, 100 ms hold, retry with 20 steps):
+`ActuationVerifier.overflowed(_:)` flags every on-bar item before the chevron plus any fresh items with identical frame x and width.
+`LiveActuator.move` checks the subject, the relation target and whatever is under the first drop point; if any is overflowed it skips
+both doomed drags (saves ~14 s) and goes straight to the order-store fallback when `allowFallback`, else returns
+`.failed(.mechanismFailed("... is in the menu bar overflow area (hidden by macOS because the bar is full); a drag cannot reach it"))`.
+Verification is unchanged (full scan, never relaxed).
+
+### Order-store fallback and duplicate position values
+The old fallback permuted the existing values among all on-bar store keys and bailed on "duplicate position values" when two
+keys shared a value (the order of tied keys is undetermined). `OrderStorePlanner` (pure, unit-tested) now assigns the SUBJECT a
+unique value and leaves every other key alone when it can:
+1. both neighbours exist and an integer fits strictly between them: subject = `floor((L + R) / 2)`, one key written (duplicates
+   elsewhere in the store are irrelevant);
+2. leftmost / rightmost participant: `R + 2` / `L - 2` (>= 1);
+3. otherwise (adjacent integers, equal neighbour values, inverted values, no room at the end): the contiguous run around the slot
+   is re-based: it grows one neighbour at a time until it sits between two untouched anchors with room for a spacing of >= 2 (or
+   reaches an end), then its keys are spread evenly between the anchors keeping their order. Keys outside the run and `module:` keys
+   are never written. One write, one respawn, then the usual full-scan verification.
+The fallback is still refused when `allowFallback == false` (also with `forceFallback`). Seven planner tests plus actuator tests with
+a fixture store (duplicates elsewhere -> single midpoint write; equal neighbours -> only the run is re-based; fallback disallowed).

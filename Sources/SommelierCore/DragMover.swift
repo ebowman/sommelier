@@ -26,20 +26,38 @@ public struct DragStep: Equatable, Sendable {
 public enum DragPlan {
     /// move-to-start, down, (hold), `steps` dragged events interpolated linearly to (targetX, y), up at target.
     /// The first dragged event waits `hold`; subsequent ones wait `stepDelay`; the up waits `stepDelay`.
+    /// `arm` is a pause between landing on the source item and mouse-down (hover-arm); `preUp` is a pause on the
+    /// drop point between the last dragged event and mouse-up. Both default to 0 (the gdu.7 behaviour).
     public static func make(from start: CGPoint, toX targetX: CGFloat, steps: Int,
-                            stepDelay: TimeInterval, hold: TimeInterval) -> [DragStep] {
+                            stepDelay: TimeInterval, hold: TimeInterval,
+                            arm: TimeInterval = 0, preUp: TimeInterval = 0) -> [DragStep] {
         let n = max(1, steps)
         var out: [DragStep] = [
             DragStep(kind: .move, point: start, delayBefore: 0),
-            DragStep(kind: .down, point: start, delayBefore: 0.02),
+            DragStep(kind: .down, point: start, delayBefore: max(0.02, arm)),
         ]
         for i in 1...n {
             let x = start.x + (targetX - start.x) * CGFloat(i) / CGFloat(n)
             out.append(DragStep(kind: .dragged, point: CGPoint(x: x, y: start.y), delayBefore: i == 1 ? hold : stepDelay))
         }
-        out.append(DragStep(kind: .up, point: CGPoint(x: targetX, y: start.y), delayBefore: stepDelay))
+        out.append(DragStep(kind: .up, point: CGPoint(x: targetX, y: start.y), delayBefore: max(stepDelay, preUp)))
         return out
     }
+
+    /// Step count that keeps the per-step distance at or below `maxStepPx` (never fewer than `steps`).
+    public static func stepsCapping(distance: CGFloat, steps: Int, maxStepPx: CGFloat?) -> Int {
+        guard let m = maxStepPx, m > 0 else { return steps }
+        return max(steps, Int((abs(distance) / m).rounded(.up)))
+    }
+}
+
+/// One event of a traced drag: where it was meant to go, where the cursor actually was right after posting, and when.
+public struct DragTraceEvent: Sendable {
+    public var kind: DragStep.Kind
+    public var planned: CGPoint
+    public var actual: CGPoint
+    /// Milliseconds since the first event of the drag.
+    public var tMS: Double
 }
 
 /// Synthesizes Cmd+drag on the menu bar.
@@ -47,18 +65,35 @@ public struct DragMover {
     public var steps: Int
     public var stepDelay: TimeInterval
     public var holdTime: TimeInterval
+    /// Hover on the source item this long before mouse-down (0 = none).
+    public var armTime: TimeInterval
+    /// Hover on the drop point this long before mouse-up (0 = none).
+    public var preUpHover: TimeInterval
+    /// Cap on the per-step distance in points (raises the step count when needed); nil = off.
+    public var maxStepPx: CGFloat?
 
-    public init(steps: Int = 10, stepDelay: TimeInterval = 0.015, holdTime: TimeInterval = 0.1) {
+    public init(steps: Int = 10, stepDelay: TimeInterval = 0.015, holdTime: TimeInterval = 0.1,
+                armTime: TimeInterval = 0, preUpHover: TimeInterval = 0, maxStepPx: CGFloat? = nil) {
         self.steps = steps; self.stepDelay = stepDelay; self.holdTime = holdTime
+        self.armTime = armTime; self.preUpHover = preUpHover; self.maxStepPx = maxStepPx
     }
 
     /// Drags the item's center to `targetX` (same y). Returns the time the mouse-up was posted.
     /// Guarantees that a mouseUp is posted whenever a mouseDown was (even when later event creation fails).
     @discardableResult
     public func move(itemFrame: CGRect, toX targetX: CGFloat) throws -> Date {
+        try moveTraced(itemFrame: itemFrame, toX: targetX).upAt
+    }
+
+    /// Like `move`, also returning the per-event trace (planned vs actual cursor location, timestamps).
+    public func moveTraced(itemFrame: CGRect, toX targetX: CGFloat) throws -> (upAt: Date, trace: [DragTraceEvent]) {
         if NSEvent.pressedMouseButtons != 0 { throw DragError.userBusy }
         let start = CGPoint(x: itemFrame.midX, y: itemFrame.midY)
-        let plan = DragPlan.make(from: start, toX: targetX, steps: steps, stepDelay: stepDelay, hold: holdTime)
+        let n = DragPlan.stepsCapping(distance: targetX - start.x, steps: steps, maxStepPx: maxStepPx)
+        let plan = DragPlan.make(from: start, toX: targetX, steps: n, stepDelay: stepDelay, hold: holdTime,
+                                 arm: armTime, preUp: preUpHover)
+        var trace: [DragTraceEvent] = []
+        var t0: Date?
         let saved = CGEvent(source: nil)?.location ?? .zero
         let src = CGEventSource(stateID: .hidSystemState)
         defer { CGWarpMouseCursorPosition(saved) }
@@ -77,11 +112,15 @@ public struct DragMover {
             else { return false }
             e.flags = .maskCommand
             e.post(tap: .cghidEventTap)
+            let now = Date()
+            if t0 == nil { t0 = now }
+            trace.append(DragTraceEvent(kind: s.kind, planned: s.point, actual: CGEvent(source: nil)?.location ?? .zero,
+                                        tMS: now.timeIntervalSince(t0!) * 1000))
             return true
         })
         if let err = outcome.error { throw err }
         Thread.sleep(forTimeInterval: 0.05)
-        return outcome.upAt
+        return (outcome.upAt, trace)
     }
 
     /// Runs a plan through `post` (returns false when the event could not be created). If creation fails after a

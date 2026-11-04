@@ -18,6 +18,26 @@ public enum ActuationVerifier {
         return bar.sorted { ($0.element.item.frame.minX, $0.offset) < ($1.element.item.frame.minX, $1.offset) }.map(\.element)
     }
 
+    /// macOS's own name for the overflow control (the chevron) the agent hosts when the bar is full.
+    static let overflowChevron = ItemKey.module(name: "Show Hidden Menu Bar Items")
+
+    /// Items macOS itself hides because the bar is full (gdu.25): the agent still reports them as hosted, with frames
+    /// clipped and stacked at the left edge of the usable area, but nothing is drawn there, so a drag cannot reach them.
+    /// Rule: every on-bar item ordered before the overflow chevron; and, whether or not the chevron was read, any
+    /// fresh on-bar items sharing an identical frame x and width (a real bar never draws two items on top of each other).
+    public static func overflowed(_ resolved: [ResolvedItem]) -> Set<ItemKey> {
+        let order = barOrder(resolved)
+        var out = Set<ItemKey>()
+        if let c = order.firstIndex(where: { $0.key == overflowChevron }) { for r in order[..<c] { out.insert(r.key) } }
+        let fresh = order.filter { !$0.item.stale }
+        for (i, a) in fresh.enumerated() {
+            for b in fresh[(i + 1)...] where abs(a.item.frame.minX - b.item.frame.minX) < 0.5 && abs(a.item.frame.width - b.item.frame.width) < 0.5 {
+                out.insert(a.key); out.insert(b.key)
+            }
+        }
+        return out
+    }
+
     static func isModule(_ r: ResolvedItem) -> Bool { if case .module = r.key { return true } else { return false } }
 
     /// A heuristic key is a fingerprint, not a store key: it cannot support a verified claim unless a non-frame
