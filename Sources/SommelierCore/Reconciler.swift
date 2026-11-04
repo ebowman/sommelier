@@ -234,8 +234,17 @@ public struct Reconciler: Sendable {
             }
             let firstBlockInTarget = target.firstIndex { blockSet.contains($0) } ?? target.count
             let limit = min(blockStart, firstBlockInTarget)
-            let beyond = target.enumerated().filter { $0.offset >= limit && !anchors.contains($0.element) }.map(\.element)
-            if !beyond.isEmpty {
+            // With shows pending, target slots are displaced by the appended shown keys (a shown key sits in the last slot and the
+            // block moves earlier), so "beyond" is judged by the layout's own order: a key is right of the block only if
+            // `desired` puts it after the block's first key.
+            let beyond: [ItemKey]
+            if shows.isEmpty {
+                beyond = target.enumerated().filter { $0.offset >= limit && !anchors.contains($0.element) }.map(\.element)
+            } else if let first = desired.firstIndex(where: { blockSet.contains($0) }) {
+                let inTarget = Set(target)
+                beyond = desired[(first + 1)...].filter { !anchors.contains($0) && inTarget.contains($0) }
+            } else { beyond = [] }
+            if !beyond.isEmpty || !shows.isEmpty {
                 for k in beyond where !skipped.contains(where: { $0.key == k && $0.reason.hasPrefix("cannot be placed right of the system items") }) {
                     skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(kept[blockStart]))"))
                 }

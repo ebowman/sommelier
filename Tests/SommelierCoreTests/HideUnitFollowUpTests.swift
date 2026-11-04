@@ -87,6 +87,21 @@ struct TrailingBlockHonestyTests {
         #expect(p.skipped.contains { $0.reason == "immovable item is out of layout order" })
         #expect(p.desiredOnBar.suffix(3) == [wifi, bento, clock])
     }
+    @Test func membershipPassShowLeftOfTheClockIsNotSkipped() {
+        let layout = Layout(visible: [k("a"), k("b"), clock])
+        let p = rec.plan(observed: obs([k("a"), clock], [k("b")]), layout: layout, capabilities: caps)
+        #expect(p.phase == .membership)
+        #expect(p.actions == [.show(k("b"))])
+        #expect(p.skipped.isEmpty)
+        #expect(p.desiredOnBar == [k("a"), k("b"), clock])
+    }
+    @Test func orderPhaseLeftOfTheClockPlansNormally() {
+        let layout = Layout(visible: [k("b"), k("a"), clock])
+        let p = rec.plan(observed: obs([k("a"), k("b"), clock]), layout: layout, capabilities: caps)
+        #expect(p.phase == .order)
+        #expect(p.skipped.isEmpty)
+        #expect(p.desiredOnBar == [k("b"), k("a"), clock])
+    }
     @Test func membershipPassAlreadyKeepsShownKeysLeftOfTheClock() {
         let layout = Layout(visible: [k("a"), clock, k("b")])
         let p = rec.plan(observed: obs([k("a"), clock], [k("b")]), layout: layout, capabilities: caps)
