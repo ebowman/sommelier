@@ -12,6 +12,9 @@ private struct Src: AccessibilitySource {
     var failing: Set<pid_t> = []
     var trees: [AgentHostedTree] = []
     let n = Counter()
+    let notes = Notes()
+    final class Notes: @unchecked Sendable { var v: [Bool] = []; let l = NSLock(); func add(_ b: Bool) { l.lock(); v.append(b); l.unlock() } }
+    func noteUnresolvedGroups(selfPositioning: Bool) { notes.add(selfPositioning) }
     final class Counter: @unchecked Sendable { var v = 0; let l = NSLock(); func next() -> Int { l.lock(); defer { l.unlock() }; v += 1; return v } }
     func runningApps() -> [RunningAppInfo] { apps }
     func extrasItems(for app: RunningAppInfo) -> [AXElementInfo] { extras[app.pid] ?? [] }
@@ -19,6 +22,7 @@ private struct Src: AccessibilitySource {
         failing.contains(app.pid) ? .failed("timed out") : .items(extrasItems(for: app))
     }
     func agentHostedTree(for agent: RunningAppInfo) -> AgentHostedTree { trees[min(n.next(), trees.count) - 1] }
+    func agentHostedTree(for agent: RunningAppInfo, retry: Bool) -> AgentHostedTree { agentHostedTree(for: agent) }
 }
 
 private let agent = RunningAppInfo(pid: 99, bundleID: menuBarAgentBundleID, name: "MenuBarAgent")
@@ -219,4 +223,66 @@ private final class Lines: @unchecked Sendable { let l = NSLock(); var v: [Strin
     #expect(ReadCompleteness.complete.displayName == "complete")
     #expect(ReadCompleteness.completeExceptSelfPositioning.displayName == "exceptSelfPositioning")
     #expect(ReadCompleteness.incomplete.displayName == "incomplete")
+}
+
+// MARK: - gdu.53: long iStat streaks keep their attribution
+
+private let streakScan = tree([dummyEl, otherEl], failed: 2, unnamed: 2)
+
+@Test func tenConsecutiveIStatOnlyUnnamedTimeoutScansStayCompleteExceptSelfPositioning() {
+    let s = source([full] + Array(repeating: streakScan, count: 10))
+    let scanner = MenuBarScanner(source: s)
+    #expect(scanner.scan().completeness == .complete)
+    for i in 1...10 { #expect(scanner.scan().completeness == .completeExceptSelfPositioning, "scan \(i)") }
+    #expect(s.notes.v.count == 11 && s.notes.v.dropFirst().allSatisfy { $0 })      // groups stay attributed (capped) for the whole streak
+}
+
+@Test func nonIStatUnnamedTimeoutInTheMiddleOfAStreakIsIncompleteOnlyForThatScan() {
+    let bad = tree([dummyEl, otherEl], failed: 3, unnamed: 3)     // one more unnamed timeout than iStat groups
+    let s = source([full] + Array(repeating: streakScan, count: 5) + [bad] + Array(repeating: streakScan, count: 2))
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    for _ in 1...5 { #expect(scanner.scan().completeness == .completeExceptSelfPositioning) }
+    #expect(scanner.scan().completeness == .incomplete)
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func vanishedThirdPartyElementDuringALongStreakIsIncomplete() {
+    let s = source([full] + Array(repeating: streakScan, count: 4)
+                   + [tree([dummyEl], failed: 2, unnamed: 2)])      // Other's element vanished while iStat times out
+    let scanner = MenuBarScanner(source: s)
+    for _ in 0..<5 { _ = scanner.scan() }
+    #expect(scanner.scan().completeness == .incomplete)
+}
+
+@Test func iStatQuittingPrunesTheRecord() {
+    var s = source([full] + Array(repeating: streakScan, count: 5)
+                   + [tree([dummyEl, otherEl]), tree([dummyEl, otherEl], failed: 1, unnamed: 1)])
+    let scanner = MenuBarScanner(source: s)
+    for _ in 0..<6 { _ = scanner.scan() }
+    s.apps = [agent, dummy, other]                                      // iStat quit
+    var sc = scanner; sc.source = s
+    #expect(sc.scan().completeness == .complete)
+    #expect(sc.scan().completeness == .incomplete)                      // an unnamed timeout can no longer be iStat's
+}
+
+@Test func freshProcessAttributesUnnamedIStatTimeoutsOnItsFirstScan() {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("scan-cache-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let first = MenuBarScanner(source: source([full] + Array(repeating: streakScan, count: 6)), cacheURL: url)
+    for _ in 0..<7 { _ = first.scan() }                                 // streak longer than the carry-over: lastHosted has no iStat
+    let reborn = MenuBarScanner(source: source([streakScan]), cacheURL: url)
+    #expect(reborn.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func cappedGroupsStayCappedForTheStreak() {
+    let cache = AXElementCache()
+    let g = AXUIElementCreateApplication(1), other = AXUIElementCreateApplication(2)
+    cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true)
+    for _ in 0..<10 { cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true); #expect(cache.isCapped(g)) }
+    cache.setSlow([g, other]); cache.noteUnresolvedAttribution(selfPositioning: false)   // unattributed extra failure: nobody capped
+    #expect(!cache.isCapped(g) && !cache.isCapped(other))
+    cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true)           // next streak read: capped again
+    #expect(cache.isCapped(g))
+    cache.setSlow([other]); #expect(!cache.isCapped(g))                 // resolved: leaves the set
 }

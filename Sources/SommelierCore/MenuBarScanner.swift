@@ -183,10 +183,49 @@ public struct MenuBarScanner {
         func isSP(_ e: AXElementInfo) -> Bool { SelfPositioning.matches(identifier: e.identifier, owners: owners) }
         let miss = missing(tree)
         let spMiss = miss.filter(isSP)
+        // Persisted group identity (gdu.53): the self-positioning groups last seen for a running owner survive the 3-scan
+        // carry-over, so a long streak stays attributable. Unnamed timeouts are covered when their count does not exceed the
+        // persisted (or previous-tree) self-positioning groups absent from this read; an unnamed timeout of anything else
+        // makes the count exceed them. No other previously hosted element may be missing.
+        let spApps = apps.filter { SelfPositioning.matches(bundleID: $0.bundleID, name: $0.name, owners: owners) }
+        for pid in Array(state.selfPositioningGroups.keys) {
+            let a = spApps.first { $0.pid == pid }
+            if a == nil || (state.selfPositioningBundles[pid] != nil && a?.bundleID != state.selfPositioningBundles[pid]) {
+                state.selfPositioningGroups[pid] = nil; state.selfPositioningBundles[pid] = nil
+                log("self-positioning groups: pid \(pid) no longer running; record pruned")
+            }
+        }
+        let namedKeys = Set(tree.timedOut.map(\.identityKey))
+        var absentSP = Set(state.selfPositioningGroups.values.joined().map(\.key)).union(spMiss.map(\.identityKey))
+        absentSP.subtract(freshKeys); absentSP.subtract(namedKeys)
         var attributable = false
         if tree.failedReads > 0, tree.topFailures == 0, tree.timedOut.allSatisfy(isSP),
            tree.unnamedTimeouts > 0 || !tree.timedOut.isEmpty {
-            attributable = tree.unnamedTimeouts == 0 || (spMiss.count >= tree.unnamedTimeouts && spMiss.count == miss.count)
+            attributable = tree.unnamedTimeouts == 0 || (absentSP.count >= tree.unnamedTimeouts && miss.allSatisfy(isSP))
+        }
+        // Refresh the record from this read: exactly on a complete read, merged on an attributed one.
+        let completeRead = tree.failedReads == 0 && tree.unnamedTimeouts == 0 && !tree.elements.isEmpty
+        if completeRead || attributable {
+            func ownerPID(_ e: AXElementInfo) -> pid_t? {
+                spApps.first { a in a.bundleID.map { b in SelfPositioning.prefixes(b).contains { e.identifier.hasPrefix($0) } } ?? false }?.pid
+                    ?? (spApps.count == 1 ? spApps[0].pid : nil)
+            }
+            var fresh: [pid_t: [SPGroup]] = [:]
+            for e in tree.elements where !e.stale && isSP(e) {
+                if let pid = ownerPID(e) { fresh[pid, default: []].append(SPGroup(e)) }
+            }
+            let freshAll = Set(fresh.values.joined().map(\.key))
+            for pid in Array(state.selfPositioningGroups.keys) {   // a group now shown under another owner leaves this one
+                let other = Set((fresh[pid] ?? []).map(\.key))
+                state.selfPositioningGroups[pid] = state.selfPositioningGroups[pid]!.filter { !freshAll.contains($0.key) || other.contains($0.key) }
+            }
+            for a in spApps {
+                let mine = fresh[a.pid] ?? []
+                var cur = completeRead ? [] : (state.selfPositioningGroups[a.pid] ?? [])
+                for g in mine { if let i = cur.firstIndex(where: { $0.key == g.key }) { cur[i] = g } else { cur.append(g) } }
+                if cur.isEmpty { state.selfPositioningGroups[a.pid] = nil; state.selfPositioningBundles[a.pid] = nil }
+                else { state.selfPositioningGroups[a.pid] = cur; state.selfPositioningBundles[a.pid] = a.bundleID }
+            }
         }
         tree.failuresAreSelfPositioning = attributable
         if tree.failedReads > 0, !attributable {
@@ -367,8 +406,9 @@ public struct MenuBarScanner {
            hosted.contains(where: { !$0.stale }) {
             let staleHosted = hosted.filter(\.stale)
             let staleCands = candidates.filter(\.stale)
-            spOnly = (!staleHosted.isEmpty || !staleCands.isEmpty)
-                && staleHosted.allSatisfy { SelfPositioning.matches(identifier: $0.identifier, owners: spOwners) }
+            // No "something is stale" requirement (gdu.53): a long streak outlives the carry-over, and the failures are
+            // attributed by identity (`failuresAreSelfPositioning`).
+            spOnly = staleHosted.allSatisfy { SelfPositioning.matches(identifier: $0.identifier, owners: spOwners) }
                 && staleCands.allSatisfy { SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: spOwners) }
             if !spOnly {
                 if let c = staleCands.first(where: { !SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: spOwners) }) {
