@@ -15,6 +15,8 @@
 #    click in "inline" mode): dummies must appear on the bar, then disappear again.
 # Scope: the soak asserts the order of THIRD-PARTY items and the dummies' states; system items (module:*, status:com.apple.*) are
 #    macOS-ordered and excluded from every comparison (phases and final), as are heuristic keys and iStat items.
+# Self-tests (also: --selftest runs them alone and exits 0): the volatile-key filter, and the respawn attribution, which counts only app-log
+#    lines stamped at or after the soak's start (an own-fallback line from an earlier run can never excuse a foreign respawn).
 # Safety: the app is never stopped while the engine acts. Every stop (restart between phases, exit handler) first waits, up to 60 s,
 #    for the app log to show the latest pass reaching `plan: phase=converged` after the last request, with no new actuator output for
 #    2 s; on timeout it says so and leaves the app RUNNING instead of killing a batch or drag.
@@ -29,16 +31,54 @@
 set -u
 cd "$(dirname "$0")/.."
 
-N=10; TOGGLES=10; ALLOW_RESPAWN=0
+N=10; TOGGLES=10; ALLOW_RESPAWN=0; SELFTEST_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --relaunches) N="$2"; shift 2 ;;
     --toggles) TOGGLES="$2"; shift 2 ;;
     --allow-respawn) ALLOW_RESPAWN=1; shift ;;
-    *) echo "usage: $0 [--relaunches N] [--toggles N] [--allow-respawn]" >&2; exit 2 ;;
+    --selftest) SELFTEST_ONLY=1; shift ;;
+    *) echo "usage: $0 [--relaunches N] [--toggles N] [--allow-respawn] [--selftest]" >&2; exit 2 ;;
   esac
 done
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 2; }
+
+# One -e per pattern: macOS grep honours `$` only at the end of the whole pattern, so a `$` inside an alternation never matched.
+# System items are macOS-ordered (it re-bases them on every agent respawn) and Sommelier does not manage them: `module:*` and `status:com.apple.*`.
+volatile_filter() { grep -Ev -e '^heuristic:' -e 'istatmenus' -e '^module:' -e '^status:com\.apple\.' ; }
+
+# own_fallback_count <since> <files...>: lines of the app log(s) at or after the timestamp <since> ("YYYY-MM-DD HH:MM:SS.mmm", the
+# NSLog prefix) that attribute an agent respawn to Sommelier's own fallback. Lines from before the soak started never count.
+own_fallback_count() {
+  local since="$1"; shift
+  cat "$@" 2>/dev/null | awk -v since="$since" 'substr($0, 1, 23) >= since && (index($0, "agent restarted by Sommelier (expected)") || index($0, "falling back to respawn")) { n++ } END { print n + 0 }'
+}
+# respawn_verdict <since> <seen> <files...>: prints "own <n>" when the logs hold more own-fallback lines (n) than already attributed
+# to earlier phases (<seen>), else "foreign <n>".
+respawn_verdict() {
+  local since="$1" seen="$2" n; shift 2
+  n="$(own_fallback_count "$since" "$@")"
+  if [ "$n" -gt "$seen" ]; then echo "own $n"; else echo "foreign $n"; fi
+}
+
+selftest() {
+  local t; t="$(mktemp -d)"
+  # (1) the volatile-key filter: system items out, third-party items and the dummies in.
+  [ -z "$(printf 'module:WiFi\nmodule:AudioVideoModule\nmodule:Clock\nstatus:com.apple.TextInputMenuAgent::Item-0\n' | volatile_filter)" ] \
+    && [ "$(printf 'status:MBDummy::Dummy-A\nstatus:com.corsair.ControlCenter::Item-0\nstatus:ie.boboco.vpnswitch::Item-0\n' | volatile_filter | wc -l | tr -d ' ')" = 3 ] \
+    || { echo "self-test failed: the volatile-key filter does not behave" >&2; rm -rf "$t"; return 1; }
+  # (2) an own-fallback line from BEFORE the soak started must not excuse a respawn; the same line after the start does.
+  printf '2026-11-04 19:30:00.000 Sommelier[1:2] [Sommelier] engine: actuator: live verify failed; falling back to respawn\n' > "$t/old.log"
+  printf '2026-11-04 20:05:00.000 Sommelier[1:2] [Sommelier] engine: actuator: live verify failed; falling back to respawn\n' > "$t/new.log"
+  [ "$(respawn_verdict '2026-11-04 20:00:00.000' 0 "$t/old.log")" = "foreign 0" ] \
+    && [ "$(respawn_verdict '2026-11-04 20:00:00.000' 0 "$t/new.log")" = "own 1" ] \
+    && [ "$(respawn_verdict '2026-11-04 20:00:00.000' 1 "$t/new.log")" = "foreign 1" ] \
+    || { echo "self-test failed: respawn attribution (stale or leaked own-fallback lines)" >&2; rm -rf "$t"; return 1; }
+  rm -rf "$t"
+}
+selftest || exit 2
+if [ "$SELFTEST_ONLY" = 1 ]; then echo "self-tests passed"; exit 0; fi
+SOAK_START="$(date '+%Y-%m-%d %H:%M:%S.000')"
 
 make app >/dev/null 2>&1 || { echo "make app failed" >&2; exit 2; }
 PROBE="$(swift build --show-bin-path)/mbprobe"
@@ -56,6 +96,9 @@ log() { echo "$@" | tee -a "$LOG"; }
 
 LAST_PS=0
 INCONCLUSIVE=0
+APP_STARTED=0
+SOM_PID=""   # pid of the Sommelier THIS script started; the only one it ever stops
+app_alive() { [ -n "$SOM_PID" ] && kill -0 "$SOM_PID" 2>/dev/null; }
 # unsettled_reason: prints why the latest observation in the app log was not a settled, complete read (nothing when it was, or when
 # the latest event is a plan). Used to tell "engine idle, but the bar could not be read reliably" from a real failure.
 unsettled_reason() {
@@ -80,25 +123,30 @@ wait_idle() {
   local limit="${1:-60}" t0 plan_line ps_line a1 a2
   t0="$(date +%s)"
   while :; do
-    pgrep -x Sommelier >/dev/null || return 0
+    app_alive || return 0
     plan_line="$(grep -n 'plan: phase=' "$APP_LOG" | tail -1)"
     ps_line="$(grep -n 'pass started' "$APP_LOG" | tail -1 | cut -d: -f1)"
     if [ "$(ps_count)" -gt "$LAST_PS" ] && echo "$plan_line" | grep -q 'plan: phase=converged' && [ "${plan_line%%:*}" -gt "${ps_line:-0}" ]; then
       a1="$(grep -c 'actuator:' "$APP_LOG")"; sleep 2; a2="$(grep -c 'actuator:' "$APP_LOG")"
-      [ "$a1" = "$a2" ] && [ "$(grep -n 'plan: phase=' "$APP_LOG" | tail -1)" = "$plan_line" ] && return 0
+      # Quiet for 2 s AND still the same last plan AND no pass started after it meanwhile (else wait for that pass's plan, same bound).
+      ps_line="$(grep -n 'pass started' "$APP_LOG" | tail -1 | cut -d: -f1)"
+      [ "$a1" = "$a2" ] && [ "$(grep -n 'plan: phase=' "$APP_LOG" | tail -1)" = "$plan_line" ] && [ "${plan_line%%:*}" -gt "${ps_line:-0}" ] && return 0
     fi
     [ $(( $(date +%s) - t0 )) -ge "$limit" ] && return 1
     sleep 1
   done
 }
 
-# stop_app: stops Sommelier only when the engine is idle; otherwise reports and leaves it running (returns 1).
+# stop_app: stops the Sommelier this script started (by pid, never by name) only when its engine is idle; otherwise reports and leaves it
+# running (returns 1). Nothing to stop (or a pre-existing Sommelier of the user's) -> returns 0 without touching anything.
 stop_app() {
+  app_alive || return 0
   if ! wait_idle 60; then
-    echo "ERROR: Sommelier's engine was not idle after 60 s (last plan: $(grep 'plan: phase=' "$APP_LOG" | tail -1 | cut -c1-120)); NOT killing it mid-pass. Stop it by hand: pkill -x Sommelier"
+    echo "ERROR: Sommelier's engine was not idle after 60 s (last plan: $(grep 'plan: phase=' "$APP_LOG" | tail -1 | cut -c1-120)); NOT killing it mid-pass. Stop it by hand: kill $SOM_PID"
     return 1
   fi
-  pkill -x Sommelier >/dev/null 2>&1
+  kill "$SOM_PID" >/dev/null 2>&1
+  SOM_PID=""
   return 0
 }
 
@@ -130,17 +178,19 @@ pgrep -x Sommelier >/dev/null && { echo "Sommelier is already running; stop it f
 agent_pid() { pgrep -x MenuBarAgent | head -1; }
 AGENT_BEFORE="$(agent_pid)"
 LAST_AGENT="$AGENT_BEFORE"; ATTR_SEEN=0; RESPAWN_NOTES=""
-# check_respawn <phase>: a MenuBarAgent pid change in the phase. Attributed to Sommelier's own fallback when the app log (all runs)
-# gained an `agent restarted by Sommelier (expected)` or `falling back to respawn` line: INCONCLUSIVE, "own fallback respawn (slow
+# check_respawn <phase>: a MenuBarAgent pid change in the phase. Attributed to Sommelier's own fallback when the app log
+# (lines from after this soak started) gained an `agent restarted by Sommelier (expected)` or `falling back to respawn` line: INCONCLUSIVE, "own fallback respawn (slow
 # reads)". Without such a line it is a FAIL ("foreign respawn"). --allow-respawn only prints a note.
 check_respawn() {
-  local cur n
+  local cur n verdict
   cur="$(agent_pid)"
-  [ "$cur" = "$LAST_AGENT" ] && return 0
-  n="$(cat "$WORK/applog.all" "$APP_LOG" 2>/dev/null | grep -c -e 'agent restarted by Sommelier (expected)' -e 'falling back to respawn')"
+  verdict="$(respawn_verdict "$SOAK_START" "$ATTR_SEEN" "$WORK/applog.all" "$APP_LOG")"
+  n="${verdict#* }"
+  # Fallback lines of a phase WITHOUT a pid change are consumed here too, so they cannot excuse a later phase's respawn.
+  if [ "$cur" = "$LAST_AGENT" ]; then ATTR_SEEN="$n"; return 0; fi
   if [ "$ALLOW_RESPAWN" = 1 ]; then log "  note [$1] MenuBarAgent respawned ($LAST_AGENT -> $cur); allowed"; RESPAWN_NOTES="$RESPAWN_NOTES
   $1: $LAST_AGENT -> $cur (allowed)"
-  elif [ "$n" -gt "$ATTR_SEEN" ]; then
+  elif [ "${verdict%% *}" = own ]; then
     printf '%s\tinconclusive\t0\n' "$1" >> "$STATS"; INCONCLUSIVE=$((INCONCLUSIVE + 1))
     log "  INCONCLUSIVE [$1] MenuBarAgent respawned ($LAST_AGENT -> $cur): own fallback respawn (slow reads)"
     RESPAWN_NOTES="$RESPAWN_NOTES
@@ -156,30 +206,26 @@ check_respawn() {
 
 # Fresh, on-bar keys in bar order from `mbprobe list --json` on stdin. Heuristic keys (chevron, unnamed items), iStat items
 # (they reposition themselves) and AX-identifier system modules (Focus) and the Wi-Fi module (which flickers in and out of the read, see AgreedScanObserver.defaultVolatileKeys) are not compared.
-# One -e per pattern: macOS grep honours `$` only at the end of the whole pattern, so a `$` inside an alternation never matched.
-# System items are macOS-ordered (it re-bases them on every agent respawn) and Sommelier does not manage them: `module:*` and `status:com.apple.*`.
-volatile_filter() { grep -Ev -e '^heuristic:' -e 'istatmenus' -e '^module:' -e '^status:com\.apple\.' ; }
 onbar() { jq -r '[.items, .keys] | transpose | map(select(.[0].isOnMenuBar and (.[0].stale | not))) | .[] | .[1]' | volatile_filter; }
-# Self-test of the filter, so a broken pattern cannot silently put a flickering module into the comparison again.
-[ -z "$(printf 'module:WiFi\nmodule:AudioVideoModule\nmodule:Clock\nstatus:com.apple.TextInputMenuAgent::Item-0\n' | volatile_filter)" ] \
-  && [ "$(printf 'status:MBDummy::Dummy-A\nstatus:com.corsair.ControlCenter::Item-0\nstatus:ie.boboco.vpnswitch::Item-0\n' | volatile_filter | wc -l | tr -d ' ')" = 3 ] \
-  || { echo "self-test failed: the volatile-key filter does not behave" >&2; exit 2; }
 snapshot() { "$PROBE" list --json 2>/dev/null; }
 is_dummy() { grep -q '^status:MBDummy::'; }
 # Order of the keys of $1 that also occur in $2 (common keys, order of $1).
 common_in() { grep -Fxf "$2" "$1"; }
 
 start_app() {   # start_app <layout file>
-  if pgrep -x Sommelier >/dev/null; then
+  if app_alive; then
     stop_app || { log "FAIL cannot stop the running app safely"; FAILURES=$((FAILURES + 1)); exit 1; }
     sleep 1
   fi
-  cat "$APP_LOG" >> "$WORK/applog.all" 2>/dev/null   # keep earlier runs' log lines for the respawn attribution
+  # Log lines of earlier app runs of THIS soak stay available for the attribution (the pre-soak build/sommelier.log is discarded).
+  [ "$APP_STARTED" = 1 ] && cat "$APP_LOG" >> "$WORK/applog.all" 2>/dev/null
+  APP_STARTED=1
   : > "$APP_LOG"; LAST_PS=0
   SOMMELIER_LAYOUT_FILE="$1" SOMMELIER_DEBUG_REVEAL_FILE="$REVEAL" "$PWD/build/Sommelier.app/Contents/MacOS/Sommelier" > "$APP_LOG" 2>&1 &
+  SOM_PID=$!
   disown
   sleep 2
-  pgrep -x Sommelier >/dev/null || { log "Sommelier did not start"; exit 2; }
+  app_alive || { log "Sommelier did not start"; exit 2; }
   wait_idle 90 || log "note: first passes not converged after 90 s"
 }
 
@@ -222,7 +268,7 @@ record() {   # record <phase> <label> <seconds> <rc>
     local why; why="$(unsettled_reason)"
     if [ -n "$why" ]; then
       printf '%s\tinconclusive\t%s\n' "$1" "$3" >> "$STATS"; INCONCLUSIVE=$((INCONCLUSIVE + 1))
-      log "  INCONCLUSIVE $2: not converged after ${3}s; engine idle but $why"
+      log "  INCONCLUSIVE $2: not converged after ${3}s; $why"
     else
       printf '%s\tfail\t%s\n' "$1" "$3" >> "$STATS"; log "  FAIL $2: not converged after ${3}s"; FAILURES=$((FAILURES + 1))
     fi
