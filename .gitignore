@@ -14,3 +14,6 @@ build/
 # Notarization credentials (App Store Connect API key ids), never committed
 .env
 .env.*
+
+# Release artifacts
+dist/

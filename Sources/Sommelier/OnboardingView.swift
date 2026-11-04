@@ -14,7 +14,7 @@ struct OnboardingView: View {
             row(title: "Screen Recording (optional)", state: model.screenRecording, optional: true,
                 text: "Optional: enables live images in the overflow panel.",
                 request: { model.requestScreenRecording() }, pane: .screenRecording)
-            Text("After rebuilding Sommelier its ad-hoc signature changes and macOS may require granting again.")
+            Text("Rebuilding from source changes the app's signature, so macOS asks for Accessibility again; the notarized release keeps its grant across updates signed with the same Developer ID.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
         .padding(20)

@@ -1,5 +1,15 @@
 # Manual testing
 
+## QA run (ordered)
+Run the sections below in this order for a full pass; each links to its checklist.
+1. First launch: [Developer launch trick](#developer-launch-trick)
+2. Permissions: onboarding and Accessibility grant (README "Permissions"; `mbprobe permissions`)
+3. Panel: [Overflow panel](#overflow-panel), [Live hide detection](#live-hide-detection), [Live hide/show](#live-hideshow)
+4. Arrange: [Layout import mirrors the bar](#layout-import-mirrors-the-bar), [System overflow](#system-overflow), [Arrange window](#arrange-window)
+5. Click-forwarding: [Click-forwarding](#click-forwarding)
+6. Robustness: [Robustness (gdu.21)](#robustness-gdu21)
+7. Release smoke: [Release smoke (reviewer/human)](#release-smoke-reviewerhuman)
+
 ## Developer launch trick
 Run the app binary from a shell that has Accessibility trust, not via `open`:
 
@@ -135,6 +145,7 @@ Headless drop pipeline (no mouse): `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dumm
 index is 0-based among MOVABLE items of the target section (modules do not count; `mbprobe layout move` is 1-based), passes through
 `ArrangeDrop.index` exactly like a UI drop, so `0` = first movable slot (after leading anchors) and `99` = before the trailing system
 block; "-" = append). Chain with `;`, spacing `SOMMELIER_ARRANGE_MOVE_INTERVAL`.
+Also set `SOMMELIER_OPEN_ARRANGE=1` for now: the hook's capability check refreshes only while the Arrange window is open; otherwise items whose owner key differs from the bundle id are rejected with "no Control Center entry" (bug tracked separately).
 
 Results 2026-11-04 (live, Bartender quit, scratch layout, Dummy A/B only): hide `...|hidden|-`: drop -> "⟳" 0.13 s, verified
 membership 6.7 s actuation, "✓" 11.6 s after the drop, agent pid constant; `...|visible|1`: back at bar index 1/2 per
@@ -294,3 +305,29 @@ the policy) for ~10 s and the log has the same text.
 Corrective soak run (2026-11-04 18:1x, baseline captured before the app starts and compared in full, every stop waits for an idle engine): V 5/5, H 6/6, R 20/20, final 1/1, no respawn, `SOAK PASS`. The app log of that run ends with `plan: phase=converged` before the stop (the last line is an observation-only poll pass); no kill happened inside a batch or drag. A first corrective run failed 3 times only because `module:WiFi` flickers out of the read; it is now excluded from the comparison like the other volatile modules.
 
 Soak script corrections (corrective pass 2): the Wi-Fi exclusion used `$` inside a `grep -v` alternation, which macOS grep ignores, so Wi-Fi was still compared; the filter is now `grep -Ev` with one `-e` per pattern and a start-of-script self-test. Convergence waits are 90 s; a wait that ends while the latest observation in the app log is unsettled, incomplete or has stale on-bar items (e.g. `hostedComplete=false onBarStale=8`, all iStat items stale; the engine correctly does nothing) is recorded INCONCLUSIVE with the reason, shown in the summary and not counted as a failure; more than 3 inconclusive phases fail the soak. A failure to stop the app safely now sets the exit code (decided inside the EXIT trap). This pass was NOT re-run live (the bar was needed elsewhere); the live re-run is pending.
+
+## Release smoke (reviewer/human)
+Status: **RUN 2026-11-04 (reviewer, partly headless); human steps below still needed.**
+Observed:
+- DMG: `spctl -t open` accepted (Notarized Developer ID), `stapler validate` OK. Only the DMG carries a stapled ticket; the `.app` has none of its own. Fine online; an offline first launch is untested (follow-up bead exists).
+- Locally built artefacts carry no quarantine flag, so `com.apple.quarantine` was added to a scratch copy to mimic a download. `open` then showed the Gatekeeper dialog
+  "'Sommelier' is an app created by the app Safari. ... Apple checked it for malicious software and none was found" (Cancel/Open). macOS ran it from an App Translocation path.
+- The status item appeared and the onboarding window showed Accessibility "Not granted".
+- A trusted run of the bundle's binary from the terminal logged `launch trusted=true` and `live hide/show: available` (the app-group entitlement IS honored in the notarized .app; findings-live-trigger section 8 case resolved).
+- Hide verified live in 10.5 s (dominated by a stale-iStat scan streak; see the stale-iStat bead), show verified live in 5.2 s; MenuBarAgent pid unchanged.
+- QA steps 1-3 ran headlessly.
+Still to do by a human: grant Accessibility to the Finder-launched app and confirm it starts working without relaunch; panel and Arrange clicks; display change and sleep/wake.
+Quit Bartender first; relaunch it afterwards.
+1. `make release VERSION=0.1.0 && make notarize` (or use an existing `dist/Sommelier-0.1.0.dmg`). Check
+   `spctl -a -vv -t install dist/Sommelier-0.1.0.dmg` and `spctl -a -vv -t exec dist/Sommelier.app` say "accepted, source=Notarized Developer ID".
+2. Mount the DMG (`open dist/Sommelier-0.1.0.dmg`), drag Sommelier to /Applications (or run it from `dist/`).
+   Use `SOMMELIER_LAYOUT_FILE` only for the terminal-started variant; a Finder launch uses the real layout, so back it up first.
+3. Launch from Finder (double-click). Expected Gatekeeper dialog: "Apple checked it for malicious software and none was found" with an Open button. Click Open.
+4. The onboarding window appears. Grant Accessibility in System Settings (macOS 27: "Device Control and Data Access"); Sommelier should start working without a relaunch.
+5. Confirm the app's own result (`mbprobe permissions` checks mbprobe, not the app): the onboarding/Settings state shows trusted. Do NOT use `log show`: NSLog text is
+   redacted to `<private>` in release builds. For `launch trusted=true` and live hide/show availability, run the bundle binary from a terminal and read its stderr
+   (`make app-run` style: `dist/Sommelier.app/Contents/MacOS/Sommelier 2>&1 | tee /tmp/s.log`). If live hide/show is unavailable, record that as the finding.
+6. Start a dummy (`make dummy ARGS="--count 2"`), hide one dummy via the app (Arrange window or panel) with the live mechanism, verify with `make probe ARGS="list"` that it left the bar
+   within 1-5 s and no MenuBarAgent restart happened, then show it again and verify.
+7. Quit Sommelier, `make dummy-stop`, relaunch Bartender.
+Record results (pass/fail, timings, Gatekeeper dialog text) here.
