@@ -247,7 +247,12 @@ struct ReconcilerRandomTests {
                     shown = shown &* 31 &+ 7
                 }
             }
-            if converged {
+            if !converged {
+                let fp = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
+                converged = fp.phase == .converged
+                #expect(plans <= 3 && converged, fail("not converged within 3 plans"))
+            }
+            do {   // oracle runs after the final plan whether or not the planner declared convergence
                 // Independent oracle: the layout-derived order of the keys now on the bar.
                 var want = layout.visible + (showHidden ? layout.hidden : [])
                 if layout.newItemPolicy == .visibleAtEnd { want += observedKeys.filter { layout.section(of: $0) == nil } }
@@ -262,10 +267,6 @@ struct ReconcilerRandomTests {
                     #expect(o.onBar.filter { Set(want).contains($0) } == want, fail("final order differs from layout"))
                 }
                 #expect(last.desiredOnBar == o.onBar, fail("final order differs from the planner's target"))
-            }
-            if !converged {
-                converged = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden).phase == .converged
-                #expect(plans <= 3 && converged, fail("not converged within 3 plans"))
             }
         }
     }

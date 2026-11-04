@@ -226,6 +226,40 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.calls.count == 1)
     }
 
+    @Test func driftedBatchSetsBatchDriftAndNeverDrags() async {
+        // H must be hidden; C and A are out of order so an order phase would have run.
+        let r = await rig(order: ["A", "H", "B", "C"].map(k), layout: Layout(visible: ["C", "A", "B"].map(k), hidden: [k("H")]))
+        await r.actuator.scriptDrift(onCall: 1, expected: "a", observed: "b")
+        let rep = await r.engine.reconcileOnce()
+        let calls = await r.actuator.calls
+        #expect(calls.count == 1)
+        #expect(calls.allSatisfy { if case .move = $0 { false } else { true } })
+        #expect(rep.outcome == .incomplete)
+        #expect(r.state.lastError == .batchDrift(expected: "a", observed: "b"))
+        #expect(!r.state.isConverged)
+        #expect(r.state.perItem[k("H")] == .inPlace)
+        #expect(await r.actuator.hidden == [k("H")])
+
+        // The next pass runs normally and drags, but the error stays until cleared.
+        let again = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.contains { if case .move = $0 { true } else { false } })
+        #expect(again.outcome == .converged)
+        #expect(r.state.lastError == .batchDrift(expected: "a", observed: "b"))
+        await r.engine.clearFailures()
+        #expect(r.state.lastError == nil)
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastError == nil)
+        #expect(r.state.isConverged)
+    }
+
+    @Test func userBusyBatchIsNotBatchDrift() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .userBusy)])
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .incomplete)
+        #expect(r.state.lastError == nil)
+    }
+
     @Test func concurrentTriggersCoalesce() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B", "C"].map(k))
         let gate = GateObserver(items: items)

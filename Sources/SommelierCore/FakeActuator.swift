@@ -14,6 +14,7 @@ public actor FakeActuator: MenuBarActuator {
     public private(set) var hidden: Set<ItemKey>
     public private(set) var calls: [Call] = []
     private var scripted: [Int: ActuationError] = [:]
+    private var drift: [Int: (String, String)] = [:]
     private let capabilities: any CapabilityProvider
     private let makeSnapshot: @Sendable ([ItemKey], Set<ItemKey>) -> MenuBarSnapshot
 
@@ -25,6 +26,14 @@ public actor FakeActuator: MenuBarActuator {
         self.hidden = hidden
         self.capabilities = capabilities
         self.makeSnapshot = makeSnapshot
+    }
+
+    /// Makes the Nth call apply its changes normally but report `.failed(.notVerified(expected:observed:), snapshot)`.
+    public func scriptDrift(onCall n: Int, expected: String, observed: String) { drift[n] = (expected, observed) }
+    /// Moves `key` to `index` in the order without recording a call (simulates an item shifted by the agent restart).
+    public func displace(_ key: ItemKey, toIndex index: Int) {
+        guard let i = order.firstIndex(of: key) else { return }
+        order.remove(at: i); order.insert(key, at: min(index, order.count))
     }
 
     public func failOnCall(_ n: Int, _ error: ActuationError) { scripted[n] = error }
@@ -65,7 +74,12 @@ public actor FakeActuator: MenuBarActuator {
 
     public func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult {
         if let f = begin(.applyHiddenBatch(changes)) { return f }
-        return apply(changes)
+        let n = calls.count
+        let r = apply(changes)
+        if let d = drift[n], case .verified = r {
+            return .failed(.notVerified(expected: d.0, observed: d.1), snapshot())
+        }
+        return r
     }
 
     /// All-or-nothing: validates every key before mutating.

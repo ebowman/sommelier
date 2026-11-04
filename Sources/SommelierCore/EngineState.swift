@@ -15,6 +15,9 @@ public enum EngineError: Equatable, Sendable {
     case conflictingManager(String)
     /// A pass was aborted after this many consecutive failed actuator calls. Cleared only by `clearFailures`/`setLayout`.
     case stoppedAfterFailures(Int)
+    /// A membership batch reported it could not verify the result (e.g. a non-batch item moved across the agent
+    /// restart). Not cleared by observing; cleared only by `clearFailures`/`setLayout`.
+    case batchDrift(expected: String, observed: String)
 }
 
 /// What the UI binds to. `observed` only ever holds observed truth (a verified actuator snapshot or a fresh observe),
