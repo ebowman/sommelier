@@ -302,6 +302,8 @@ on wake additionally logs `agent restarted: pid A -> B`; the pass waits out its 
 Also check by hand: launch a new third-party menu bar app that is not in the layout: Arrange status line shows `New item: <name> placed in Visible` (or Hidden per
 the policy) for ~10 s and the log has the same text.
 
+Scope: the soak asserts the order of THIRD-PARTY items and the dummies' states in every phase and the final check; system items (`module:*`, `status:com.apple.*`) are macOS-ordered (re-based on every agent respawn, not managed by Sommelier) and excluded, together with heuristic keys and iStat items.
+
 Respawn rule: a MenuBarAgent pid change that the app log attributes to Sommelier's own hide fallback (`agent restarted by Sommelier (expected)` or `falling back to respawn`) makes its phase INCONCLUSIVE ("own fallback respawn (slow reads)", counted in the inconclusive column, not a failure; more than 3 inconclusive fail the soak); a pid change without such a line is a FAIL ("foreign respawn").
 
 Live run 2026-11-04 19:0x-19:17 (Bartender quit): V 5/5, H 6/6, R 20/20, final 1/1; one own-fallback respawn (pid 22293 -> 46171) in reveal 10 after `live verify failed after 17626ms: 8 scans, 1 complete` (slow incomplete reads); it failed the then-strict rule, which is why the rule above exists.

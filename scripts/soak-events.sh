@@ -13,6 +13,8 @@
 # 4. Phase R: M reveal toggles (show hidden section / hide it) through SOMMELIER_DEBUG_REVEAL_FILE (Sommelier's own item can sit
 #    in Apple's overflow where it cannot be clicked, so the left click is replaced by the debug file; same engine call as the
 #    click in "inline" mode): dummies must appear on the bar, then disappear again.
+# Scope: the soak asserts the order of THIRD-PARTY items and the dummies' states; system items (module:*, status:com.apple.*) are
+#    macOS-ordered and excluded from every comparison (phases and final), as are heuristic keys and iStat items.
 # Safety: the app is never stopped while the engine acts. Every stop (restart between phases, exit handler) first waits, up to 60 s,
 #    for the app log to show the latest pass reaching `plan: phase=converged` after the last request, with no new actuator output for
 #    2 s; on timeout it says so and leaves the app RUNNING instead of killing a batch or drag.
@@ -155,11 +157,12 @@ check_respawn() {
 # Fresh, on-bar keys in bar order from `mbprobe list --json` on stdin. Heuristic keys (chevron, unnamed items), iStat items
 # (they reposition themselves) and AX-identifier system modules (Focus) and the Wi-Fi module (which flickers in and out of the read, see AgreedScanObserver.defaultVolatileKeys) are not compared.
 # One -e per pattern: macOS grep honours `$` only at the end of the whole pattern, so a `$` inside an alternation never matched.
-volatile_filter() { grep -Ev -e '^heuristic:' -e 'istatmenus' -e '^module:com\.apple\.menuextra\.' -e '^module:WiFi$' -e '^module:FocusModes$'; }
+# System items are macOS-ordered (it re-bases them on every agent respawn) and Sommelier does not manage them: `module:*` and `status:com.apple.*`.
+volatile_filter() { grep -Ev -e '^heuristic:' -e 'istatmenus' -e '^module:' -e '^status:com\.apple\.' ; }
 onbar() { jq -r '[.items, .keys] | transpose | map(select(.[0].isOnMenuBar and (.[0].stale | not))) | .[] | .[1]' | volatile_filter; }
 # Self-test of the filter, so a broken pattern cannot silently put a flickering module into the comparison again.
-[ -z "$(printf 'module:WiFi\n' | volatile_filter)" ] && [ -z "$(printf 'module:FocusModes\n' | volatile_filter)" ] \
-  && [ "$(printf 'module:Clock\nstatus:MBDummy::Dummy-A\n' | volatile_filter | wc -l | tr -d ' ')" = 2 ] \
+[ -z "$(printf 'module:WiFi\nmodule:AudioVideoModule\nmodule:Clock\nstatus:com.apple.TextInputMenuAgent::Item-0\n' | volatile_filter)" ] \
+  && [ "$(printf 'status:MBDummy::Dummy-A\nstatus:com.corsair.ControlCenter::Item-0\nstatus:ie.boboco.vpnswitch::Item-0\n' | volatile_filter | wc -l | tr -d ' ')" = 3 ] \
   || { echo "self-test failed: the volatile-key filter does not behave" >&2; exit 2; }
 snapshot() { "$PROBE" list --json 2>/dev/null; }
 is_dummy() { grep -q '^status:MBDummy::'; }
