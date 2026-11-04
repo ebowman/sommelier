@@ -50,6 +50,8 @@ public actor LayoutEngine {
         public var maxAllFailedPasses = 3
         /// `setLayout` calls closer together than this are one request: only the last layout is planned (gdu.47). Zero = no window.
         public var layoutCoalesce: Duration = .milliseconds(300)
+        /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
+        public var layoutCoalesceMax: Duration = .seconds(1)
         public init() {}
     }
 
@@ -74,6 +76,8 @@ public actor LayoutEngine {
     /// A pass remembers the value it started with; a different value means its plan is stale and it ends `.superseded` (gdu.47).
     private var layoutGeneration = 0
     private var supersedeReason = "setLayout"
+    /// When the first `setLayout` of the open coalescing burst arrived.
+    private var burstStart: ContinuousClock.Instant?
     private var draining = false
     private var inPass = false
     private var stopped = false
@@ -163,7 +167,13 @@ public actor LayoutEngine {
             // key), so a quick change of mind plans only the final layout. The drop's revision stamp is unaffected: the first
             // drop's keys are judged by the first pass started after the stamp, against the then-current (final) layout.
             if delayed["setLayout"] != nil { log("setLayout coalesced with an earlier one inside \(config.layoutCoalesce)") }
-            scheduleReconcile(after: config.layoutCoalesce, reason: "setLayout")
+            var delay = config.layoutCoalesce
+            if delayed["setLayout"] != nil, let b = burstStart {
+                delay = min(delay, max(.zero, config.layoutCoalesceMax - b.duration(to: .now)))   // the burst's cap
+            } else {
+                burstStart = .now
+            }
+            scheduleReconcile(after: delay, reason: "setLayout")
         } else {
             requestReconcile(supersede: true, reason: "setLayout")
         }
@@ -222,6 +232,7 @@ public actor LayoutEngine {
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
         pending = true
         if supersede, let t = observeTask {
+            supersedeReason = reason
             log("\(reason): abandoning the observation in progress")
             t.cancel()
         }
@@ -257,6 +268,7 @@ public actor LayoutEngine {
 
     private func fireDelayed(_ reason: String, supersede: Bool) {
         delayed[reason] = nil
+        if reason == "setLayout" { burstStart = nil }
         requestReconcile(supersede: supersede, reason: reason)
     }
 
@@ -773,6 +785,11 @@ public actor LayoutEngine {
                 // planned from; it is NOT a failure for the new layout. Adopt what it observed, reset its keys to the new plan's
                 // statuses, drop the rest of the stale plan, and let the next pass plan from the new layout and a fresh scan.
                 if await adopt(snap, into: &obs) { await publishObserved(obs, makePlan(obs)) }
+                else if foreignRestartInPass {
+                    // MenuBarAgent was respawned by someone else: the gdu.21 outcome, not a plain supersede.
+                    await publish { $0.inFlight = nil }
+                    return await finish(report(.agentRestarted), converged: false)
+                }
                 log("batch finished (\(err.map { "\($0)" } ?? "verified")) after the layout changed; not judged against the new layout")
                 return await endSuperseded(report(.superseded))
             }

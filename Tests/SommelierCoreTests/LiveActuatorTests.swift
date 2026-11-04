@@ -1082,16 +1082,56 @@ private final class FakePrefs: @unchecked Sendable {
 }
 
 // gdu.47: a batch asking the opposite of a write made moments ago rescans before it trusts its pre-write snapshot.
-@Test func oppositeBatchRightAfterAWriteWaitsAndRescans() async {
+// The earlier hide LAGS the scan: B is still on the bar in the first scan and parked from the second on.
+private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Config) {
     let w = World(["A", "B", "C"])
+    w.liveAvailable = true
     var c = LiveActuator.Config()
-    c.recentWriteSettle = 1e6   // the fake clock only moves by sleeps: make "moments ago" cover the whole test
+    c.recentWriteSettle = 1.5
     let a = LiveActuator(platform: w, config: c)
-    let hide = await a.applyHiddenBatchDetailed([key("B"): true])
-    #expect(hide.result.isVerified)
+    let hide = await a.applyHiddenBatchDetailed([key("B"): true])    // a real, verified live hide (recorded as the last write)
+    #expect(hide.result.isVerified && hide.mechanism == .live)
+    // Re-arm the lag: the hide "has not shown up yet" (B on the bar), landing on the second scan from now.
+    w.order = ["A", "B", "C"]; w.hidden = []
+    w.livePending = ["tracked.B": false]; w.liveScanCount = 0; w.liveApplyAfterScans = 2
+    return (w, a, c)
+}
+
+@Test func oppositeBatchRightAfterAWriteWaitsAndRescans() async {
+    let (w, a, _) = await laggingHideWorld()
+    let show = await a.applyHiddenBatchDetailed([key("B"): false])
+    #expect(await a.trace.contains { $0.contains("opposite of a write made") })
+    // The rescan shows B parked, so the show is a real change: it writes and verifies.
+    #expect(show.result.isVerified && show.mechanism == .live)
+    #expect(w.liveWrites.count == 2 && w.liveWrites[1] == ["tracked.B": true])
+    #expect(w.order.contains("B") && !w.hidden.contains("B"))
+}
+
+@Test func withoutTheSettleTheStalePreWriteScanLooksAlreadySatisfied() async {
+    let (w, _, _) = await laggingHideWorld()
+    var c = LiveActuator.Config(); c.recentWriteSettle = 0       // control: the same lag, no settle
+    let a = LiveActuator(platform: w, config: c)
+    let show = await a.applyHiddenBatchDetailed([key("B"): false])
+    #expect(show.result.isVerified && show.mechanism == nil)       // believed the stale scan: no write
+    #expect(w.liveWrites.count == 1)
+}
+
+@Test func aSameDirectionBatchSkipsTheWait() async {
+    let w = World(["A", "B", "C"]); w.liveAvailable = true
+    let a = LiveActuator(platform: w, config: LiveActuator.Config())
+    _ = await a.applyHiddenBatchDetailed([key("B"): true])
+    let again = await a.applyHiddenBatchDetailed([key("B"): true, key("C"): true])
+    #expect(again.result.isVerified)
+    #expect(await !a.trace.contains { $0.contains("opposite of a write made") })
+}
+
+@Test func anOppositeBatchOlderThanTheSettleWindowSkipsTheWait() async {
+    let w = World(["A", "B", "C"]); w.liveAvailable = true
+    let a = LiveActuator(platform: w, config: LiveActuator.Config())
+    _ = await a.applyHiddenBatchDetailed([key("B"): true])
+    w.clock = w.clock.addingTimeInterval(30)
     let show = await a.applyHiddenBatchDetailed([key("B"): false])
     #expect(show.result.isVerified)
-    #expect(await a.trace.contains { $0.contains("opposite of a write made") })
-    #expect(w.allowedWrites == [["tracked.B": false], ["tracked.B": true]])   // one write per direction
-    #expect(Set(w.order) == ["A", "B", "C"])
+    #expect(await !a.trace.contains { $0.contains("opposite of a write made") })
+    #expect(w.liveWrites.count == 2)
 }

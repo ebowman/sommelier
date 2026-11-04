@@ -65,7 +65,8 @@ private struct Rig {
 }
 
 @MainActor
-private func rig(layout: Layout, window: Duration, slowFirst: Bool = false) async -> Rig {
+private func rig(layout: Layout, window: Duration, slowFirst: Bool = false,
+                 agentPID: @escaping @Sendable () -> pid_t? = { nil }) async -> Rig {
     let act = FakeActuator(order: [A, B, C], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let logs = Logs()
     var cfg = LayoutEngine.Config()
@@ -75,7 +76,7 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false) asyn
     let engine = LayoutEngine(observer: slow ?? ActuatorObserver(actuator: act), actuator: act,
                               store: InMemoryLayoutStore(layout), capabilities: Caps(), state: state,
                               resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
-                              log: { logs.add($0) }, config: cfg)
+                              log: { logs.add($0) }, config: cfg, agentPID: agentPID)
     await engine.start()
     return Rig(engine: engine, state: state, actuator: act, logs: logs, slow: slow)
 }
@@ -150,4 +151,47 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false) asyn
         if case .failed? = st {} else { Issue.record("expected .failed, got \(String(describing: st))") }
         #expect(r.logs.count("pass superseded") == 0)
     }
+
+    // gdu.47 corrective: a steady stream of setLayout calls cannot starve the pass past layoutCoalesceMax (1 s).
+    @Test func aBurstOfLayoutsIsCappedAtTheCoalesceMax() async {
+        let r = await rig(layout: allVisible, window: .milliseconds(300))
+        var firstPassAfterCall: Int?
+        for i in 0..<8 {
+            await r.engine.setLayout(i % 2 == 0 ? Layout(visible: [B, A, C]) : allVisible)
+            let started = await MainActor.run { r.state.passesStarted }
+            if firstPassAfterCall == nil, started >= 1 { firstPassAfterCall = i }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        #expect(firstPassAfterCall != nil && firstPassAfterCall! <= 6)   // started while the burst was still going (~1 s), not after call 8 (1.4 s)
+        #expect(await waitUntil { await MainActor.run { r.state.isConverged } })
+    }
+
+    // The supersede log names the actual source.
+    @Test func anObservationCancelledByAnotherSourceLogsItsOwnReason() async {
+        let r = await rig(layout: allVisible, window: .milliseconds(30), slowFirst: true)
+        await r.engine.requestReconcile()
+        #expect(await waitUntil { await r.slow!.calls == 1 })
+        await r.engine.requestReconcile(supersede: true, reason: "transient reveal ended")
+        #expect(await waitUntil { r.logs.count("pass superseded by transient reveal ended") == 1 })
+        #expect(r.logs.count("pass superseded by setLayout") == 0)
+    }
+
+    // (b) with a foreign agent respawn during the batch: the gdu.21 outcome, not a plain supersede.
+    @Test func aBatchFollowedByAForeignAgentRespawnEndsAgentRestartedNotSuperseded() async {
+        let pid = PIDBox()
+        let r = await rig(layout: allVisible, window: .milliseconds(30), agentPID: { pid.value })
+        await r.actuator.setBatchDelay(.milliseconds(250))
+        await r.engine.setLayout(bHidden)
+        #expect(await waitUntil { await r.actuator.batchStarts == 1 })
+        await r.engine.setLayout(allVisible)   // supersede the batch in flight
+        pid.value = 4242                         // and someone else respawns the agent meanwhile
+        #expect(await waitUntil { r.logs.count("agent restarted during the pass") >= 1 })
+        #expect(r.logs.count("pass superseded by") == 0)
+        #expect(r.logs.count("pass delayed") == 0 && r.logs.count("not judged against the new layout") == 0)
+    }
+}
+
+private final class PIDBox: @unchecked Sendable {
+    private let lock = NSLock(); private var v: pid_t = 100
+    var value: pid_t { get { lock.lock(); defer { lock.unlock() }; return v } set { lock.lock(); v = newValue; lock.unlock() } }
 }
