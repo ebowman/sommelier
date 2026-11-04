@@ -139,16 +139,32 @@ public actor LayoutEngine {
             return
         }
         let l = layout, sh = showHidden
-        await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil }
+        await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
     }
 
-    public func setLayout(_ new: Layout) async {
+    /// Adopts `new`, publishes it with a new revision stamp (`layoutRevision`, `passesStartedAtRevision`) and returns that stamp:
+    /// the caller judges its change only by passes started after it.
+    @discardableResult
+    public func setLayout(_ new: Layout) async -> LayoutRevision {
         layout = new
         loaded = true
         do { try store.save(new) } catch { log("cannot save layout: \(error)") }
-        await publish { $0.layout = new }
+        let stamp = await publishLayout(new)
         await clearFailures()
         requestReconcile(supersede: true, reason: "setLayout")
+        return stamp
+    }
+
+    /// Publishes `l` as the next layout revision, stamped with the passes started so far (one main-actor hop, so the stamp is exact).
+    @discardableResult
+    private func publishLayout(_ l: Layout) async -> LayoutRevision {
+        let s = state
+        return await MainActor.run {
+            s.layout = l
+            s.layoutRevision += 1
+            s.passesStartedAtRevision = s.passesStarted
+            return LayoutRevision(revision: s.layoutRevision, passesStarted: s.passesStarted)
+        }
     }
 
     public func setShowHiddenSection(_ on: Bool) async {
@@ -385,7 +401,20 @@ public actor LayoutEngine {
 
     private var hasRetryableFailure: Bool { failures.keys.contains { (strikes[$0] ?? 0) < config.maxKeyFailures } }
 
+    /// A failed key whose placement a settled observation finds realized (and that the plan does not touch) is no longer failed:
+    /// a wrong earlier verdict, or something else fixed it (gdu.48). A failure recorded in THIS pass stays until a later pass. `.unsupported` is derived afresh every pass anyway.
+    private func clearFailuresInPlace(_ obs: ObservedOrder, _ plan: Plan) {
+        let acting = Set(plan.actions.map(Self.key(of:)))
+        for k in Array(failures.keys) where !acting.contains(k) && !failedThisPass.contains(k) && transientReveals[k.hideUnit] == nil
+            && (obs.onBar.contains(k) || obs.parked.contains(k))
+            && ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden) {
+            failures[k] = nil; strikes[k] = nil
+            log("cleared failure for \(k): now in place")
+        }
+    }
+
     private func statuses(_ obs: ObservedOrder, _ plan: Plan) -> [ItemKey: ItemStatus] {
+        clearFailuresInPlace(obs, plan)
         var out: [ItemKey: ItemStatus] = [:]
         for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
@@ -649,8 +678,7 @@ public actor LayoutEngine {
             for n in plan.newItems { layout.append(n.key, to: n.section) }
             await noteNewItems(plan.newItems)
             do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
-            let l = layout
-            await publish { $0.layout = l }
+            await publishLayout(layout)   // a new revision: the engine itself changed the layout (gdu.48)
             plan = makePlan(obs)
         }
         log(Self.describe(plan))

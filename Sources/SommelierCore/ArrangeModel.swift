@@ -293,7 +293,54 @@ public enum ArrangeSections {
 
 // MARK: - Drops, steps and toolbar actions
 
+/// The layout the Arrange window submitted, until the engine has published it (so rapid consecutive drops build on each other).
+/// Compared by REVISION, never by equality (gdu.48): the engine may append new items to the layout before it is published, so the
+/// published layout can differ from the submitted one. While pending, further drops build on `effective(over:)`, which rebases the
+/// pending copy onto the engine's layout (keys the engine added are kept), so they never drop the engine's additions.
+public struct PendingLayout: Equatable, Sendable {
+    public private(set) var layout: Layout?
+    public private(set) var submittedRevision: Int?
+    private var outstanding = 0
+    public init() {}
+
+    public var isActive: Bool { layout != nil }
+
+    /// A layout was handed to `setLayout` (its revision is not known yet).
+    public mutating func submit(_ l: Layout) { layout = l; outstanding += 1 }
+
+    /// `setLayout` returned `revision` for one earlier `submit`.
+    public mutating func submitted(revision: Int) {
+        outstanding = max(0, outstanding - 1)
+        submittedRevision = max(submittedRevision ?? revision, revision)
+    }
+
+    /// Clears the pending copy once every submission has returned its revision and the engine state has reached the latest one.
+    @discardableResult
+    public mutating func resolve(stateRevision: Int) -> Bool {
+        guard layout != nil, outstanding == 0, let r = submittedRevision, stateRevision >= r else { return false }
+        layout = nil; submittedRevision = nil
+        return true
+    }
+
+    /// What the window should treat as the current layout: the engine's when nothing is pending, else the pending copy plus any
+    /// key the engine added that the pending copy does not know.
+    public func effective(over current: Layout) -> Layout {
+        guard var l = layout else { return current }
+        for k in current.allKeys where l.section(of: k) == nil {
+            if let sec = current.section(of: k) { l.append(k, to: sec) }
+        }
+        return l
+    }
+}
+
 public enum ArrangeCapabilities {
+    /// Capability rules computed from the given `EngineState.items` (owning bundle ids) and the Control Center tracked set
+    /// (`nil` = unreadable, everything hideable). Pure, so a headless caller resolves exactly like a UI drop.
+    public static func rules(items: [ItemKey: ItemInfo], tracked: Set<String>?) -> CapabilityRules {
+        let ids = items.compactMapValues(\.ownerBundleID)
+        return EngineFactory.makeCapabilityRules(tracked: tracked, bundleID: { ids[$0] })
+    }
+
     /// Capability only from the engine's own data: a key without `ItemInfo` (no observation yet, or the app is not running)
     /// is UNKNOWN, so everything is allowed and the engine decides (the capsule shows "⟳" until it reports). Modules are
     /// anchors by kind. Known items get the real `CapabilityRules` answer (with the owning bundle id from `ItemInfo`).
@@ -463,7 +510,15 @@ public struct ArrangeTracker: Equatable, Sendable {
     public static let timeout: TimeInterval = 90
     public static let timeoutText = "Arrange window timeout: the menu bar still does not match the layout after 90 s (the engine may still be working)"
 
-    public struct Entry: Equatable, Sendable { public var dropSequence: Int; public var since: Date }
+    /// `awaitingStamp`: the drop's layout has been submitted but the engine has not yet reported the revision it produced
+    /// (`stamp`); such an entry is never judged. `ticket` identifies the submission.
+    public struct Entry: Equatable, Sendable {
+        public var dropSequence: Int
+        public var since: Date
+        public var awaitingStamp: Bool = false
+        public var ticket: Int = 0
+    }
+    private var nextTicket = 0
     public private(set) var entries: [ItemKey: Entry] = [:]
     public private(set) var timedOut: Set<ItemKey> = []
     private var lastUpdate: Date?
@@ -477,22 +532,37 @@ public struct ArrangeTracker: Equatable, Sendable {
     /// tracked key is suppressed.
     public func suppressed(passSequence: Int, observationSettled: Bool = true) -> Set<ItemKey> {
         if !observationSettled { return Set(entries.keys) }
-        return Set(entries.filter { passSequence <= $0.value.dropSequence }.keys)
+        return Set(entries.filter { $0.value.awaitingStamp || passSequence <= $0.value.dropSequence }.keys)
     }
 
     /// Records a submitted move (unit siblings together). Re-recording a key restarts its wait.
-    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date) {
-        for k in keys { entries[k] = Entry(dropSequence: passesStarted, since: now); timedOut.remove(k) }
+    ///
+    /// `awaitingStamp: true` (a drop that goes through `LayoutEngine.setLayout`): the entry is not judged until `stamp(ticket:...)`
+    /// supplies the engine's `passesStartedAtRevision` for the revision this drop produced (gdu.48). The returned ticket names
+    /// this submission. Without it, `passesStarted` is the stamp (an action that publishes no layout).
+    @discardableResult
+    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date, awaitingStamp: Bool = false) -> Int {
+        nextTicket += 1
+        for k in keys {
+            entries[k] = Entry(dropSequence: passesStarted, since: now, awaitingStamp: awaitingStamp, ticket: nextTicket)
+            timedOut.remove(k)
+        }
+        return nextTicket
     }
 
     public mutating func retry(passesStarted: Int, now: Date) {
-        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now) }
+        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now, ticket: entries[k]?.ticket ?? 0) }
         timedOut = []
     }
 
-    /// The engine has now published the layout the drops were made against: only passes started from here count.
-    public mutating func restamp(passesStarted: Int) {
-        for k in entries.keys { entries[k]?.dropSequence = passesStarted }
+    /// The engine published the layout of submission `ticket` as a revision that had `passesStartedAtRevision` passes started:
+    /// only passes started after that count (`passSequence > passesStartedAtRevision`). Entries re-recorded or retried since
+    /// carry another ticket / are no longer awaiting and are left alone.
+    public mutating func stamp(ticket: Int, passesStartedAtRevision: Int) {
+        for (k, e) in entries where e.ticket == ticket && e.awaitingStamp {
+            entries[k]?.dropSequence = passesStartedAtRevision
+            entries[k]?.awaitingStamp = false
+        }
     }
 
     public mutating func removeAll() { entries = [:]; timedOut = [] }
@@ -513,7 +583,7 @@ public struct ArrangeTracker: Equatable, Sendable {
         for (k, e) in entries {
             guard layout.section(of: k) != nil else { entries[k] = nil; timedOut.remove(k); continue }
             let dt = now.timeIntervalSince(e.since)
-            if passSequence > e.dropSequence {
+            if !e.awaitingStamp, passSequence > e.dropSequence {
                 switch perItem[k] {
                 case .failed(let err)?:
                     entries[k] = nil; timedOut.remove(k)

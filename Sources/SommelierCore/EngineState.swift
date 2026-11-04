@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 
+/// What `LayoutEngine.setLayout` returns: the revision the call produced and `passesStarted` when it was published.
+public struct LayoutRevision: Equatable, Sendable {
+    public var revision: Int
+    public var passesStarted: Int
+    public init(revision: Int, passesStarted: Int) { self.revision = revision; self.passesStarted = passesStarted }
+}
+
 public enum ItemStatus: Equatable, Sendable {
     case inPlace
     case pending
@@ -45,6 +52,11 @@ public final class EngineState {
     public var passSequence: Int = 0
     /// False while `observed` is the latest complete read that two scans did not agree on (gdu.46): shown, never acted on.
     public var observationSettled: Bool = true
+    /// Monotonic layout revision (gdu.48): incremented every time the engine adopts a layout (`start`, `setLayout`) or modifies
+    /// it itself (new items appended). `passesStartedAtRevision` is `passesStarted` at the moment that revision was published:
+    /// a pass judges a layout change only if `passSequence > passesStartedAtRevision` (it then started after publication).
+    public var layoutRevision: Int = 0
+    public var passesStartedAtRevision: Int = 0
     /// Transient "New item: X placed in Visible" text for the Arrange window status line (cleared by the engine after a few seconds).
     public var newItemNotice: String?
 

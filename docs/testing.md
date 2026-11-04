@@ -145,7 +145,18 @@ Headless drop pipeline (no mouse): `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dumm
 index is 0-based among MOVABLE items of the target section (modules do not count; `mbprobe layout move` is 1-based), passes through
 `ArrangeDrop.index` exactly like a UI drop, so `0` = first movable slot (after leading anchors) and `99` = before the trailing system
 block; "-" = append). Chain with `;`, spacing `SOMMELIER_ARRANGE_MOVE_INTERVAL`.
-Also set `SOMMELIER_OPEN_ARRANGE=1` for now: the hook's capability check refreshes only while the Arrange window is open; otherwise items whose owner key differs from the bundle id are rejected with "no Control Center entry" (bug tracked separately).
+`SOMMELIER_OPEN_ARRANGE=1` is no longer needed (gdu.48); keep it only to watch the `arrange rows:` lines.
+
+Arrange tracker (gdu.48) reviewer steps (live, Bartender quit, scratch layout, Dummy A/B only, NO `SOMMELIER_OPEN_ARRANGE`):
+1. `make dummy`, `make app`; `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dummy-A|hidden|-" make app-run`.
+   Expect in `build/sommelier.log`: `arrange env move: ...`, no `no Control Center entry` rejection, `arrange: submit layout; moved=...`.
+2. Expect `arrange: ... verified in place N s after the drop (observed order matches)` for Dummy A and B on the FIRST pass after the
+   `setLayout` log line (no second pass needed, no 90 s `NOT applied`); `mbprobe list` agrees.
+3. Chain drops with `SOMMELIER_ARRANGE_MOVE_INTERVAL=0.2` (`...|hidden|-;...|visible|1`): no capsule stays "⟳" and the second drop does not
+   undo a new item the engine appended (`New item:` notice; `layout.json` still lists it).
+4. After a failure (`stoppedAfterFailures` or a "N failed" line), fix the bar by hand, wait for a pass: the log shows `cleared failure for
+   ... : now in place` and the status line stops counting it.
+Unit coverage: `Tests/SommelierCoreTests/ArrangeRevisionTests.swift`.
 
 Results 2026-11-04 (live, Bartender quit, scratch layout, Dummy A/B only): hide `...|hidden|-`: drop -> "⟳" 0.13 s, verified
 membership 6.7 s actuation, "✓" 11.6 s after the drop, agent pid constant; `...|visible|1`: back at bar index 1/2 per
