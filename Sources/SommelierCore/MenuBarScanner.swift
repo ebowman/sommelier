@@ -81,6 +81,18 @@ public struct MenuBarScanner {
         return l.entries
     }
 
+    /// The actuator is about to hide the unit owned by `pids`: its hosted elements legitimately vanish from the tree and must
+    /// not count as a read defect (gdu.51). Expires after 60 s; `clearExpectedToVanish` ends it with the batch.
+    public func expectToVanish(pids: Set<pid_t>) {
+        state.loadIfNeeded()
+        var keys = Set<String>()
+        for p in pids { for i in state.perApp[p]?.infos ?? [] { keys.insert(i.identityKey) } }
+        state.expectedToVanish = (keys, Date())
+        log("expected to vanish: \(keys.sorted().joined(separator: ", "))")
+    }
+
+    public func clearExpectedToVanish() { state.expectedToVanish = nil }
+
     /// Forgets the assumed-hidden state of these owners (a show by us, a respawn, a failed attempt).
     public func clearAssumedHidden(pids: Set<pid_t>) {
         state.loadIfNeeded()
@@ -174,14 +186,30 @@ public struct MenuBarScanner {
         var carried: [AXElementInfo] = []
         // Groups that timed out without the source knowing their contents: carry what was visible before and is
         // missing now (still bounded by the stale-scan cap and the owner check below).
-        var candidatesToCarry = tree.timedOut
+        var candidatesToCarry = tree.timedOut.filter { !($0.frame.width <= 1 || ($0.identifier.isEmpty && $0.axDescription.isEmpty && $0.frame.minX <= 1)) }
         // Attribution by IDENTITY (gdu.51): every failed group is a self-positioning owner's when there is no top-level
         // failure, every named timeout carries a self-positioning element, and the unnamed timeouts are covered by
         // self-positioning elements that were hosted in the previous tree and are missing now, with NO other previously
         // hosted element missing and uncarried. Counts of the owner's cached items prove nothing.
         let owners = selfPositioningOwners
         func isSP(_ e: AXElementInfo) -> Bool { SelfPositioning.matches(identifier: e.identifier, owners: owners) }
-        let miss = missing(tree)
+        // Read noise (gdu.51): a zero-width element, or a nameless one parked at x <= 1, is the same class as the main-menu
+        // noise; it never blocks completeness and is not carried forward.
+        func isNoise(_ e: AXElementInfo) -> Bool {
+            e.frame.width <= 1 || (e.identifier.isEmpty && e.axDescription.isEmpty && e.frame.minX <= 1)
+        }
+        for e in tree.timedOut where isNoise(e) && state.loggedNoise.insert(e.identityKey).inserted {
+            log("ignored noise element (frame \(Int(e.frame.minX)),\(Int(e.frame.minY)) w\(Int(e.frame.width)))")
+        }
+        // Elements that legitimately left the tree are not "missing": the actuator is hiding their unit, their owner is gone
+        // or assumed hidden by us.
+        if let e = state.expectedToVanish, Date().timeIntervalSince(e.at) > 60 { state.expectedToVanish = nil }
+        let vanishing = state.expectedToVanish?.keys ?? []
+        let hiddenOwnerKeys: Set<String> = Set(state.assumedHidden.keys.flatMap { pid in state.perApp[pid]?.infos.map(\.identityKey) ?? [] })
+        func legitimatelyGone(_ e: AXElementInfo) -> Bool {
+            vanishing.contains(e.identityKey) || hiddenOwnerKeys.contains(e.identityKey) || ownerGone(e, running: running)
+        }
+        let miss = missing(tree).filter { !isNoise($0) && !legitimatelyGone($0) }
         let spMiss = miss.filter(isSP)
         // Persisted group identity (gdu.53): the self-positioning groups last seen for a running owner survive the 3-scan
         // carry-over, so a long streak stays attributable. Unnamed timeouts are covered when their count does not exceed the
@@ -199,7 +227,8 @@ public struct MenuBarScanner {
         var absentSP = Set(state.selfPositioningGroups.values.joined().map(\.key)).union(spMiss.map(\.identityKey))
         absentSP.subtract(freshKeys); absentSP.subtract(namedKeys)
         var attributable = false
-        if tree.failedReads > 0, tree.topFailures == 0, tree.timedOut.allSatisfy(isSP),
+        let namedRelevant = tree.timedOut.filter { !isNoise($0) }
+        if tree.failedReads > 0, tree.topFailures == 0, namedRelevant.allSatisfy(isSP),
            tree.unnamedTimeouts > 0 || !tree.timedOut.isEmpty {
             attributable = tree.unnamedTimeouts == 0 || (absentSP.count >= tree.unnamedTimeouts && miss.allSatisfy(isSP))
         }
@@ -230,9 +259,11 @@ public struct MenuBarScanner {
         tree.failuresAreSelfPositioning = attributable
         if tree.failedReads > 0, !attributable {
             if tree.topFailures > 0 || (tree.timedOut.isEmpty && tree.unnamedTimeouts == 0) { tree.incompleteReason = "top-level failure" }
-            else if let t = tree.timedOut.first(where: { !isSP($0) }) { tree.incompleteReason = "named timeout not self-positioning (\(t.identityKey))" }
-            else if tree.unnamedTimeouts > 0, spMiss.count < tree.unnamedTimeouts {
-                tree.incompleteReason = "\(tree.unnamedTimeouts) unnamed timeouts, only \(spMiss.count) self-positioning groups absent"
+            else if let t = namedRelevant.first(where: { !isSP($0) }) { tree.incompleteReason = "named timeout not self-positioning (\(t.identityKey))" }
+            else if tree.unnamedTimeouts > 0, absentSP.count < tree.unnamedTimeouts {
+                let recorded = spApps.filter { state.selfPositioningGroups[$0.pid] != nil }.count
+                tree.incompleteReason = "\(tree.unnamedTimeouts) unnamed timeouts, persisted self-positioning groups absent: \(absentSP.count), previous-tree absent: \(spMiss.count)"
+                    + (recorded == 0 ? spApps.map { " (no persisted record for pid \($0.pid))" }.joined() + (spApps.isEmpty ? " (no self-positioning app running)" : "") : "")
             } else if let m = miss.first(where: { !isSP($0) }) { tree.incompleteReason = "non-self-positioning element missing (\(m.identityKey))" }
             else { tree.incompleteReason = "failed reads not attributable to self-positioning owners" }
         }

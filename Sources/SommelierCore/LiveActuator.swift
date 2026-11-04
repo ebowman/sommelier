@@ -502,6 +502,11 @@ public actor LiveActuator: MenuBarActuator {
                     else { note("live: no complete hosted baseline (scan, 4 s of retries, cache); no element evidence for identifier-less items") }
                 }
                 var wrote = false
+                let hidePIDs = Set(resolved.compactMap { r -> pid_t? in
+                    guard let t = platform.trackedKey(for: r), wantByApp[t] == true else { return nil }
+                    return r.item.ownerPID
+                })
+                if !hidePIDs.isEmpty { platform.expectToVanish(pids: hidePIDs) }
                 do { try platform.setAllowedLive(wantByApp.mapValues { !$0 }); wrote = true }
                 catch { note("live write failed (\(error)); falling back to respawn") }
                 var evidence: String?
@@ -565,6 +570,7 @@ public actor LiveActuator: MenuBarActuator {
                                 let via = evidence.map { "live: verified by \($0); " } ?? ""
                                 note("\(via)live: verified by complete read #\(complete) (rule: first/second complete read satisfied); \(polls) scans, \(complete) complete, \(ms)ms, no respawn, read level \(s.completeness.rawValue)")
                                 var out = finish(expectations, v, s, settled: true, collateral: [])
+                                platform.clearExpectedToVanish()
                                 out.mechanism = .live; out.elapsedMS = ms
                                 return out
                             }
@@ -583,6 +589,7 @@ public actor LiveActuator: MenuBarActuator {
         }
         // Layout before the restart (docs/findings-restart-collateral.md): MenuBarAgent re-bases the stored positions on
         // every restart, and the re-based values can re-sort items. Remember the store values so the order can be restored.
+        platform.clearExpectedToVanish()
         platform.clearAssumedHidden(pids: members)   // the respawn rebuilds the layout; no write-time assumption survives it
         let store0 = (try? platform.readOrderStore()) ?? [:]
         // Participants: every item the agent lays out by store value, on the bar now (stale or not: its store value is still

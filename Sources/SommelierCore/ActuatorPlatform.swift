@@ -58,6 +58,9 @@ public protocol ActuatorPlatform: SnapshotScanning {
     func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?)
     /// Forgets the assumed-hidden state of these owners (show, respawn, failed attempt).
     func clearAssumedHidden(pids: Set<pid_t>)
+    /// The unit owned by `pids` is about to be hidden: its hosted elements are expected to vanish (gdu.51). Cleared with the batch.
+    func expectToVanish(pids: Set<pid_t>)
+    func clearExpectedToVanish()
 }
 
 public struct AssumedHiddenOwner: Equatable, Sendable {
@@ -79,6 +82,8 @@ extension ActuatorPlatform {
     public func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? { nil }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
     public func clearAssumedHidden(pids: Set<pid_t>) {}
+    public func expectToVanish(pids: Set<pid_t>) {}
+    public func clearExpectedToVanish() {}
 }
 
 private final class ScannerBox: @unchecked Sendable { let v: MenuBarScanner; init(_ v: MenuBarScanner) { self.v = v } }
@@ -247,6 +252,8 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     }
 
     public func clearAssumedHidden(pids: Set<pid_t>) { scanner.clearAssumedHidden(pids: pids) }
+    public func expectToVanish(pids: Set<pid_t>) { scanner.expectToVanish(pids: pids) }
+    public func clearExpectedToVanish() { scanner.clearExpectedToVanish() }
 
     /// MenuBarAgent respawned: drop everything cached from the old agent (see `MenuBarScanner.invalidateAgentState`).
     public func invalidateAgentState() { scanner.invalidateAgentState() }

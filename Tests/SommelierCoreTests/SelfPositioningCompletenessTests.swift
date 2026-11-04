@@ -190,7 +190,7 @@ private func reason(_ second: AgentHostedTree, failing: Set<pid_t> = [], log: (@
 
 @Test func reasonUnnamedTimeoutsNotCovered() {
     let r = reason(tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], unnamed: 1))
-    #expect(r.completenessReason == "1 unnamed timeouts, only 0 self-positioning groups absent")
+    #expect(r.completenessReason == "1 unnamed timeouts, persisted self-positioning groups absent: 0, previous-tree absent: 0")
 }
 
 @Test func reasonNonSelfPositioningElementMissing() {
@@ -216,7 +216,7 @@ private final class Lines: @unchecked Sendable { let l = NSLock(); var v: [Strin
     let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], unnamed: 1)
     let scanner = MenuBarScanner(source: source([full, t, t, t]), log: { lines.add($0) })
     for _ in 0..<4 { _ = scanner.scan() }
-    #expect(lines.v.filter { $0.hasPrefix("incomplete: ") } == ["incomplete: 1 unnamed timeouts, only 0 self-positioning groups absent"])
+    #expect(lines.v.filter { $0.hasPrefix("incomplete: ") } == ["incomplete: 1 unnamed timeouts, persisted self-positioning groups absent: 0, previous-tree absent: 0"])
 }
 
 @Test func levelDisplayNamesForJson() {
@@ -285,4 +285,77 @@ private let streakScan = tree([dummyEl, otherEl], failed: 2, unnamed: 2)
     cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true)           // next streak read: capped again
     #expect(cache.isCapped(g))
     cache.setSlow([other]); #expect(!cache.isCapped(g))                 // resolved: leaves the set
+}
+
+
+// MARK: - gdu.51/53 corrective 3: noise, vanishing units, reason text, persisted record
+
+private let noise = AXElementInfo(frame: CGRect(x: 0, y: 29, width: 0, height: 0))
+
+@Test func namelessZeroWidthTimeoutDoesNotBlockTheMiddleLevel() {
+    let r = reason(tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem), stale(noise)]))
+    #expect(noise.identityKey == "frame:0,29,0")
+    #expect(r.completeness == .completeExceptSelfPositioning && r.completenessReason == nil)
+    // not carried forward as a stale item
+    #expect(!r.items.contains { $0.stale && $0.axIdentifier.isEmpty && $0.axDescription.isEmpty && $0.frame.width <= 1 })
+}
+
+@Test func nameless_atLeftEdgeTimeoutIsNoiseToo() {
+    let edge = AXElementInfo(frame: CGRect(x: 0, y: 3, width: 24, height: 24))
+    let r = reason(tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem), stale(edge)]))
+    #expect(r.completeness == .completeExceptSelfPositioning)
+}
+
+@Test func noiseIsLoggedOnceAtDebugLevel() {
+    let lines = Lines()
+    let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem), stale(noise)])
+    let scanner = MenuBarScanner(source: source([full, t, t, t]), log: { lines.add($0) })
+    for _ in 0..<4 { _ = scanner.scan() }
+    #expect(lines.v.filter { $0.hasPrefix("ignored noise element") }.count == 1)
+}
+
+@Test func unitBeingHiddenIsNotAMissingElementOnceExpectedToVanish() {
+    // Dummy-A vanishes (hide) while iStat's groups time out unnamed: with the expectation the read stays the middle level.
+    var scanner = MenuBarScanner(source: source([full]))
+    _ = scanner.scan()
+    scanner.source = source([tree([otherEl], failed: 2, unnamed: 2)])
+    let without = scanner.scan()
+    #expect(without.completeness == .incomplete)
+    #expect(without.completenessReason == "non-self-positioning element missing (id:Dummy-A)")
+    scanner.expectToVanish(pids: [10])
+    let with = scanner.scan()
+    #expect(with.completeness == .completeExceptSelfPositioning)
+    scanner.clearExpectedToVanish()    // (afterwards Dummy-A is no longer in the previous tree either)
+}
+
+@Test func ownerThatQuitIsNotMissing() {
+    var scanner = MenuBarScanner(source: source([full]))
+    _ = scanner.scan()
+    var s2 = source([tree([otherEl], failed: 2, unnamed: 2)])
+    s2.apps = [agent, other, istatApp]          // Dummy quit
+    scanner.source = s2
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func reasonNamesPersistedCoverageAndMissingRecord() {
+    // 3 unnamed timeouts but only 2 persisted iStat groups
+    let r = reason(tree([dummyEl, otherEl], failed: 3, unnamed: 3))
+    #expect(r.completenessReason == "3 unnamed timeouts, persisted self-positioning groups absent: 2, previous-tree absent: 2")
+    // no complete read first: no persisted record for the iStat pid
+    let fresh = MenuBarScanner(source: source([tree([dummyEl, otherEl], failed: 2, unnamed: 2)]))
+    let f = fresh.scan()
+    #expect(f.completenessReason?.contains("no persisted record for pid 20") == true)
+}
+
+@Test func persistedRecordKeepsTheStreakAttributableInMemoryAndFromTheCacheFile() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("sommelier-sp-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let t = tree([dummyEl, otherEl], failed: 2, unnamed: 2)
+    let s = source([full, t, t, t, t, t, t])
+    let scanner = MenuBarScanner(source: s, cacheURL: url)
+    _ = scanner.scan()
+    for _ in 0..<5 { #expect(scanner.scan().completeness == .completeExceptSelfPositioning) }   // past maxStaleScans
+    // a new process reads the record from the cache file
+    let again = MenuBarScanner(source: source([t]), cacheURL: url)
+    #expect(again.scan().completeness == .completeExceptSelfPositioning)
 }
