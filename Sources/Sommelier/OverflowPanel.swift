@@ -16,7 +16,8 @@ final class OverflowNSPanel: NSPanel {
 /// Entries whose last activation failed (red outline + tooltip), cleared after a few seconds.
 @MainActor @Observable
 final class OverflowFeedback {
-    var errors: [ItemKey: String] = [:]
+    var model = OverflowFeedbackModel()
+    var errors: [ItemKey: String] { model.errors }
 }
 
 @MainActor
@@ -25,7 +26,8 @@ final class OverflowPanelController {
     private let onArrange: () -> Void
     private let onActivate: (ItemKey, ClickButton) async -> ActivationResult
     private let feedback = OverflowFeedback()
-    private var clearTask: Task<Void, Never>?
+    /// One 4 s clear per failed key: a later failure of another key must not cancel this one's.
+    private var clearTasks: [ItemKey: Task<Void, Never>] = [:]
     private var panel: OverflowNSPanel?
     private var hosting: NSHostingView<OverflowBarView>?
     private let probe: NSHostingView<OverflowBarView>
@@ -53,17 +55,20 @@ final class OverflowPanelController {
         let (anchor, screen) = (self.anchor, self.screen)
         hide("activate")
         let key = entry.key
+        let listAtClick = self.entries
         Task { @MainActor [weak self] in
             guard let self else { return }
             let r = await self.onActivate(key, button)
             guard case .failed(let e) = r else { return }
             NSLog("[Sommelier] overflow activation of %@ failed: %@", "\(key)", e.description)
-            self.feedback.errors[key] = e.description
+            self.feedback.model.fail(entry, message: e.description, in: listAtClick)
             if let screen { self.show(anchoredTo: anchor, on: screen) }
-            self.clearTask?.cancel()
-            self.clearTask = Task { @MainActor [weak self] in
+            self.clearTasks[key]?.cancel()
+            self.clearTasks[key] = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(4))
-                if !Task.isCancelled { self?.feedback.errors[key] = nil }
+                guard !Task.isCancelled, let self else { return }
+                self.feedback.model.clear(key)
+                self.clearTasks[key] = nil
             }
         }
     }
@@ -71,7 +76,7 @@ final class OverflowPanelController {
     var isVisible: Bool { panel?.isVisible ?? false }
     var frame: CGRect? { panel?.frame }
 
-    var entries: [OverflowEntry] { OverflowEntries.make(layout: state.layout, items: state.items) }
+    var entries: [OverflowEntry] { feedback.model.rendered(OverflowEntries.make(layout: state.layout, items: state.items)) }
 
     func toggle(anchoredTo itemFrame: CGRect, on screen: NSScreen) {
         if isVisible { hide() } else { show(anchoredTo: itemFrame, on: screen) }
@@ -225,7 +230,8 @@ struct OverflowBarView: View {
     @AppStorage("overflowShowNames") private var showNames = true
 
     var body: some View {
-        let entries = OverflowEntries.make(layout: state.layout, items: state.items)
+        let base = OverflowEntries.make(layout: state.layout, items: state.items)
+        let entries = feedback?.model.rendered(base) ?? base
         Group {
             if entries.isEmpty {
                 HStack(spacing: 10) {

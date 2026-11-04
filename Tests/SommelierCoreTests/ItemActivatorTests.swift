@@ -96,11 +96,17 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
     func menuBaseline(_ t: ActivationTarget) -> Int { 0 }
     func menuState(_ t: ActivationTarget, baseline: Int) -> ActivationMenuState {
         guard let o = openedAt, let a = menuAfter else { return ActivationMenuState(present: false) }
+        if escapedAt != nil { return ActivationMenuState(present: false) }
         let dt = clock.now().timeIntervalSince(o)
         if dt < a { return ActivationMenuState(present: false) }
         if let f = menuOpenFor, dt >= a + f { return ActivationMenuState(present: false) }
         return ActivationMenuState(present: true, frame: CGRect(x: 780, y: 24, width: 200, height: 300))
     }
+    /// Escape presses; with `escapeClosesMenu` the menu vanishes right after the first one.
+    var escapes = 0
+    var escapeClosesMenu = false
+    private var escapedAt: Date?
+    func postEscape() { escapes += 1; if escapeClosesMenu { escapedAt = clock.now() } }
     func sleep(_ seconds: TimeInterval) async { clock.advance(seconds) }
     func now() -> Date { clock.now() }
 }
@@ -326,6 +332,46 @@ private actor FakeHold: TransientRevealing {
         let elapsed = p.clock.now().timeIntervalSince(t0)
         #expect(elapsed >= 60 && elapsed < 63)
         #expect(p.writes.last == ["com.x.tool": false])
+    }
+
+    @Test func hardCapPostsEscapeAndRehidesAnywayWhenMenuStaysOpen() async {
+        let p = FakeActivation(); p.menuOpenFor = nil
+        let h = FakeHold()
+        let t0 = p.clock.now()
+        guard case .opened(let o) = await make(p, h).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.closedBy == "hard cap")
+        #expect(p.escapes == 1)
+        #expect(o.note == "menuStillOpenAtCap")
+        #expect(p.clock.now().timeIntervalSince(t0) >= 62)   // 60 s cap + the 2 s grace
+        #expect(p.writes.last == ["com.x.tool": false])
+        #expect(await h.ended == [key.hideUnit])
+    }
+
+    @Test func hardCapEscapeThatClosesTheMenuLeavesNoNote() async {
+        let p = FakeActivation(); p.menuOpenFor = nil; p.escapeClosesMenu = true
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.closedBy == "hard cap" && p.escapes == 1 && o.note == nil)
+        #expect(p.writes.last == ["com.x.tool": false])
+    }
+
+    @Test func menuClosedBeforeTheCapPostsNoEscape() async {
+        let p = FakeActivation()
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(p.escapes == 0 && o.note == nil)
+    }
+
+    @Test func cancellationDuringBaselineReturnsCancelledWithoutWriting() async {
+        let p = FakeActivation(); p.countKnown = false   // the baseline never reads
+        let h = FakeHold()
+        let a = make(p, h)
+        let t = Task { () -> ActivationResult in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await a.activate(key: key, button: .left)
+        }
+        let r = await t.value
+        #expect(r == .failed(.cancelled))
+        #expect(p.writes.isEmpty && p.presses == 0 && p.clicks.isEmpty)
+        #expect(await h.ended == [key.hideUnit])
     }
 
     @Test func notFittingItemUsesAXPressWithoutReveal() async {

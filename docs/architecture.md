@@ -431,7 +431,7 @@ Clicking an entry in the overflow panel opens the REAL item's menu or popover. M
    (CGEvent move/down/up via `.cghidEventTap`) at its centre (left or right), wait for the menu to close, hide the unit again
    (`setAllowedLive([tracked: false])`) and release the hold. The menu opens exactly under the item. "Really drawn" is NOT the app-side
    frame alone (a live-hidden item keeps a stale on-bar frame); it is the app-side frame on the strip AND MenuBarAgent hosting one more item
-   than before the write (`hostedBarCount`); without a usable baseline a stale on-bar frame is believed only 0.6 s after the write.
+   than before the write (`hostedBarCount`); without a usable complete baseline (`baselineAttempts` tries) the activator does not reveal at all and presses in place (left) / refuses (right). A cancellation during that baseline read returns `.cancelled` (nothing was written; the hold is released).
    The reveal is per unit (app): siblings appear too while the menu is open.
 2. **`axPressParked` (fallback, left click only)**: `AXUIElementPerformAction(kAXPressAction)` on the app-side element while it stays parked.
    Used when live hide/show is unavailable (no app-group entitlement), the item has no Control Center entry, the live write throws, or the
@@ -445,7 +445,7 @@ A drawn item (Control Center says allowed) is simply clicked (`barClick`).
 Menu close: a `CloseMonitoring` source (app: global `NSEvent` monitor for mouse-up and Escape, installed only during an activation;
 `mbprobe`: a listen-only CGEvent tap), OR the menu/popover child (counted against its count before the click, because some apps keep an empty
 zero-sized `AXMenu` child) disappearing, polled every 250 ms; then a 300 ms settle. An outside mouse-up is believed only if the menu is gone
-(a popover survives a click inside it); Escape is always believed. Hard cap 60 s. The re-hide is written once; a throwing write still releases
+(a popover survives a click inside it); Escape is always believed. Menu detection also counts the app's AX windows against their count before the click (popovers are windows), so any new app window is taken for the menu. Hard cap 60 s: at the cap the activator posts an Escape and waits up to 2 s (`capEscapeGrace`) for the menu to vanish before re-hiding; if it is still open it re-hides anyway and the result `note` is `menuStillOpenAtCap` (re-hiding under an open menu was seen live with Moom). The re-hide is written once; a throwing write still releases
 the hold and the result carries `rehideFailed` (the engine's next pass hides it); the activator never retries.
 
 Engine hold: while a unit is held the engine hides `ObservedOrder` entries of that unit from the planner (it neither hides nor orders them), shows
