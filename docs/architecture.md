@@ -63,6 +63,8 @@ steps); second failure -> fallback (order store + restart, if allowed by the cal
 `.permissionDenied`, `.unsupportedItem`, `.notFound`. Restart-based actions: one retry of the restart if the verifying scan still shows the
 old state AND the plist write is confirmed to have landed; second failure -> `.failed`.
 
+**Live hide/show path found (gdu.36, `docs/findings-live-trigger.md`):** writing `trackedApplications` through cfprefsd under `group.com.apple.controlcenter` (needs the app-group entitlement) hides/shows with no MenuBarAgent respawn; respawn stays the fallback. Whether a Developer ID-signed build may claim that app group is unverified.
+
 **Batching.** All hide/show changes in a plan are collected into ONE `isAllowed` write + one restart (`applyHiddenBatch`); fallback reorders
 join the same restart. Drags are never batched with each other (sequential, each verified) and run **before** any restart in the same plan
 (a restart blanks the bar for 1-2 s). Restart happens after the agent-store file is quiet. A batch is all-or-nothing at the write
