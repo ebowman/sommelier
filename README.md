@@ -6,8 +6,7 @@ Bartender's recurring failure mode is that it says it moved or hid an item and t
 order silently changed. Sommelier is built around one rule: **nothing is shown as done until the real menu bar
 confirms it.** The UI renders observed state; what you asked for is shown separately as pending, moving or failed.
 
-![Screenshot placeholder: overflow panel](docs/images/panel.png)
-![Screenshot placeholder: Arrange window](docs/images/arrange.png)
+Screenshots: coming soon.
 
 ## Status
 
@@ -23,12 +22,13 @@ assumed to behave the same but has not been verified. Single display only; multi
 
 ## Install
 
+Before you start: quit Bartender (or any other menu bar manager). The engine pauses while another manager runs, because they fight each other.
+
 1. Download `Sommelier-<version>.dmg` from the GitHub Releases page. It is signed with a Developer ID and notarized by Apple.
 2. Open the DMG and drag Sommelier to Applications.
 3. Launch it from Applications. macOS shows the usual "downloaded from the internet" confirmation; click Open.
 4. Sommelier opens an onboarding window until Accessibility is granted. Grant it in System Settings > Privacy & Security >
    Accessibility (on macOS 27 the pane is called "Device Control and Data Access"). It starts working without a relaunch.
-5. Quit Bartender (or any other menu bar manager) first: the engine pauses while another manager runs, because they fight each other.
 
 ## Usage
 
@@ -41,10 +41,11 @@ assumed to behave the same but has not been verified. Single display only; multi
   - moving: the change is in flight;
   - failed: the move did not verify; hover for the error, "Retry" is in the context menu;
   - cannot move or hide: the item is greyed (for example system items, Apple apps);
-  - does not fit: the item is hidden because there is no room for it on the bar.
+  - does not fit: the item sits behind macOS's own overflow chevron because there is no room for it on the bar.
 - **Always hidden**: items placed there stay hidden, including when the Hidden section is revealed.
-- **Hide what does not fit**: when the bar is too crowded (for example on a notched display), items that would be pushed into
-  macOS's own overflow are hidden by Sommelier instead, so you decide which ones go.
+- **Hide what does not fit...**: a manual button in the Arrange window toolbar, enabled only when items sit behind macOS's
+  overflow chevron (a crowded bar, for example on a notched display). It opens a confirmation sheet and then hides those items
+  so you can reach them from the panel instead. Sommelier never hides anything automatically.
 - **Per-app caveat**: macOS hides all status items of one app together. If an app has two items, they share one visibility setting.
 
 ## How it works
@@ -67,9 +68,9 @@ findings: [positioning](docs/findings-positioning.md), [visibility](docs/finding
 - Apple apps' items cannot be hidden.
 - Apps without a "Allow in the Menu Bar" entry in Control Center cannot be hidden yet.
 - Reordering takes about 6-11 s because it uses real drags; hide/show takes 1-5 s, bounded by scan time.
-- Items that macOS has pushed into its own overflow cannot be dragged.
+- Items that macOS has pushed into its own overflow cannot be dragged. "Hide what does not fit..." in the Arrange window is a manual action and never runs automatically.
 - Multi-display is untested.
-- macOS 25 and earlier are not supported.
+- macOS 15 and earlier are not supported.
 - Rebuilding from source changes the ad-hoc signature, so Accessibility must be granted again (see Troubleshooting).
   The notarized release keeps a stable identity across versions.
 

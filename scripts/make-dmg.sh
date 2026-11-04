@@ -81,7 +81,7 @@ rm -f "${DMG_PATH}"
 
 echo "==> Creating ${DMG_NAME}..."
 # `hdiutil create` is deprecated on macOS 27. diskutil creates an APFS volume
-# (hdiutil defaulted to HFS+), which is fine for the macOS 14 deployment
+# (hdiutil defaulted to HFS+), which is fine for the macOS 26 deployment
 # target. No -ov equivalent: DMG_PATH was removed above. The image is not
 # mounted afterwards; `set -e` aborts on a non-zero exit.
 diskutil image create from --format UDZO --volumeName "${VOLUME_NAME}" "${STAGING_DIR}" "${DMG_PATH}"
