@@ -36,6 +36,12 @@ public actor FakeActuator: MenuBarActuator {
         order.remove(at: i); order.insert(key, at: min(index, order.count))
     }
 
+    /// Every `applyHiddenBatch` takes this long between starting and applying (a slow live write).
+    public func setBatchDelay(_ d: Duration) { batchDelay = d }
+    /// Batches that have started (counted before their delay), for tests that act while one is in flight.
+    public private(set) var batchStarts = 0
+    private var batchDelay: Duration = .zero
+
     public func failOnCall(_ n: Int, _ error: ActuationError) { scripted[n] = error }
 
     private func snapshot() -> MenuBarSnapshot { makeSnapshot(order, hidden) }
@@ -75,6 +81,8 @@ public actor FakeActuator: MenuBarActuator {
     public func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult {
         if let f = begin(.applyHiddenBatch(changes)) { return f }
         let n = calls.count
+        batchStarts += 1
+        if batchDelay > .zero { try? await Task.sleep(for: batchDelay) }
         let r = apply(changes)
         if let d = drift[n], case .verified = r {
             return .failed(.notVerified(expected: d.0, observed: d.1), snapshot())

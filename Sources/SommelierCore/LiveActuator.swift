@@ -42,6 +42,10 @@ public actor LiveActuator: MenuBarActuator {
         /// Hard ceiling on full scans taken while waiting for a complete read.
         public var liveVerifyMaxScans = 8
         public var liveVerifyInterval: TimeInterval = 0.5
+        /// A batch that asks the OPPOSITE of a write made less than this long ago waits out the remainder and rescans before
+        /// it believes its pre-write scan: the earlier write may not be visible yet, and a stale scan would make the new batch
+        /// look "already satisfied" or compute expectations against the wrong starting state (gdu.47).
+        public var recentWriteSettle: TimeInterval = 1.5
         public var dragSteps = 10
         /// Second drag attempt uses more steps (docs/findings-drag: >=10 always worked, 20 is the next parameter).
         public var retrySteps = 20
@@ -362,12 +366,15 @@ public actor LiveActuator: MenuBarActuator {
     /// True when the last batch restarted MenuBarAgent (fallback path). The engine strikes such keys out at once.
     public private(set) var lastBatchRespawned = false
     private var batchRespawned = false
+    /// The keys and directions of the last batch that wrote, and when it finished (see `Config.recentWriteSettle`).
+    private var lastWrite: (changes: [ItemKey: Bool], at: Date)?
 
     public func applyHiddenBatchDetailed(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
         await acquire(); defer { release() }
         batchRespawned = false
         let out = await performBatch(changes)
         lastBatchRespawned = batchRespawned || out.mechanism == .respawn
+        if out.mechanism == .live || out.mechanism == .respawn { lastWrite = (changes, platform.now()) }
         return out
     }
 
@@ -376,6 +383,14 @@ public actor LiveActuator: MenuBarActuator {
         if let f = globalPrecheck() { return uniform(changes.keys, f) }
         var snap = await scanNonEmpty()
         if changes.isEmpty { return BatchOutcome(perKey: [:], result: .verified(snap)) }
+        if let w = lastWrite {
+            let age = platform.now().timeIntervalSince(w.at)
+            if age < config.recentWriteSettle, changes.contains(where: { key, hide in w.changes[key].map { $0 != hide } ?? false }) {
+                note("opposite of a write made \(Int(age * 1000)) ms ago; waiting before trusting the pre-write scan")
+                await platform.sleep(config.recentWriteSettle - age)
+                snap = await scanNonEmpty()
+            }
+        }
         var resolved = platform.resolve(snap)
         for _ in 0..<2 where changes.keys.contains(where: { k in !resolved.contains { $0.key == k } }) {
             // A key missing from one scan is not believed: confirm with another full scan before `.notFound`.

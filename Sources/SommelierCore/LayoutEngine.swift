@@ -50,6 +50,10 @@ public actor LayoutEngine {
         public var maxAllFailedPasses = 3
         /// Owners whose stale items do not block a pass but whose ORDER is only actuated on a COMPLETE read (gdu.51).
         public var selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners
+        /// `setLayout` calls closer together than this are one request: only the last layout is planned (gdu.47). Zero = no window.
+        public var layoutCoalesce: Duration = .milliseconds(300)
+        /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
+        public var layoutCoalesceMax: Duration = .seconds(1)
         public init() {}
     }
 
@@ -72,6 +76,12 @@ public actor LayoutEngine {
     private var loaded = false
     private var failures: [ItemKey: ActuationError] = [:]
     private var pending = false
+    /// Bumped by every explicit request that changes what a running pass should do (`setLayout`, `setShowHiddenSection`).
+    /// A pass remembers the value it started with; a different value means its plan is stale and it ends `.superseded` (gdu.47).
+    private var layoutGeneration = 0
+    private var supersedeReason = "setLayout"
+    /// When the first `setLayout` of the open coalescing burst arrived.
+    private var burstStart: ContinuousClock.Instant?
     private var draining = false
     private var inPass = false
     private var stopped = false
@@ -152,11 +162,36 @@ public actor LayoutEngine {
     public func setLayout(_ new: Layout) async -> LayoutRevision {
         layout = new
         loaded = true
+        noteSupersede("setLayout")
         do { try store.save(new) } catch { log("cannot save layout: \(error)") }
         let stamp = await publishLayout(new)
         await clearFailures()
-        requestReconcile(supersede: true, reason: "setLayout")
+        if config.layoutCoalesce > .zero {
+            // The pass for this layout starts after the window; a further setLayout inside it replaces this one (same reason
+            // key), so a quick change of mind plans only the final layout. The drop's revision stamp is unaffected: the first
+            // drop's keys are judged by the first pass started after the stamp, against the then-current (final) layout.
+            if delayed["setLayout"] != nil { log("setLayout coalesced with an earlier one inside \(config.layoutCoalesce)") }
+            var delay = config.layoutCoalesce
+            if delayed["setLayout"] != nil, let b = burstStart {
+                delay = min(delay, max(.zero, config.layoutCoalesceMax - b.duration(to: .now)))   // the burst's cap
+            } else {
+                burstStart = .now
+            }
+            scheduleReconcile(after: delay, reason: "setLayout")
+        } else {
+            requestReconcile(supersede: true, reason: "setLayout")
+        }
         return stamp
+    }
+
+    /// A request arrived that makes a running pass's plan stale: invalidate it and abandon an observation in progress.
+    private func noteSupersede(_ reason: String) {
+        layoutGeneration += 1
+        supersedeReason = reason
+        if let t = observeTask {
+            log("\(reason): abandoning the observation in progress")
+            t.cancel()
+        }
     }
 
     /// Publishes `l` as the next layout revision, stamped with the passes started so far (one main-actor hop, so the stamp is exact).
@@ -173,6 +208,7 @@ public actor LayoutEngine {
 
     public func setShowHiddenSection(_ on: Bool) async {
         showHidden = on
+        noteSupersede("setShowHiddenSection")
         await publish { $0.showHiddenSection = on }
         requestReconcile(supersede: true, reason: "setShowHiddenSection")
     }
@@ -200,6 +236,7 @@ public actor LayoutEngine {
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
         pending = true
         if supersede, let t = observeTask {
+            supersedeReason = reason
             log("\(reason): abandoning the observation in progress")
             t.cancel()
         }
@@ -235,6 +272,7 @@ public actor LayoutEngine {
 
     private func fireDelayed(_ reason: String, supersede: Bool) {
         delayed[reason] = nil
+        if reason == "setLayout" { burstStart = nil }
         requestReconcile(supersede: supersede, reason: reason)
     }
 
@@ -561,10 +599,7 @@ public actor LayoutEngine {
         case .failure(let e):
             if e == .superseded {
                 log("observation abandoned after \(took) ms for a newer request")
-                if draining { pending = true }
-                let r = PassReport(outcome: .superseded)
-                _ = await finish(r, converged: false)
-                return .end(r)
+                return .end(await endSuperseded(PassReport(outcome: .superseded)))
             }
             if e == .permissionDenied {
                 stopped = true
@@ -578,6 +613,15 @@ public actor LayoutEngine {
             _ = await finish(PassReport(outcome: .observeFailed), converged: false)
             return .end(PassReport(outcome: .observeFailed))
         }
+    }
+
+    /// Ends a pass whose plan a newer request made stale (gdu.47): nothing is recorded as a failure, no strikes, the next pass
+    /// plans from the NEW layout and a fresh full scan. While a `setLayout` coalescing window is open its timer starts that pass.
+    private func endSuperseded(_ r: PassReport) async -> PassReport {
+        log("pass superseded by \(supersedeReason)")
+        await publish { $0.inFlight = nil }
+        if draining, delayed["setLayout"] == nil { pending = true }
+        return await finish(r, converged: false)
     }
 
     private func runPass(scheduled: Bool) async -> PassReport {
@@ -606,6 +650,7 @@ public actor LayoutEngine {
     private func runPassBody(scheduled: Bool) async -> PassReport {
         inPass = true
         defer { inPass = false }
+        let generation = layoutGeneration
         lastStart = .now
         var actionCount = 0
         await publish { $0.passesStarted += 1 }
@@ -672,6 +717,7 @@ public actor LayoutEngine {
             notReadyUntil = nil
         }
 
+        if generation != layoutGeneration { return await endSuperseded(PassReport(outcome: .superseded)) }   // the layout changed during observation
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
         pruneFailures(obs)
 
@@ -744,6 +790,9 @@ public actor LayoutEngine {
             guard let first = order.first else { return await abort(.incomplete) }
             let firstAction: PlannedAction = batch[first] == true ? .hide(first) : .show(first)
             await publish { s in for k in order { s.perItem[k] = .pending }; s.inFlight = firstAction }
+            // The actuator computes its expectations and `before` map from ITS OWN scan taken right before the write; the engine
+            // passes only the keys and directions, never a snapshot, so a stale engine observation cannot leak into the verdict.
+            log("membership batch: \(batch.count) key(s); the actuator verifies against its own pre-write scan")
             let result = await actuator.applyHiddenBatch(batch)
             actionCount += 1
             var err: ActuationError?
@@ -755,6 +804,19 @@ public actor LayoutEngine {
             let respawned = await actuator.lastBatchRespawned
             if respawned { passAgent = agentPID() }   // our own fallback respawn: the pass continues with the new agent
             if let e = err, await handleFatal(e) { return await abort(.stopped) }
+            if generation != layoutGeneration {
+                // A newer layout arrived while the batch ran. The batch stands on its own verification against the layout it was
+                // planned from; it is NOT a failure for the new layout. Adopt what it observed, reset its keys to the new plan's
+                // statuses, drop the rest of the stale plan, and let the next pass plan from the new layout and a fresh scan.
+                if await adopt(snap, into: &obs) { await publishObserved(obs, makePlan(obs)) }
+                else if foreignRestartInPass {
+                    // MenuBarAgent was respawned by someone else: the gdu.21 outcome, not a plain supersede.
+                    await publish { $0.inFlight = nil }
+                    return await finish(report(.agentRestarted), converged: false)
+                }
+                log("batch finished (\(err.map { "\($0)" } ?? "verified")) after the layout changed; not judged against the new layout")
+                return await endSuperseded(report(.superseded))
+            }
             // A batch that reported anything other than success (userBusy and fatal errors aside) ends the pass.
             var driftErr: ActuationError?
             if let e = err, e != .userBusy { driftErr = e }
@@ -802,6 +864,10 @@ public actor LayoutEngine {
         while plan.phase == .order {
             // Every iteration re-plans from the CURRENT layout, so a setLayout that arrived during a drag is acted on at the
             // next iteration (the rest of the running drag cannot be taken back); log when that happens.
+            if generation != layoutGeneration {
+                log("layout changed during the order phase; dropping the rest of the stale plan")
+                return await endSuperseded(report(.superseded))
+            }
             if let r = requestedAt, requestedDuringPass {
                 requestedAt = nil
                 log("\(requestReason) picked up by the running pass at its next re-plan, \(Self.ms(r.duration(to: .now))) ms after the request")

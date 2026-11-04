@@ -174,6 +174,15 @@ apart (`hidden`, then `visible|0`): capsules stayed "⟳" until a pass that star
 ("not verified: expected membership change, saw unchanged") and both capsules showed "⚠" with that text (an engine-level result of
 overlapping layouts, shown honestly). Stall detector now logs timer lateness > 100 ms; none seen.
 
+### Rapid hide-then-show (gdu.47) reviewer steps
+
+Live steps (menu bar interaction; reviewer only, MBDummy items only). Unit tests: `SupersedeTests`, `oppositeBatchRightAfterAWriteWaitsAndRescans`.
+1. `make dummy`, `make app`; use a scratch layout: `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json`.
+2. `SOMMELIER_ARRANGE_MOVE="<Dummy-A key>|hidden|-;<Dummy-A key>|visible|0" SOMMELIER_ARRANGE_MOVE_INTERVAL=1 SOMMELIER_LAYOUT_FILE=<scratch>/layout.json make app-run` (key as printed by `mbprobe list`, e.g. `status:MBDummy::Dummy-A`).
+3. Expected log: either `setLayout coalesced with an earlier one inside` (interval shorter than 300 ms; not at 1 s) or, at 1 s, `pass superseded by setLayout` (the hide pass was observing or its batch in flight, then `batch finished (...) after the layout changed; not judged against the new layout`); the final pass shows Dummy-A again. Both capsules end "✓"; Dummy-A is on the bar at index 0 per `mbprobe list`; the log has NO `not verified` and NO `expected membership change`; at most one `live: verified` for the hide and one for the show.
+4. Repeat with `SOMMELIER_ARRANGE_MOVE_INTERVAL=5`: the hide pass completes and verifies on its own, then the show pass; no `superseded` expected; both capsules "✓", no "⚠".
+5. Regression: a hide that genuinely cannot work (e.g. a system module) still shows its failure; nothing in this change hides real failures.
+
 ## Launch latency (gdu.46)
 
 Bartender quit, no dummies, `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json`, 22 s per launch, `pkill -x Sommelier` between launches; times from
