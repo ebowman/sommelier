@@ -81,11 +81,32 @@ public struct Layout: Codable, Equatable, Sendable {
         return found
     }
 
-    /// Moves (or inserts) `key` into `section` at `index` (clamped to 0...count; nil appends).
+    /// The maximal suffix of `section` consisting only of `.module` keys (Control Center modules, Clock). On macOS 26+
+    /// a third-party item cannot be placed right of this block, so it is an unreachable region.
+    public func trailingSystemBlock(in section: LayoutSection = .visible) -> [ItemKey] {
+        let ks = keys(in: section)
+        var start = ks.count
+        while start > 0, case .module = ks[start - 1] { start -= 1 }
+        return Array(ks[start...])
+    }
+
+    /// Moves (or inserts) `key` into `section` at `index` (clamped to 0...count).
+    /// With `index == nil`, `.hidden`/`.alwaysHidden` append; `.visible` inserts immediately BEFORE the trailing run of
+    /// `.module` keys (see `trailingSystemBlock`), because anything right of it is unreachable and the engine would
+    /// otherwise try to drag real items to realize it. With no such run it appends. An explicit index is taken literally.
     public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil) {
         remove(key)
         var ks = keys(in: section)
-        let i = index.map { max(0, min($0, ks.count)) } ?? ks.count
+        let i: Int
+        if let index {
+            i = max(0, min(index, ks.count))
+        } else if section == .visible {
+            var start = ks.count
+            while start > 0, case .module = ks[start - 1] { start -= 1 }
+            i = start
+        } else {
+            i = ks.count
+        }
         ks.insert(key, at: i)
         set(ks, in: section)
     }

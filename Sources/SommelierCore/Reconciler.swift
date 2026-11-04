@@ -139,15 +139,49 @@ public struct Reconciler: Sendable {
             target = base.map { anchors.contains($0) ? $0 : (fill.next() ?? $0) }
         }
 
+        // Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock).
+        // Nothing movable can be placed right of its first item, so such targets are reported and relocated to the last
+        // slot before the block (relative order kept); no drag ever targets the block.
+        let blockStart = Self.trailingBlockStart(base: base, anchors: anchors)
+        if blockStart < base.count {
+            let blockSet = Set(base[blockStart...])
+            let firstBlockInTarget = target.firstIndex { blockSet.contains($0) } ?? target.count
+            let limit = min(blockStart, firstBlockInTarget)
+            let beyond = target.enumerated().filter { $0.offset >= limit && !anchors.contains($0.element) }.map(\.element)
+            if !beyond.isEmpty {
+                for k in beyond {
+                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(base[blockStart]))"))
+                }
+                target = target.filter { !blockSet.contains($0) } + base[blockStart...]
+            }
+        }
+
         var actions: [PlannedAction] = hides.map { .hide($0) } + shows.map { .show($0) }
         let phase: PlanPhase
         if !actions.isEmpty {
             phase = .membership
         } else {
             actions = Self.moves(from: base, to: target, anchors: anchors)
+            assert(Self.violations(actions, target: target, anchors: anchors, blockStart: blockStart).isEmpty,
+                   "planned a move of or into the trailing system block")
             phase = actions.isEmpty ? .converged : .order
         }
         return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: target)
+    }
+
+    /// Index in `base` where the trailing run of anchors starts (`base.count` when the last item is movable).
+    static func trailingBlockStart(base: [ItemKey], anchors: Set<ItemKey>) -> Int {
+        var i = base.count
+        while i > 0, anchors.contains(base[i - 1]) { i -= 1 }
+        return i
+    }
+
+    /// Post-condition: actions whose subject is an anchor, or whose destination slot in `target` is at/after `blockStart`.
+    static func violations(_ actions: [PlannedAction], target: [ItemKey], anchors: Set<ItemKey>, blockStart: Int) -> [PlannedAction] {
+        actions.filter {
+            guard case .move(let k, _) = $0 else { return false }
+            return anchors.contains(k) || (target.firstIndex(of: k) ?? Int.max) >= blockStart
+        }
     }
 
     /// The full left-to-right order the layout asks for, anchors included. Anchors the layout does not place (not in

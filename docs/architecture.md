@@ -132,6 +132,12 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   with anchors included. If the anchors' relative order on the bar differs from the layout's, that part is unreachable: each offending
   anchor goes into `skipped` ("immovable item is out of layout order"; the engine shows `.unsupported`) and the rest is planned with
   every anchor in its observed slot.
+- Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock) is unreachable for third-party
+  items on macOS 26+. A movable key the layout places right of its first item goes into `skipped` ("cannot be placed right of the system
+  items (<anchor>)") and is relocated in the target to the last slot before the block (relative order kept), so no drag ever has an anchor
+  as subject or a destination in the block (asserted after `moves`). Non-trailing anchors (e.g. `module:WiFi` mid-bar) are unaffected.
+  Correspondingly `Layout.move(_, to: .visible, index: nil)` inserts before the trailing run of `.module` keys instead of appending
+  (`Layout.trailingSystemBlock`); an explicit index is literal and `mbprobe layout move` warns when it lands in the block.
 - Unknown keys (not in the layout) follow `newItemPolicy` and are returned in `newItems` (the planner never mutates the layout);
   unknown parked keys are never shown. Layout keys not observed are listed in `absent` and ignored.
 - Minimality: anchors are always kept; per gap between anchors, a longest increasing subsequence of movables stays put; moves == misplaced items. Moves are emitted

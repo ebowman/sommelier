@@ -24,6 +24,7 @@ func usage() -> Never {
            mbprobe layout show [--json] [--file PATH]
            mbprobe layout init-from-current [--file PATH] [--force]
            mbprobe layout move <key> <visible|hidden|always> [index(1-based)] [--file PATH]
+                        (no index: appends; for visible, inserts before the trailing system items)
            mbprobe layout remove <key> [--file PATH]
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
            mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback]      (ONE engine pass: executes the plan)
@@ -730,6 +731,15 @@ func runLayout(_ a: [String]) async {
         l.move(key, to: section, index: idx)
         do { try store.save(l) } catch { fail("save failed: \(error)") }
         printLayout(l, only: section)
+        let order = l.keys(in: section)
+        print("order: " + order.enumerated().map { "\($0.offset + 1):\($0.element)" }.joined(separator: " "))
+        if section == .visible, case .module = key {} else if section == .visible, let at = order.firstIndex(of: key) {
+            var without = l; without.remove(key)
+            let tail = without.trailingSystemBlock(in: .visible)
+            if let first = tail.first, at > without.visible.count - tail.count {
+                print("warning: \(key) is right of the system items (\(first)); the engine will report it as unsupported")
+            }
+        }
     case "remove":
         guard a.count == 2 else { usage() }
         let key = parseKey(a[1])

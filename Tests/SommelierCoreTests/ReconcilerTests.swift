@@ -259,7 +259,7 @@ struct ReconcilerRandomTests {
                 let onFinal = Set(o.onBar)
                 want = want.filter { onFinal.contains($0) }
                 let last = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
-                let reachable = last.skipped.allSatisfy { $0.reason != "immovable item is out of layout order" }
+                let reachable = last.skipped.allSatisfy { $0.reason != "immovable item is out of layout order" && !$0.reason.hasPrefix("cannot be placed right of the system items") }
                 let movables = o.onBar.filter { !anchorSet.contains($0) && Set(want).contains($0) }
                 #expect(movables == want.filter { !anchorSet.contains($0) }, fail("movable order differs from layout"))
                 if reachable {
