@@ -111,12 +111,12 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
                                 axIdentifier: "x", frame: CGRect(x: 5, y: 0, width: 24, height: 24), source: .appExtras, isOnMenuBar: true)
         let hidden = it("ShowHidden", x: 50)
         // Key-level rule: both are exempt by key, whatever their width.
-        #expect(BarSignature.Value(order: [], presence: [], parked: [], staleParked: []).forPoll(selfPositioningOwners: []).presence.isEmpty)
         let sig = BarSignature(selfPositioningOwners: [])
         let a = [ResolvedItem(item: agent, key: .heuristic(bundleID: "com.apple.MenuBarAgent", fingerprint: "f", ordinal: 0), confidence: .heuristic),
                  ResolvedItem(item: hidden, key: .module(name: "Show Hidden Menu Bar Items"), confidence: .exact),
                  ResolvedItem(item: it("A", x: 100), key: .status(ownerKey: "A", autosaveName: "A"), confidence: .inferred)]
         #expect(sig.value(a) == sig.value([a[2]]))
+        #expect(sig.value(a)?.presence == ["status:A::A"])
     }
 
     @Test func thirdPartyAppearingTriggersAfterTheConfirmingScan() async {
@@ -147,23 +147,22 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         #expect(r.fired.logs.contains { $0.contains("not confirmed") })
     }
 
-    @Test func backOffGrowsWhileQuietAndResetsOnChangeOrUserAction() async {
+    @Test func periodIsFixedAndWorstCaseDetectionStaysWithinTwelveSeconds() async {
         let c = PollConfig()
-        #expect(c.period(quietPolls: 0) == 10)
-        #expect(c.period(quietPolls: 2) == 10)
-        #expect(c.period(quietPolls: 3) == 20)
-        #expect(c.period(quietPolls: 6) == 30)
-        #expect(c.period(quietPolls: 60) == 30)   // capped
+        #expect(c.interval == 10 && c.confirmDelay == 1)
+        #expect(c.worstCaseDetection <= 12)
+    }
+
+    @Test func heuristicAndStaleParkedKeysDoNotTrigger() async {
         let r = await rig()
-        for _ in 0..<4 { await r.triggers.poll() }
-        #expect(r.triggers.quietPolls == 4)
-        r.gate.value = PollGate(userActions: 1, secondsSinceUserAction: 60)
+        r.scans.set([base + [it("H1", x: 0, onBar: false)]])                 // heuristic parked: noise
         await r.triggers.poll()
-        #expect(r.triggers.quietPolls == 0)
-        for _ in 0..<2 { await r.triggers.poll() }
-        r.scans.set([base + [it("C", x: 300)]])
-        await r.triggers.poll()   // a confirmed change resets
-        #expect(r.triggers.quietPolls == 0 && r.fired.count == 1)
+        r.scans.set([base + [it("P", x: 0, stale: true, onBar: false)]])      // stale parked: a flag, not a change
+        await r.triggers.poll()
+        #expect(r.fired.count == 0 && r.sleeps.count == 0)
+        r.scans.set([base + [it("P", x: 0, onBar: false)]])                   // a fresh identified parked key is a change
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
     }
 
     @Test func skipsWhileBusyHeldUnsettledOrRightAfterAUserAction() async {
@@ -179,14 +178,46 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         }
     }
 
-    @Test func aPassBetweenPollsDropsTheBaselineSoItsOwnChangesNeverTrigger() async {
+    private func engineSig(_ items: [MenuBarItem]) -> BarSignature.Value {
+        let rule = BarSignature(selfPositioningOwners: ["S1", "S2"])
+        return rule.value(resolver(MenuBarSnapshot(items: items, capturedAt: Date())))!.forPoll(selfPositioningOwners: ["S1", "S2"])
+    }
+
+    @Test func aChangeRightAfterAPassIsCaughtByTheNextPoll() async {
         let r = await rig()
-        r.gate.value = PollGate(passesStarted: 1)
+        // The pass observed the bar WITHOUT C (the launch pass ran before the status item existed); C appears afterwards.
+        r.gate.value = PollGate(passesStarted: 1, engineSignature: engineSig(base), engineSignatureSerial: 1)
         r.scans.set([base + [it("C", x: 300)]])
-        await r.triggers.poll()   // new baseline taken from the post-pass bar
-        #expect(r.fired.count == 0)
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
+        #expect(r.fired.logs.contains { $0.contains("presence +[status:C::C]") })
+    }
+
+    @Test func aNewEngineObservationReplacesTheInPollBaseline() async {
+        let r = await rig()   // in-poll baseline = base
+        r.gate.value = PollGate(passesStarted: 1, engineSignature: engineSig(base + [it("C", x: 300)]), engineSignatureSerial: 1)
+        r.scans.set([base + [it("C", x: 300)]])   // the pass adopted C and the bar still has it
+        await r.triggers.poll()
+        #expect(r.fired.count == 0 && r.sleeps.count == 0)
+    }
+
+    @Test func anUnsettledSkipKeepsTheReferenceSoARealChangeTriggersOnceSettled() async {
+        let r = await rig()
+        r.scans.set([base + [it("C", x: 300)]])
+        r.gate.value = PollGate(observationSettled: false)
         await r.triggers.poll()
         #expect(r.fired.count == 0)
+        r.gate.value = PollGate(observationSettled: true)
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
+    }
+
+    @Test func aSamePassCannotRetriggerForTheSameBar() async {
+        let r = await rig()
+        r.scans.set([base + [it("C", x: 300)]])
+        await r.triggers.poll()
+        await r.triggers.poll()   // the bar is unchanged since the trigger and the engine published nothing new
+        #expect(r.fired.count == 1)
     }
 
     @Test func aPassStartingDuringTheConfirmationCancelsIt() async {

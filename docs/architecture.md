@@ -230,12 +230,12 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
     the SAME rule `AgreedScanObserver` uses for two-scan agreement: ORDER of identified, non-heuristic, non-self-positioning on-bar keys; PRESENCE of other
     on-bar keys; parked set of identified keys. Exempt: volatile modules (WiFi, Focus, "Show Hidden Menu Bar Items"), `heuristic:com.apple.MenuBarAgent` main-menu
     entries, width<=1 items, stale flags, and (poll only) the presence of self-positioning owners' items (iStat's eight items vanish from the fast scan and
-    return between polls). The baseline is the signature of the previous quiet poll, not `EngineState.observed` (which omits stale items and so differs
-    from a fast scan on this bar). A difference is CONFIRMED by a second fast scan `confirmDelay` (1 s) later; only a second scan with the same new signature requests a pass
-    (`requestReconcile(reason: "poll")`) and logs `poll: poll change confirmed ...: <diff>`. A one-scan flicker is logged "not confirmed" and ignored.
-    The baseline is dropped (and the next poll only re-baselines) after any pass started, user action or skip, so a pass's own changes never re-trigger.
-    Back-off: after every 3 consecutive quiet polls the period grows by 10 s (10, 20, 30 s cap); reset by a confirmed change, a user action
-    (`PollGate.userActions`) or an app launch/quit. Skipped entirely (no scan) while a pass is running/requested/scheduled, the engine sleeps, a transient reveal hold
+    return between polls). The reference is the poll signature the ENGINE publishes with each agreed observation (`PollGate.engineSignature`, serial-stamped), else the last quiet poll's scan
+    (the engine's observation omits stale items, so `EngineState.observed` itself cannot be compared): a change after a pass's last observation (an app's item appearing
+    after the launch pass observed) is caught by the next poll, and skips never drop it. A difference is CONFIRMED by a second fast scan `confirmDelay` (1 s) later; only
+    a second scan with the same new signature requests a pass (`requestReconcile(reason: "poll")`, logged `poll: poll change confirmed ...: <diff>`); a one-scan flicker is
+    logged "not confirmed". A signature that already triggered once is not re-triggered until the engine publishes a newer one. Fixed 10 s period, no back-off (worst-case
+    detection 11 s; the noise fix alone gave 0 passes). Skipped entirely (no scan) while a pass is running/requested/scheduled, the engine sleeps, a transient reveal hold
     is active, `observationSettled == false`, or within 5 s of a user-initiated request (`LayoutEngine.pollGate()`).
 - **UI binds to**: `observed`, `layout`, `perItem`, `inFlight`, `lastError`, `isConverged`, `lastPassAt`, `passCount`; it changes the bar only via `setLayout` / `setShowHiddenSection`.
 

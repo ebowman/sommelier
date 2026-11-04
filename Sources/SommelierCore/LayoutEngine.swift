@@ -87,6 +87,14 @@ public actor LayoutEngine {
     /// When the last explicit (superseding) request arrived: `setLayout`, show/hide section, hold release, agent restart.
     private var userActionAt: ContinuousClock.Instant?
     private var userActions = 0
+    /// The poll signature of the engine's latest agreed/adopted observation and a serial that changes with every publication (e7t).
+    private var pollSignature: BarSignature.Value?
+    private var pollSignatureSerial = 0
+    private func notePollSignature(_ items: [ResolvedItem]) {
+        let rule = BarSignature()
+        guard let v = rule.value(AgreedScanObserver.dedupe(items).items)?.forPoll(selfPositioningOwners: rule.selfPositioningOwners) else { return }
+        pollSignature = v; pollSignatureSerial += 1
+    }
     private func noteUserAction() { userActionAt = .now; userActions += 1 }
     private var stopped = false
     private var busyRetried = false
@@ -424,7 +432,7 @@ public actor LayoutEngine {
     public func pollGate() -> PollGate {
         PollGate(busy: inPass || pending || requestedAt != nil || !delayed.isEmpty || sleeping || !loaded,
                  holdActive: !transientReveals.isEmpty, userActions: userActions,
-                 secondsSinceUserAction: userActionAt.map { Double($0.duration(to: .now).components.seconds) + Double($0.duration(to: .now).components.attoseconds) / 1e18 })
+                 secondsSinceUserAction: userActionAt.map { Double($0.duration(to: .now).components.seconds) + Double($0.duration(to: .now).components.attoseconds) / 1e18 }, engineSignature: pollSignature, engineSignatureSerial: pollSignatureSerial)
     }
 
     public func isTransientlyRevealed(_ unit: HideUnit) -> Bool { transientReveals[unit] != nil }
@@ -548,6 +556,7 @@ public actor LayoutEngine {
             if o.onBar.isEmpty { return .failure(.empty) }
             if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
             observedCompleteness = r.completeness
+            if r.settled { notePollSignature(r.items) }
             itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items))
             return .success((o, r.settled))
         } catch let e as ObserveError {
@@ -580,6 +589,7 @@ public actor LayoutEngine {
             let o = ObservedOrder(resolved: resolved)
             if !o.onBar.isEmpty {
                 itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved))
+                notePollSignature(resolved)
                 obs = o; return true
             }
         }
@@ -1042,8 +1052,12 @@ public struct PollGate: Sendable, Equatable {
     public var secondsSinceUserAction: Double?
     /// Count of explicit user-initiated requests so far (a change resets the poll's back-off).
     public var userActions: Int
+    /// The engine's latest observed `BarSignature.forPoll` and its publication serial: the poll's reference after any pass.
+    public var engineSignature: BarSignature.Value?
+    public var engineSignatureSerial: Int
     public init(busy: Bool = false, holdActive: Bool = false, userActions: Int = 0, passesStarted: Int = 0, observationSettled: Bool = true,
-                secondsSinceUserAction: Double? = nil) {
+                secondsSinceUserAction: Double? = nil, engineSignature: BarSignature.Value? = nil, engineSignatureSerial: Int = 0) {
+        self.engineSignature = engineSignature; self.engineSignatureSerial = engineSignatureSerial
         self.busy = busy; self.holdActive = holdActive; self.passesStarted = passesStarted
         self.observationSettled = observationSettled; self.userActions = userActions
         self.secondsSinceUserAction = secondsSinceUserAction
