@@ -129,4 +129,29 @@ struct LayoutBuilderTests {
         #expect(out.excluded[0].hasSuffix("(File)"))
         #expect(out.layout.isValid)
     }
+
+    @Test func keepsObservedOrderWithModulesMidBar() {
+        let app = ItemKey.status(ownerKey: "com.example.b", autosaveName: "B")
+        let sh = ItemKey.module(name: "ShowHidden"), clock = ItemKey.module(name: "Clock")
+        let cc = ItemKey.module(name: "com.apple.menuextra.controlcenter")
+        let bar = [r(a, x: 100, w: 24, onBar: true), r(sh, x: 130, w: 24, onBar: true), r(app, x: 160, w: 24, onBar: true),
+                   r(clock, x: 190, w: 24, onBar: true), r(cc, x: 220, w: 24, onBar: true)]
+        #expect(LayoutBuilder.build(from: bar).layout.visible == [a, sh, app, clock, cc])
+        // Clock / ControlCenter sharing one x: discovery order stands.
+        let tied = [r(a, x: 100, w: 24, onBar: true), r(sh, x: 130, w: 24, onBar: true), r(app, x: 160, w: 24, onBar: true),
+                    r(cc, x: 190, w: 24, onBar: true), r(clock, x: 190, w: 24, onBar: true)]
+        #expect(LayoutBuilder.build(from: tied).layout.visible == [a, sh, app, cc, clock])
+    }
+    @Test func freshLayoutIsConvergedForThePlanner() {
+        let app = ItemKey.status(ownerKey: "com.example.b", autosaveName: "B")
+        let sh = ItemKey.module(name: "ShowHidden"), clock = ItemKey.module(name: "Clock")
+        let cc = ItemKey.module(name: "ControlCenter")
+        let res = [r(a, x: 100, w: 24, onBar: true), r(sh, x: 130, w: 24, onBar: true), r(app, x: 160, w: 24, onBar: true),
+                   r(clock, x: 190, w: 24, onBar: true), r(cc, x: 190, w: 24, onBar: true)]
+        let layout = LayoutBuilder.build(from: res).layout
+        let p = Reconciler().plan(observed: ObservedOrder(resolved: res), layout: layout,
+                                  capabilities: { if case .module = $0 { return Capability(canMove: false, canHide: false, reason: "system") }
+                                                  return Capability(canMove: true, canHide: true) })
+        #expect(p.phase == .converged); #expect(p.actions.isEmpty); #expect(p.skipped.isEmpty)
+    }
 }

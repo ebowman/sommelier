@@ -120,6 +120,9 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   `ItemKey.description` strings (`status:owner::name`, `module:Name`, `heuristic:...`).
 - Sections: `visible`, `hidden`, `alwaysHidden` (ordered); a key lives in at most one section. Mutators (`move`, `remove`,
   `append`, `reorder`) enforce this; `validated()` dedups keeping the first occurrence (visible, hidden, alwaysHidden).
+- Import order: `LayoutBuilder` writes `visible` in the observed left-to-right order (frame minX; ties keep the scanner's discovery
+  order, i.e. the hosted tree's child order), modules included, without `append`'s
+  trailing-block insertion rule.
 - Hide unit (`HideUnit`, `ItemKey.hideUnit`, `hideUnits(_:)` in `ItemKey.swift`): Control Center hides per app, so the unit is the
   `ownerKey` for status items, `module:<Name>` for each module (independent), the bundle id for heuristic keys. A unit is hidden
   only if ALL its items are in `hidden`/`alwaysHidden` (a `hidden`+`alwaysHidden` split is fine). `Layout.normalizedHideUnits()`

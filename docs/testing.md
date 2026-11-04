@@ -75,3 +75,21 @@ drags real (iStat) items. Restore from a copy taken while the dummies were visib
 non-dummy on-bar order identical; engine apply hide 0.71 s / show 0.63 s actuation (5.6 / 6.5 s wall); unentitled copy: respawn path, both verified, no stray plist.
 
 Poll bound (after the reviewer's finding): full scans every 0.5 s; the FIRST complete read decides, an unsatisfied complete read gets one more complete read, hard ceiling 8 scans / 20 s. The respawn fallback should now occur only when no complete read arrives within that ceiling (or two complete reads disagree). The trace states scans taken, complete count and the ending rule.
+
+## Layout import mirrors the bar
+
+`init-from-current` must write `visible` in the observed left-to-right order, modules included (sommelier-gdu.43: `LayoutBuilder`
+used `Layout.append`, whose "insert before the trailing module run" default reversed the modules and moved them to the end).
+Read-only check (never the real layout file):
+
+    MB=$(swift build --show-bin-path)/mbprobe
+    $MB layout init-from-current --file SCRATCH/layout.json --force   # retry on "scans did not agree"
+    $MB list                                                           # on-bar section, left to right
+    $MB plan --file SCRATCH/layout.json                                # phase: converged, actions (0), skipped (0)
+
+Result 2026-11-04 (22 identified items, widths > 1): on-bar and `visible` sequences identical. Mid-bar module and trailing block:
+`0 systemuiserver::TimeMachine, 1 module:AudioVideoModule, 2 TextInputMenuAgent, 3 KeepingYouAwake, 4-8 iStat weather/network/disks/battery/sensors,
+9 GateOpener, 10-11 iStat memory/cpu, 12 signal, 13 corsair ControlCenter, 14 vpnswitch, 15 mcpmaestro, 16 FloTile, 17 iStat time,
+18 Bartender::GoldenGateBar, 19 airmail2hookmark, 20 module:com.apple.menuextra.controlcenter, 21 module:Clock`.
+Before the fix the same bar produced `... 19 airmail2hookmark, module:Clock, module:com.apple.menuextra.controlcenter, module:AudioVideoModule,
+module:com.apple.menuextra.focusmode, module:WiFi` (all modules appended, in reverse). `plan` on the fresh file: converged, 0 actions, 0 skipped.
