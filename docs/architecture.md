@@ -366,5 +366,10 @@ them as `.pending` in `EngineState.perItem`, and auto-expires the hold after the
 KNOWN LIMITATION (bead filed): for items without an AX identifier/description (Tot, Yoink, Moom) the scanner cannot see a live hide, so after
 the hold ends the next pass sees the item "on the bar", plans a hide and the live verification fails, which falls back to ONE agent respawn
 (`live verify failed ... falling back to respawn`, ~4.5 s flash). The item itself is hidden again as soon as the live write lands.
+Latency: the user-felt metric is panel click -> menu visible (activation starts on mouse-UP); it is 0.55-3 s in practice (locating scan 0.2-1.8 s,
+hosted reads, live show 60-300 ms), so the 700 ms target is met only for the fastest reveals; the click -> menu part is 22-130 ms. Landing needs a
+settled frame (y 0...5, identical on two polls) AND one more hosted item than before the write (baseline read after the hold; an incomplete read
+means AXPress, never a believed stale frame). A click that opens no menu within 1.5 s is `.failed(.noMenu)` (re-hide and release still happen);
+a cancelled task re-hides and releases too.
 Debug: `SOMMELIER_ACTIVATE="<storeKey>[|right]"` (3 s after launch, result in `build/sommelier.log`); `mbprobe activate <key> [--right]
 [--ax-press] [--escape-after S]`.

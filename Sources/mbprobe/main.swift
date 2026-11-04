@@ -30,7 +30,7 @@ func usage() -> Never {
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
            mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback]      (ONE engine pass: executes the plan)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
-           mbprobe activate <key> [--right] [--ax-press] [--escape-after SECONDS]      (ItemActivator: reveal + click, or AXPress; waits for the menu to close)
+           mbprobe activate <key> [--right] [--ax-press] [--escape-after SECONDS] [--force]      (ItemActivator: reveal + click, or AXPress; waits for the menu to close)
 
     """.utf8))
     exit(2)
@@ -800,6 +800,15 @@ func runActivate(_ a: [String]) async {
     guard let keyText = a.first(where: { !$0.hasPrefix("--") }) else { usage() }
     let key = parseKey(keyText)
     let right = a.contains("--right"), axPress = a.contains("--ax-press")
+    if !a.contains("--force") {
+        let pg = Process(); pg.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep"); pg.arguments = ["-x", "Sommelier"]
+        pg.standardOutput = FileHandle.nullDevice
+        try? pg.run(); pg.waitUntilExit()
+        if pg.terminationStatus == 0 {
+            print("refusing: a Sommelier process is running; mbprobe has no engine hold, so its engine would re-hide the item mid-menu (--force to override)")
+            exit(4)
+        }
+    }
     await MainActor.run { _ = NSApplication.shared }   // global NSEvent monitors need the AppKit event machinery
     let platform = LiveActivationPlatform(closeMonitor: TapCloseMonitor())
     let activator = ItemActivator(platform: platform, hold: NoHold(), log: { _ in })

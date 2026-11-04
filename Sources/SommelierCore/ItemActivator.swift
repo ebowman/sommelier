@@ -23,6 +23,9 @@ public enum ActivationError: Error, Equatable, Sendable, CustomStringConvertible
     case pressFailed(Int32)
     case engineBusy
     case unavailable(String)
+    /// The click or press was delivered but no menu/popover appeared within the timeout.
+    case noMenu
+    case cancelled
     public var description: String {
         switch self {
         case .notFound: return "item not found on the menu bar"
@@ -31,6 +34,8 @@ public enum ActivationError: Error, Equatable, Sendable, CustomStringConvertible
         case .pressFailed(let e): return "Accessibility press failed (AXError \(e))"
         case .engineBusy: return "another reveal is in progress"
         case .unavailable(let why): return why
+        case .noMenu: return "no menu opened"
+        case .cancelled: return "cancelled"
         }
     }
 }
@@ -156,6 +161,8 @@ public actor ItemActivator {
         public var hardCap: TimeInterval = 60
         /// Without a hosted-count baseline, how long after the show write a stale on-bar frame is believed.
         public var unverifiedRevealWait: TimeInterval = 0.6
+        /// A reveal needs a complete hosted read as baseline; this many tries before falling back to AXPress.
+        public var baselineAttempts = 2
         public init() {}
     }
 
@@ -197,7 +204,7 @@ public actor ItemActivator {
             return await pressAndWait(target, mechanism: .axPressOverflow, t0: t0, revealMS: nil, revealed: false, say: say)
         }
         // Already drawn (e.g. revealed by the user): click it where it is, no reveal, no hold.
-        if target.isOnBar, !target.hiddenInControlCenter, Self.isOnBarStrip(target.frame), !forceAXPress {
+        if target.isOnBar, !target.hiddenInControlCenter, Self.isSettledOnBar(target.frame), !forceAXPress {
             return await clickAndWait(target, button: button, mechanism: .barClick, t0: t0, revealMS: nil, revealed: false, say: say)
         }
 
@@ -212,9 +219,20 @@ public actor ItemActivator {
         }
         guard let tracked = target.trackedKey else { return .failed(.unavailable("no Control Center entry")) }
         let unit = key.hideUnit
-        // The pre-reveal hosted count; nil when the read was incomplete (no retry: it sits on the latency path).
-        let hostedBefore = await platform.hostedBarCount()
         guard await hold.beginTransientReveal(unit, timeout: .seconds(Int(config.hardCap) + 5)) else { return .failed(.engineBusy) }
+        // The pre-reveal hosted count, read right before the show write (after the hold). Without a complete baseline a
+        // landed reveal cannot be told from a stale on-bar frame: do not reveal, press in place instead.
+        var hostedBefore: Int?
+        for _ in 0..<config.baselineAttempts {
+            hostedBefore = await platform.hostedBarCount()
+            if hostedBefore != nil || Task.isCancelled { break }
+        }
+        guard let hostedBefore else {
+            await hold.endTransientReveal(unit)
+            say("hosted read incomplete (\(config.baselineAttempts) tries); not revealing, pressing in place")
+            guard button == .left else { return .failed(.unavailable("the menu bar could not be read completely; a right click needs the reveal")) }
+            return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: false, say: say)
+        }
         do { try platform.setAllowedLive([tracked: true]) }
         catch {
             await hold.endTransientReveal(unit)
@@ -225,21 +243,24 @@ public actor ItemActivator {
         let shownAt = platform.now()
         say("unit shown (write done)")
 
-        // Wait for the item's own frame to land on the bar strip.
+        // Wait for the item to be drawn AND settled: the agent hosts one more item than before, and the app-side frame is on
+        // the strip (y 0...5) and identical (+-1 pt) on two consecutive polls (a frame still sliding in is not clicked).
         var landed: CGRect?
+        var previous: CGRect?
+        var cancelled = false
         while true {
-            if let f = platform.frame(of: target), Self.isOnBarStrip(f) {
-                // Frame on the strip is necessary, not sufficient: the agent must also host one more item than before.
-                if let before = hostedBefore {
-                    if let now = await platform.hostedBarCount(), now > before { landed = f; break }
-                } else if !Self.isOnBarStrip(target.frame) || platform.now().timeIntervalSince(shownAt) >= config.unverifiedRevealWait {
-                    // No baseline: a frame that moved from the parked spot is proof enough; a frame that looked on-bar
-                    // already (stale) is believed only after the agent had time to draw the item.
-                    landed = f; break
-                }
-            }
+            if Task.isCancelled { cancelled = true; break }
+            if let f = platform.frame(of: target), Self.isSettledOnBar(f) {
+                if let p = previous, Self.sameFrame(p, f) {
+                    if let now = await platform.hostedBarCount(), now > hostedBefore { landed = f; break }
+                } else { previous = f }
+            } else { previous = nil }
             if platform.now().timeIntervalSince(shownAt) > config.revealTimeout { break }
             await platform.sleep(config.revealPoll)
+        }
+        if cancelled {
+            _ = await rehide(tracked: tracked, unit: unit, say: say)
+            return .failed(.cancelled)
         }
         guard let landedFrame = landed else {
             say("reveal timed out")
@@ -258,6 +279,11 @@ public actor ItemActivator {
     }
 
     static func isOnBarStrip(_ f: CGRect) -> Bool { f.width > 1 && f.minY < 30 && f.minX > 10 }
+    /// Resting position on the bar: the item's top edge is within 0...5 pt of the screen top (live items sit at y 1...4).
+    static func isSettledOnBar(_ f: CGRect) -> Bool { isOnBarStrip(f) && f.minY >= 0 && f.minY <= 5 }
+    static func sameFrame(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) <= 1 && abs(a.minY - b.minY) <= 1 && abs(a.width - b.width) <= 1 && abs(a.height - b.height) <= 1
+    }
 
     // MARK: click / press
 
@@ -309,16 +335,17 @@ public actor ItemActivator {
         while true {
             let s = platform.menuState(t, baseline: baseline)
             if s.present { menuAppear = Int(since(postedAt) * 1000); menuFrame = s.frame; break }
-            if since(postedAt) > config.menuAppearTimeout { break }
+            if since(postedAt) > config.menuAppearTimeout || Task.isCancelled { break }
             await platform.sleep(config.revealPoll)
         }
         if let m = menuAppear { say("menu observed \(m) ms after the click at \(menuFrame.map { "\($0)" } ?? "?")") }
         else { say("no menu observed through Accessibility") }
 
-        if requireMenu, menuAppear == nil, pressError != 0 {
+        if menuAppear == nil {
             platform.closeMonitor?.stop()
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
-            return .failed(.pressFailed(pressError))
+            if Task.isCancelled { return .failed(.cancelled) }
+            return .failed(requireMenu && pressError != 0 ? .pressFailed(pressError) : .noMenu)
         }
 
         // 2. Wait for it to close: outside mouse-up / Escape (then settle), or the menu disappearing; hard cap.
@@ -327,6 +354,7 @@ public actor ItemActivator {
         var lastMenuPoll = platform.now()
         let waitStart = platform.now()
         loop: while since(waitStart) < config.hardCap {
+            if Task.isCancelled { closedBy = "cancelled"; break loop }
             await platform.sleep(config.tick)
             var hint: String?
             for e in platform.closeMonitor?.drain() ?? [] {
@@ -426,14 +454,14 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
                 let src = LiveAccessibilitySource()
                 var out: Int?
                 if let agent = src.runningApps().first(where: { $0.bundleID == menuBarAgentBundleID }) {
-                    let tree = src.agentHostedTree(for: agent, retry: false)
+                    let tree = src.agentHostedTree(for: agent, retry: true)
                     if tree.failedReads == 0, tree.unnamedTimeouts == 0, !tree.elements.isEmpty {
                         out = tree.elements.filter { !$0.stale && $0.frame.width > 1 && $0.frame.midY < 30 }.count
                     }
                 }
                 if once.take() { c.resume(returning: out) }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { if once.take() { c.resume(returning: nil) } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.6) { if once.take() { c.resume(returning: nil) } }
         }
     }
 

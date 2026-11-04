@@ -53,8 +53,15 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
         else if failHide { throw PreferenceWriterError.writeFailed("hide") }
         writes.append(c)
     }
+    /// Frames returned (in order) once the item has landed; the last one repeats. Models an item still sliding in.
+    var slide: [CGRect] = []
+    private var slideIndex = 0
     func frame(of t: ActivationTarget) -> CGRect? {
         if staleFrame { return barFrame }
+        if !slide.isEmpty, let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true {
+            defer { slideIndex += 1 }
+            return slide[min(slideIndex, slide.count - 1)]
+        }
         if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return barFrame }
         return parkedFrame
     }
@@ -122,13 +129,46 @@ private actor FakeHold: TransientRevealing {
         #expect(o2.mechanism == .axPressParked && q.clicks.isEmpty)
     }
 
-    @Test func withoutAHostedBaselineAStaleFrameIsBelievedOnlyAfterTheWait() async {
+    @Test func incompleteHostedReadFallsBackToAXPressAndNeverClicks() async {
         let p = FakeActivation(); p.staleFrame = true; p.countKnown = false
         p.locateResult = .found(ActivationTarget(key: key, ownerPID: 42, trackedKey: "com.x.tool", frame: barFrame, isOnBar: true, systemOverflow: false,
                                                  hiddenInControlCenter: true))
+        let h = FakeHold()
+        guard case .opened(let o) = await make(p, h).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.mechanism == .axPressParked)
+        #expect(p.clicks.isEmpty && p.writes.isEmpty)
+        #expect(await h.ended == [key.hideUnit])
+        guard case .failed(.unavailable) = await make(p, h).activate(key: key, button: .right) else { Issue.record("right"); return }
+    }
+
+    @Test func slidingFrameIsNotClickedUntilSettled() async {
+        let p = FakeActivation(); p.landsAfter = 0.1
+        p.slide = [CGRect(x: 800, y: 18, width: 24, height: 24), CGRect(x: 800, y: 9, width: 24, height: 24),
+                   CGRect(x: 800, y: 2, width: 24, height: 24)]
         guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
         #expect(o.mechanism == .revealClick)
-        #expect(o.revealMS! >= 600)
+        #expect(p.clicks.count == 1 && p.clicks[0].0 == CGPoint(x: 812, y: 14))   // centre of the settled y=2 frame
+    }
+
+    @Test func noMenuAfterClickFailsAndRehides() async {
+        let p = FakeActivation(); p.menuAfter = nil
+        let h = FakeHold()
+        let r = await make(p, h).activate(key: key, button: .left)
+        #expect(r == .failed(.noMenu))
+        #expect(p.writes.last == ["com.x.tool": false])
+        #expect(await h.ended == [key.hideUnit])
+    }
+
+    @Test func cancelledActivationRehidesAndReleases() async {
+        let p = FakeActivation(); p.menuOpenFor = nil
+        let h = FakeHold()
+        let a = make(p, h)
+        let t = Task { await a.activate(key: key, button: .left) }
+        for _ in 0..<5 { await Task.yield() }
+        t.cancel()
+        _ = await t.value
+        #expect(p.writes.last == ["com.x.tool": false])
+        #expect(await h.ended == [key.hideUnit])
     }
 
     @Test func rightClickIsForwardedWhenRevealed() async {
@@ -218,27 +258,25 @@ private actor FakeHold: TransientRevealing {
         #expect(o.closedBy == "menu disappeared" || o.closedBy == "escape")
     }
 
-    @Test func escapeBelievedWhenMenuNeverObservedThroughAX() async {
-        let p = FakeActivation(); p.menuAfter = nil
+    @Test func escapeClosesAnObservedMenuAtOnce() async {
+        let p = FakeActivation(); p.menuOpenFor = 30
         p.monitor.buffer.push(.escape)
         let r = await make(p).activate(key: key, button: .left)
         guard case .opened(let o) = r else { Issue.record("\(r)"); return }
-        #expect(o.menuAppearMS == nil)
         #expect(o.closedBy == "escape")
     }
 
     @Test func outsideClickClosesButClickOnTheItemDoesNot() async {
-        let p = FakeActivation(); p.menuAfter = nil
+        let p = FakeActivation(); p.menuOpenFor = nil   // a popover that survives clicks
         p.monitor.buffer.push(.mouseUp(CGPoint(x: barFrame.midX, y: barFrame.midY)))   // our own click's mouse-up
+        p.monitor.buffer.push(.mouseUp(CGPoint(x: 100, y: 300)))   // outside, but the menu is still there: not believed
         let a = make(p)
-        let r = await a.activate(key: key, button: .left)
-        guard case .opened(let o) = r else { Issue.record("\(r)"); return }
+        guard case .opened(let o) = await a.activate(key: key, button: .left) else { Issue.record("no"); return }
         #expect(o.closedBy == "hard cap")
-        #expect(p.writes.last == ["com.x.tool": false])
-        let q = FakeActivation(); q.menuAfter = nil
+        let q = FakeActivation(); q.menuOpenFor = 0.5
         q.monitor.buffer.push(.mouseUp(CGPoint(x: 100, y: 300)))
         guard case .opened(let o2) = await make(q).activate(key: key, button: .left) else { Issue.record("no"); return }
-        #expect(o2.closedBy == "outside click")
+        #expect(o2.closedBy == "outside click" || o2.closedBy == "menu disappeared")
     }
 
     @Test func menuDisappearanceClosesIt() async {

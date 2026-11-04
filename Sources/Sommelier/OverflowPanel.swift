@@ -257,6 +257,16 @@ struct OverflowEntryView: View {
     @State private var hovering = false
 
     var body: some View {
+        VStack(spacing: 2) {
+            entryBody
+            // Tooltips never show on a non-activating panel: the failure text is drawn inline too.
+            if let error {
+                Text(error).font(.system(size: 9)).foregroundStyle(.red).lineLimit(2).frame(maxWidth: 160)
+            }
+        }
+    }
+
+    private var entryBody: some View {
         HStack(spacing: 5) {
             icon.frame(width: 18, height: 18)
             if showName { Text(entry.displayName).font(.system(size: 12)).lineLimit(1) }
@@ -317,7 +327,10 @@ struct ClickCatcher: NSViewRepresentable {
     final class CatcherView: NSView {
         var onClick: (ClickButton) -> Void = { _ in }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) { onClick(.left) }
-        override func rightMouseDown(with event: NSEvent) { onClick(.right) }
+        // Activation starts on mouse-UP so no button is held when the activator posts its own click.
+        override func mouseDown(with event: NSEvent) {}
+        override func rightMouseDown(with event: NSEvent) {}
+        override func mouseUp(with event: NSEvent) { if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick(.left) } }
+        override func rightMouseUp(with event: NSEvent) { if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick(.right) } }
     }
 }

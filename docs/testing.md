@@ -210,3 +210,20 @@ respawn (see the known limitation in docs/architecture.md; the respawn changed t
 alone).
 Caveats of the live runs: `mbprobe list` reports the three (identifier-less) items as ON the bar after a reveal+re-hide although they are not
 drawn (stale app-side frame); `mbprobe agent-restart` re-parks them. Screenshots of Tot's popover can contain private text: do not archive them.
+
+### Click-forwarding: user-felt latency (corrective pass)
+The metric that matters is **panel click -> menu visible** (mouse-up on the entry to the menu/popover being present), not click->menu
+(the synthesized click to the menu, 22-130 ms, secondary). The 700 ms target applies to the panel metric and is met only for the fastest
+reveals: reviewer panel runs Yoink 806 ms, Tot about 1658 ms; the Moom run missed it (accepted a frame still sliding in, see below); my
+`SOMMELIER_OPEN_PANEL=1` + `cliclick` run on the Tot entry: mouse-up 14:36:33.807 -> `menu observed` 14:36:34.359 = 552 ms (locate scan
+only 170 ms that time). The `mbprobe activate` reveal (entry -> drawn) after the fixes below was 0.8-2.8 s (Moom x8), because the scan and the
+now-retrying hosted read dominate; so typical panel click -> menu is 1-3 s, the target is NOT generally met (follow-up: cache the locate scan).
+Reviewer's Keyboard Maestro case: a mis-aimed reveal fell back to AXPress and the menu appeared at an unrelated place (the fallback caveat).
+Fixes this pass: landing needs a SETTLED frame (y 0...5, identical +-1 pt on two polls 50 ms apart) plus the agent hosting one more item;
+the hosted baseline is read after the hold, right before the write; an incomplete hosted read never lets a stale frame be believed (retry, then
+AXPress `axPressParked` for left, unavailable for right); a click or press that opens no menu within 1.5 s returns `.failed(.noMenu)` (re-hide and
+hold release still happen). Moom x4 with `--escape-after 5`: 4 of 4 opened under the item; an earlier x6 batch with the old rules produced 2 `no
+menu` failures that were AXPress fallbacks on a stale frame (the hosted fast read was incomplete), which is why the baseline read now uses the
+retrying tree read. The panel's inline red caption is drawn under the outlined entry (tooltips do not show on a non-activating panel); live check:
+a not-running Tot refreshed the entries (entry gone, log `failed: the app is not running`), so the caption itself was only seen by the reviewer's
+outline run. `mbprobe activate` refuses while a Sommelier process runs (no engine hold) unless `--force`.
