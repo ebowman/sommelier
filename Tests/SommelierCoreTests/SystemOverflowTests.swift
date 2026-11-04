@@ -169,12 +169,12 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     #expect(p.actions == [.show(k("p"))])
 }
 
-@Test func aDrawnItemAtOrLeftOfTheOverflowRunIsReportedAndLeftWhereItIs() {
-    let o = obs(["o1", "ch", "a", "b"], ovf: ["o1"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["b", "o1", "ch", "a"]), capabilities: anchorCh)
-    #expect(Set(p.skipped.map(\.key)) == [k("b"), k("o1")])
-    #expect(p.skipped.allSatisfy { $0.reason == Reconciler.notFittingReason })
-    #expect(p.actions.isEmpty)                                          // b stays put; nothing lands in or left of the overflow
+@Test func aDrawnKeyPlacedLeftOfTheOverflowRunIsOrderedAmongDrawnKeysOnly() {
+    let o = obs(["o1", "ch", "a", "b", "c"], ovf: ["o1"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["c", "o1", "ch", "a", "b"]), capabilities: anchorCh)
+    #expect(p.skipped.isEmpty)
+    #expect(p.actions == [.move(k("c"), .before(k("a")))])              // never a slot left of the first drawn item
+    #expect(Reconciler.overflowViolations(p.actions, forbidden: [k("o1"), k("ch")], boundary: true).isEmpty)
 }
 
 @Test func anOverflowedItemMayStillBeHidden() {
@@ -206,19 +206,28 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
 // MARK: overflowed keys never influence drawn keys (third corrective pass)
 
 @Test func anUnknownNewItemInTheOverflowCausesNoSkipsAndNoActions() {
-    // u is new (not in the layout) and sits in the overflow; the policy appends it to the wanted order after a, b, c.
     let o = obs(["u", "ch", "a", "b", "c"], ovf: ["u"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "b", "c"]), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
 }
 
-@Test func aHiddenListedSiblingPulledIntoTheOverflowAnchorsNoDrawnKey() {
+@Test func aSiblingPulledOnBarByLayoutDecodeNormalizationCausesNoSkipsAndNoActions() throws {
     func kk(_ n: String) -> ItemKey { .status(ownerKey: "com.x.app", autosaveName: n) }
-    let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), k("z"), kk("b")], parked: [], systemOverflow: [kk("o")], overflowChevron: k("ch"))
-    let l = Layout(visible: [kk("a"), k("z"), kk("b")], hidden: [kk("o")], alwaysHidden: [])
+    // "o" (overflowed) is hidden-listed, but its app also has visible items: decode moves it to visible, after every drawn key.
+    let json = Data(#"{"schemaVersion":1,"visible":["status:com.x.app::a","status:com.x.z::z","status:com.x.app::b"],"hidden":["status:com.x.app::o"],"alwaysHidden":[],"newItemPolicy":"visibleAtEnd"}"#.utf8)
+    let (l, warnings) = try Layout.decode(json)
+    #expect(!warnings.isEmpty && l.visible.last == kk("o"))              // normalization ran
+    let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), .status(ownerKey: "com.x.z", autosaveName: "z"), kk("b")], parked: [],
+                          systemOverflow: [kk("o")], overflowChevron: k("ch"))
     let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
-    #expect(p.skipped.filter { $0.reason == Reconciler.notFittingReason }.isEmpty)
-    #expect(p.actions.isEmpty)
+    #expect(p.skipped.isEmpty && p.actions.isEmpty && p.phase == .converged)
+}
+
+@Test func churnInWhichItemsOverflowCausesNoSkipsAndNoActions() {
+    // At init O was overflowed and 28 drawn; later O is drawn and 28 overflowed.
+    let o = obs(["28", "ch", "O", "M", "N"], ovf: ["28"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["O", "28", "ch", "M", "N"]), capabilities: anchorCh)
+    #expect(p.phase == .converged && p.skipped.isEmpty && p.actions.isEmpty)
 }
 
 @Test func aRealBarShapedFixtureWithTheLayoutEqualToTheObservedOrderIsConverged() {

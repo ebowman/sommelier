@@ -263,13 +263,14 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   chevron, or a stale one, flags nothing (conservative). Stacked or identical frames never feed the flag. They are only a local
   pre-drag guard in `ActuationVerifier.overflowed`, which also reads the flag. `ObservedOrder.systemOverflow` /
   `overflowChevron`, `ItemInfo.systemOverflow` and `ItemStatus.notFitting` carry it to the planner and UI.
-- The chevron is the hard left boundary for drags. `Reconciler.plan` plans the order on the drawn items right of it only: no
-  move has an overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost`
-  drop is rewritten to `.before(first drawn item)`); `overflowViolations` asserts this. The overflow run is the OBSERVED set
-  (every on-bar key left of the chevron). A skip ("does not fit: macOS moved it into its own overflow") is emitted only when
-  the layout puts an overflowed key right of a drawn on-bar key, or a drawn key left of an overflowed one; that drawn key is
-  left where it is. Wanted-but-parked keys decide nothing, and the order among overflowed items is ignored. Hiding an
-  overflowed item is still allowed (it frees room).
+- Rule: Sommelier orders the drawn bar; macOS decides what overflows (it depends on total width), so a layout's order across the
+  overflow boundary is not a request Sommelier can act on. `Reconciler.plan` drops the overflowed keys and the chevron from
+  `desired` and `base` before the order planning: no drawn key is ever anchored or reported because of them, whatever the layout
+  lists (unknown, pulled-in, normalized or churned), and the planner never emits a "does not fit" skip. No move has an
+  overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost` drop becomes
+  `.before(first drawn item)`); `overflowViolations` asserts this. Membership is unchanged (an overflowed item may still be
+  hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as
+  unsupported. To bring one into view, hide something else or use the future "hide what does not fit" action.
 - Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
   warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. A future one-click
   "Hide what does not fit" in the Arrange window (gdu.19) calls `Layout.hideNotFitting(_:)` (already implemented and tested,

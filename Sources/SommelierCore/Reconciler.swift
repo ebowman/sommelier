@@ -84,9 +84,6 @@ public struct Plan: Equatable, Sendable {
 public struct Reconciler: Sendable {
     public init() {}
 
-    /// Reason reported for a requested change that involves an item macOS moved into its own overflow.
-    public static let notFittingReason = "does not fit: macOS moved it into its own overflow"
-
     public func plan(observed: ObservedOrder, layout: Layout, capabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false) -> Plan {
         // Defensive dedup: first occurrence wins; a key on the bar is never also parked.
@@ -180,34 +177,13 @@ public struct Reconciler: Sendable {
         let ovf = observed.systemOverflow.intersection(onBarSet)
         let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }
         let ovfKept = onBar.filter { ovf.contains($0) && wantOnBar.contains($0) && !hideSet.contains($0) }
-        var held = Set<ItemKey>()
-        if let chevron { desired = desired.filter { $0 != chevron } }
-        if !ovf.isEmpty {
-            // Overflowed keys never influence where drawn keys may go: the drawn plan is computed as if they were absent from
-            // `desired` (filtered below, after the membership decisions). A skip is emitted only for what the layout EXPLICITLY
-            // lists in its visible section (unknown new items and keys pulled on-bar by their app's unit are not requests):
-            //  (a) an overflowed key placed right of a drawn key (the layout asks to move it out of the overflow);
-            //  (b) the first drawn key, when it is placed left of a listed overflowed key (inside the leading overflow run);
-            //      it is reported and left where it is.
-            // The run itself is the OBSERVED set; the order among overflowed keys is ignored (stacked frames carry none).
-            let drawn = Set(onBar.filter { !ovf.contains($0) && $0 != chevron && wantOnBar.contains($0) && !hideSet.contains($0) })
-            let listed = layout.visible.filter { wantOnBar.contains($0) && $0 != chevron }
-            var seenDrawn = false
-            for (i, k) in listed.enumerated() {
-                if ovf.contains(k) {
-                    if seenDrawn { skipped.append(SkippedAction(k, Self.notFittingReason)) }
-                } else if drawn.contains(k) {
-                    if !seenDrawn, listed[(i + 1)...].contains(where: ovf.contains) {
-                        skipped.append(SkippedAction(k, Self.notFittingReason))
-                        held.insert(k)
-                    }
-                    seenDrawn = true
-                }
-            }
-            desired = desired.filter { !ovf.contains($0) && !held.contains($0) }
-        }
+        // macOS decides what overflows (total width); a layout's order across the overflow boundary is not a request we can
+        // act on. Overflowed keys and the chevron are therefore dropped from `desired` and `base` before the ORDER planning:
+        // no drawn key is anchored or reported because of them, whatever the layout lists (unknown, pulled-in, normalized,
+        // churned). Membership (hiding an overflowed key) was decided above and is unchanged.
+        desired = desired.filter { !ovf.contains($0) && $0 != chevron }
         let base = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron } + shows
-        let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) || held.contains($0) })
+        let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
         var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
         // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
         // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.

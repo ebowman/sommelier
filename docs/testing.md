@@ -95,13 +95,17 @@ Before the fix the same bar produced `... 19 airmail2hookmark, module:Clock, mod
 module:com.apple.menuextra.focusmode, module:WiFi` (all modules appended, in reverse). `plan` on the fresh file: converged, 0 actions, 0 skipped.
 
 ## System overflow
-Read-only, 2026-11-04. Normal bar (no chevron): 3 x `mbprobe list --json` -> 0 `"systemOverflow" : true`.
-Full bar (MBDummy `--count 31`): 14 items flagged `overflow`, all left of the chevron. The bar churns with dummies: a dummy can
-flip parked/on-bar between scans, so a `show` action, `newItems` or `scans did not agree` can appear (and one run had no
-chevron at all, planning with no overflow); plans were retried until the scans agreed. Unedited `init-from-current`, then `plan`:
+Read-only, 2026-11-04. Normal bar: 5 x `mbprobe list --json` -> 0 `"systemOverflow" : true`. Full bar (MBDummy `--count 31`):
+14 items flagged, all left of the chevron. The bar churns with dummies (a dummy can flip parked/on-bar, so a `show`, `newItems` or
+"scans did not agree" can appear); plans were retried until an order/converged phase. Unedited `init-from-current`, then `plan`:
 ```
 phase: converged  (observed 53 on bar, 28 parked; showHidden=false)  systemOverflow=14
 actions (0):
 skipped (0):
 ```
-`apply` was not run and the real layout.json was not touched.
+Scratch file with two adjacent drawn dummies (N, M) swapped:
+```
+phase: order  (observed 53 on bar, 28 parked; showHidden=false)  systemOverflow=14
+actions (1):  1. move status:MBDummy::Dummy-N after status:MBDummy::Dummy-M      skipped (0)
+```
+No action names the chevron or an overflowed item. `apply` not run; the real layout.json was not touched.
