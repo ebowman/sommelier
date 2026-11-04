@@ -145,6 +145,7 @@ Headless drop pipeline (no mouse): `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dumm
 index is 0-based among MOVABLE items of the target section (modules do not count; `mbprobe layout move` is 1-based), passes through
 `ArrangeDrop.index` exactly like a UI drop, so `0` = first movable slot (after leading anchors) and `99` = before the trailing system
 block; "-" = append). Chain with `;`, spacing `SOMMELIER_ARRANGE_MOVE_INTERVAL`.
+Also set `SOMMELIER_OPEN_ARRANGE=1` for now: the hook's capability check refreshes only while the Arrange window is open; otherwise items whose owner key differs from the bundle id are rejected with "no Control Center entry" (bug tracked separately).
 
 Results 2026-11-04 (live, Bartender quit, scratch layout, Dummy A/B only): hide `...|hidden|-`: drop -> "⟳" 0.13 s, verified
 membership 6.7 s actuation, "✓" 11.6 s after the drop, agent pid constant; `...|visible|1`: back at bar index 1/2 per
@@ -301,9 +302,16 @@ Also check by hand: launch a new third-party menu bar app that is not in the lay
 the policy) for ~10 s and the log has the same text.
 
 ## Release smoke (reviewer/human)
-Status: **not yet run.** The pipeline (build, sign, DMG, notarize, staple, spctl) was run by the release bead, but the notarized
-.app was never launched there (live menu-bar experiments were in progress). This is also the first test of the unproven .app-bundle
-case in docs/findings-live-trigger.md section 8 (does the app-group entitlement keep live hide/show in a Developer ID .app?).
+Status: **RUN 2026-11-04 (reviewer, partly headless); human steps below still needed.**
+Observed:
+- DMG: `spctl -t open` accepted (Notarized Developer ID), `stapler validate` OK. Only the DMG carries a stapled ticket; the `.app` has none of its own. Fine online; an offline first launch is untested (follow-up bead exists).
+- Locally built artefacts carry no quarantine flag, so `com.apple.quarantine` was added to a scratch copy to mimic a download. `open` then showed the Gatekeeper dialog
+  "'Sommelier' is an app created by the app Safari. ... Apple checked it for malicious software and none was found" (Cancel/Open). macOS ran it from an App Translocation path.
+- The status item appeared and the onboarding window showed Accessibility "Not granted".
+- A trusted run of the bundle's binary from the terminal logged `launch trusted=true` and `live hide/show: available` (the app-group entitlement IS honored in the notarized .app; findings-live-trigger section 8 case resolved).
+- Hide verified live in 10.5 s (dominated by a stale-iStat scan streak; see the stale-iStat bead), show verified live in 5.2 s; MenuBarAgent pid unchanged.
+- QA steps 1-3 ran headlessly.
+Still to do by a human: grant Accessibility to the Finder-launched app and confirm it starts working without relaunch; panel and Arrange clicks; display change and sleep/wake.
 Quit Bartender first; relaunch it afterwards.
 1. `make release VERSION=0.1.0 && make notarize` (or use an existing `dist/Sommelier-0.1.0.dmg`). Check
    `spctl -a -vv -t install dist/Sommelier-0.1.0.dmg` and `spctl -a -vv -t exec dist/Sommelier.app` say "accepted, source=Notarized Developer ID".
@@ -311,9 +319,9 @@ Quit Bartender first; relaunch it afterwards.
    Use `SOMMELIER_LAYOUT_FILE` only for the terminal-started variant; a Finder launch uses the real layout, so back it up first.
 3. Launch from Finder (double-click). Expected Gatekeeper dialog: "Apple checked it for malicious software and none was found" with an Open button. Click Open.
 4. The onboarding window appears. Grant Accessibility in System Settings (macOS 27: "Device Control and Data Access"); Sommelier should start working without a relaunch.
-5. Confirm the app's own result (`mbprobe permissions` checks mbprobe, not the app): the onboarding/Settings state shows trusted, and the app log
-   (`log show --last 2m --predicate 'process == "Sommelier"'`) shows `launch trusted=true` with live hide/show available ("permissions" reporting
-   "live hide/show: available" in the notarized bundle). Record the exact evidence. If unavailable, the entitlement is not honored in the .app bundle: record that as the finding.
+5. Confirm the app's own result (`mbprobe permissions` checks mbprobe, not the app): the onboarding/Settings state shows trusted. Do NOT use `log show`: NSLog text is
+   redacted to `<private>` in release builds. For `launch trusted=true` and live hide/show availability, run the bundle binary from a terminal and read its stderr
+   (`make app-run` style: `dist/Sommelier.app/Contents/MacOS/Sommelier 2>&1 | tee /tmp/s.log`). If live hide/show is unavailable, record that as the finding.
 6. Start a dummy (`make dummy ARGS="--count 2"`), hide one dummy via the app (Arrange window or panel) with the live mechanism, verify with `make probe ARGS="list"` that it left the bar
    within 1-5 s and no MenuBarAgent restart happened, then show it again and verify.
 7. Quit Sommelier, `make dummy-stop`, relaunch Bartender.

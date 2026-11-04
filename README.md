@@ -142,6 +142,7 @@ Debug env vars: `SOMMELIER_DEBUG_MENU=1`, `SOMMELIER_OPEN_SETTINGS=1`, `SOMMELIE
 `SOMMELIER_ARRANGE_MOVE="<storeKey>|<visible|hidden|always>|<index or ->"` (one move through the same code path as a drop, including its clamp, once the
 engine has observed; the index is 0-based among MOVABLE items, modules do not count, 0 = first movable slot, 99 = before the trailing
 system block; `mbprobe layout move` indexes are 1-based and unclamped; chain moves with `;`, space them with `SOMMELIER_ARRANGE_MOVE_INTERVAL=<seconds>`).
+**Currently the hook also needs `SOMMELIER_OPEN_ARRANGE=1`**: its capability check refreshes only while the Arrange window is open, and without it items whose owner key differs from the bundle id are rejected with "no Control Center entry" (bug tracked separately).
 **`SOMMELIER_LAYOUT_FILE=<path>`** makes the app use that file instead of `~/Library/Application Support/Sommelier/layout.json`:
 set it for every development run, so experiments never touch your real layout (the file is created on first launch from the current bar).
 
