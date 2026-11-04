@@ -19,6 +19,9 @@ public struct MenuBarScanner {
     /// Owners that re-position their own items and whose AX answers are slow (iStat); their stale items do not make a read
     /// "incomplete" for membership evidence (`ReadCompleteness`, gdu.51).
     public var selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners
+    /// Longest a persisted self-positioning record may go without a complete read refreshing it before it stops attributing
+    /// unnamed timeouts (gdu.54).
+    public var selfPositioningRecordMaxAge: TimeInterval = 600
     /// Messaging timeout (seconds) of the extras read of an owner whose read failed even its retry in the previous full scan
     /// (gdu.51); the default timeout is used for every other owner. 0 = no cap.
     public var slowOwnerExtrasTimeout: Float = 0.3
@@ -138,7 +141,9 @@ public struct MenuBarScanner {
     /// Reads the MenuBarAgent tree. Items whose element read specifically timed out are carried forward from the
     /// previous scan (marked stale, bounded by `maxStaleScans`, dropped if their owner quit). An item that is merely
     /// absent is gone, after one confirming re-read.
-    private func readHosted(agent: RunningAppInfo?, apps: [RunningAppInfo], retry: Bool, lap: (String) -> Void) -> AgentHostedTree {
+    /// `ownExtras` (full scans only) returns the app-side extras read in THIS scan, by pid; it may block until they are in.
+    private func readHosted(agent: RunningAppInfo?, apps: [RunningAppInfo], retry: Bool, lap: (String) -> Void,
+                            ownExtras: (() -> [pid_t: [AXElementInfo]])? = nil) -> AgentHostedTree {
         guard let agent else { return AgentHostedTree(stripFrame: nil, elements: []) }
         let src = source
         let fastDeadline = self.fastDeadline
@@ -186,18 +191,19 @@ public struct MenuBarScanner {
         var carried: [AXElementInfo] = []
         // Groups that timed out without the source knowing their contents: carry what was visible before and is
         // missing now (still bounded by the stale-scan cap and the owner check below).
-        var candidatesToCarry = tree.timedOut.filter { !($0.frame.width <= 1 || ($0.identifier.isEmpty && $0.axDescription.isEmpty && $0.frame.minX <= 1)) }
+        // Read noise (gdu.51): a zero-width element, or a nameless one parked at the menu bar strip's LEFT EDGE (gdu.54: the
+        // strip's own minX, not x = 0, so an item on a display arranged left of the main one never matches), is the same class
+        // as the main-menu noise; it never blocks completeness and is not carried forward.
+        func isNoise(_ e: AXElementInfo) -> Bool {
+            e.frame.width <= 1 || (e.identifier.isEmpty && e.axDescription.isEmpty && e.frame.minX >= strip.minX - 1 && e.frame.minX <= strip.minX + 1)
+        }
+        var candidatesToCarry = tree.timedOut.filter { !isNoise($0) }
         // Attribution by IDENTITY (gdu.51): every failed group is a self-positioning owner's when there is no top-level
         // failure, every named timeout carries a self-positioning element, and the unnamed timeouts are covered by
         // self-positioning elements that were hosted in the previous tree and are missing now, with NO other previously
         // hosted element missing and uncarried. Counts of the owner's cached items prove nothing.
         let owners = selfPositioningOwners
         func isSP(_ e: AXElementInfo) -> Bool { SelfPositioning.matches(identifier: e.identifier, owners: owners) }
-        // Read noise (gdu.51): a zero-width element, or a nameless one parked at x <= 1, is the same class as the main-menu
-        // noise; it never blocks completeness and is not carried forward.
-        func isNoise(_ e: AXElementInfo) -> Bool {
-            e.frame.width <= 1 || (e.identifier.isEmpty && e.axDescription.isEmpty && e.frame.minX <= 1)
-        }
         for e in tree.timedOut where isNoise(e) && state.loggedNoise.insert(e.identityKey).inserted {
             log("ignored noise element (frame \(Int(e.frame.minX)),\(Int(e.frame.minY)) w\(Int(e.frame.width)))")
         }
@@ -219,18 +225,55 @@ public struct MenuBarScanner {
         for pid in Array(state.selfPositioningGroups.keys) {
             let a = spApps.first { $0.pid == pid }
             if a == nil || (state.selfPositioningBundles[pid] != nil && a?.bundleID != state.selfPositioningBundles[pid]) {
-                state.selfPositioningGroups[pid] = nil; state.selfPositioningBundles[pid] = nil
+                state.selfPositioningGroups[pid] = nil; state.selfPositioningBundles[pid] = nil; state.selfPositioningRefreshed[pid] = nil
                 log("self-positioning groups: pid \(pid) no longer running; record pruned")
+            }
+        }
+        // Prune by the owner's own extras (gdu.54): iStat enumerates its items, so a persisted group its fresh extras no longer
+        // list was removed and must not keep covering an unnamed timeout. Only extras read in this scan count.
+        var prunedKeys = Set<String>()
+        if let extras = ownExtras?() {
+            for a in spApps {
+                guard let infos = extras[a.pid], let rec = state.selfPositioningGroups[a.pid] else { continue }
+                // `readExtras` reports success even when single children timed out (they come back without an identifier), and an
+                // empty result may be a failed read: neither is proof that a group was removed.
+                if infos.isEmpty || infos.contains(where: { $0.identifier.isEmpty }) { continue }
+                let listed = Set(infos.map(\.identifier).filter { !$0.isEmpty })
+                let kept = rec.filter { listed.contains($0.identifier) }
+                if kept.count != rec.count {
+                    let gone = rec.filter { !listed.contains($0.identifier) }.map(\.key)
+                    prunedKeys.formUnion(gone)
+                    log("self-positioning groups: pid \(a.pid) extras no longer list \(gone.joined(separator: ", ")); pruned from the record")
+                    if kept.isEmpty { state.selfPositioningGroups[a.pid] = nil; state.selfPositioningBundles[a.pid] = nil; state.selfPositioningRefreshed[a.pid] = nil }
+                    else { state.selfPositioningGroups[a.pid] = kept }
+                }
+            }
+        }
+        // Record age (gdu.54): without a complete read refreshing it, a record stops attributing unnamed timeouts.
+        var recordExpired = false
+        for a in spApps where state.selfPositioningGroups[a.pid] != nil {
+            let at = state.selfPositioningRefreshed[a.pid] ?? Date()
+            state.selfPositioningRefreshed[a.pid] = at
+            if Date().timeIntervalSince(at) > selfPositioningRecordMaxAge {
+                recordExpired = true
+                if state.expiredRecordLogged.insert(a.pid).inserted {
+                    log("self-positioning groups: record for pid \(a.pid) not refreshed by a complete read for over \(Int(selfPositioningRecordMaxAge)) s; a complete read is required before attributing unnamed timeouts again")
+                }
             }
         }
         let namedKeys = Set(tree.timedOut.map(\.identityKey))
         var absentSP = Set(state.selfPositioningGroups.values.joined().map(\.key)).union(spMiss.map(\.identityKey))
-        absentSP.subtract(freshKeys); absentSP.subtract(namedKeys)
+        absentSP.subtract(freshKeys); absentSP.subtract(namedKeys); absentSP.subtract(prunedKeys)   // a removed group is not absent, it is gone
         var attributable = false
         let namedRelevant = tree.timedOut.filter { !isNoise($0) }
         if tree.failedReads > 0, tree.topFailures == 0, namedRelevant.allSatisfy(isSP),
            tree.unnamedTimeouts > 0 || !tree.timedOut.isEmpty {
-            attributable = tree.unnamedTimeouts == 0 || (absentSP.count >= tree.unnamedTimeouts && miss.allSatisfy(isSP))
+            if tree.unnamedTimeouts == 0 {
+                // A dropped noise element hides which group failed: then the missing set must be iStat's too (gdu.54).
+                attributable = namedRelevant.count == tree.timedOut.count || miss.allSatisfy(isSP)
+            } else {
+                attributable = !recordExpired && absentSP.count >= tree.unnamedTimeouts && miss.allSatisfy(isSP)
+            }
         }
         // Refresh the record from this read: exactly on a complete read, merged on an attributed one.
         let completeRead = tree.failedReads == 0 && tree.unnamedTimeouts == 0 && !tree.elements.isEmpty
@@ -252,17 +295,26 @@ public struct MenuBarScanner {
                 let mine = fresh[a.pid] ?? []
                 var cur = completeRead ? [] : (state.selfPositioningGroups[a.pid] ?? [])
                 for g in mine { if let i = cur.firstIndex(where: { $0.key == g.key }) { cur[i] = g } else { cur.append(g) } }
-                if cur.isEmpty { state.selfPositioningGroups[a.pid] = nil; state.selfPositioningBundles[a.pid] = nil }
-                else { state.selfPositioningGroups[a.pid] = cur; state.selfPositioningBundles[a.pid] = a.bundleID }
+                if cur.isEmpty { state.selfPositioningGroups[a.pid] = nil; state.selfPositioningBundles[a.pid] = nil; state.selfPositioningRefreshed[a.pid] = nil }
+                else {
+                    state.selfPositioningGroups[a.pid] = cur; state.selfPositioningBundles[a.pid] = a.bundleID
+                    if completeRead || state.selfPositioningRefreshed[a.pid] == nil { state.selfPositioningRefreshed[a.pid] = Date(); state.expiredRecordLogged.remove(a.pid) }
+                }
             }
         }
         tree.failuresAreSelfPositioning = attributable
         if tree.failedReads > 0, !attributable {
             if tree.topFailures > 0 || (tree.timedOut.isEmpty && tree.unnamedTimeouts == 0) { tree.incompleteReason = "top-level failure" }
             else if let t = namedRelevant.first(where: { !isSP($0) }) { tree.incompleteReason = "named timeout not self-positioning (\(t.identityKey))" }
+            else if tree.unnamedTimeouts > 0, recordExpired {
+                tree.incompleteReason = "\(tree.unnamedTimeouts) unnamed timeouts, self-positioning record older than \(Int(selfPositioningRecordMaxAge)) s (a complete read is required)"
+            }
             else if tree.unnamedTimeouts > 0, absentSP.count < tree.unnamedTimeouts {
+                // Previously hosted non-iStat groups that are missing now: the best candidates for the uncovered timeouts.
+                let uncovered = miss.filter { !isSP($0) }.map(\.identityKey)
                 let recorded = spApps.filter { state.selfPositioningGroups[$0.pid] != nil }.count
                 tree.incompleteReason = "\(tree.unnamedTimeouts) unnamed timeouts, persisted self-positioning groups absent: \(absentSP.count), previous-tree absent: \(spMiss.count)"
+                    + (uncovered.isEmpty ? "" : " uncovered: \(uncovered.prefix(3).joined(separator: ", ")) (owner unknown)")
                     + (recorded == 0 ? spApps.map { " (no persisted record for pid \($0.pid))" }.joined() + (spApps.isEmpty ? " (no self-positioning app running)" : "") : "")
             } else if let m = miss.first(where: { !isSP($0) }) { tree.incompleteReason = "non-self-positioning element missing (\(m.identityKey))" }
             else { tree.incompleteReason = "failed reads not attributable to self-positioning owners" }
@@ -368,7 +420,12 @@ public struct MenuBarScanner {
         }
 
         // 2. The agent tree is the authoritative visible set.
-        let tree = readHosted(agent: agent, apps: apps, retry: true, lap: lap)
+        let tree = readHosted(agent: agent, apps: apps, retry: true, lap: lap, ownExtras: {
+            extrasDone.wait()
+            var m: [pid_t: [AXElementInfo]] = [:]
+            for (app, read) in zip(toRead, holder.value ?? []) { if case .items(let infos)? = read { m[app.pid] = infos } }
+            return m
+        })
         lap("agent tree")
         extrasDone.wait()
         lap("app pass")

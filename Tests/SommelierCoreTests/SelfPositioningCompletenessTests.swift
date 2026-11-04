@@ -359,3 +359,122 @@ private let noise = AXElementInfo(frame: CGRect(x: 0, y: 29, width: 0, height: 0
     let again = MenuBarScanner(source: source([t]), cacheURL: url)
     #expect(again.scan().completeness == .completeExceptSelfPositioning)
 }
+
+
+// MARK: - gdu.54: prune by the owner's extras, record age, noise with a missing element, reason text, strip-scoped noise
+
+private let disk = AXElementInfo(axDescription: "Disk", identifier: "com.bjango.istatmenus.disk", frame: bar(580))
+private let thirdX = AXElementInfo(axDescription: "X", identifier: "x-new", frame: bar(620))
+
+private func sourceWithDisk(_ trees: [AgentHostedTree], istatExtras: [AXElementInfo]) -> Src {
+    var s = source(trees)
+    s.extras[20] = istatExtras
+    return s
+}
+
+@Test func recordGroupAbsentFromTheOwnersFreshExtrasIsPruned() {
+    // Scan 1 records {cpu, mem, disk}. iStat's extras no longer list disk; scan 2 times out cpu+mem+X unnamed (X is third-party).
+    let full3 = tree([dummyEl, otherEl, cpu, mem, disk])
+    var scanner = MenuBarScanner(source: sourceWithDisk([full3], istatExtras: [cpu, mem, disk]))
+    #expect(scanner.scan().completeness == .complete)
+    scanner.source = sourceWithDisk([tree([dummyEl, otherEl], failed: 3, unnamed: 3)], istatExtras: [cpu, mem])
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    #expect(r.completenessReason?.hasPrefix("3 unnamed timeouts, persisted self-positioning groups absent: 2") == true)
+}
+
+@Test func recordIsKeptWhenTheExtrasStillListEveryGroupOrAreNotFresh() {
+    let full3 = tree([dummyEl, otherEl, cpu, mem, disk])
+    let all = [cpu, mem, disk]
+    // extras still list everything: three unnamed timeouts stay iStat's
+    var scanner = MenuBarScanner(source: sourceWithDisk([full3], istatExtras: all))
+    _ = scanner.scan()
+    scanner.source = sourceWithDisk([tree([dummyEl, otherEl], failed: 3, unnamed: 3)], istatExtras: all)
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    // iStat's extras read failed this scan (not fresh): no pruning on stale knowledge
+    var failing = sourceWithDisk([tree([dummyEl, otherEl], failed: 3, unnamed: 3)], istatExtras: [cpu, mem])
+    failing.failing = [20]
+    scanner.source = failing
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func prunedGroupIsLoggedAndStaysGoneUntilACompleteRead() {
+    let lines = Lines()
+    var scanner = MenuBarScanner(source: sourceWithDisk([tree([dummyEl, otherEl, cpu, mem, disk])], istatExtras: [cpu, mem, disk]), log: { lines.add($0) })
+    _ = scanner.scan()
+    let streak = tree([dummyEl, otherEl], failed: 2, unnamed: 2)
+    scanner.source = sourceWithDisk([streak, streak], istatExtras: [cpu, mem])
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)   // 2 timeouts, cpu+mem still cover them
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    #expect(lines.v.filter { $0.contains("extras no longer list") && $0.contains(disk.identityKey) }.count == 1)
+}
+
+@Test func recordOlderThanTheMaximumAgeRequiresACompleteReadBeforeAttributing() {
+    let lines = Lines()
+    let s = source([full, streakScan, streakScan, full, streakScan])
+    var scanner = MenuBarScanner(source: s, log: { lines.add($0) })
+    scanner.selfPositioningRecordMaxAge = 0.05
+    _ = scanner.scan()
+    Thread.sleep(forTimeInterval: 0.12)
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    #expect(r.completenessReason?.contains("record older than 0 s") == true)
+    _ = scanner.scan()
+    #expect(lines.v.filter { $0.contains("not refreshed by a complete read") }.count == 1)    // logged once
+    #expect(scanner.scan().completeness == .complete)                                         // a complete read refreshes it
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func namedIStatTimeoutsDoNotNeedAFreshRecord() {
+    var scanner = MenuBarScanner(source: source([full, tree([dummyEl, otherEl], failed: 2, timedOut: [stale(cpu), stale(mem)])]))
+    scanner.selfPositioningRecordMaxAge = 0.01
+    _ = scanner.scan()
+    Thread.sleep(forTimeInterval: 0.05)
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func noiseElementPlusMissingThirdPartyWithoutUnnamedTimeoutsIsIncomplete() {
+    // Other's element is gone and the only failure left is a noise timeout: the missing set must still be checked.
+    let r = reason(tree([dummyEl, cpu, mem], failed: 1, timedOut: [stale(noise)]))
+    #expect(r.completeness == .incomplete)
+    #expect(r.completenessReason == "non-self-positioning element missing (\(otherEl.identityKey))")
+}
+
+@Test func noiseElementPlusMissingIStatElementWithoutUnnamedTimeoutsStaysTheMiddleLevel() {
+    let r = reason(tree([dummyEl, otherEl, mem], failed: 1, timedOut: [stale(noise)]))
+    #expect(r.completeness == .completeExceptSelfPositioning)
+}
+
+@Test func uncoveredUnnamedTimeoutNamesTheMissingNonIStatGroup() {
+    // Other's group is missing and one more unnamed timeout than iStat can cover: its frame identity is named.
+    let r = reason(tree([dummyEl], failed: 4, unnamed: 4))
+    #expect(r.completeness == .incomplete)
+    #expect(r.completenessReason == "4 unnamed timeouts, persisted self-positioning groups absent: 2, previous-tree absent: 2 uncovered: \(otherEl.identityKey) (owner unknown)")
+}
+
+@Test func noiseRuleIsScopedToTheStripsLeftEdge() {
+    // The strip starts at x = -1000 (main display arranged right of another one).
+    let wide = CGRect(x: -1000, y: 0, width: 3000, height: 30)
+    func t(_ timedOut: [AXElementInfo]) -> AgentHostedTree {
+        AgentHostedTree(stripFrame: wide, elements: [dummyEl, otherEl], failedReads: 3, timedOut: timedOut)
+    }
+    func nameless(_ x: CGFloat) -> AXElementInfo { AXElementInfo(frame: CGRect(x: x, y: 3, width: 24, height: 24)) }
+    // nameless at the strip's left edge: noise
+    #expect(reason(t([stale(cpu), stale(mem), stale(nameless(-1000))])).completeness == .completeExceptSelfPositioning)
+    // nameless at x = 0 on that strip is a real item (a display left of the main one would put real items there)
+    let r = reason(t([stale(cpu), stale(mem), stale(nameless(0))]))
+    #expect(r.completeness == .incomplete)
+    #expect(r.completenessReason?.hasPrefix("named timeout not self-positioning") == true)
+}
+
+@Test func partlyFailedOrEmptyExtrasDoNotPruneTheRecord() {
+    let full3 = tree([dummyEl, otherEl, cpu, mem, disk])
+    let streak3 = tree([dummyEl, otherEl], failed: 3, unnamed: 3)
+    let timedOutChild = AXElementInfo(frame: bar(580))          // a child read that timed out: no identifier
+    for extras in [[cpu, mem, timedOutChild], []] {
+        var scanner = MenuBarScanner(source: sourceWithDisk([full3], istatExtras: [cpu, mem, disk]))
+        _ = scanner.scan()
+        scanner.source = sourceWithDisk([streak3], istatExtras: extras)
+        #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    }
+}
