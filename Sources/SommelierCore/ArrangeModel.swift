@@ -9,6 +9,8 @@ public enum ArrangeBadge: Equatable, Sendable {
     /// No claim (app not running, or no observation yet).
     case none
     case inPlace
+    /// Applied per the Control Center store, but no complete read has confirmed it yet (gdu.55): a check mark with a marker.
+    case inPlacePending
     /// Pending, moving, or waiting for the next observation to place it.
     case moving
     case failed(String)
@@ -21,6 +23,7 @@ public enum ArrangeBadge: Equatable, Sendable {
         switch self {
         case .none: return ""
         case .inPlace: return "✓"
+        case .inPlacePending: return "✓"
         case .moving: return "⟳"
         case .failed: return "⚠"
         case .cannotChange: return "⊘"
@@ -32,6 +35,7 @@ public enum ArrangeBadge: Equatable, Sendable {
         switch self {
         case .none: return ""
         case .inPlace: return "In place (verified against the real menu bar)"
+        case .inPlacePending: return "Applied; confirmation pending (the menu bar could not be read completely yet)"
         case .moving: return "Waiting for the menu bar to change"
         case .failed(let e): return "Failed: \(e)"
         case .cannotChange(let r): return r
@@ -106,12 +110,14 @@ public enum ArrangeSections {
         case .userBusy: return "mouse in use; try again"
         case .mechanismFailed(let m): return m
         case .conflictingManager(let m): return m
+        case .liveWriteFailed(let m): return "hide/show write failed: \(m)"
         }
     }
 
     /// Badge for one capsule (see `ArrangeBadge`). `pendingPlacement` is true for ghosts and for items whose move was
     /// requested but not yet seen on the real bar.
-    public static func badge(status: ItemStatus?, running: Bool, pendingPlacement: Bool, isAnchor: Bool, timedOut: Bool = false) -> ArrangeBadge {
+    public static func badge(status: ItemStatus?, running: Bool, pendingPlacement: Bool, isAnchor: Bool, timedOut: Bool = false,
+                             pendingConfirmation: Bool = false) -> ArrangeBadge {
         guard running else { return .none }
         switch status {
         case .failed(let e)?: return .failed(describe(e))
@@ -123,7 +129,8 @@ public enum ArrangeSections {
         if timedOut { return .failed(ArrangeTracker.timeoutText) }
         if pendingPlacement { return .moving }
         if isAnchor { return .none }
-        return status == nil ? .none : .inPlace
+        if status == nil { return .none }
+        return pendingConfirmation ? .inPlacePending : .inPlace
     }
 
     /// True when the observed bar/parked state already realizes `key`'s layout position. Visible: the drawn keys common to
@@ -181,6 +188,7 @@ public enum ArrangeSections {
     public static func make(observed: ObservedOrder, layout: Layout, items: [ItemKey: ItemInfo], perItem: [ItemKey: ItemStatus],
                             capabilities: (ItemKey) -> Capability, showHiddenSection: Bool = false,
                             awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
+                            pendingConfirmation: Set<ItemKey> = [],
                             observationProblem: String? = nil, filter: String = "") -> ArrangeContent {
         // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
@@ -196,7 +204,8 @@ public enum ArrangeSections {
             let info = items[k]
             let pending = ghost || awaiting.contains(k)
             let b = hasObs
-                ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k))
+                ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k),
+                        pendingConfirmation: pendingConfirmation.contains(k))
                 : .none
             return ArrangeRow(key: k, title: title(k), ownerName: info?.ownerName ?? "", ownerBundleID: info?.ownerBundleID ?? ownerBundleID(k),
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,

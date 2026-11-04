@@ -131,6 +131,41 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
 @MainActor
 @Suite struct LayoutEngineTests {
+    // MARK: gdu.55 - applied per the store, confirmation pending; failed live writes
+
+    @Test func unconfirmedHideIsInPlaceWithAMarkerUntilALaterCompleteReadConfirms() async {
+        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        await r.actuator.scriptUnconfirmed()
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.pendingConfirmation == [k("B")] && r.state.perItem[k("B")] == .inPlace)
+        #expect(r.state.lastError == nil)
+        #expect(ArrangeSections.badge(status: .inPlace, running: true, pendingPlacement: false, isAnchor: false, pendingConfirmation: true) == .inPlacePending)
+        #expect(ArrangeBadge.inPlacePending.glyph == "✓" && ArrangeBadge.inPlacePending.tooltip.contains("confirmation pending"))
+        _ = await r.engine.reconcileOnce()      // a later settled complete read
+        #expect(r.state.pendingConfirmation.isEmpty && r.state.perItem[k("B")] == .inPlace)
+    }
+
+    @Test func contradictedUnconfirmedHideIsReplannedNotStruckOut() async {
+        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        await r.actuator.scriptUnconfirmed(applyChange: false)   // store said applied, the bar still shows B
+        _ = await r.engine.reconcileOnce()
+        if case .failed? = r.state.perItem[k("B")] { Issue.record("an unconfirmed hide must not be a failure") }
+        _ = await r.engine.reconcileOnce()      // next pass re-plans the hide from a fresh read
+        #expect(await r.actuator.hidden == [k("B")])
+        #expect(await r.actuator.calls.count == 2)
+        #expect(r.state.pendingConfirmation.isEmpty)
+    }
+
+    @Test func liveWriteFailureIsFailedNotUnsupportedAndNotRetried() async {
+        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .liveWriteFailed("readback"))])
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.perItem[k("B")] == .failed(.liveWriteFailed("readback")))
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 1)   // struck out at once: a failing write is not retried by itself
+        #expect(ArrangeSections.describe(.liveWriteFailed("readback")).contains("readback"))
+    }
+
     @Test func orderInvolvingSelfPositioningOwnerWaitsForACompleteRead() async {
         let order = [istat, k("A"), k("B")]
         let layout = Layout(visible: [k("B"), k("A"), istat])

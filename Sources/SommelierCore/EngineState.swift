@@ -41,6 +41,9 @@ public final class EngineState {
     public var showHiddenSection: Bool
     public var inFlight: PlannedAction?
     public var perItem: [ItemKey: ItemStatus]
+    /// Keys that are `.inPlace` because a live hide/show was APPLIED per the Control Center store, but no usable complete read
+    /// has confirmed it yet (`ActuationMechanism.liveUnverified`, gdu.55). Cleared by a later settled complete read.
+    public var pendingConfirmation: Set<ItemKey> = []
     public var lastError: EngineError?
     public var isConverged: Bool
     public var lastPassAt: Date?

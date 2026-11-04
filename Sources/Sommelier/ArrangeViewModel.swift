@@ -72,6 +72,7 @@ final class ArrangeViewModel {
                              capabilities: cap, showHiddenSection: state.showHiddenSection,
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
                              suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
+                             pendingConfirmation: state.pendingConfirmation,
                              observationProblem: observationProblem, filter: filter)
     }
 
