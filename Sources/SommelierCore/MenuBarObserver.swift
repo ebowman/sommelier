@@ -77,7 +77,8 @@ public struct AgreedScanObserver: MenuBarObserver {
     public var volatileKeys: Set<ItemKey>
     public var log: @Sendable (String) -> Void
 
-    public static let defaultVolatileKeys: Set<ItemKey> = [.module(name: "WiFi"), .module(name: "com.apple.menuextra.focusmode")]
+    public static let defaultVolatileKeys: Set<ItemKey> = [.module(name: "WiFi"), .module(name: "com.apple.menuextra.focusmode"),
+                                                               .module(name: "Show Hidden Menu Bar Items")]
 
     public init(scanner: any SnapshotScanning,
                 resolve: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],
@@ -112,30 +113,10 @@ public struct AgreedScanObserver: MenuBarObserver {
         return a == .complete && b == .complete ? .complete : .completeExceptSelfPositioning
     }
 
-    private func isSelfPositioning(_ r: ResolvedItem) -> Bool {
-        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return true }
-        return SelfPositioning.matches(r.item, owners: selfPositioningOwners)
-    }
+    private var rule: BarSignature { BarSignature(selfPositioningOwners: selfPositioningOwners, volatileKeys: volatileKeys) }
 
-    private func orderable(_ r: ResolvedItem) -> Bool {
-        if volatileKeys.contains(r.key) || r.confidence == .heuristic || r.item.axIdentifier.isEmpty { return false }
-        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return false }
-        return true
-    }
-
-    /// nil = this scan cannot be used for agreement (a stale item is on the bar).
-    func signature(_ all: [ResolvedItem]) -> String? {
-        let r = all.filter { $0.item.frame.width > 1 && !volatileKeys.contains($0.key) }
-        // A stale item of a self-positioning owner does not block (gdu.51): it counts for presence, never for order.
-        if r.contains(where: { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }) { return nil }
-        let bar = r.filter { $0.item.isOnMenuBar }
-        let order = bar.filter(orderable).map { $0.key.description }.joined(separator: "\n")
-        let presence = bar.map { $0.key.description }.sorted().joined(separator: "\n")
-        let off = r.filter { !$0.item.isOnMenuBar }
-        let parked = off.filter { !$0.item.stale }.map { $0.key.description }.sorted().joined(separator: "\n")
-        let staleParked = off.filter { $0.item.stale }.map { $0.key.description }.sorted().joined(separator: "\n")
-        return [order, presence, parked, staleParked].joined(separator: "\n--\n")
-    }
+    /// nil = this scan cannot be used for agreement (a stale item is on the bar). Shared with the poll (`BarSignature`).
+    func signature(_ all: [ResolvedItem]) -> BarSignature.Value? { rule.value(all) }
 
     /// Strict: throws `noAgreement` when the scans never agreed.
     public func observe() async throws -> [ResolvedItem] { try await observeCounting().items }
@@ -151,7 +132,7 @@ public struct AgreedScanObserver: MenuBarObserver {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
         let limit = Date().addingTimeInterval(deadline)
         var scans = 0
-        var prevSig: String?
+        var prevSig: BarSignature.Value?
         var sawNonEmpty = false
         var sentProgress = false
         // Latest complete read; a read without a stale item on the bar is preferred over one with.
@@ -181,7 +162,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             let level = snap.completeness
             log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") level=\(level.rawValue) items=\(res.count) onBarStale=\(onBarStale.count) agree=\(sig != nil && sig == prevSig)")
             if ProcessInfo.processInfo.environment["SOMMELIER_DEBUG_OBSERVE"] != nil {
-                FileHandle.standardError.write(Data("observe scan \(scans): blocked=\(sig == nil) agree=\(sig != nil && sig == prevSig) \(sig?.count ?? 0)\n".utf8))
+                FileHandle.standardError.write(Data("observe scan \(scans): blocked=\(sig == nil) agree=\(sig != nil && sig == prevSig) \(sig?.joined.count ?? 0)\n".utf8))
             }
             // The first scan with anything on the bar is shown at once as provisional, even when the hosted read was incomplete
             // (a slow iStat read leaves its items stale, and a pass would otherwise show nothing for 10+ s); only a COMPLETE
@@ -204,6 +185,82 @@ public struct AgreedScanObserver: MenuBarObserver {
             return BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel)
         }
         throw ObserveError.noAgreement(scans: scans)
+    }
+}
+
+/// The agreement signature of one resolved scan (see `AgreedScanObserver`), shared by the observer's two-scan agreement and the
+/// 10 s poll (`EngineTriggers`, e7t) so the two cannot drift: what is too noisy to agree on is too noisy to trigger a pass.
+public struct BarSignature: Sendable {
+    public var selfPositioningOwners: Set<String>
+    public var volatileKeys: Set<ItemKey>
+    public init(selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners,
+                volatileKeys: Set<ItemKey> = AgreedScanObserver.defaultVolatileKeys) {
+        self.selfPositioningOwners = selfPositioningOwners; self.volatileKeys = volatileKeys
+    }
+
+    public struct Value: Equatable, Sendable {
+        public var order: [String], presence: [String], parked: [String], staleParked: [String]
+        public var joined: String {
+            [order, presence, parked, staleParked].map { $0.joined(separator: "\n") }.joined(separator: "\n--\n")
+        }
+        /// The poll's view (e7t): the same components, but parked = identified keys only (a heuristic parked key is noise) and
+        /// no stale-parked component (a stale flag is not a change).
+        /// Presence also drops the self-positioning owners' items: their fast-scan presence flaps with their staleness (e7t:
+        /// all eight iStat items vanish and return between polls), and they position themselves.
+        public func forPoll(selfPositioningOwners: Set<String>) -> Value {
+            let selfKeys = selfPositioningOwners.map { ItemKey.statusPrefix + $0 + ItemKey.separator }
+            return Value(order: order,
+                         presence: presence.filter { k in !selfKeys.contains { k.hasPrefix($0) } },
+                         parked: parked.filter { !$0.hasPrefix(ItemKey.heuristicPrefix) }, staleParked: [])
+        }
+        /// One-line explanation of what differs from `other`: component names with the keys added/removed.
+        public func diff(from other: Value) -> String {
+            var parts: [String] = []
+            func part(_ name: String, _ a: [String], _ b: [String], ordered: Bool) {
+                guard a != b else { return }
+                let added = Set(a).subtracting(b).sorted(), removed = Set(b).subtracting(a).sorted()
+                var d = name
+                if !added.isEmpty { d += " +[" + added.joined(separator: ", ") + "]" }
+                if !removed.isEmpty { d += " -[" + removed.joined(separator: ", ") + "]" }
+                if ordered, added.isEmpty, removed.isEmpty { d += " reordered" }
+                parts.append(d)
+            }
+            part("order", order, other.order, ordered: true)
+            part("presence", presence, other.presence, ordered: false)
+            part("parked", parked, other.parked, ordered: false)
+            part("staleParked", staleParked, other.staleParked, ordered: false)
+            return parts.joined(separator: "; ")
+        }
+    }
+
+    /// MenuBarAgent's own entries (the Apple main menu: `heuristic:com.apple.MenuBarAgent::...`) come and go between reads.
+    static func isAgentNoise(_ k: ItemKey) -> Bool {
+        if case .heuristic(let b, _, _) = k { return b == "com.apple.MenuBarAgent" }
+        return false
+    }
+
+    private func isSelfPositioning(_ r: ResolvedItem) -> Bool {
+        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return true }
+        return SelfPositioning.matches(r.item, owners: selfPositioningOwners)
+    }
+
+    private func orderable(_ r: ResolvedItem) -> Bool {
+        if volatileKeys.contains(r.key) || r.confidence == .heuristic || r.item.axIdentifier.isEmpty { return false }
+        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return false }
+        return true
+    }
+
+    /// nil = this scan cannot be used (a stale item of a non-self-positioning owner is on the bar).
+    public func value(_ all: [ResolvedItem]) -> Value? {
+        let r = all.filter { $0.item.frame.width > 1 && !volatileKeys.contains($0.key) && !Self.isAgentNoise($0.key) }
+        // A stale item of a self-positioning owner does not block (gdu.51): it counts for presence, never for order.
+        if r.contains(where: { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }) { return nil }
+        let bar = r.filter { $0.item.isOnMenuBar }
+        let off = r.filter { !$0.item.isOnMenuBar }
+        return Value(order: bar.filter(orderable).map { $0.key.description },
+                     presence: bar.map { $0.key.description }.sorted(),
+                     parked: off.filter { !$0.item.stale }.map { $0.key.description }.sorted(),
+                     staleParked: off.filter { $0.item.stale }.map { $0.key.description }.sorted())
     }
 }
 

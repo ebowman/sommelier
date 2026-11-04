@@ -369,3 +369,10 @@ Quit Bartender first; relaunch it afterwards.
    within 1-5 s and no MenuBarAgent restart happened, then show it again and verify.
 7. Quit Sommelier, `make dummy-stop`, relaunch Bartender.
 Record results (pass/fail, timings, Gatekeeper dialog text) here.
+
+## Poll trigger (sommelier-e7t)
+
+`PollTriggerTests` (12 tests, 480 total): iStat order flip / iStat vanishing, WiFi flicker, width-0 heuristic noise, MenuBarAgent heuristic + "Show Hidden" module: no trigger and no
+confirming scan; a third-party item appearing or moving: trigger after the confirming scan (2 fast scans, 1 sleep); a one-scan flicker: confirmed away; back-off period
+(10/20/30 s cap) and resets; skip while busy / hold / unsettled / within 5 s of a user action (no scan); baseline dropped after a pass; pass starting during the confirmation cancels it.
+Live (scratch layout, Bartender quit, converged 5 min): 0 poll passes (was ~28); `make dummy` -> pass 10 s later, 2 dummies placed in Visible; `make dummy-stop` -> pass 13 s later.

@@ -1,0 +1,205 @@
+import Testing
+import Foundation
+@testable import SommelierCore
+
+// e7t: the 10 s poll compares the observer's agreement signature, confirms a change with a second scan, backs off while
+// quiet and skips while the engine is busy.
+
+private struct Caps: CapabilityProvider {
+    func capability(for key: ItemKey) -> Capability { Capability(canMove: true, canHide: true) }
+}
+
+private final class ScanQueue: SnapshotScanning, @unchecked Sendable {
+    private let lock = NSLock(); private var snaps: [MenuBarSnapshot] = []; private var _scans = 0
+    func set(_ s: [[MenuBarItem]]) { lock.lock(); snaps = s.map { MenuBarSnapshot(items: $0, capturedAt: Date()) }; lock.unlock() }
+    private func next() -> MenuBarSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        _scans += 1
+        return snaps.count > 1 ? snaps.removeFirst() : snaps[0]
+    }
+    var scans: Int { lock.lock(); defer { lock.unlock() }; return _scans }
+    func scanVisible() async -> MenuBarSnapshot { next() }
+    func scan() async -> MenuBarSnapshot { await scanVisible() }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock(); private var n = 0; private var l: [String] = []
+    func hit() { lock.lock(); n += 1; lock.unlock() }
+    func add(_ s: String) { lock.lock(); l.append(s); lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return n }
+    var logs: [String] { lock.lock(); defer { lock.unlock() }; return l }
+}
+
+private final class GateBox: @unchecked Sendable {
+    private let lock = NSLock(); private var g = PollGate()
+    var value: PollGate { get { lock.lock(); defer { lock.unlock() }; return g } set { lock.lock(); g = newValue; lock.unlock() } }
+}
+
+private func it(_ n: String, x: CGFloat, w: CGFloat = 24, stale: Bool = false, onBar: Bool = true) -> MenuBarItem {
+    MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: n, title: n, axDescription: "", axIdentifier: n,
+                frame: CGRect(x: x, y: 0, width: w, height: 24), source: .appExtras, isOnMenuBar: onBar, stale: stale)
+}
+
+private let resolver: @Sendable (MenuBarSnapshot) -> [ResolvedItem] = { s in
+    s.items.map { i in
+        if i.ownerName == "WiFi" { return ResolvedItem(item: i, key: .module(name: "WiFi"), confidence: .exact) }
+        if i.ownerName.hasPrefix("H") { return ResolvedItem(item: i, key: .heuristic(bundleID: i.ownerName, fingerprint: "f", ordinal: 0), confidence: .heuristic) }
+        return ResolvedItem(item: i, key: .status(ownerKey: i.ownerName, autosaveName: i.title), confidence: .inferred)
+    }
+}
+
+private let base = [it("A", x: 100), it("B", x: 140), it("S1", x: 180), it("S2", x: 220), it("WiFi", x: 260)]
+
+@MainActor
+private struct Rig {
+    let triggers: EngineTriggers
+    let scans: ScanQueue
+    let gate: GateBox
+    let fired: Counter
+    let sleeps: Counter
+}
+
+@MainActor
+private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfig()) async -> Rig {
+    let act = FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+    let state = EngineState()
+    let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: InMemoryLayoutStore(.empty), capabilities: Caps(),
+                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+    let scans = ScanQueue(); scans.set([initial])
+    let gate = GateBox(), fired = Counter(), sleeps = Counter()
+    let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver, config: config,
+                           signature: BarSignature(selfPositioningOwners: ["S1", "S2"]),
+                           log: { fired.add($0) }, gate: { gate.value }, trigger: { fired.hit() }, sleep: { _ in sleeps.hit() })
+    await t.poll()   // establishes the baseline
+    return Rig(triggers: t, scans: scans, gate: gate, fired: fired, sleeps: sleeps)
+}
+
+@MainActor
+@Suite struct PollTriggerTests {
+    @Test func selfPositioningOrderFlipDoesNotTrigger() async {
+        let r = await rig()
+        r.scans.set([[it("A", x: 100), it("B", x: 140), it("S2", x: 180), it("S1", x: 220, stale: true), it("WiFi", x: 260)]])
+        await r.triggers.poll()
+        #expect(r.fired.count == 0)
+        #expect(r.sleeps.count == 0)   // no change detected, so no confirming scan either
+    }
+
+    @Test func volatileModulePresenceFlickerDoesNotTrigger() async {
+        let r = await rig()
+        r.scans.set([Array(base.dropLast())])
+        await r.triggers.poll()
+        #expect(r.fired.count == 0 && r.sleeps.count == 0)
+    }
+
+    @Test func zeroWidthHeuristicNoiseDoesNotTrigger() async {
+        let r = await rig()
+        r.scans.set([base + [it("HMenuBarAgent", x: 0, w: 0)]])
+        await r.triggers.poll()
+        #expect(r.fired.count == 0 && r.sleeps.count == 0)
+    }
+
+    @Test func selfPositioningItemsVanishingDoesNotTrigger() async {
+        let r = await rig()
+        r.scans.set([[it("A", x: 100), it("B", x: 140), it("WiFi", x: 260)]])   // the whole of iStat missing from the fast scan
+        await r.triggers.poll()
+        #expect(r.fired.count == 0 && r.sleeps.count == 0)
+    }
+
+    @Test func agentMainMenuHeuristicAndShowHiddenModuleDoNotTrigger() async {
+        let r = await rig()
+        let agent = MenuBarItem(ownerPID: 1, ownerBundleID: "com.apple.MenuBarAgent", ownerName: "HAgent", title: "x", axDescription: "",
+                                axIdentifier: "x", frame: CGRect(x: 5, y: 0, width: 24, height: 24), source: .appExtras, isOnMenuBar: true)
+        let hidden = it("ShowHidden", x: 50)
+        // Key-level rule: both are exempt by key, whatever their width.
+        #expect(BarSignature.Value(order: [], presence: [], parked: [], staleParked: []).forPoll(selfPositioningOwners: []).presence.isEmpty)
+        let sig = BarSignature(selfPositioningOwners: [])
+        let a = [ResolvedItem(item: agent, key: .heuristic(bundleID: "com.apple.MenuBarAgent", fingerprint: "f", ordinal: 0), confidence: .heuristic),
+                 ResolvedItem(item: hidden, key: .module(name: "Show Hidden Menu Bar Items"), confidence: .exact),
+                 ResolvedItem(item: it("A", x: 100), key: .status(ownerKey: "A", autosaveName: "A"), confidence: .inferred)]
+        #expect(sig.value(a) == sig.value([a[2]]))
+    }
+
+    @Test func thirdPartyAppearingTriggersAfterTheConfirmingScan() async {
+        let r = await rig()
+        let before = r.scans.scans
+        r.scans.set([base + [it("C", x: 300)]])
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
+        #expect(r.sleeps.count == 1)
+        #expect(r.scans.scans == before + 2)   // the detecting scan and the confirming scan
+        #expect(r.fired.logs.contains { $0.contains("presence +[status:C::C]") })
+    }
+
+    @Test func thirdPartyMovingTriggers() async {
+        let r = await rig()
+        r.scans.set([[it("B", x: 100), it("A", x: 140), it("S1", x: 180), it("S2", x: 220), it("WiFi", x: 260)]])
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
+        #expect(r.fired.logs.contains { $0.contains("order reordered") })
+    }
+
+    @Test func oneScanFlickerDoesNotTrigger() async {
+        let r = await rig()
+        r.scans.set([base + [it("C", x: 300)], base])   // appears for one scan only
+        await r.triggers.poll()
+        #expect(r.fired.count == 0)
+        #expect(r.sleeps.count == 1)   // it was confirmed, not trusted
+        #expect(r.fired.logs.contains { $0.contains("not confirmed") })
+    }
+
+    @Test func backOffGrowsWhileQuietAndResetsOnChangeOrUserAction() async {
+        let c = PollConfig()
+        #expect(c.period(quietPolls: 0) == 10)
+        #expect(c.period(quietPolls: 2) == 10)
+        #expect(c.period(quietPolls: 3) == 20)
+        #expect(c.period(quietPolls: 6) == 30)
+        #expect(c.period(quietPolls: 60) == 30)   // capped
+        let r = await rig()
+        for _ in 0..<4 { await r.triggers.poll() }
+        #expect(r.triggers.quietPolls == 4)
+        r.gate.value = PollGate(userActions: 1, secondsSinceUserAction: 60)
+        await r.triggers.poll()
+        #expect(r.triggers.quietPolls == 0)
+        for _ in 0..<2 { await r.triggers.poll() }
+        r.scans.set([base + [it("C", x: 300)]])
+        await r.triggers.poll()   // a confirmed change resets
+        #expect(r.triggers.quietPolls == 0 && r.fired.count == 1)
+    }
+
+    @Test func skipsWhileBusyHeldUnsettledOrRightAfterAUserAction() async {
+        for gate in [PollGate(busy: true), PollGate(holdActive: true), PollGate(observationSettled: false),
+                     PollGate(secondsSinceUserAction: 2)] {
+            let r = await rig()
+            r.scans.set([base + [it("C", x: 300)]])
+            r.gate.value = gate
+            let before = r.scans.scans
+            await r.triggers.poll()
+            #expect(r.fired.count == 0)
+            #expect(r.scans.scans == before)   // not even scanned
+        }
+    }
+
+    @Test func aPassBetweenPollsDropsTheBaselineSoItsOwnChangesNeverTrigger() async {
+        let r = await rig()
+        r.gate.value = PollGate(passesStarted: 1)
+        r.scans.set([base + [it("C", x: 300)]])
+        await r.triggers.poll()   // new baseline taken from the post-pass bar
+        #expect(r.fired.count == 0)
+        await r.triggers.poll()
+        #expect(r.fired.count == 0)
+    }
+
+    @Test func aPassStartingDuringTheConfirmationCancelsIt() async {
+        let act = FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let state = EngineState()
+        let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: InMemoryLayoutStore(.empty), capabilities: Caps(),
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+        let scans = ScanQueue(), g = GateBox(), fired = Counter()
+        let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver,
+                               signature: BarSignature(selfPositioningOwners: ["S1", "S2"]),
+                               gate: { g.value }, trigger: { fired.hit() }, sleep: { _ in g.value = PollGate(busy: true) })
+        scans.set([base]); await t.poll()   // baseline
+        scans.set([base + [it("C", x: 300)]]); await t.poll()
+        #expect(fired.count == 0)
+    }
+}

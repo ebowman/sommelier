@@ -177,3 +177,21 @@ After the change (same machine, in ONE process, `mbprobe list --repeat 14 --timi
 behaviour) 2.49 s; scans 2-14 with iStat still stale 0.34-0.92 s typically (tree read ~0.63 s; occasional 1.4-1.6 s when unrelated
 apps' extras reads hit the 1.5 s budget under load 100+). Every 5th full read gives the slow groups one attempt at the normal 0.5 s
 timeout (no retry round), so the periodic refresh costs at most 0.5 s.
+
+
+## Poll trigger noise (sommelier-e7t)
+
+Measured 2026-11-04 on this bar (Bartender quit, scratch layout, converged), old poll (`fresh.onBar != observed.onBar`), 3.3 min: 20 polls, 16 passes with reason
+"trigger" (the poll) plus the startup pass and one setLayout pass, i.e. a pass on 80 % of polls (about 28 per 5 min). Every one was a PRESENCE difference (never an order difference):
+
+| Differing keys | Polls | Class |
+|---|---|---|
+| all eight iStat items (battery, cpu, disks, memory, network, sensors, time, weather) | 9 | iStat (self-positioning): stale in `observed`, fresh in the fast scan, or the reverse |
+| `heuristic:com.apple.MenuBarAgent::#0` + `module:Show Hidden Menu Bar Items` + iStat disks, network | 5 | Apple/agent noise + iStat |
+| the above plus all iStat items | 2 | agent noise + iStat |
+
+No module:WiFi/Focus, Bartender or third-party differences occurred in this window. `EngineState.observed` excludes stale items while the fast scan includes
+them, so the old comparison could never settle while iStat flapped stale.
+After (same bar, new poll, 5 min converged): 0 poll-triggered passes (an earlier run with only the heuristic/"Show Hidden" noise not yet exempt had 1 poll pass in 5 min;
+three other changes were logged "not confirmed" because the second scan differed). Genuine changes: `make dummy` (2 items) -> poll pass ~10 s after launch,
+placed per `newItemPolicy`; `make dummy-stop` -> poll pass ~13 s after quit.

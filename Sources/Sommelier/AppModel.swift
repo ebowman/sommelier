@@ -115,7 +115,8 @@ final class AppModel {
             let e = EngineFactory.makeLive(platform: platform, store: store, state: state,
                                            log: { NSLog("[Sommelier] engine: %@", $0) })
             engine = e
-            triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
+            triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") },
+                                       log: { NSLog("[Sommelier] poll: %@", $0) })
             watchErrors()
             agentWatcher = MenuBarAgentWatcher(log: { NSLog("[Sommelier] %@", $0) },
                                                 busy: { [platform] in platform.agentRestartInProgress },

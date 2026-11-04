@@ -84,6 +84,10 @@ public actor LayoutEngine {
     private var burstStart: ContinuousClock.Instant?
     private var draining = false
     private var inPass = false
+    /// When the last explicit (superseding) request arrived: `setLayout`, show/hide section, hold release, agent restart.
+    private var userActionAt: ContinuousClock.Instant?
+    private var userActions = 0
+    private func noteUserAction() { userActionAt = .now; userActions += 1 }
     private var stopped = false
     private var busyRetried = false
     private var chained = 0
@@ -160,6 +164,7 @@ public actor LayoutEngine {
     /// the caller judges its change only by passes started after it.
     @discardableResult
     public func setLayout(_ new: Layout) async -> LayoutRevision {
+        noteUserAction()
         layout = new
         loaded = true
         noteSupersede("setLayout")
@@ -233,6 +238,7 @@ public actor LayoutEngine {
     public func requestReconcile(supersede: Bool = false, reason: String = "trigger") {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
         guard !stopped, !sleeping else { return }
+        if supersede { noteUserAction() }
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
         pending = true
         if supersede, let t = observeTask {
@@ -404,6 +410,13 @@ public actor LayoutEngine {
         let keys = itemInfo.keys.filter { $0.hideUnit == unit }
         await publish { s in for k in keys where s.perItem[k] == .pending { s.perItem[k] = .inPlace } }
         requestReconcile(supersede: true, reason: "transient reveal ended")
+    }
+
+    /// What the poll (`EngineTriggers`) needs to decide whether it may run now (e7t).
+    public func pollGate() -> PollGate {
+        PollGate(busy: inPass || pending || requestedAt != nil || !delayed.isEmpty || sleeping || !loaded,
+                 holdActive: !transientReveals.isEmpty, userActions: userActions,
+                 secondsSinceUserAction: userActionAt.map { Double($0.duration(to: .now).components.seconds) + Double($0.duration(to: .now).components.attoseconds) / 1e18 })
     }
 
     public func isTransientlyRevealed(_ unit: HideUnit) -> Bool { transientReveals[unit] != nil }
@@ -1007,5 +1020,24 @@ public actor LayoutEngine {
             pending = true
         }
         return await finish(r, converged: converged)
+    }
+}
+
+/// Snapshot of the engine's activity for the poll (e7t).
+public struct PollGate: Sendable, Equatable {
+    /// A pass is running or requested (pending/delayed), the engine sleeps or has no layout.
+    public var busy: Bool
+    public var holdActive: Bool
+    /// Filled in by the caller from `EngineState` (the engine actor does not own them).
+    public var passesStarted: Int
+    public var observationSettled: Bool
+    public var secondsSinceUserAction: Double?
+    /// Count of explicit user-initiated requests so far (a change resets the poll's back-off).
+    public var userActions: Int
+    public init(busy: Bool = false, holdActive: Bool = false, userActions: Int = 0, passesStarted: Int = 0, observationSettled: Bool = true,
+                secondsSinceUserAction: Double? = nil) {
+        self.busy = busy; self.holdActive = holdActive; self.passesStarted = passesStarted
+        self.observationSettled = observationSettled; self.userActions = userActions
+        self.secondsSinceUserAction = secondsSinceUserAction
     }
 }
