@@ -122,6 +122,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var ghosts: Set<String> = []
     var hostedTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to hosted layouts read after the live write
     var preScansIncomplete = 0               // the first N full scans report an incomplete hosted read
+    var spOnlyIncomplete = false             // incomplete reads are incomplete ONLY for self-positioning owners (gdu.51)
     var probeOnlyTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to raw probes only (poll scans stay right)
     var allowedLiveValues: [String: Bool]?   // Control Center store readback (nil = unavailable)
     func readAllowedLive(_ keys: [String]) -> [String: Bool]? { allowedLiveValues.map { $0.filter { keys.contains($0.key) } } }
@@ -196,14 +197,14 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
         if let p = livePending {
             liveScanCount += 1
             if liveScanCount <= liveIncompleteScans { incomplete = true }
-            else if let n = liveApplyAfterScans, liveScanCount >= n { applyLive(p); livePending = nil }
+            if let n = liveApplyAfterScans, liveScanCount >= n, !incomplete || spOnlyIncomplete { applyLive(p); livePending = nil }
         }
         var s = snapshot()
         var lay = layout(attributed: true)
         if !liveWrites.isEmpty { hostedTamper?(&lay) }
         s.hostedLayout = lay
         if preScansIncomplete > 0 { preScansIncomplete -= 1; incomplete = true }
-        if incomplete { s.hostedReadComplete = false }
+        if incomplete { s.hostedReadComplete = false; s.incompleteOnlyForSelfPositioning = spOnlyIncomplete }
         return s
     }
     func accessibilityTrusted() -> Bool { trusted }
@@ -1079,4 +1080,44 @@ private final class FakePrefs: @unchecked Sendable {
     v.liveAvailable = true; v.liveApplyAfterScans = 1; v.allowedLiveValues = ["tracked.B": false]   // B is named
     let o2 = await liveActuator(v).applyHiddenBatchDetailed([key("B"): true])
     #expect(o2.mechanism == .live && v.liveWrites.count == 1 && v.assumedRecords.isEmpty)
+}
+
+
+// MARK: - gdu.51: reads incomplete only because of self-positioning owners
+
+@Test func liveVerifiesOnReadsIncompleteOnlyForSelfPositioningWithoutRespawn() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.preScansIncomplete = 100; w.spOnlyIncomplete = true; w.liveApplyAfterScans = 1   // EVERY scan is exceptSelfPositioning
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .live)
+    #expect(w.restarts == 0 && w.allowedWrites.isEmpty)
+    #expect((out.elapsedMS ?? 0) < 5000)
+}
+
+@Test func liveStillFallsBackWhenIncompleteForAnotherReason() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveIncompleteScans = 100; w.spOnlyIncomplete = false; w.liveApplyAfterScans = 1
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .respawn && w.restarts == 1)
+}
+
+@Test func liveUnitThatIsSelfPositioningStillNeedsACompleteRead() async {
+    let w = World(["A", "S", "C"])
+    w.liveAvailable = true; w.preScansIncomplete = 100; w.spOnlyIncomplete = true; w.liveApplyAfterScans = 1
+    var c = LiveActuator.Config()
+    c.liveHideShow = true
+    c.selfPositioningOwners = ["app.S"]
+    let a = LiveActuator(platform: w, config: c)
+    let out = await a.applyHiddenBatchDetailed([key("S"): true])
+    #expect(out.mechanism == .respawn && w.restarts == 1)
+}
+
+@Test func hostedEvidenceIgnoresSelfPositioningEntries() {
+    let before = [HostedEntry(sig: "com.bjango.istatmenus.cpu", minX: 10, width: 30), HostedEntry(sig: "", minX: 50, width: 20, ownerPID: 7), HostedEntry(sig: "x", minX: 90, width: 30, ownerPID: 8)]
+    let owners: Set<String> = ["com.bjango.istatmenus.status"]
+    let afterStale = [HostedEntry(sig: "x", minX: 90, width: 30, ownerPID: 8)]
+    #expect(!HostedEvidence.removedExactly(before: before, after: afterStale, unitPIDs: [7]))
+    #expect(HostedEvidence.removedExactly(before: SelfPositioning.strip(before, owners: owners), after: SelfPositioning.strip(afterStale, owners: owners), unitPIDs: [7]))
 }

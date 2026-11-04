@@ -465,18 +465,24 @@ public actor LiveActuator: MenuBarActuator {
                 // elements must equal the post-write tree, in order. Only for pure hides; a batch that also shows items cannot
                 // predict the tree, so it keeps the complete-read poll alone.
                 var baseline: [HostedEntry]?
+                // gdu.51: a read that is incomplete ONLY because of self-positioning owners' stale items is enough for a unit that
+                // is not itself self-positioning; layouts are then compared without those owners' entries.
+                let unitSP = expectations.keys.contains { selfPositioning($0) }
+                let spOwners = config.selfPositioningOwners
+                func usable(_ s: MenuBarSnapshot) -> Bool { unitSP ? s.completeness == .complete : s.completeness.membershipUsable }
+                func norm(_ l: [HostedEntry]) -> [HostedEntry] { unitSP ? l : SelfPositioning.strip(l, owners: spOwners) }
                 if !unnamedOwners.isEmpty, showPIDs.isEmpty {
                     var from = ""
-                    if snap.hostedReadComplete != false, let l = snap.hostedLayout, !l.isEmpty {
-                        baseline = l; from = "pre-write full scan"
+                    if usable(snap), let l = snap.hostedLayout, !l.isEmpty {
+                        baseline = norm(l); from = "pre-write full scan"
                     }
                     let limit = platform.now().addingTimeInterval(4)
                     while baseline == nil, platform.now() < limit {
                         let s = await platform.scan()
-                        if s.hostedReadComplete != false, let l = s.hostedLayout, !l.isEmpty { baseline = l; from = "retried full scan"; break }
+                        if usable(s), let l = s.hostedLayout, !l.isEmpty { baseline = norm(l); from = "retried full scan"; break }
                         await platform.sleep(0.2)
                     }
-                    if baseline == nil, let l = platform.recentCompleteHostedLayout(maxAge: 10) { baseline = l; from = "scanner cache (<= 10 s old)" }
+                    if baseline == nil, let l = platform.recentCompleteHostedLayout(maxAge: 10) { baseline = norm(l); from = "scanner cache (<= 10 s old)" }
                     if let baseline { note("live: baseline = \(from), \(baseline.count) hosted elements, unit owns \(baseline.filter { $0.ownerPID.map(members.contains) ?? false }.count)") }
                     else { note("live: no complete hosted baseline (scan, 4 s of retries, cache); no element evidence for identifier-less items") }
                 }
@@ -492,14 +498,14 @@ public actor LiveActuator: MenuBarActuator {
                         for at in [0.3, 0.8, 1.5, 2.5, 4.0, 6.0] {
                             let due = at - platform.now().timeIntervalSince(tw); if due > 0 { await platform.sleep(due) }
                             guard let after = await platform.hostedLayout() else { note("live: probe @\(Int(at * 1000))ms incomplete"); continue }
-                            if HostedEvidence.removedExactly(before: baseline, after: after, unitPIDs: members) {
+                            if HostedEvidence.removedExactly(before: baseline, after: norm(after), unitPIDs: members) {
                                 let n = baseline.count - after.count
                                 evidence = "hosted-element evidence: exactly the unit's \(n) element(s) vanished (\(baseline.count) -> \(after.count))"
                                 platform.recordAssumedHidden(unnamedOwners, hostedAfter: after.count)
                                 note("live: \(evidence!) at \(Int(at * 1000))ms")
                                 break
                             }
-                            note("live: probe @\(Int(at * 1000))ms: ambiguous: \(HostedEvidence.mismatch(before: baseline, after: after, unitPIDs: members) ?? "?")")
+                            note("live: probe @\(Int(at * 1000))ms: ambiguous: \(HostedEvidence.mismatch(before: baseline, after: norm(after), unitPIDs: members) ?? "?")")
                         }
                     }
                 }
@@ -513,12 +519,12 @@ public actor LiveActuator: MenuBarActuator {
                         await platform.sleep(config.liveVerifyInterval)
                         let s = await platform.scan()
                         polls += 1
-                        if !(s.hostedReadComplete == false || s.onBarLeftToRight.isEmpty) {
+                        if usable(s), !s.onBarLeftToRight.isEmpty {
                             complete += 1
                             let v = verdicts(platform.resolve(s))
                             // The poll's own complete scans carry the attributed hosted tree: the same element evidence applies when the
                             // timed probes were incomplete or too early. Record, then read once more with the flag in effect.
-                            if evidence == nil, let baseline, let after = s.hostedLayout,
+                            if evidence == nil, let baseline, let after = s.hostedLayout.map(norm),
                                HostedEvidence.removedExactly(before: baseline, after: after, unitPIDs: members) {
                                 evidence = "hosted-element evidence (poll scan #\(polls)): exactly the unit's \(baseline.count - after.count) element(s) vanished (\(baseline.count) -> \(after.count))"
                                 platform.recordAssumedHidden(unnamedOwners, hostedAfter: after.count)
@@ -539,7 +545,7 @@ public actor LiveActuator: MenuBarActuator {
                             if v.values.allSatisfy(\.ok) {
                                 let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
                                 let via = evidence.map { "live: verified by \($0); " } ?? ""
-                                note("\(via)live: verified by complete read #\(complete) (rule: first/second complete read satisfied); \(polls) scans, \(complete) complete, \(ms)ms, no respawn")
+                                note("\(via)live: verified by complete read #\(complete) (rule: first/second complete read satisfied); \(polls) scans, \(complete) complete, \(ms)ms, no respawn, read level \(s.completeness.rawValue)")
                                 var out = finish(expectations, v, s, settled: true, collateral: [])
                                 out.mechanism = .live; out.elapsedMS = ms
                                 return out

@@ -48,6 +48,8 @@ public actor LayoutEngine {
         public var maxKeyFailures = 3
         /// Consecutive passes in which every action failed (each ended by `maxConsecutiveFailures`) before the engine reports `stoppedAfterFailures`.
         public var maxAllFailedPasses = 3
+        /// Owners whose stale items do not block a pass but whose ORDER is only actuated on a COMPLETE read (gdu.51).
+        public var selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners
         public init() {}
     }
 
@@ -58,6 +60,8 @@ public actor LayoutEngine {
     private let state: EngineState
     private let busy: @Sendable () -> Bool
     private var itemInfo: [ItemKey: ItemInfo] = [:]
+    /// Read level of the latest observation (gdu.51).
+    private var observedCompleteness = ReadCompleteness.complete
     private let resolveSnapshot: @Sendable (MenuBarSnapshot) -> [ResolvedItem]
     private let sleep: @Sendable (Duration) async -> Void
     private let log: @Sendable (String) -> Void
@@ -484,6 +488,7 @@ public actor LayoutEngine {
             let o = ObservedOrder(resolved: r.items)
             if o.onBar.isEmpty { return .failure(.empty) }
             if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
+            observedCompleteness = r.completeness
             itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items))
             return .success((o, r.settled))
         } catch let e as ObserveError {
@@ -689,6 +694,25 @@ public actor LayoutEngine {
         func report(_ o: PassReport.Outcome) -> PassReport { PassReport(outcome: o, phase: phaseReached, actionCount: actionCount) }
 
         func isConverged() -> Bool { failures.isEmpty }
+
+        // (e2) ORDER actuation that involves a self-positioning owner (a moved item or its target) waits for a COMPLETE
+        // read: with their items stale, their frames and slots are not trusted (gdu.51). Membership is not affected.
+        if plan.phase == .order, observedCompleteness != .complete {
+            let owners = config.selfPositioningOwners
+            func sp(_ k: ItemKey) -> Bool { if case .status(let o, _) = k { return owners.contains(o) }; return false }
+            let involved = plan.actions.contains { a in
+                guard case .move(let k, let rel) = a else { return false }
+                if sp(k) { return true }
+                switch rel { case .before(let t), .after(let t): return sp(t); case .leftmost, .rightmost: return false }
+            }
+            if involved {
+                log("engine: order actuation involves a self-positioning owner and the read is \(observedCompleteness.rawValue); waiting for a complete read")
+                if draining { pending = true }
+                let r = PassReport(outcome: .unsettled)
+                _ = await finish(r, converged: false)
+                return r
+            }
+        }
 
         // (f)
         if plan.phase == .converged {

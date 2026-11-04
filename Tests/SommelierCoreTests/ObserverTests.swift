@@ -146,3 +146,43 @@ private func bar(_ items: [MenuBarItem], complete: Bool? = nil) -> MenuBarSnapsh
     let r = try await o.observeDetailed(progress: { _ in b.bump() })
     #expect(b.n == 1 && r.settled && r.items.count == 2)
 }
+
+
+// MARK: - gdu.51: stale items of self-positioning owners
+
+private func spBar(_ items: [MenuBarItem], level: ReadCompleteness = .completeExceptSelfPositioning) -> MenuBarSnapshot {
+    MenuBarSnapshot(items: items, capturedAt: Date(), hostedReadComplete: level == .complete ? true : false,
+                    incompleteOnlyForSelfPositioning: level == .completeExceptSelfPositioning)
+}
+
+@Test func completenessLevelsOnTheSnapshot() {
+    #expect(MenuBarSnapshot(items: [], capturedAt: Date()).completeness == .complete)
+    #expect(MenuBarSnapshot(items: [], capturedAt: Date(), hostedReadComplete: true).completeness == .complete)
+    #expect(MenuBarSnapshot(items: [], capturedAt: Date(), hostedReadComplete: false).completeness == .incomplete)
+    #expect(spBar([]).completeness == .completeExceptSelfPositioning)
+    #expect(spBar([]).hostedReadComplete == false)       // compatibility flag stays strict
+}
+
+@Test func agreesAcrossScansDifferingOnlyByStaleSelfPositioningItems() async throws {
+    let a = spBar([plain("A", x: 100), plain("S1", x: 140, stale: true), plain("S2", x: 170, stale: true), plain("B", x: 200)])
+    let b = spBar([plain("A", x: 100), plain("S1", x: 140), plain("S2", x: 170), plain("B", x: 200)], level: .complete)
+    let (o, box) = obs([a, b])
+    let r = try await o.observeDetailed(progress: nil)
+    #expect(r.settled && box.i == 2)
+    #expect(r.completeness == .completeExceptSelfPositioning)
+    let (o2, _) = obs([a, a])
+    let r2 = try await o2.observeDetailed(progress: nil)
+    #expect(r2.settled && r2.items.count == 4)
+}
+
+@Test func staleThirdPartyOnBarItemStillBlocksAgreement() async {
+    let a = spBar([plain("A", x: 100), plain("S1", x: 140, stale: true), plain("T", x: 170, stale: true)], level: .incomplete)
+    let (o, _) = obs([a, a, a, a, a, a])
+    await #expect(throws: ObserveError.noAgreement(scans: 6)) { try await o.observe() }
+}
+
+@Test func cleanCompleteObservationReportsComplete() async throws {
+    let a = bar([plain("A", x: 100), plain("B", x: 140)], complete: true)
+    let (o, _) = obs([a, a])
+    #expect(try await o.observeDetailed(progress: nil).completeness == .complete)
+}

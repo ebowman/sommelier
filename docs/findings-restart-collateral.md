@@ -151,3 +151,29 @@ one 0.6-1.5 s), so a run of stale scans alone costs 8-10 s. (2) Nothing in the d
 Rule now (`AgreedScanObserver`, docs/architecture.md "Observer"): order of identified, non-heuristic, non-self-positioning keys; presence
 of everything else; Wi-Fi and Focus exempt altogether; on-bar stale still blocks; stale parked items are compared as a set;
 duplicates collapsed. After `maxScans`/`deadline` the latest COMPLETE read is returned unsettled instead of an error.
+
+## iStat AX timeout streaks (gdu.51)
+
+Why: during the gdu.21 soak the observer reported `hostedComplete=false onBarStale=8` for 40+ s (all eight iStat items stale), the
+engine correctly planned nothing, and a requested hide/show waited until the actuator fell back to a respawn.
+
+Study 2026-11-04 20:34, Bartender 7 running, machine under heavy load (1-minute load 62-122), 20 x `mbprobe list --json --debug`
+(one process each, ~2 s apart; raw files in the session scratchpad `gdu51/c1..c20.{json,err}`, times in `char.times`):
+
+| scans | wall time | hosted tree | app-side reads that failed | stale items |
+|---|---|---|---|---|
+| 7 complete (1, 4, 7, 10, 12, 15, 18) | 0.84-2.17 s | 24 elements, 0 failed reads | Universal Control, MindNode Quick Entry, DEVONthink Helper, iStat Menus (main app, no items); `iStat Menus Menubar` in 5 of them (cached items NOT used: the hosted tree was fine) | 0 |
+| 11 with only iStat stale (2, 3, 5, 6, 8, 9, 11, 13, 16, 19, 20) | 2.51-2.96 s | 16 elements, **8 failed reads**, 0 named (fresh process) | the same plus `iStat Menus Menubar` (`using 8 cached item(s)`) | 8, all `iStat Menus Menubar` |
+| 2 with everything slow (14, 17: load spike) | 2.68-2.83 s | 16 elements, 8 failed reads | 20+ apps incl. BoltAI, DEVONthink, Hazel | 10 (iStat + BoltAI + DEVONthink): genuinely `.incomplete` |
+
+Streaks (consecutive scans, separate processes) with iStat stale: 2, 2, 2, 1, 2 (13-14), 2, 2; none longer than 2 scans (~5-6 s) in
+this study. The 40+ s streak of the soak was inside ONE long-lived process (the app) where the cache keeps carrying the stale items
+until `maxStaleScans` (3) and the app-side cache then keeps them stale; it was not reproduced here. Which reads fail: the HOSTED groups
+of the eight iStat items (MenuBarAgent forwards each group query to iStat, which does not answer), 8 failed reads every time; the
+app-side extras read of iStat Menus Menubar fails in parallel. Cost: the hosted tree read takes 2.45-2.58 s per stale scan (pass 1:
+0.5 s timeout x 2 attempts, retry round: 1.0 s timeout within a 1.2 s window), against 0.3-0.9 s when iStat answers.
+
+After the change (same machine, in ONE process, `mbprobe list --repeat 14 --timing`): scan 1 (no memory of slow groups, the old
+behaviour) 2.49 s; scans 2-14 with iStat still stale 0.34-0.92 s typically (tree read ~0.63 s; occasional 1.4-1.6 s when unrelated
+apps' extras reads hit the 1.5 s budget under load 100+). Every 5th full read gives the slow groups one attempt at the normal 0.5 s
+timeout (no retry round), so the periodic refresh costs at most 0.5 s.

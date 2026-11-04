@@ -200,8 +200,19 @@ public struct MenuBarSnapshot: Codable, Sendable {
     /// Whether the agent's hosted tree was read completely (no failed reads or unnamed timeouts). Only a complete read can
     /// report a live-hidden item (docs/findings-live-trigger.md section 4). nil = not a full scan / unknown (treated as complete).
     public var hostedReadComplete: Bool?
+    /// True when the read was incomplete ONLY because of self-positioning owners' stale items (see `ReadCompleteness`; set by
+    /// the scanner, not serialized).
+    public var incompleteOnlyForSelfPositioning = false
 
-    public init(items: [MenuBarItem], capturedAt: Date, hostedReadComplete: Bool? = nil, hostedLayout: [HostedEntry]? = nil) {
+    /// `hostedReadComplete` stays true only for `.complete` (compatibility); membership consumers use this level.
+    public var completeness: ReadCompleteness {
+        if hostedReadComplete != false { return .complete }
+        return incompleteOnlyForSelfPositioning ? .completeExceptSelfPositioning : .incomplete
+    }
+
+    public init(items: [MenuBarItem], capturedAt: Date, hostedReadComplete: Bool? = nil, hostedLayout: [HostedEntry]? = nil,
+                incompleteOnlyForSelfPositioning: Bool = false) {
+        self.incompleteOnlyForSelfPositioning = incompleteOnlyForSelfPositioning
         self.hostedLayout = hostedLayout
         self.items = items
         self.capturedAt = capturedAt

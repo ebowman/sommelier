@@ -82,6 +82,19 @@ private actor SlowFirstObserver: MenuBarObserver {
     }
 }
 
+/// Wraps the actuator's truth in an observation with a given read level (gdu.51).
+private final class ActuatorBox: @unchecked Sendable { var actuator: FakeActuator? }
+private struct LevelObserver: MenuBarObserver {
+    let box: ActuatorBox
+    let level: ReadCompleteness
+    func observe() async throws -> [ResolvedItem] { try await ActuatorObserver(actuator: box.actuator!).observe() }
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        BarObservation(items: try await observe(), settled: true, scans: 2, completeness: level)
+    }
+}
+
+private let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
+
 private struct Rig {
     let engine: LayoutEngine
     let state: EngineState
@@ -118,6 +131,30 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
 @MainActor
 @Suite struct LayoutEngineTests {
+    @Test func orderInvolvingSelfPositioningOwnerWaitsForACompleteRead() async {
+        let order = [istat, k("A"), k("B")]
+        let layout = Layout(visible: [k("B"), k("A"), istat])
+        let box = ActuatorBox()
+        let r = await rig(order: order, layout: layout, observer: LevelObserver(box: box, level: .completeExceptSelfPositioning))
+        box.actuator = r.actuator
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .unsettled)
+        #expect(await r.actuator.order == order)
+        let r2 = await rig(order: order, layout: layout)
+        #expect(await r2.engine.reconcileOnce().outcome == .converged)
+    }
+
+    @Test func orderAmongOthersProceedsOnAnExceptSelfPositioningRead() async {
+        let order = [istat, k("A"), k("B")]
+        let layout = Layout(visible: [istat, k("B"), k("A")])
+        let box = ActuatorBox()
+        let r = await rig(order: order, layout: layout, observer: LevelObserver(box: box, level: .completeExceptSelfPositioning))
+        box.actuator = r.actuator
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome != .unsettled)
+        #expect(await r.actuator.order != order)
+    }
+
     @Test func convergesInOnePass() async {
         let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["C", "B", "A"].map(k)))
         let rep = await r.engine.reconcileOnce()

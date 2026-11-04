@@ -64,10 +64,14 @@ public struct AgentHostedTree: Sendable {
     /// Groups that timed out and that the source has no memory of (e.g. first read in this process). Something
     /// provably failed to read, but not what; the scanner may then carry previously visible items, boundedly.
     public var unnamedTimeouts: Int
+    /// Part of `failedReads` that is NOT a per-item group (the window or the top level could not be read). Such a failure
+    /// can never be attributed to an item's owner (gdu.51).
+    public var topFailures: Int
     public init(stripFrame: CGRect?, elements: [AXElementInfo], failedReads: Int = 0, timedOut: [AXElementInfo] = [],
-                unnamedTimeouts: Int = 0) {
+                unnamedTimeouts: Int = 0, topFailures: Int = 0) {
         self.stripFrame = stripFrame; self.elements = elements; self.failedReads = failedReads; self.timedOut = timedOut
-        self.unnamedTimeouts = unnamedTimeouts
+        self.unnamedTimeouts = unnamedTimeouts; self.topFailures = topFailures
+        if failedReads > 0, topFailures == 0, timedOut.isEmpty, unnamedTimeouts == 0 { self.topFailures = failedReads }
     }
 }
 
@@ -125,6 +129,20 @@ final class AXElementCache: @unchecked Sendable {
         subtrees[ElementKey(e: e)] = items.map { var i = $0; i.element = nil; return i }
     }
     func subtree(_ e: AXUIElement) -> [AXElementInfo] { lock.lock(); defer { lock.unlock() }; return subtrees[ElementKey(e: e)] ?? [] }
+
+    /// Agent groups whose last full (retrying) read did not finish: the next read gives them a short timeout and no retry
+    /// round (gdu.51), so one slow owner (iStat) does not cost every scan the whole retry budget.
+    private var slow: Set<ElementKey> = []
+    private var slowReads = 0
+    func isSlow(_ e: AXUIElement) -> Bool { lock.lock(); defer { lock.unlock() }; return slow.contains(ElementKey(e: e)) }
+    /// Every 5th full read gives slow groups one attempt with the normal first-pass timeout (still no retry round), so a group
+    /// that merely needs a bit more than the cap is refreshed regularly at a bounded cost.
+    var slowRefreshRead: Bool { lock.lock(); defer { lock.unlock() }; return slowReads % 5 == 4 }
+    func setSlow(_ groups: [AXUIElement]) {
+        lock.lock(); defer { lock.unlock() }
+        slow = Set(groups.map { ElementKey(e: $0) })
+        slowReads += 1
+    }
 
     init() {
         let nc = NSWorkspace.shared.notificationCenter
@@ -184,6 +202,9 @@ public struct LiveAccessibilitySource: AccessibilitySource {
     public var agentRetryWindow: TimeInterval = 1.2
     /// Max concurrent element reads while walking the MenuBarAgent tree.
     public var agentWorkers = 8
+    /// Timeout for an agent group that did not finish in the previous full read (gdu.51); such a group is not retried.
+    /// 0 disables the cap.
+    public var agentSlowGroupTimeout: Float = 0.3
     private let cache = AXElementCache()
     public init() {}
 
@@ -381,10 +402,14 @@ public struct LiveAccessibilitySource: AccessibilitySource {
 
         /// Reads whole groups in parallel; returns the groups that did not finish cleanly (timed out, unfinished at
         /// the deadline, or containing a node that timed out).
-        func run(_ work: [Unchecked<AXUIElement>], timeout: Float, attempts: Int, within: TimeInterval?) -> [Unchecked<AXUIElement>] {
+        func run(_ work: [Unchecked<AXUIElement>], timeout: Float, attempts: Int, within: TimeInterval?, slowCap: Bool = false) -> [Unchecked<AXUIElement>] {
+            let capped = slowCap && agentSlowGroupTimeout > 0
+            let refresh = cache.slowRefreshRead
             let parts = boundedParallelMap(work, workers: workers, deadline: within.map { Date().addingTimeInterval($0) }) { w -> Collected in
                 var c = Collected()
-                self.collect(w.value, depth: 1, timeout: timeout, attempts: attempts, into: &c)
+                let isSlow = capped && self.cache.isSlow(w.value)
+                self.collect(w.value, depth: 1, timeout: isSlow && !refresh ? min(timeout, self.agentSlowGroupTimeout) : timeout,
+                             attempts: isSlow ? 1 : attempts, into: &c)
                 return c
             }
             var unfinished: [Unchecked<AXUIElement>] = []
@@ -396,16 +421,20 @@ public struct LiveAccessibilitySource: AccessibilitySource {
             }
             return unfinished
         }
-        var unresolved = run(tasks, timeout: t, attempts: retry ? 2 : 1, within: overall.map { max(0, $0.timeIntervalSinceNow) })
+        var unresolved = run(tasks, timeout: t, attempts: retry ? 2 : 1, within: overall.map { max(0, $0.timeIntervalSinceNow) }, slowCap: retry)
         trace("pass 1 done, \(unresolved.count) unfinished")
         if retry, !unresolved.isEmpty {
-            unresolved = run(unresolved, timeout: agentRetryTimeout, attempts: 2, within: agentRetryWindow)
+            // Groups that were already slow last time had their short pass; only the others get the long retry round.
+            let fresh = unresolved.filter { !cache.isSlow($0.value) || agentSlowGroupTimeout <= 0 }
+            let stillSlow = unresolved.filter { cache.isSlow($0.value) && agentSlowGroupTimeout > 0 }
+            unresolved = stillSlow + (fresh.isEmpty ? [] : run(fresh, timeout: agentRetryTimeout, attempts: 2, within: agentRetryWindow))
         }
+        if retry { cache.setSlow(unresolved.map(\.value)) }
         // Name what is still missing from the source's memory of those groups (never guessed from elsewhere).
         let unnamed = unresolved.filter { cache.subtree($0.value).isEmpty }.count
         let timedOut = unresolved.flatMap { cache.subtree($0.value) }.map { i -> AXElementInfo in var c = i; c.stale = true; return c }
         if ProcessInfo.processInfo.environment["SOMMELIER_AX_TRACE"] != nil { trace("done: \(found.count) found, \(unresolved.count) groups timed out") }
         return AgentHostedTree(stripFrame: strip, elements: found, failedReads: unresolved.count + topFailed, timedOut: timedOut,
-                               unnamedTimeouts: unnamed)
+                               unnamedTimeouts: unnamed, topFailures: topFailed)
     }
 }

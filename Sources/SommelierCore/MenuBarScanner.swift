@@ -16,6 +16,12 @@ public struct MenuBarScanner {
     public var emptyTTL: TimeInterval
     /// Overall deadline (seconds) of the fast path's agent-tree read.
     public var fastDeadline: TimeInterval = 0.3
+    /// Owners that re-position their own items and whose AX answers are slow (iStat); their stale items do not make a read
+    /// "incomplete" for membership evidence (`ReadCompleteness`, gdu.51).
+    public var selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners
+    /// Messaging timeout (seconds) of the extras read of an owner whose read failed even its retry in the previous full scan
+    /// (gdu.51); the default timeout is used for every other owner. 0 = no cap.
+    public var slowOwnerExtrasTimeout: Float = 0.3
     /// Control Center `isAllowed` readback for a tracked key (nil = unreadable); injectable for tests.
     public var allowedReadback: @Sendable (String) -> Bool? = { k in (try? ControlCenterTrackedAppsStore.allowedLive([k]))?[k] }
     private let state: ScanState
@@ -169,7 +175,20 @@ public struct MenuBarScanner {
         // Groups that timed out without the source knowing their contents: carry what was visible before and is
         // missing now (still bounded by the stale-scan cap and the owner check below).
         var candidatesToCarry = tree.timedOut
-        if tree.unnamedTimeouts > 0 { candidatesToCarry += missing(tree) }
+        if tree.unnamedTimeouts > 0 {
+            // When the failed groups are provably the self-positioning owner's (every named timeout is theirs, no top-level
+            // failure, and their known items cover every failed read), the other absent items are simply gone: carry only
+            // the self-positioning ones (gdu.51), so a hide of an unrelated unit is not masked as a stale carry.
+            let miss = missing(tree)
+            let owners = selfPositioningOwners
+            let spMiss = miss.filter { SelfPositioning.matches(identifier: $0.identifier, owners: owners) }
+            let spNamed = tree.timedOut.filter { SelfPositioning.matches(identifier: $0.identifier, owners: owners) }.count
+            let spCached = state.perApp.values.filter { SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: owners) }
+                .reduce(0) { $0 + $1.infos.count }
+            let accounted = max(spNamed + spMiss.count, spCached)
+            if tree.topFailures == 0, spNamed == tree.timedOut.count, accounted >= tree.failedReads { candidatesToCarry += spMiss }
+            else { candidatesToCarry += miss }
+        }
         for t in candidatesToCarry where !freshKeys.contains(t.identityKey) && seen.insert(t.identityKey).inserted {
             let prior = state.lastHosted.first { $0.identityKey == t.identityKey }
             let count = (prior?.staleCount ?? 0) + 1
@@ -245,12 +264,13 @@ public struct MenuBarScanner {
         let toRead = queried.filter { !skip.contains($0.pid) }
         let retryTimeoutSetting = self.retryTimeout
         let chronic = state.chronic
+        let capSlow = slowOwnerExtrasTimeout
         let extrasDone = DispatchGroup()
         let holder = Holder<[ExtrasRead?]>()
         extrasDone.enter()
         DispatchQueue.global(qos: .userInitiated).async {
             var reads: [ExtrasRead?] = boundedParallelMap(toRead, workers: Self.maxConcurrency, deadline: deadline) {
-                source.readExtras(for: $0, timeout: nil)
+                source.readExtras(for: $0, timeout: capSlow > 0 && chronic.contains($0.pid) ? capSlow : nil)
             }
             // Retry failed/timed-out apps once with a longer timeout, within what is left of the budget. Apps that
             // failed even their retry last time are not retried again (they cost the whole retry window).
@@ -326,6 +346,20 @@ public struct MenuBarScanner {
             f.width > 0 && f.height > 0 && f.midY >= strip.minY && f.midY <= strip.maxY
         }
         let hostedComplete = agent != nil && !hosted.isEmpty && tree.failedReads == 0 && tree.unnamedTimeouts == 0
+        // Completeness level (gdu.51): a FULL scan whose only incompleteness is stale items of self-positioning owners
+        // (iStat's AX answers time out for 40+ s at a time). Every stale hosted element and every stale app-side candidate
+        // must be theirs, there is no top-level failure, there is fresh hosted data, and their stale items account for
+        // every failed read. `hostedReadComplete` itself stays strict (== hostedComplete).
+        let spOwners = selfPositioningOwners
+        var spOnly = false
+        if !verifiedOnly, !hostedComplete, agent != nil, tree.topFailures == 0, tree.failedReads > 0, hosted.contains(where: { !$0.stale }) {
+            let staleHosted = hosted.filter(\.stale)
+            let staleCands = candidates.filter(\.stale)
+            spOnly = (!staleHosted.isEmpty || !staleCands.isEmpty)
+                && staleHosted.allSatisfy { SelfPositioning.matches(identifier: $0.identifier, owners: spOwners) }
+                && staleCands.allSatisfy { SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: spOwners) }
+                && max(staleHosted.count, staleCands.count) >= tree.failedReads
+        }
 
         // Assumed-hidden state (of7). Identifier-less items (Tot, Yoink, Moom) cannot be judged by name, so after a live
         // hide their stale on-bar app-side frame looks "on the bar". When WE hid such an owner (live write confirmed by
@@ -387,13 +421,7 @@ public struct MenuBarScanner {
 
         // Identifier-prefix attribution: hosted element id "com.bjango.istatmenus.weather" belongs to a
         // failed-read app whose bundle id is a reverse-DNS prefix relative (com.bjango.istatmenus.status).
-        func relatedPrefixes(_ bundle: String) -> [String] {
-            var out = [bundle + "."]
-            var comps = bundle.split(separator: ".").map(String.init)
-            comps.removeLast()
-            if comps.count >= 3 { out.append(comps.joined(separator: ".") + ".") }
-            return out
-        }
+        func relatedPrefixes(_ bundle: String) -> [String] { SelfPositioning.prefixes(bundle) }
         var attributed: [(Int, RunningAppInfo)] = []
         for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !h.identifier.isEmpty {
             let owners = failedApps.filter { app in
@@ -445,7 +473,10 @@ public struct MenuBarScanner {
             guard state.seenHostedKeys.contains("\(c.app.pid)|\(c.info.identityKey)") else { return false }
             // Incomplete read: it proves nothing by absence, so an item already known to be live-hidden stays hidden until
             // a read shows it hosted again (no flip-flop on flaky scans); everything else keeps the frame rule.
-            if !hostedComplete && !state.hiddenKeys.contains("\(c.app.pid)|\(c.info.identityKey)") { return false }
+            // On a read that is incomplete only because of self-positioning owners (gdu.51), the absence of a NON-self-positioning
+            // item's name is still proof: every failed group is theirs.
+            let trusted = hostedComplete || (spOnly && !SelfPositioning.matches(bundleID: c.app.bundleID, name: c.app.name, owners: spOwners))
+            if !trusted && !state.hiddenKeys.contains("\(c.app.pid)|\(c.info.identityKey)") { return false }
             if !c.info.identifier.isEmpty { return !hostedIdentifiers.contains(c.info.identifier) }
             guard matchedCandidates[ci] == nil else { return false }
             // An unmatched hosted element with the same (non-empty) title may be this item under a drifted description.
@@ -517,7 +548,7 @@ public struct MenuBarScanner {
         }
         // Remembered so the fast path keeps reporting a live-hidden item as hidden after a full scan dropped it from
         // `hostedKeys`; an item the agent hosts again leaves the set. An incomplete read leaves the set as it was.
-        if hostedComplete { state.hiddenKeys = state.hiddenKeys.subtracting(matchedKeys).union(newHidden) }
+        if hostedComplete || spOnly { state.hiddenKeys = state.hiddenKeys.subtracting(matchedKeys).union(newHidden) }
         for c in candidates where !c.stale && nameHosted(c) { state.seenHostedKeys.insert("\(c.app.pid)|\(c.info.identityKey)") }
         if hostedComplete {
             // Drop keys of owners that are no longer running.
@@ -542,7 +573,8 @@ public struct MenuBarScanner {
         // Our own hosted status item is counted in `hostedLayout` (evidence) but is not an item to report (unless asked for).
         let reported = (on + off).map(\.element).filter { includeSelf || $0.axIdentifier != Self.ownStatusItemIdentifier }
         let marked = SystemOverflow.mark(reported)
-        return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout)
+        return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
+                               incompleteOnlyForSelfPositioning: spOnly)
     }
 }
 

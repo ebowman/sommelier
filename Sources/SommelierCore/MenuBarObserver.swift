@@ -26,8 +26,11 @@ public struct BarObservation: Sendable {
     /// the user but never acted on (gdu.46).
     public var settled: Bool
     public var scans: Int
-    public init(items: [ResolvedItem], settled: Bool = true, scans: Int = 1) {
-        self.items = items; self.settled = settled; self.scans = scans
+    /// The weakest read level among the scans this observation rests on (gdu.51). `.completeExceptSelfPositioning`: the
+    /// self-positioning owners' items are stale (present, but their frames are not trusted).
+    public var completeness: ReadCompleteness
+    public init(items: [ResolvedItem], settled: Bool = true, scans: Int = 1, completeness: ReadCompleteness = .complete) {
+        self.items = items; self.settled = settled; self.scans = scans; self.completeness = completeness
     }
 }
 
@@ -104,6 +107,16 @@ public struct AgreedScanObserver: MenuBarObserver {
         return (out, dup)
     }
 
+    static func weakest(_ a: ReadCompleteness, _ b: ReadCompleteness) -> ReadCompleteness {
+        if a == .incomplete || b == .incomplete { return .incomplete }
+        return a == .complete && b == .complete ? .complete : .completeExceptSelfPositioning
+    }
+
+    private func isSelfPositioning(_ r: ResolvedItem) -> Bool {
+        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return true }
+        return SelfPositioning.matches(r.item, owners: selfPositioningOwners)
+    }
+
     private func orderable(_ r: ResolvedItem) -> Bool {
         if volatileKeys.contains(r.key) || r.confidence == .heuristic || r.item.axIdentifier.isEmpty { return false }
         if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return false }
@@ -113,7 +126,8 @@ public struct AgreedScanObserver: MenuBarObserver {
     /// nil = this scan cannot be used for agreement (a stale item is on the bar).
     func signature(_ all: [ResolvedItem]) -> String? {
         let r = all.filter { $0.item.frame.width > 1 && !volatileKeys.contains($0.key) }
-        if r.contains(where: { $0.item.stale && $0.item.isOnMenuBar }) { return nil }
+        // A stale item of a self-positioning owner does not block (gdu.51): it counts for presence, never for order.
+        if r.contains(where: { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }) { return nil }
         let bar = r.filter { $0.item.isOnMenuBar }
         let order = bar.filter(orderable).map { $0.key.description }.joined(separator: "\n")
         let presence = bar.map { $0.key.description }.sorted().joined(separator: "\n")
@@ -143,6 +157,8 @@ public struct AgreedScanObserver: MenuBarObserver {
         // Latest complete read; a read without a stale item on the bar is preferred over one with.
         var best: [ResolvedItem]?
         var bestClean = false
+        var bestLevel = ReadCompleteness.complete
+        var prevLevel = ReadCompleteness.complete
         while scans < maxScans, Date() < limit {
             if Task.isCancelled { throw ObserveError.superseded }
             let snap = await scanner.scan()
@@ -162,7 +178,8 @@ public struct AgreedScanObserver: MenuBarObserver {
             if !empty { sawNonEmpty = true }
             let sig = signature(res)
             let onBarStale = res.filter { $0.item.stale && $0.item.isOnMenuBar }.map { $0.key.description }
-            log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") items=\(res.count) onBarStale=\(onBarStale.count) agree=\(sig != nil && sig == prevSig)")
+            let level = snap.completeness
+            log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") level=\(level.rawValue) items=\(res.count) onBarStale=\(onBarStale.count) agree=\(sig != nil && sig == prevSig)")
             if ProcessInfo.processInfo.environment["SOMMELIER_DEBUG_OBSERVE"] != nil {
                 FileHandle.standardError.write(Data("observe scan \(scans): blocked=\(sig == nil) agree=\(sig != nil && sig == prevSig) \(sig?.count ?? 0)\n".utf8))
             }
@@ -170,18 +187,21 @@ public struct AgreedScanObserver: MenuBarObserver {
             // (a slow iStat read leaves its items stale, and a pass would otherwise show nothing for 10+ s); only a COMPLETE
             // read may be returned as the unsettled result.
             if !empty, !sentProgress { sentProgress = true; progress?(res) }
-            if !empty, snap.hostedReadComplete != false {
-                if sig != nil || !bestClean { best = res; bestClean = sig != nil }
+            if !empty, level.membershipUsable {
+                if sig != nil || !bestClean { best = res; bestClean = sig != nil; bestLevel = level }
             }
-            if !empty, let sig, sig == prevSig { return BarObservation(items: res, settled: true, scans: scans) }
+            if !empty, let sig, sig == prevSig {
+                return BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel))
+            }
             prevSig = sig
+            prevLevel = level
             await sleep(.milliseconds(300))
         }
         if Task.isCancelled { throw ObserveError.superseded }
         if scans > 0, !sawNonEmpty { throw ObserveError.empty }
         if let best {
             log("scans did not agree after \(scans) attempts; returning the latest complete read, unsettled")
-            return BarObservation(items: best, settled: false, scans: scans)
+            return BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel)
         }
         throw ObserveError.noAgreement(scans: scans)
     }
