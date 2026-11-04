@@ -24,6 +24,8 @@ public struct ControlCenterTrackedAppsStore {
     public var url: URL
     /// Raw bytes of the file as first read before any write through this store.
     public private(set) var backup: Data?
+    /// `trackedApplications` blob as first read through CFPreferences before a live write.
+    public internal(set) var liveBackup: Data?
 
     public init(url: URL = ControlCenterTrackedAppsStore.defaultURL) { self.url = url }
 

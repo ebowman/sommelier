@@ -429,7 +429,7 @@ public struct MenuBarScanner {
         let on = indexed.filter { $0.element.isOnMenuBar }
             .sorted { ($0.element.frame.minX, $0.offset) < ($1.element.frame.minX, $1.offset) }
         let off = indexed.filter { !$0.element.isOnMenuBar }
-        return MenuBarSnapshot(items: (on + off).map(\.element), capturedAt: Date())
+        return MenuBarSnapshot(items: (on + off).map(\.element), capturedAt: Date(), hostedReadComplete: hostedComplete)
     }
 }
 

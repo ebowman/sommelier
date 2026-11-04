@@ -8,7 +8,7 @@ Open-source menu bar item manager for macOS 26+ (work in progress).
     make test      # swift test
     make app       # assemble and ad-hoc sign build/Sommelier.app
     make run       # build and open build/Sommelier.app
-    make probe ARGS="..."   # swift run mbprobe
+    make probe ARGS="..."   # build (signs mbprobe with the app-group entitlement), then run the bin-path mbprobe
     make dummy [ARGS="--count 3 --removal-allowed"]   # build/MBDummy.app test status items
     make dummy-stop
     make clean
@@ -55,4 +55,8 @@ The app is deliberately not sandboxed. License: MIT.
 A process started directly from the shell inherits the terminal's Accessibility trust (as `mbprobe` does), so for
 development use `make app-run`, which builds the bundle and runs `build/Sommelier.app/Contents/MacOS/Sommelier` in the
 background with logs in `build/sommelier.log` (look for `launch trusted=true`). Stop it with `pkill -x Sommelier`.
+Live hide/show (cfprefsd-notified `isAllowed` write, no agent respawn) needs the `com.apple.security.application-groups`
+entitlement for `group.com.apple.controlcenter` (`Resources/Sommelier.entitlements`). `make build` re-signs the built `mbprobe`
+with it; `swift run mbprobe` re-links and runs an UNENTITLED binary, so use `make probe` or `$(swift build --show-bin-path)/mbprobe`.
+`mbprobe permissions` prints `live hide/show: available|unavailable`; unentitled binaries use the respawn path automatically.
 Debug env vars: `SOMMELIER_DEBUG_MENU=1`, `SOMMELIER_OPEN_SETTINGS=1`, `SOMMELIER_TOGGLE_LOGIN=1`, `SOMMELIER_SHOW_ONBOARDING=1`.

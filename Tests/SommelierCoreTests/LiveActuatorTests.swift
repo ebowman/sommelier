@@ -108,6 +108,26 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var restartAppliesAllowed = true, restartAppliesStore = true
     var store: [String: Double]
     var clock = Date(timeIntervalSince1970: 1000)
+    // Live (cfprefsd-notified) path scripting.
+    var liveAvailable = false, liveThrows = false
+    var liveApplyAfterScans: Int? = 2        // the Nth full scan after the live write shows it; nil = never
+    var liveIncompleteScans = 0              // that many scans right after the write report an incomplete hosted read
+    var liveWrites: [[String: Bool]] = []
+    var livePending: [String: Bool]?
+    var liveScanCount = 0
+
+    var liveHideShowAvailable: Bool { liveAvailable }
+    func setAllowedLive(_ c: [String: Bool]) throws {
+        if liveThrows { throw PreferenceWriterError.writeFailed("injected live failure") }
+        liveWrites.append(c); livePending = c; liveScanCount = 0
+    }
+    private func applyLive(_ allowedByTracked: [String: Bool]) {
+        for n in Array(order) + Array(hidden).sorted() {
+            guard let allowed = allowedByTracked[tracked(n)] else { continue }
+            if allowed { hidden.remove(n); if !order.contains(n) { order.append(n) } }
+            else if let i = order.firstIndex(of: n) { order.remove(at: i); hidden.insert(n) }
+        }
+    }
 
     init(_ names: [String]) {
         order = names
@@ -125,7 +145,18 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
         return MenuBarSnapshot(items: items, capturedAt: clock)
     }
     func scanVisible() async -> MenuBarSnapshot { fastScans += 1; return snapshot() }
-    func scan() async -> MenuBarSnapshot { fullScans += 1; return snapshot() }
+    func scan() async -> MenuBarSnapshot {
+        fullScans += 1
+        var incomplete = false
+        if let p = livePending {
+            liveScanCount += 1
+            if liveScanCount <= liveIncompleteScans { incomplete = true }
+            else if let n = liveApplyAfterScans, liveScanCount >= n { applyLive(p); livePending = nil }
+        }
+        var s = snapshot()
+        if incomplete { s.hostedReadComplete = false }
+        return s
+    }
     func accessibilityTrusted() -> Bool { trusted }
     func pressedMouseButtons() -> Int { buttons }
     func conflictingManager() -> String? { bartender }
@@ -186,6 +217,12 @@ private func actuator(_ w: World, fallback: Bool = true, forceFallback: Bool = f
     var c = LiveActuator.Config()
     c.allowFallback = fallback
     c.forceFallback = forceFallback
+    return LiveActuator(platform: w, config: c)
+}
+
+private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
+    var c = LiveActuator.Config()
+    c.liveHideShow = live
     return LiveActuator(platform: w, config: c)
 }
 
@@ -662,4 +699,169 @@ private func actuator(_ w: World, fallback: Bool = true, forceFallback: Bool = f
     #expect(r[0].item.hiddenReason == .notHosted)
     #expect(ActuationVerifier.visibilityVerdict(key: k, hidden: true, resolved: r).ok)
     #expect(!ActuationVerifier.visibilityVerdict(key: k, hidden: false, resolved: r).ok)
+}
+
+
+// MARK: - live (cfprefsd-notified) hide/show
+
+@Test func liveVerifiedOnSecondPollWithoutRestart() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveIncompleteScans = 1; w.liveApplyAfterScans = 2
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified)
+    #expect(out.mechanism == .live)
+    #expect(w.restarts == 0 && w.allowedWrites.isEmpty)
+    #expect(w.liveWrites == [["tracked.B": false]])
+    #expect(w.order == ["A", "C"] && w.hidden == ["B"])
+    #expect((out.elapsedMS ?? 0) >= 1000)          // two polls of 0.5 s on the fake clock
+}
+
+@Test func liveUnavailableUsesRespawnExactlyAsBefore() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = false
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .respawn)
+    #expect(w.liveWrites.isEmpty && w.restarts == 1 && w.allowedWrites == [["tracked.B": false]])
+}
+
+@Test func liveWriteThrowFallsBackToOneRestart() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveThrows = true
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .respawn)
+    #expect(w.restarts == 1 && w.allowedWrites.count == 1)
+}
+
+@Test func liveTwoCompleteUnsatisfiedReadsFallBackToOneRestart() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveApplyAfterScans = nil
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .respawn)
+    #expect(w.restarts == 1 && w.liveWrites.count == 1 && w.allowedWrites.count == 1)
+    #expect(await a.trace.contains { $0.contains("2 scans, 2 complete") && $0.contains("two complete reads unsatisfied") })
+}
+
+@Test func liveOneUnsatisfiedCompleteReadThenSatisfiedIsLive() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveApplyAfterScans = 2     // scan 1 complete but pre-write state, scan 2 shows it
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .live && w.restarts == 0)
+}
+
+@Test func liveEightIncompleteReadsThenFallback() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveIncompleteScans = 100; w.liveApplyAfterScans = 1
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .respawn && out.result.isVerified)
+    #expect(w.restarts == 1)
+    #expect(await a.trace.contains { $0.contains("8 scans, 0 complete") && $0.contains("max scans") })
+}
+
+@Test func liveSevenIncompleteThenOneCompleteSatisfiedIsLive() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveIncompleteScans = 7; w.liveApplyAfterScans = 8
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .live && w.restarts == 0)
+    #expect(await a.trace.contains { $0.contains("8 scans, 1 complete") })
+}
+
+@Test func liveIncompleteReadsAloneAreNotFailure() async {
+    let w = World(["A", "B"])
+    w.liveAvailable = true; w.liveIncompleteScans = 5; w.liveApplyAfterScans = 6
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("A"): true])
+    #expect(out.result.isVerified && out.mechanism == .live && w.restarts == 0)
+}
+
+@Test func liveSiblingsOfTheSameAppAreVerifiedToo() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.shared = ["B": "tracked.BC", "C": "tracked.BC"]
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .live)
+    #expect(Set(out.perKey.keys) == [key("B"), key("C")])
+    #expect(w.liveWrites == [["tracked.BC": false]] && w.order == ["A"] && w.restarts == 0)
+}
+
+@Test func liveShowRoundTrip() async {
+    let w = World(["A", "B"])
+    w.liveAvailable = true; w.liveApplyAfterScans = 1
+    let a = liveActuator(w)
+    #expect((await a.applyHiddenBatchDetailed([key("B"): true])).mechanism == .live)
+    let back = await a.applyHiddenBatchDetailed([key("B"): false])
+    #expect(back.result.isVerified && back.mechanism == .live && w.restarts == 0)
+    #expect(Set(w.order) == ["A", "B"])
+}
+
+@Test func liveDisabledInConfigBypassesTheLivePath() async {
+    let w = World(["A", "B"])
+    w.liveAvailable = true
+    let out = await liveActuator(w, live: false).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .respawn)
+    #expect(w.liveWrites.isEmpty && w.restarts == 1)
+}
+
+// MARK: - ControlCenterTrackedAppsStore.setAllowedBatchLive (injected CFPreferences)
+
+private func trackedBlob(_ entries: [(String, Bool)]) -> Data {
+    var list: [Any] = []
+    for (k, allowed) in entries {
+        let loc: [String: Any] = ["bundle": ["_0": k]]
+        list.append(loc)
+        list.append(["location": loc, "menuItemLocations": [loc], "isAllowed": allowed] as [String: Any])
+    }
+    return try! PropertyListSerialization.data(fromPropertyList: list, format: .binary, options: 0)
+}
+
+private final class FakePrefs: @unchecked Sendable {
+    var blob: Data?
+    var file: Data?
+    var syncOK = true
+    var dropWrites = false
+    var writes = 0
+    init(_ b: Data?) { blob = b }
+    var access: LivePrefsAccess {
+        LivePrefsAccess(read: { self.blob },
+                        write: { d in self.writes += 1; if !self.dropWrites { self.blob = d }; return self.syncOK },
+                        fileBlob: { self.file })
+    }
+}
+
+@Test func liveStoreWritesAndReadsBackThroughPrefs() throws {
+    let p = FakePrefs(trackedBlob([("ie.x", true), ("ie.y", true)]))
+    var s = ControlCenterTrackedAppsStore(url: URL(fileURLWithPath: "/nonexistent/cc.plist"))
+    try s.setAllowedBatchLive(["ie.x": false], access: p.access)
+    #expect(p.writes == 1)
+    #expect(try ControlCenterTrackedAppsStore.allowedLive(["ie.x", "ie.y"], access: p.access) == ["ie.x": false, "ie.y": true])
+    #expect(s.liveBackup != nil)
+}
+
+@Test func liveStoreRefusesModuleSystemAndUnknownKeysWithoutWriting() throws {
+    let p = FakePrefs(trackedBlob([("ie.x", true)]))
+    var s = ControlCenterTrackedAppsStore(url: URL(fileURLWithPath: "/nonexistent/cc.plist"))
+    #expect(throws: PreferenceWriterError.self) { try s.setAllowedBatchLive(["module:Clock": false], access: p.access) }
+    #expect(throws: PreferenceWriterError.self) { try s.setAllowedBatchLive(["com.apple.Safari": false], access: p.access) }
+    #expect(throws: PreferenceWriterError.self) { try s.setAllowedBatchLive(["ie.x": false, "ie.nope": false], access: p.access) }
+    #expect(p.writes == 0)
+    #expect(try ControlCenterTrackedAppsStore.allowedLive(["ie.x"], access: p.access) == ["ie.x": true])
+}
+
+@Test func liveStoreThrowsWhenSynchronizeFailsOrValueDoesNotTake() {
+    let p = FakePrefs(trackedBlob([("ie.x", true)]))
+    var s = ControlCenterTrackedAppsStore(url: URL(fileURLWithPath: "/nonexistent/cc.plist"))
+    p.syncOK = false
+    #expect(throws: PreferenceWriterError.self) { try s.setAllowedBatchLive(["ie.x": false], access: p.access) }
+    p.blob = trackedBlob([("ie.x", true)]); p.syncOK = true; p.dropWrites = true
+    #expect(throws: PreferenceWriterError.self) { try s.setAllowedBatchLive(["ie.x": false], access: p.access) }
+}
+
+@Test func liveStoreFallsBackToFileBlobAndReportsWhenBothFail() throws {
+    let p = FakePrefs(nil)
+    var s = ControlCenterTrackedAppsStore(url: URL(fileURLWithPath: "/nonexistent/cc.plist"))
+    #expect(throws: PreferenceWriterError.self) { try s.setAllowedBatchLive(["ie.x": false], access: p.access) }
+    p.file = trackedBlob([("ie.x", true)])
+    // Read-back also goes through CFPreferences: with nothing stored there yet, the write must land.
+    try s.setAllowedBatchLive(["ie.x": false], access: p.access)
+    #expect(try ControlCenterTrackedAppsStore.allowedLive(["ie.x"], access: p.access) == ["ie.x": false])
 }

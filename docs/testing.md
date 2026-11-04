@@ -49,3 +49,29 @@ Procedure: `./ccset ie.boboco.mbdummy 0`, then `mbprobe list --json` in a loop e
 | show (`ccset ... 1`) -> first scan reporting both on-bar | implementer +1.5 s; reviewer +1.11, +1.65, +1.90 s |
 | non-dummy on-bar order, before vs during hide vs after show | identical (18 items; only the "64%" -> "65%" readout title changed) |
 | fast path (`list --fast`, one-shot process, 0.3 s hosted deadline) | reports `notHosted` only on complete reads, which are intermittent on this machine (first one at +4.05 s in one run). It is not a bounded-latency signal. |
+
+## Live hide/show
+
+Bead sommelier-gdu.39. The actuator writes `isAllowed` through CFPreferences (cfprefsd-notified, needs the app-group entitlement) and polls full scans until a complete read confirms it; respawn is the fallback.
+Use the ENTITLED binary: `make build` re-signs `$(swift build --show-bin-path)/mbprobe` with `Resources/Sommelier.entitlements`; `swift run mbprobe` is unentitled.
+Bartender quit (`osascript -e 'tell application "Bartender 7" to quit'`), `make dummy ARGS="--count 2"`, back up both plists first.
+
+    MB=$(swift build --show-bin-path)/mbprobe
+    codesign -d --entitlements :- $MB          # shows group.com.apple.controlcenter
+    $MB permissions                            # "live hide/show: available"
+    $MB list --json >/dev/null                 # seed (the scanner only reports live hides for items it saw hosted)
+    $MB hide status:MBDummy::Dummy-A           # MECHANISM live ACTUATION_MS ~0.6-5 s; pgrep -x MenuBarAgent unchanged
+    $MB show status:MBDummy::Dummy-A
+    $MB layout init-from-current --file SCRATCH/layout.json; cp SCRATCH/layout.json SCRATCH/layout-visible.json
+    $MB layout move status:MBDummy::Dummy-A hidden --file SCRATCH/layout.json   # same for Dummy-B
+    $MB apply --file SCRATCH/layout.json       # "actuator: live: verified after N scan(s) ... no respawn"
+    cp SCRATCH/layout-visible.json SCRATCH/layout.json; $MB apply --file SCRATCH/layout.json
+    # fallback: cp $MB SCRATCH/mbprobe-unent; codesign --force --sign - SCRATCH/mbprobe-unent
+    #   -> permissions says "unavailable"; hide/show print MECHANISM respawn and still verify; no
+    #   ~/Library/Preferences/group.com.apple.controlcenter.plist may appear.
+
+Do NOT restore a dummy to "visible" in a scratch layout by `layout move ... visible` without an index: it is appended after Clock and the engine's order phase then
+drags real (iStat) items. Restore from a copy taken while the dummies were visible. Results 2026-11-04: hide/show live 0.6-5.1 s, 40 ops (20 cycles), agent pid constant (implementer soak 40/40 live; the reviewer's run was 4/6 live under the old 6 s wall bound because of incomplete-read streaks),
+non-dummy on-bar order identical; engine apply hide 0.71 s / show 0.63 s actuation (5.6 / 6.5 s wall); unentitled copy: respawn path, both verified, no stray plist.
+
+Poll bound (after the reviewer's finding): full scans every 0.5 s; the FIRST complete read decides, an unsatisfied complete read gets one more complete read, hard ceiling 8 scans / 20 s. The respawn fallback should now occur only when no complete read arrives within that ceiling (or two complete reads disagree). The trace states scans taken, complete count and the ending rule.

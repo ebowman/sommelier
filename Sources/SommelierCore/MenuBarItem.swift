@@ -112,10 +112,14 @@ public struct MenuBarSnapshot: Codable, Sendable {
     /// All items: on-bar left-to-right first, then parked.
     public var items: [MenuBarItem]
     public var capturedAt: Date
+    /// Whether the agent's hosted tree was read completely (no failed reads or unnamed timeouts). Only a complete read can
+    /// report a live-hidden item (docs/findings-live-trigger.md section 4). nil = not a full scan / unknown (treated as complete).
+    public var hostedReadComplete: Bool?
 
-    public init(items: [MenuBarItem], capturedAt: Date) {
+    public init(items: [MenuBarItem], capturedAt: Date, hostedReadComplete: Bool? = nil) {
         self.items = items
         self.capturedAt = capturedAt
+        self.hostedReadComplete = hostedReadComplete
     }
 
     /// On-bar items sorted by frame.minX (stable for equal x).

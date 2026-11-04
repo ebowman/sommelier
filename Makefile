@@ -3,8 +3,10 @@
 APP := build/Sommelier.app
 DUMMY := build/MBDummy.app
 
+# build also re-signs mbprobe ad-hoc with the app-group entitlement (live hide/show); `swift run` would re-link it unsigned.
 build:
 	swift build
+	codesign --force --sign - --entitlements Resources/Sommelier.entitlements "$$(swift build --show-bin-path)/mbprobe"
 
 test:
 	swift test
@@ -34,8 +36,8 @@ app-run: app
 	-@pkill -x Sommelier || true
 	$(APP)/Contents/MacOS/Sommelier > build/sommelier.log 2>&1 &
 
-probe:
-	swift run mbprobe $(ARGS)
+probe: build
+	"$$(swift build --show-bin-path)/mbprobe" $(ARGS)
 
 dummy: build
 	rm -rf $(DUMMY)

@@ -2,11 +2,22 @@ import CoreGraphics
 import Foundation
 
 /// Per-key and aggregate outcome of a hide/show batch.
+public enum ActuationMechanism: String, Sendable {
+    /// cfprefsd-notified `isAllowed` write; MenuBarAgent applied it without a respawn.
+    case live
+    /// File write + `killall MenuBarAgent`.
+    case respawn
+}
+
 public struct BatchOutcome: Sendable {
     /// One entry per requested key, plus keys of the same app that the app-level `isAllowed` flip necessarily changes.
     public var perKey: [ItemKey: ActuationResult]
     /// `.verified` only if every entry verified.
     public var result: ActuationResult
+    /// Which path produced the result; nil when nothing was written (already satisfied, refused).
+    public var mechanism: ActuationMechanism? = nil
+    /// Wall time of the write-to-verified phase in milliseconds (platform clock), nil when nothing was written.
+    public var elapsedMS: Int? = nil
 }
 
 /// The real `MenuBarActuator`: precheck -> act -> settle -> verify (docs/architecture.md (c)).
@@ -22,6 +33,13 @@ public actor LiveActuator: MenuBarActuator {
         /// Skip the drag mechanism and go straight to the fallback (testing).
         public var forceFallback = false
         public var restartTimeout: TimeInterval = 15
+        /// Use the cfprefsd-notified write (no respawn) when the platform has the entitlement; the respawn is the fallback.
+        public var liveHideShow = true
+        /// Full scans are polled until a COMPLETE read confirms the change (a live hide shows only on a complete read).
+        public var liveVerifyTimeout: TimeInterval = 20
+        /// Hard ceiling on full scans taken while waiting for a complete read.
+        public var liveVerifyMaxScans = 8
+        public var liveVerifyInterval: TimeInterval = 0.5
         public var dragSteps = 10
         /// Second drag attempt uses more steps (docs/findings-drag: >=10 always worked, 20 is the next parameter).
         public var retrySteps = 20
@@ -40,6 +58,7 @@ public actor LiveActuator: MenuBarActuator {
 
     public init(platform: any ActuatorPlatform, config: Config = Config(), log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.platform = platform; self.config = config; self.log = log
+        if config.liveHideShow { log("live hide/show: \(platform.liveHideShowAvailable ? "available" : "unavailable (no app-group entitlement)")") }
     }
 
     public func setConfig(_ c: Config) { config = c }
@@ -375,6 +394,45 @@ public actor LiveActuator: MenuBarActuator {
         }
         if verdicts(resolved).values.allSatisfy(\.ok) { note("batch already satisfied"); return finish(expectations, verdicts(resolved), snap, settled: true, collateral: []) }
 
+        let respawnStart = platform.now()   // elapsed of a respawn result includes a failed live attempt
+        if config.liveHideShow {
+            if platform.liveHideShowAvailable {
+                let t0 = respawnStart
+                var wrote = false
+                do { try platform.setAllowedLive(wantByApp.mapValues { !$0 }); wrote = true }
+                catch { note("live write failed (\(error)); falling back to respawn") }
+                if wrote {
+                    var polls = 0
+                    var complete = 0
+                    var ended = "ceiling"
+                    // The FIRST complete read decides; an unsatisfied one gets ONE more complete read (a scan may have
+                    // started before the write landed). No complete read within the ceiling -> fallback.
+                    while true {
+                        await platform.sleep(config.liveVerifyInterval)
+                        let s = await platform.scan()
+                        polls += 1
+                        if !(s.hostedReadComplete == false || s.onBarLeftToRight.isEmpty) {
+                            complete += 1
+                            let v = verdicts(platform.resolve(s))
+                            if v.values.allSatisfy(\.ok) {
+                                let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
+                                note("live: verified by complete read #\(complete) (rule: first/second complete read satisfied); \(polls) scans, \(complete) complete, \(ms)ms, no respawn")
+                                var out = finish(expectations, v, s, settled: true, collateral: [])
+                                out.mechanism = .live; out.elapsedMS = ms
+                                return out
+                            }
+                            if complete >= 2 { ended = "two complete reads unsatisfied"; break }
+                        }
+                        if polls >= config.liveVerifyMaxScans { ended = "max scans (\(config.liveVerifyMaxScans))"; break }
+                        if platform.now().timeIntervalSince(t0) >= config.liveVerifyTimeout { ended = "timeout (\(Int(config.liveVerifyTimeout)) s)"; break }
+                    }
+                    let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
+                    note("live verify failed after \(ms)ms: \(polls) scans, \(complete) complete, ended by \(ended); falling back to respawn")
+                }
+            } else {
+                note("live hide/show unavailable (no app-group entitlement); using respawn")
+            }
+        }
         // Layout before the restart (docs/findings-restart-collateral.md): MenuBarAgent re-bases the stored positions on
         // every restart, and the re-based values can re-sort items. Remember the store values so the order can be restored.
         let store0 = (try? platform.readOrderStore()) ?? [:]
@@ -467,6 +525,8 @@ public actor LiveActuator: MenuBarActuator {
             }
         }
         var outcome = finish(expectations, last.verdicts, snap, settled: last.settled, collateral: last.collateral)
+        outcome.mechanism = .respawn
+        outcome.elapsedMS = Int(platform.now().timeIntervalSince(respawnStart) * 1000)
         if let f = driftFailure, outcome.result.isVerified { outcome.result = .failed(f, snap) }
         return outcome
     }

@@ -37,6 +37,11 @@ public protocol ActuatorPlatform: SnapshotScanning {
     /// ONE atomic write of all `isAllowed` flags (keys are `trackedKey`s).
     func writeAllowed(_ changes: [String: Bool]) throws
     func readAllowed(_ keys: [String]) throws -> [String: Bool]
+    /// True when the cfprefsd-notified write is usable (this process has the app-group entitlement). Decided BEFORE writing:
+    /// an unentitled CFPreferences write silently lands in the wrong file.
+    var liveHideShowAvailable: Bool { get }
+    /// Live (CFPreferences, cfprefsd-notified) variant of `writeAllowed`; MenuBarAgent applies it without a respawn.
+    func setAllowedLive(_ changes: [String: Bool]) throws
     /// `expectedChange`: hosted items expected to appear/disappear because of the restart (see `MenuBarAgentControl.restart`).
     func restartAgent(timeout: TimeInterval, expectedChange: Int) async -> AgentRestartOutcome
     func sleep(_ seconds: TimeInterval) async
@@ -149,6 +154,14 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public func writeAllowed(_ changes: [String: Bool]) throws {
         var s = ControlCenterTrackedAppsStore()
         try s.setAllowedBatch(changes)
+    }
+
+    public var liveHideShowAvailable: Bool { AppGroupEntitlement.hasControlCenterGroup() }
+
+    public func setAllowedLive(_ changes: [String: Bool]) throws {
+        guard liveHideShowAvailable else { throw PreferenceWriterError.writeFailed("no app-group entitlement for live writes") }
+        var s = ControlCenterTrackedAppsStore()
+        try s.setAllowedBatchLive(changes)
     }
 
     public func readAllowed(_ keys: [String]) throws -> [String: Bool] {

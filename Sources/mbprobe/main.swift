@@ -17,7 +17,7 @@ func usage() -> Never {
            mbprobe agent-restart
            mbprobe set-visible <bundleID> <autosaveName> <0|1> [--host]
            mbprobe cc-allowed list
-           mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc]
+           mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc] [--live]
            mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
            mbprobe move <key> --before <key> | --after <key> | --leftmost | --rightmost [--force-fallback] [--no-fallback]
            mbprobe hide <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
@@ -259,10 +259,16 @@ func runCCAllowed(_ a: [String]) {
         } catch { fail("\(error)") }
     case "set":
         let flags = Set(a.filter { $0.hasPrefix("--") })
-        guard flags.isSubset(of: ["--restart", "--create", "--restart-cc"]) else { usage() }
+        guard flags.isSubset(of: ["--restart", "--create", "--restart-cc", "--live"]) else { usage() }
         let pos = a.dropFirst().filter { !$0.hasPrefix("--") }
         guard pos.count == 2, ["0", "1"].contains(pos[1]) else { usage() }
-        do { try store.setAllowed(pos[0], pos[1] == "1", create: flags.contains("--create")) } catch { fail("\(error)") }
+        if flags.contains("--live") {
+            guard AppGroupEntitlement.hasControlCenterGroup() else { fail("--live needs the app-group entitlement (use the bin-path mbprobe from `make build`)") }
+            guard !flags.contains("--create") else { fail("--live cannot --create") }
+            do { try store.setAllowedBatchLive([pos[0]: pos[1] == "1"]) } catch { fail("\(error)") }
+        } else {
+            do { try store.setAllowed(pos[0], pos[1] == "1", create: flags.contains("--create")) } catch { fail("\(error)") }
+        }
         print("cc-allowed: \(pos[0]) isAllowed=\(pos[1] == "1")")
         if flags.contains("--restart") { runAgentRestart() }
         if flags.contains("--restart-cc") {
@@ -489,6 +495,7 @@ func runHideShow(_ a: [String], hide: Bool) async {
     let out = await act.applyHiddenBatchDetailed(Dictionary(uniqueKeysWithValues: keys.map { ($0, hide) }))
     print("RESULT \(describe(out.result))")
     for (k, r) in out.perKey.sorted(by: { $0.key.description < $1.key.description }) { print("  \(k): \(describe(r))") }
+    print("MECHANISM \(out.mechanism?.rawValue ?? "none") ACTUATION_MS \(out.elapsedMS.map(String.init) ?? "-")")
     print(String(format: "ELAPSED_MS %.0f", Date().timeIntervalSince(t0) * 1000))
     printFinalOrder(snapshotOf(out.result))
     exit(out.result.isVerified ? 0 : 1)
@@ -740,6 +747,7 @@ func runPermissions(_ a: [String]) {
     let ax = checker.accessibility(prompt: prompt)
     print("accessibility: \(ax)")
     print("screenRecording: \(checker.screenRecording())")
+    print("live hide/show: " + (AppGroupEntitlement.hasControlCenterGroup() ? "available" : "unavailable (no app-group entitlement)"))
 }
 
 switch args.first {
