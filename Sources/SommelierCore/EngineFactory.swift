@@ -78,12 +78,14 @@ public enum EngineFactory {
     public static func makeLive(platform: LivePlatform = LivePlatform(), store: any LayoutStore, state: EngineState,
                                 log: @escaping @Sendable (String) -> Void,
                                 selfBundleID: String = "ie.boboco.sommelier", selfModuleName: String = "Sommelier",
-                                config: LayoutEngine.Config = LayoutEngine.Config()) -> LayoutEngine {
+                                config: LayoutEngine.Config = LayoutEngine.Config(),
+                                allowAgentRestart: (@Sendable () -> Bool?)? = nil) -> LayoutEngine {
         let ids = BundleIDs()
         let filter: @Sendable ([ResolvedItem]) -> [ResolvedItem] = { dropSelf($0, bundleID: selfBundleID, moduleName: selfModuleName) }
         let rules = makeCapabilityRules(bundleIDs: ids)
         var lc = LiveActuator.Config()
         lc.allowFallback = false
+        lc.allowAgentRestartProvider = allowAgentRestart   // the Settings toggle (gdu.55); nil result = automatic
         let actuator = LiveActuator(platform: platform, config: lc, log: { log("actuator: " + $0) })
         return LayoutEngine(observer: RecordingObserver(inner: makeObserver(platform: platform, log: { log("observer: " + $0) }), ids: ids, transform: filter), actuator: actuator,
                             store: store, capabilities: rules, state: state,

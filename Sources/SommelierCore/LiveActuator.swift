@@ -9,6 +9,9 @@ public enum ActuationMechanism: String, Sendable {
     case respawn
     /// Nothing written: the Control Center store already had the wanted value (identifier-less units found already hidden).
     case alreadyApplied
+    /// Live write applied per the Control Center store (readback), but no usable complete read confirmed it in time (gdu.55).
+    /// Never a respawn reason; the result is `.verified` and the engine marks the key "applied; confirmation pending".
+    case liveUnverified
 }
 
 public struct BatchOutcome: Sendable {
@@ -20,6 +23,8 @@ public struct BatchOutcome: Sendable {
     public var mechanism: ActuationMechanism? = nil
     /// Wall time of the write-to-verified phase in milliseconds (platform clock), nil when nothing was written.
     public var elapsedMS: Int? = nil
+    /// Extra remark for logs and `mbprobe` (e.g. `.liveUnverified`: "applied per Control Center store; confirmation pending").
+    public var note: String? = nil
 }
 
 /// The real `MenuBarActuator`: precheck -> act -> settle -> verify (docs/architecture.md (c)).
@@ -42,6 +47,18 @@ public actor LiveActuator: MenuBarActuator {
         /// Hard ceiling on full scans taken while waiting for a complete read.
         public var liveVerifyMaxScans = 8
         public var liveVerifyInterval: TimeInterval = 0.5
+        /// gdu.55: MenuBarAgent may be restarted ONLY as a last resort when the live write itself failed (no entitlement, the
+        /// write threw, or the readback never showed the intended value). nil = automatic: allowed only when the platform has no
+        /// live path (`!liveHideShowAvailable`). A verification timeout is never a reason to restart.
+        public var allowAgentRestart: Bool? = nil
+        /// Read at the start of every batch; wins over `allowAgentRestart` when it returns non-nil (the Settings toggle).
+        public var allowAgentRestartProvider: (@Sendable () -> Bool?)? = nil
+        /// `isAllowed` readback after the live write: this many attempts spread over `readbackSpan` seconds.
+        public var readbackAttempts = 3
+        public var readbackSpan: TimeInterval = 1.5
+        /// During a self-positioning streak (previous read `.completeExceptSelfPositioning`) the confirm polls use the fast hosted
+        /// read, with a full scan every this many polls (gdu.55).
+        public var fastConfirmEvery = 3
         /// A batch that asks the OPPOSITE of a write made less than this long ago waits out the remainder and rescans before
         /// it believes its pre-write scan: the earlier write may not be visible yet, and a stale scan would make the new batch
         /// look "already satisfied" or compute expectations against the wrong starting state (gdu.47).
@@ -68,6 +85,11 @@ public actor LiveActuator: MenuBarActuator {
     }
 
     public func setConfig(_ c: Config) { config = c }
+
+    /// Whether a failed live write may fall back to the file write + MenuBarAgent restart (see `Config.allowAgentRestart`).
+    private func restartAllowed() -> Bool {
+        config.allowAgentRestartProvider?() ?? config.allowAgentRestart ?? !platform.liveHideShowAvailable
+    }
 
     // Actor methods are re-entrant across `await`, so an explicit FIFO gate keeps whole actuations from interleaving.
     private var busy = false
@@ -366,6 +388,8 @@ public actor LiveActuator: MenuBarActuator {
     /// True when the last batch restarted MenuBarAgent (fallback path). The engine strikes such keys out at once.
     public private(set) var lastBatchRespawned = false
     private var batchRespawned = false
+    /// Keys of the last batch applied per the Control Center store but not yet confirmed by a usable read (`.liveUnverified`).
+    public private(set) var lastBatchUnconfirmed: Set<ItemKey> = []
     /// The keys and directions of the last batch that wrote, and when it finished (see `Config.recentWriteSettle`).
     private var lastWrite: (changes: [ItemKey: Bool], at: Date)?
 
@@ -374,7 +398,8 @@ public actor LiveActuator: MenuBarActuator {
         batchRespawned = false
         let out = await performBatch(changes)
         lastBatchRespawned = batchRespawned || out.mechanism == .respawn
-        if out.mechanism == .live || out.mechanism == .respawn { lastWrite = (changes, platform.now()) }
+        lastBatchUnconfirmed = out.mechanism == .liveUnverified ? Set(out.perKey.keys) : []
+        if out.mechanism == .live || out.mechanism == .respawn || out.mechanism == .liveUnverified { lastWrite = (changes, platform.now()) }
         return out
     }
 
@@ -444,11 +469,14 @@ public actor LiveActuator: MenuBarActuator {
                 // Write-time evidence for identifier-less items (of7): the scanner cannot see their live hide (their app-side
                 // frame stays on-bar), so the complete hosted count before the write is the baseline for a count drop.
                 var unnamedOwners: [AssumedHiddenOwner] = []
+                var hideOwners: [AssumedHiddenOwner] = []   // every owner of a hide in the batch (recorded when the store confirms it)
                 var showPIDs = Set<pid_t>()
                 for r in resolved {
                     guard let t = platform.trackedKey(for: r), let want = wantByApp[t] else { continue }
                     if !want { showPIDs.insert(r.item.ownerPID); continue }
                     guard ActuationVerifier.onBar(r), !r.item.stale else { continue }
+                    if let i = hideOwners.firstIndex(where: { $0.pid == r.item.ownerPID }) { hideOwners[i].items += 1 }
+                    else { hideOwners.append(AssumedHiddenOwner(pid: r.item.ownerPID, bundleID: r.item.ownerBundleID, items: 1, trackedKey: t)) }
                     if let i = unnamedOwners.firstIndex(where: { $0.pid == r.item.ownerPID }) { unnamedOwners[i].items += 1 }
                     else { unnamedOwners.append(AssumedHiddenOwner(pid: r.item.ownerPID, bundleID: r.item.ownerBundleID, items: 1, trackedKey: t)) }
                 }
@@ -507,8 +535,35 @@ public actor LiveActuator: MenuBarActuator {
                     return r.item.ownerPID
                 })
                 if !hidePIDs.isEmpty { platform.expectToVanish(pids: hidePIDs) }
-                do { try platform.setAllowedLive(wantByApp.mapValues { !$0 }); wrote = true }
-                catch { note("live write failed (\(error)); falling back to respawn") }
+                // gdu.55: the respawn is for a failed WRITE only. The write counts as landed when the CFPreferences readback (the
+                // store the agent obeys) shows the intended values; an unreadable store cannot contradict it.
+                let intended = wantByApp.mapValues { !$0 }
+                var writeFailure: String?
+                do { try platform.setAllowedLive(intended); wrote = true }
+                catch { writeFailure = "setAllowedLive threw: \(error)" }
+                if wrote {
+                    var landed = false
+                    var seen = "unreadable"
+                    let attempts = max(1, config.readbackAttempts)
+                    for attempt in 1...attempts {
+                        if let rb = platform.readAllowedLive(Array(intended.keys)) {
+                            let wrong = intended.filter { kv in rb[kv.key].map { $0 != kv.value } ?? false }
+                            seen = intended.keys.sorted().map { "\($0)=\(rb[$0].map(String.init(describing:)) ?? "?")" }.joined(separator: ", ")
+                            if wrong.isEmpty { landed = true; break }
+                        } else { landed = true; seen = "unreadable"; break }
+                        if attempt < attempts { await platform.sleep(config.readbackSpan / Double(attempts - 1)) }
+                    }
+                    if landed { note("live: write applied per Control Center store (readback \(seen))") }
+                    else { wrote = false; writeFailure = "readback after \(attempts) attempts does not show the intended isAllowed (\(seen))" }
+                }
+                if let why = writeFailure {
+                    platform.clearExpectedToVanish()
+                    guard restartAllowed() else {
+                        note("live write failed (\(why)); agent restart not allowed -> failing the batch, no respawn")
+                        return uniform(changes.keys, .failed(.liveWriteFailed(why), snap))
+                    }
+                    note("live write failed (\(why)); agent restart allowed -> falling back to respawn")
+                }
                 var evidence: String?
                 if wrote {
                     // A show by us ends any assumed-hidden state of that owner before the verification scans read it.
@@ -533,18 +588,46 @@ public actor LiveActuator: MenuBarActuator {
                     var polls = 0
                     var complete = 0
                     var ended = "ceiling"
+                    var lastScan: MenuBarSnapshot?
+                    var lastVerdicts: [ItemKey: ActuationVerifier.Verdict] = [:]
+                    var collateralNote = ""
+                    // gdu.55 (gdu.54 e): while the previous full read was only `completeExceptSelfPositioning`, confirm with the
+                    // fast hosted read and take a full scan every `fastConfirmEvery`-th poll.
+                    var lastFullLevel = snap.completeness
                     // The FIRST complete read decides; an unsatisfied one gets ONE more complete read (a scan may have
-                    // started before the write landed). No complete read within the ceiling -> fallback.
+                    // started before the write landed). No usable complete read within the ceiling -> `.liveUnverified`
+                    // (applied per the store, confirmation pending); NEVER a respawn.
                     while true {
                         await platform.sleep(config.liveVerifyInterval)
-                        let s = await platform.scan()
+                        let fast = !unitSP && lastFullLevel == .completeExceptSelfPositioning && config.fastConfirmEvery > 1 && polls % config.fastConfirmEvery != config.fastConfirmEvery - 1
+                        let s = fast ? await platform.scanVisible() : await platform.scan()
                         polls += 1
+                        if !fast { lastFullLevel = s.completeness }
+                        lastScan = s
+                        if fast {
+                            // A fast read can only CONFIRM; an unsatisfied fast read is not a verdict (it carries no completeness).
+                            let v = verdicts(platform.resolve(s))
+                            if !s.onBarLeftToRight.isEmpty, v.values.allSatisfy(\.ok) {
+                                complete += 1
+                                let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
+                                note("live: verified by fast hosted read #\(polls) during a self-positioning streak; \(polls) scans, \(ms)ms, no respawn")
+                                var out = finish(expectations, v, s, settled: true, collateral: [])
+                                platform.clearExpectedToVanish()
+                                out.mechanism = .live; out.elapsedMS = ms
+                                return out
+                            }
+                            note("live: scan \(polls): fast read, not confirming yet")
+                            if polls >= config.liveVerifyMaxScans { ended = "max scans (\(config.liveVerifyMaxScans))"; break }
+                            if platform.now().timeIntervalSince(t0) >= config.liveVerifyTimeout { ended = "timeout (\(Int(config.liveVerifyTimeout)) s)"; break }
+                            continue
+                        }
                         if !usable(s) {
                             note("live: scan \(polls): \(s.completeness.rawValue)\(s.completenessReason.map { " (\($0))" } ?? "")")
                         }
                         if usable(s), !s.onBarLeftToRight.isEmpty {
                             complete += 1
                             let v = verdicts(platform.resolve(s))
+                            lastVerdicts = v
                             // The poll's own complete scans carry the attributed hosted tree: the same element evidence applies when the
                             // timed probes were incomplete or too early. Record, then read once more with the flag in effect.
                             if evidence == nil, let baseline, let after = s.hostedLayout.map(norm),
@@ -563,6 +646,7 @@ public actor LiveActuator: MenuBarActuator {
                             if v.values.allSatisfy(\.ok), !leftBar.isEmpty {
                                 note("live: element evidence rejected, \(leftBar.map(\.description).sorted().joined(separator: ", ")) also left the bar")
                                 platform.clearAssumedHidden(pids: Set(unnamedOwners.map(\.pid))); evidence = nil
+                                collateralNote = leftBar.map(\.description).sorted().joined(separator: ", ")
                                 ended = "collateral"; break
                             }
                             if v.values.allSatisfy(\.ok) {
@@ -580,11 +664,39 @@ public actor LiveActuator: MenuBarActuator {
                         if platform.now().timeIntervalSince(t0) >= config.liveVerifyTimeout { ended = "timeout (\(Int(config.liveVerifyTimeout)) s)"; break }
                     }
                     let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
-                    note("live verify failed after \(ms)ms: \(polls) scans, \(complete) complete, ended by \(ended); falling back to respawn")
-                    if evidence != nil { platform.clearAssumedHidden(pids: Set(unnamedOwners.map(\.pid))) }
+                    let final = lastScan ?? snap
+                    if ended == "collateral" {
+                        note("live verify rejected after \(ms)ms: \(polls) scans, \(complete) complete, other item(s) left the bar; no respawn")
+                        platform.clearExpectedToVanish()
+                        var out = uniform(changes.keys, .failed(.notVerified(expected: "no other item changes", observed: "\(collateralNote) also left the bar"), final))
+                        out.mechanism = .live; out.elapsedMS = ms
+                        return out
+                    }
+                    if ended == "two complete reads unsatisfied" {
+                        // The store says applied but two complete reads still show the unit: the agent did not act on it. Not a
+                        // timeout and not a restart reason; the engine re-plans the hide from the next settled observation.
+                        note("live verify contradicted after \(ms)ms: \(polls) scans, \(complete) complete, ended by \(ended); no respawn")
+                        platform.clearAssumedHidden(pids: Set(hideOwners.map(\.pid)))
+                        platform.clearExpectedToVanish()
+                        var out = finish(expectations, lastVerdicts, final, settled: true, collateral: [])
+                        out.mechanism = .live; out.elapsedMS = ms
+                        return out
+                    }
+                    // Max scans / timeout without a contradiction: APPLIED per the store, confirmation pending.
+                    note("live verify unconfirmed after \(ms)ms: \(polls) scans, \(complete) complete, ended by \(ended); applied per Control Center store; confirmation pending, no respawn")
+                    if !hideOwners.isEmpty { platform.recordAssumedHidden(hideOwners, hostedAfter: nil) }
+                    platform.clearExpectedToVanish()
+                    var out = BatchOutcome(perKey: Dictionary(uniqueKeysWithValues: expectations.keys.map { ($0, ActuationResult.verified(final)) }),
+                                           result: .verified(final))
+                    out.mechanism = .liveUnverified; out.elapsedMS = ms
+                    out.note = "applied per Control Center store; confirmation pending"
+                    return out
                 }
-            } else {
+            } else if restartAllowed() {
                 note("live hide/show unavailable (no app-group entitlement); using respawn")
+            } else {
+                note("live hide/show unavailable (no app-group entitlement) and agent restart is not allowed; failing the batch")
+                return uniform(changes.keys, .failed(.liveWriteFailed("no app-group entitlement for live writes"), snap))
             }
         }
         // Layout before the restart (docs/findings-restart-collateral.md): MenuBarAgent re-bases the stored positions on

@@ -21,6 +21,9 @@ public enum ActuationError: Error, Equatable, Sendable {
     case mechanismFailed(String)
     /// A competing menu bar manager is running (e.g. "Bartender 7 is running"); nothing was touched.
     case conflictingManager(String)
+    /// The live `isAllowed` write itself failed (no entitlement, the write threw, or the readback never showed the intended
+    /// value) and a MenuBarAgent restart is not allowed (gdu.55). Not a verification failure: nothing was respawned.
+    case liveWriteFailed(String)
 }
 
 /// Outcome of an actuation. `.verified` is only returned after a settled full scan satisfied the predicate.
@@ -42,11 +45,15 @@ public protocol MenuBarActuator: Sendable {
     func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult
     /// True when the last batch went through an agent respawn (see the extension default).
     var lastBatchRespawned: Bool { get async }
+    /// Keys of the last batch that were APPLIED per the Control Center store but whose result no complete read has confirmed
+    /// yet (`ActuationMechanism.liveUnverified`, gdu.55). The engine shows them in place with a pending-confirmation marker.
+    var lastBatchUnconfirmed: Set<ItemKey> { get async }
 }
 
 public extension MenuBarActuator {
     /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.
     var lastBatchRespawned: Bool { get async { false } }
+    var lastBatchUnconfirmed: Set<ItemKey> { get async { [] } }
 }
 
 /// What may be done to one item on this OS; the UI greys out controls and shows `reason`.

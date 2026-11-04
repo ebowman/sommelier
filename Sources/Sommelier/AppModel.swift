@@ -113,7 +113,8 @@ final class AppModel {
         conflictTask?.cancel(); conflictTask = nil
         if engine == nil {
             let e = EngineFactory.makeLive(platform: platform, store: store, state: state,
-                                           log: { NSLog("[Sommelier] engine: %@", $0) })
+                                           log: { NSLog("[Sommelier] engine: %@", $0) },
+                                           allowAgentRestart: { UserDefaults.standard.object(forKey: "allowAgentRestart") as? Bool })
             engine = e
             triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") },
                                        log: { NSLog("[Sommelier] poll: %@", $0) })

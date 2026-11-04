@@ -124,7 +124,9 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var preScansIncomplete = 0               // the first N full scans report an incomplete hosted read
     var spOnlyIncomplete = false             // incomplete reads are incomplete ONLY for self-positioning owners (gdu.51)
     var probeOnlyTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to raw probes only (poll scans stay right)
-    var allowedLiveValues: [String: Bool]?   // Control Center store readback (nil = unavailable)
+    var allowedLiveValues: [String: Bool]?   // Control Center store readback (nil = unavailable); follows live writes
+    var readbackIgnoresWrite = false         // the store never takes the write (readback keeps the old values)
+    var fastAppliesLive = false              // the fast hosted read already sees a pending live write (gdu.55 streak confirm)
     func readAllowedLive(_ keys: [String]) -> [String: Bool]? { allowedLiveValues.map { $0.filter { keys.contains($0.key) } } }
     var cachedLayout: [HostedEntry]?         // what the scanner cache offers as a recent complete layout
     var hostedReads = 0
@@ -157,6 +159,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
         vanishAtWrite = .some(vanishing)
         if liveThrows { throw PreferenceWriterError.writeFailed("injected live failure") }
         liveWrites.append(c)
+        if allowedLiveValues != nil, !readbackIgnoresWrite { for (k, v) in c { allowedLiveValues![k] = v } }
         if !dropAfterWrite.isEmpty { flickerName = dropAfterWrite; flickerScans = 5 }
         if liveInstant {
             let before = Set(order)
@@ -196,7 +199,11 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
         if flickerScans > 0 { flickerScans -= 1 }
         return MenuBarSnapshot(items: items, capturedAt: clock)
     }
-    func scanVisible() async -> MenuBarSnapshot { fastScans += 1; return snapshot() }
+    func scanVisible() async -> MenuBarSnapshot {
+        fastScans += 1
+        if fastAppliesLive, let p = livePending { applyLive(p); livePending = nil }
+        return snapshot()
+    }
     func scan() async -> MenuBarSnapshot {
         fullScans += 1
         var incomplete = false
@@ -277,9 +284,10 @@ private func actuator(_ w: World, fallback: Bool = true, forceFallback: Bool = f
     return LiveActuator(platform: w, config: c)
 }
 
-private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
+private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -> LiveActuator {
     var c = LiveActuator.Config()
     c.liveHideShow = live
+    c.allowAgentRestart = restart
     return LiveActuator(platform: w, config: c)
 }
 
@@ -779,10 +787,10 @@ private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
     let b: Set<pid_t> = [World(["B"]).pidOf("B")]
     let verified = await hide { _ in }                                              // live, verified
     #expect(verified.liveWrites.count == 1 && verified.vanishAtWrite == .some(b) && verified.vanishing == nil && verified.vanishSets == 1)
-    let unsatisfied = await hide { $0.liveApplyAfterScans = nil }                   // verify failure -> respawn fallback
-    #expect(unsatisfied.vanishAtWrite == .some(b) && unsatisfied.vanishing == nil && unsatisfied.restarts == 1)
-    let throwing = await hide { $0.liveThrows = true }                              // write failure -> respawn fallback
-    #expect(throwing.vanishAtWrite == .some(b) && throwing.vanishSets == 1 && throwing.vanishing == nil && throwing.restarts == 1)
+    let unsatisfied = await hide { $0.liveApplyAfterScans = nil }                   // contradicted by two complete reads: no respawn (gdu.55)
+    #expect(unsatisfied.vanishAtWrite == .some(b) && unsatisfied.vanishing == nil && unsatisfied.restarts == 0)
+    let throwing = await hide { $0.liveThrows = true }                              // write failure, restart not allowed: failed, cleared
+    #expect(throwing.vanishAtWrite == .some(b) && throwing.vanishSets == 1 && throwing.vanishing == nil && throwing.restarts == 0)
     let unavailable = await hide { $0.liveAvailable = false }                       // no live path: never set, never left set
     #expect(unavailable.vanishSets == 0 && unavailable.vanishing == nil)
 }
@@ -795,22 +803,25 @@ private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
     #expect(w.liveWrites.isEmpty && w.restarts == 1 && w.allowedWrites == [["tracked.B": false]])
 }
 
-@Test func liveWriteThrowFallsBackToOneRestart() async {
+@Test func liveWriteThrowFallsBackToOneRestartWhenRestartIsAllowed() async {
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.liveThrows = true
-    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    let out = await liveActuator(w, restart: true).applyHiddenBatchDetailed([key("B"): true])
     #expect(out.result.isVerified && out.mechanism == .respawn)
     #expect(w.restarts == 1 && w.allowedWrites.count == 1)
 }
 
-@Test func liveTwoCompleteUnsatisfiedReadsFallBackToOneRestart() async {
+// gdu.55 (was ...FallBackToOneRestart): two complete reads that contradict the store are a failed verification, never a restart.
+@Test func liveTwoCompleteUnsatisfiedReadsFailWithoutRestart() async {
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.liveApplyAfterScans = nil
-    let a = liveActuator(w)
+    let a = liveActuator(w, restart: true)    // even with the restart allowed
     let out = await a.applyHiddenBatchDetailed([key("B"): true])
-    #expect(out.result.isVerified && out.mechanism == .respawn)
-    #expect(w.restarts == 1 && w.liveWrites.count == 1 && w.allowedWrites.count == 1)
+    #expect(!out.result.isVerified && out.mechanism == .live)
+    #expect(w.restarts == 0 && w.liveWrites.count == 1 && w.allowedWrites.isEmpty)
     #expect(await a.trace.contains { $0.contains("2 scans, 2 complete") && $0.contains("two complete reads unsatisfied") })
+    let respawned = await a.lastBatchRespawned
+    #expect(!respawned)
 }
 
 @Test func liveOneUnsatisfiedCompleteReadThenSatisfiedIsLive() async {
@@ -820,14 +831,19 @@ private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
     #expect(out.result.isVerified && out.mechanism == .live && w.restarts == 0)
 }
 
-@Test func liveEightIncompleteReadsThenFallback() async {
+// gdu.55 (was ...ThenFallback): no usable read within the ceiling is NOT a restart reason.
+@Test func liveEightIncompleteReadsAreUnverifiedNotARespawn() async {
     let w = World(["A", "B", "C"])
-    w.liveAvailable = true; w.liveIncompleteScans = 100; w.liveApplyAfterScans = 1
-    let a = liveActuator(w)
+    w.liveAvailable = true; w.liveIncompleteScans = 100; w.liveApplyAfterScans = 1; w.allowedLiveValues = ["tracked.B": true]
+    let a = liveActuator(w, restart: true)
     let out = await a.applyHiddenBatchDetailed([key("B"): true])
-    #expect(out.mechanism == .respawn && out.result.isVerified)
-    #expect(w.restarts == 1)
-    #expect(await a.trace.contains { $0.contains("8 scans, 0 complete") && $0.contains("max scans") })
+    #expect(out.mechanism == .liveUnverified && out.result.isVerified)
+    #expect(out.note == "applied per Control Center store; confirmation pending")
+    #expect(w.restarts == 0 && w.allowedWrites.isEmpty && w.liveWrites.count == 1)
+    #expect(w.assumedRecords.count == 1 && w.assumedPIDs == [w.pidOf("B")])
+    let unconfirmed = await a.lastBatchUnconfirmed, respawned = await a.lastBatchRespawned
+    #expect(unconfirmed == [key("B")] && !respawned)
+    #expect(await a.trace.contains { $0.contains("8 scans, 0 complete") && $0.contains("max scans") && $0.contains("confirmation pending") })
 }
 
 @Test func liveSevenIncompleteThenOneCompleteSatisfiedIsLive() async {
@@ -1028,14 +1044,13 @@ private final class FakePrefs: @unchecked Sendable {
 
 @Test func coincidentalVanishWithAMatchingCountIsAmbiguous() async {
     // B vanishes as expected, but ANOTHER element is replaced at the same time (count identical): not the unit's elements
-    // only -> nothing recorded, the ghost stays on-bar, the poll cannot confirm and the pre-existing respawn runs once.
+    // only -> nothing recorded, the ghost stays on-bar, the poll cannot confirm: failed verification, no respawn (gdu.55).
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]
     w.hostedTamper = { $0[1].sig = "someone-else" }
     let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
     #expect(w.assumedRecords.isEmpty && w.assumedPIDs.isEmpty)
-    #expect(out.mechanism == .respawn && w.restarts == 1)
-    #expect(out.result.isVerified)
+    #expect(w.restarts == 0 && !out.result.isVerified)
 }
 
 @Test func pollScanEvidenceCoversIncompleteOrEarlyProbes() async {
@@ -1119,12 +1134,12 @@ private final class FakePrefs: @unchecked Sendable {
     #expect((out.elapsedMS ?? 0) < 5000)
 }
 
-@Test func liveStillFallsBackWhenIncompleteForAnotherReason() async {
+@Test func liveIncompleteForAnotherReasonIsUnverifiedNotARespawn() async {
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.liveIncompleteScans = 100; w.spOnlyIncomplete = false; w.liveApplyAfterScans = 1
     let a = liveActuator(w)
     let out = await a.applyHiddenBatchDetailed([key("B"): true])
-    #expect(out.mechanism == .respawn && w.restarts == 1)
+    #expect(out.mechanism == .liveUnverified && w.restarts == 0)
 }
 
 @Test func liveUnitThatIsSelfPositioningStillNeedsACompleteRead() async {
@@ -1135,7 +1150,7 @@ private final class FakePrefs: @unchecked Sendable {
     c.selfPositioningOwners = ["app.S"]
     let a = LiveActuator(platform: w, config: c)
     let out = await a.applyHiddenBatchDetailed([key("S"): true])
-    #expect(out.mechanism == .respawn && w.restarts == 1)
+    #expect(out.mechanism == .liveUnverified && w.restarts == 0)
 }
 
 @Test func hostedEvidenceIgnoresSelfPositioningEntries() {
@@ -1199,4 +1214,96 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
     #expect(show.result.isVerified)
     #expect(await !a.trace.contains { $0.contains("opposite of a write made") })
     #expect(w.liveWrites.count == 2)
+}
+
+
+// MARK: - gdu.55: no MenuBarAgent restart because verification timed out
+
+@Test func timedOutVerificationNeverRespawnsEvenForThirtySeconds() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveIncompleteScans = 1000; w.allowedLiveValues = ["tracked.B": true]
+    var c = LiveActuator.Config(); c.liveVerifyMaxScans = 1000; c.liveVerifyTimeout = 30; c.allowAgentRestart = true
+    let a = LiveActuator(platform: w, config: c)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .liveUnverified && out.result.isVerified)
+    #expect((out.elapsedMS ?? 0) >= 30_000 && w.restarts == 0 && w.allowedWrites.isEmpty)
+    #expect(w.assumedRecords.count == 1)
+}
+
+@Test func readbackNeverShowingTheValueFailsOrRespawnsByToggle() async {
+    func run(restart: Bool?) async -> (World, BatchOutcome) {
+        let w = World(["A", "B", "C"])
+        w.liveAvailable = true; w.allowedLiveValues = ["tracked.B": true]; w.readbackIgnoresWrite = true
+        let out = await liveActuator(w, restart: restart).applyHiddenBatchDetailed([key("B"): true])
+        return (w, out)
+    }
+    let (off, offOut) = await run(restart: false)
+    if case .failed(.liveWriteFailed(let why), _) = offOut.result { #expect(why.contains("readback") && why.contains("3 attempts")) } else { Issue.record("got \(offOut.result)") }
+    #expect(off.restarts == 0 && off.allowedWrites.isEmpty && off.liveWrites.count == 1 && off.vanishing == nil)
+    let (auto, autoOut) = await run(restart: nil)     // entitlement present: automatic = not allowed
+    #expect(autoOut.result.error != nil && auto.restarts == 0)
+    let (on, onOut) = await run(restart: true)
+    #expect(onOut.result.isVerified && onOut.mechanism == .respawn && on.restarts == 1)
+}
+
+@Test func writeThrowIsFailedByDefaultWithTheEntitlementAndRespawnsWhenAllowed() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveThrows = true
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    if case .failed(.liveWriteFailed(let why), _) = out.result { #expect(why.contains("injected live failure")) } else { Issue.record("got \(out.result)") }
+    #expect(w.restarts == 0 && w.allowedWrites.isEmpty)
+    // Settings toggle provider wins over the default.
+    var c = LiveActuator.Config(); c.allowAgentRestartProvider = { true }
+    let v = World(["A", "B", "C"]); v.liveAvailable = true; v.liveThrows = true
+    let o2 = await LiveActuator(platform: v, config: c).applyHiddenBatchDetailed([key("B"): true])
+    #expect(o2.mechanism == .respawn && v.restarts == 1)
+}
+
+@Test func missingEntitlementRespawnsByDefaultButFailsWhenTheToggleIsOff() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = false
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .respawn && w.restarts == 1)
+    let v = World(["A", "B", "C"])
+    v.liveAvailable = false
+    let o2 = await liveActuator(v, restart: false).applyHiddenBatchDetailed([key("B"): true])
+    if case .failed(.liveWriteFailed, _) = o2.result {} else { Issue.record("got \(o2.result)") }
+    #expect(v.restarts == 0 && v.allowedWrites.isEmpty)
+}
+
+@Test func unreadableStoreCannotContradictASuccessfulWrite() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.allowedLiveValues = nil
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .live && w.restarts == 0)
+}
+
+@Test func unverifiedShowIsSymmetric() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveApplyAfterScans = 1; w.allowedLiveValues = ["tracked.B": false]
+    let a = liveActuator(w)
+    #expect((await a.applyHiddenBatchDetailed([key("B"): true])).mechanism == .live)
+    w.liveIncompleteScans = 1000; w.liveApplyAfterScans = 1; w.liveScanCount = 0
+    let back = await a.applyHiddenBatchDetailed([key("B"): false])
+    #expect(back.mechanism == .liveUnverified && back.result.isVerified && w.restarts == 0)
+    #expect(w.allowedLiveValues?["tracked.B"] == true)
+    #expect(w.assumedRecords.isEmpty)   // a show records nothing
+}
+
+@Test func streakUsesFastHostedReadsToConfirmQuickly() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveApplyAfterScans = nil; w.fastAppliesLive = true
+    w.preScansIncomplete = 1; w.spOnlyIncomplete = true      // the pre-write full scan is exceptSelfPositioning
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .live && out.result.isVerified && w.restarts == 0)
+    #expect(w.fastScans >= 1 && (out.elapsedMS ?? 9999) <= 1000)
+    #expect(await a.trace.contains { $0.contains("fast hosted read") })
+}
+
+@Test func noStreakKeepsFullScans() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveApplyAfterScans = 1; w.fastAppliesLive = true
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .live && w.fastScans == 0)
 }

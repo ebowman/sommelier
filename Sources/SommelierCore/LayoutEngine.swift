@@ -66,6 +66,10 @@ public actor LayoutEngine {
     private var itemInfo: [ItemKey: ItemInfo] = [:]
     /// Read level of the latest observation (gdu.51).
     private var observedCompleteness = ReadCompleteness.complete
+    /// Keys applied by a `.liveUnverified` batch and not yet confirmed by a settled complete read; value = hidden (gdu.55).
+    private var unconfirmed: [ItemKey: Bool] = [:]
+    /// Keys the latest observation reports hidden only through the assumed-hidden state (no hosted-tree evidence).
+    private var assumedKeys: Set<ItemKey> = []
     private let resolveSnapshot: @Sendable (MenuBarSnapshot) -> [ResolvedItem]
     private let sleep: @Sendable (Duration) async -> Void
     private let log: @Sendable (String) -> Void
@@ -237,6 +241,7 @@ public actor LayoutEngine {
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
         failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0
+        unconfirmed = [:]
         stopped = !loaded   // a layout that never loaded stays stopped until `start()` succeeds or `setLayout`
         chained = 0
         await publish { s in
@@ -525,7 +530,8 @@ public actor LayoutEngine {
         let st = plan.map { statuses(obs, $0) }
         let info = itemInfo
         hasObservation = true
-        await publish { s in s.observed = obs; s.items = info; s.observationSettled = true; if let st { s.perItem = st } }
+        let pc = Set(unconfirmed.keys)
+        await publish { s in s.observed = obs; s.items = info; s.observationSettled = true; s.pendingConfirmation = pc; if let st { s.perItem = st } }
     }
 
     private func setStatus(_ k: ItemKey, _ st: ItemStatus, inFlight: PlannedAction?) async {
@@ -557,6 +563,16 @@ public actor LayoutEngine {
             if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
             observedCompleteness = r.completeness
             if r.settled { notePollSignature(r.items) }
+            assumedKeys = Set(r.items.filter { $0.item.hiddenReason == .assumedNotHosted }.map(\.key))
+            if r.settled, r.completeness == .complete {
+                // A settled complete read confirms a pending hide when the unit is off the bar by evidence (not by assumption),
+                // a pending show when it is on the bar.
+                let done = unconfirmed.filter { k, hide in hide ? (o.parked.contains(k) && !assumedKeys.contains(k)) : o.onBar.contains(k) }.map(\.key)
+                if !done.isEmpty {
+                    for k in done { unconfirmed[k] = nil }
+                    log("confirmed by a settled complete read: \(done.map(\.description).sorted().joined(separator: ", "))")
+                }
+            }
             itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items))
             return .success((o, r.settled))
         } catch let e as ObserveError {
@@ -833,6 +849,12 @@ public actor LayoutEngine {
             case .failed(let e, let s): err = e; snap = s
             }
             let respawned = await actuator.lastBatchRespawned
+            for k in batch.keys { unconfirmed[k] = nil }
+            if err == nil {
+                for k in await actuator.lastBatchUnconfirmed { if let hide = batch[k] { unconfirmed[k] = hide } }
+                if !unconfirmed.isEmpty { log("applied per the Control Center store, confirmation pending: \(unconfirmed.keys.map(\.description).sorted().joined(separator: ", "))") }
+            }
+            if case .liveWriteFailed(let why)? = err { log("engine: live write failed (\(why)); no MenuBarAgent restart") }
             if respawned { passAgent = agentPID() }   // our own fallback respawn: the pass continues with the new agent
             if let e = err, await handleFatal(e) { return await abort(.stopped) }
             if generation != layoutGeneration {
@@ -868,7 +890,13 @@ public actor LayoutEngine {
                     guard let wasHide = batch[k] else { continue }
                     let nowHide: Bool
                     switch a { case .hide: nowHide = true; case .show: nowHide = false; case .move: continue }
-                    if nowHide == wasHide { markFailed(k, failErr, fullStrike: respawned); failedAny = true }
+                    if nowHide == wasHide, unconfirmed[k] != nil {
+                        log("\(k): applied per the Control Center store, still unconfirmed by the read; not a failure")
+                    } else if nowHide == wasHide {
+                        var writeFailed = false
+                        if case .liveWriteFailed? = err { writeFailed = true }
+                        markFailed(k, failErr, fullStrike: respawned || writeFailed); failedAny = true
+                    }
                     else { log("\(k): desired state changed while the batch ran; not a failure") }
                 }
                 if failedAny { consecutiveFailures += 1 }
@@ -1026,7 +1054,7 @@ public actor LayoutEngine {
         await publishObserved(obs, makePlan(obs))
         let err: EngineError
         if case .notVerified(let exp, let got) = e { err = .batchDrift(expected: exp, observed: got) }
-        else { err = .observe(String(describing: e)) }
+        else { err = .observe(ArrangeSections.describe(e)) }
         await publish { $0.lastError = err; $0.inFlight = nil }
         return await finish(report, converged: false)
     }

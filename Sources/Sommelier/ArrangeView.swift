@@ -280,6 +280,11 @@ struct BadgeView: View {
         switch badge {
         case .none: EmptyView()
         case .inPlace: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.system(size: 11)).help(badge.tooltip)
+        case .inPlacePending:
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green.opacity(0.55)).font(.system(size: 11))
+                Circle().fill(.orange).frame(width: 4, height: 4)
+            }.help(badge.tooltip)
         case .moving: Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
         case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.system(size: 11)).help(badge.tooltip)
         case .cannotChange: Image(systemName: "nosign").foregroundStyle(.secondary).font(.system(size: 11)).help(badge.tooltip)

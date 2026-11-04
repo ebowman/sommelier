@@ -44,6 +44,12 @@ public actor FakeActuator: MenuBarActuator {
 
     public func failOnCall(_ n: Int, _ error: ActuationError) { scripted[n] = error }
 
+    /// The next `batches` batches report every key as applied-but-unconfirmed (`.liveUnverified`); with `applyChange: false` the
+    /// change is not actually made (the agent did not act on the store value, so a later read contradicts the claim).
+    public func scriptUnconfirmed(batches: Int = 1, applyChange: Bool = true) { unconfirmedBatches = batches; unconfirmedApplies = applyChange }
+    private var unconfirmedBatches = 0, unconfirmedApplies = true
+    public private(set) var lastBatchUnconfirmed: Set<ItemKey> = []
+
     private func snapshot() -> MenuBarSnapshot { makeSnapshot(order, hidden) }
 
     /// Records the call; returns a scripted failure if one is due.
@@ -83,6 +89,14 @@ public actor FakeActuator: MenuBarActuator {
         let n = calls.count
         batchStarts += 1
         if batchDelay > .zero { try? await Task.sleep(for: batchDelay) }
+        lastBatchUnconfirmed = []
+        if unconfirmedBatches > 0 {
+            unconfirmedBatches -= 1
+            let snap = snapshot()
+            if unconfirmedApplies { _ = apply(changes) }
+            lastBatchUnconfirmed = Set(changes.keys)
+            return .verified(unconfirmedApplies ? snapshot() : snap)
+        }
         let r = apply(changes)
         if let d = drift[n], case .verified = r {
             return .failed(.notVerified(expected: d.0, observed: d.1), snapshot())

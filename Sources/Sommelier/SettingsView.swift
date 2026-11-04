@@ -8,6 +8,8 @@ struct SettingsView: View {
     @AppStorage("autoRehideSeconds") private var autoRehide = 10
     @AppStorage("revealMode") private var revealMode = "panel"
     @AppStorage("overflowShowNames") private var showNames = true
+    /// Last-resort MenuBarAgent restart (gdu.55): ON by default only when the app has no live hide/show entitlement.
+    @AppStorage("allowAgentRestart") private var allowAgentRestart = !AppGroupEntitlement.hasControlCenterGroup()
     @State private var login = LoginItem.isEnabled
 
     var body: some View {
@@ -23,6 +25,8 @@ struct SettingsView: View {
                     Text("Inline").tag("inline")
                 }
                 Toggle("Show names in panel", isOn: $showNames)
+                Toggle("Allow menu bar restart as a last resort", isOn: $allowAgentRestart)
+                    .help("If hiding or showing an item cannot be written to Control Center, restarting the menu bar (a brief blank bar) is the only fallback. Off: the item is reported as failed instead.")
                 Stepper("Auto re-hide after \(autoRehide == 0 ? "never" : "\(autoRehide) s")", value: $autoRehide, in: 0...60)
             }
             .padding()

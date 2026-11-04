@@ -21,14 +21,14 @@ func usage() -> Never {
            mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
                     [--arm-ms N] [--pre-up-ms N] [--max-step-px N] [--drop-x N] [--trace]
            mbprobe move <key> --before <key> | --after <key> | --leftmost | --rightmost [--force-fallback] [--no-fallback]
-           mbprobe hide <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
+           mbprobe hide [--allow-agent-restart] <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
            mbprobe layout show [--json] [--file PATH]
            mbprobe layout init-from-current [--file PATH] [--force]
            mbprobe layout move <key> <visible|hidden|always> [index(1-based)] [--file PATH]
                         (no index: appends; for visible, inserts before the trailing system items)
            mbprobe layout remove <key> [--file PATH]
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
-           mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback]      (ONE engine pass: executes the plan)
+           mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback] [--allow-agent-restart]      (ONE engine pass: executes the plan)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
            mbprobe activate <key> [--right] [--ax-press] [--escape-after SECONDS] [--force]      (ItemActivator: reveal + click, or AXPress; waits for the menu to close)
 
@@ -522,15 +522,24 @@ func runMove(_ a: [String]) async {
 }
 
 func runHideShow(_ a: [String], hide: Bool) async {
-    guard !a.isEmpty, a.allSatisfy({ !$0.hasPrefix("--") }) else { usage() }
-    let keys = a.map(parseKey)
-    let act = LiveActuator(platform: LivePlatform(),
+    var config = LiveActuator.Config()
+    var names: [String] = []
+    for arg in a {
+        if arg == "--allow-agent-restart" { config.allowAgentRestart = true }
+        else if arg == "--no-agent-restart" { config.allowAgentRestart = false }
+        else if arg.hasPrefix("--") { usage() }
+        else { names.append(arg) }
+    }
+    guard !names.isEmpty else { usage() }
+    let keys = names.map(parseKey)
+    let act = LiveActuator(platform: LivePlatform(), config: config,
                            log: { FileHandle.standardError.write(Data(("actuator: " + $0 + "\n").utf8)) })
     let t0 = Date()
     let out = await act.applyHiddenBatchDetailed(Dictionary(uniqueKeysWithValues: keys.map { ($0, hide) }))
     print("RESULT \(describe(out.result))")
     for (k, r) in out.perKey.sorted(by: { $0.key.description < $1.key.description }) { print("  \(k): \(describe(r))") }
     print("MECHANISM \(out.mechanism?.rawValue ?? "none") ACTUATION_MS \(out.elapsedMS.map(String.init) ?? "-")")
+    if let n = out.note { print("NOTE \(n)") }
     print(String(format: "ELAPSED_MS %.0f", Date().timeIntervalSince(t0) * 1000))
     printFinalOrder(snapshotOf(out.result))
     exit(out.result.isVerified ? 0 : 1)
@@ -614,7 +623,7 @@ func runPlan(_ a: [String]) async {
 @MainActor
 func runApply(_ a: [String]) async {
     var file: URL?
-    var showHidden = false, fake = false, allowFallback = false
+    var showHidden = false, fake = false, allowFallback = false, allowAgentRestart = false
     var maxActions = LayoutEngine.Config().maxActionsPerPass
     var i = 0
     while i < a.count {
@@ -622,6 +631,7 @@ func runApply(_ a: [String]) async {
         case "--show-hidden": showHidden = true
         case "--fake": fake = true
         case "--allow-fallback": allowFallback = true
+        case "--allow-agent-restart": allowAgentRestart = true
         case "--file": i += 1; guard i < a.count else { usage() }; file = URL(fileURLWithPath: a[i])
         case "--max-actions": i += 1; guard i < a.count, let n = Int(a[i]), n > 0 else { usage() }; maxActions = n
         default: usage()
@@ -654,6 +664,7 @@ func runApply(_ a: [String]) async {
     } else {
         observer = RecordingObserver(inner: makeObserver(platform: platform), ids: ids)
         var lc = LiveActuator.Config()
+        if allowAgentRestart { lc.allowAgentRestart = true }
         lc.allowFallback = allowFallback   // default drag-only: the order-store fallback needs an explicit opt-in
         actuator = LiveActuator(platform: platform, config: lc, log: { FileHandle.standardError.write(Data(("actuator: " + $0 + "\n").utf8)) })
         resolver = { platform.resolve($0) }
