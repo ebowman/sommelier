@@ -52,8 +52,11 @@ public struct ActivationOpened: Equatable, Sendable {
     /// Set when the re-hide write failed; the engine's next pass hides the item.
     public var rehideFailed: String?
     public var closedBy: String
+    /// Extra remark: `menuStillOpenAtCap` when the menu survived the 60 s cap, an Escape and the grace wait (re-hidden anyway).
+    public var note: String?
     public init(mechanism: ActivationMechanism, latencyMS: Int, revealMS: Int? = nil, menuAppearMS: Int? = nil,
-                menuFrame: CGRect? = nil, rehideFailed: String? = nil, closedBy: String = "") {
+                menuFrame: CGRect? = nil, rehideFailed: String? = nil, closedBy: String = "", note: String? = nil) {
+        self.note = note
         self.mechanism = mechanism; self.latencyMS = latencyMS; self.revealMS = revealMS; self.menuAppearMS = menuAppearMS
         self.menuFrame = menuFrame; self.rehideFailed = rehideFailed; self.closedBy = closedBy
     }
@@ -143,6 +146,8 @@ public protocol ActivationPlatform: Sendable {
     func clearAssumedHidden(pids: Set<pid_t>)
     func menuBaseline(_ target: ActivationTarget) -> Int
     func menuState(_ target: ActivationTarget, baseline: Int) -> ActivationMenuState
+    /// Posts an Escape key press (closes a menu left open at the hard cap). Default: nothing.
+    func postEscape()
     var closeMonitor: (any CloseMonitoring)? { get }
     func sleep(_ seconds: TimeInterval) async
     func now() -> Date
@@ -152,6 +157,7 @@ extension ActivationPlatform {
     public func hostedLayout() async -> [HostedEntry]? { nil }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
     public func clearAssumedHidden(pids: Set<pid_t>) {}
+    public func postEscape() {}
 }
 
 /// The engine side of a transient reveal (`LayoutEngine` conforms).
@@ -172,8 +178,8 @@ public actor ItemActivator {
         public var menuPoll: TimeInterval = 0.25
         public var settle: TimeInterval = 0.3
         public var hardCap: TimeInterval = 60
-        /// Without a hosted-count baseline, how long after the show write a stale on-bar frame is believed.
-        public var unverifiedRevealWait: TimeInterval = 0.6
+        /// At the hard cap an Escape is posted; how long to wait for the menu to vanish before re-hiding anyway.
+        public var capEscapeGrace: TimeInterval = 2
         /// A reveal needs a complete hosted read as baseline; this many tries before falling back to AXPress.
         public var baselineAttempts = 2
         public init() {}
@@ -243,6 +249,11 @@ public actor ItemActivator {
             if let l = await platform.hostedLayout() { layoutBefore = l; hostedBefore = l.count }
             else { hostedBefore = await platform.hostedBarCount() }
             if hostedBefore != nil || Task.isCancelled { break }
+        }
+        if hostedBefore == nil, Task.isCancelled {   // cancelled during the baseline: nothing was written, just release
+            await hold.endTransientReveal(unit)
+            say("cancelled during the baseline read")
+            return .failed(.cancelled)
         }
         guard let hostedBefore else {
             await hold.endTransientReveal(unit)
@@ -400,13 +411,26 @@ public actor ItemActivator {
             }
         }
         platform.closeMonitor?.stop()
+        var note: String?
+        if closedBy == "hard cap" {
+            // Re-hiding while the menu is still open strands it (seen live with Moom): Escape, then wait for it to vanish.
+            say("hard cap reached; posting Escape before re-hide")
+            platform.postEscape()
+            let escAt = platform.now()
+            var gone = false
+            while since(escAt) < config.capEscapeGrace {
+                await platform.sleep(config.revealPoll)
+                if !platform.menuState(t, baseline: baseline).present { gone = true; break }
+            }
+            if !gone { note = "menuStillOpenAtCap"; say("menu still open after Escape; re-hiding anyway") }
+        }
         say("menu closed (\(closedBy))")
 
         // 3. Hide again; never retry here.
-        var note: String?
-        if revealed, let tracked { note = await rehide(tracked: tracked, unit: unit, say: say) }
+        var rehideNote: String?
+        if revealed, let tracked { rehideNote = await rehide(tracked: tracked, unit: unit, say: say) }
         return .opened(ActivationOpened(mechanism: mechanism, latencyMS: clickMS, revealMS: revealMS, menuAppearMS: menuAppear,
-                                        menuFrame: menuFrame, rehideFailed: note, closedBy: closedBy))
+                                        menuFrame: menuFrame, rehideFailed: rehideNote, closedBy: closedBy, note: note))
     }
 
     /// Writes the re-hide and releases the hold either way. Returns the failure text, nil on success.
@@ -457,6 +481,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     public func setAllowedLive(_ changes: [String: Bool]) throws { try platform.setAllowedLive(changes) }
     public func sleep(_ seconds: TimeInterval) async { try? await Task.sleep(for: .seconds(seconds)) }
     public func now() -> Date { Date() }
+    public func postEscape() { DragMover.postEscape() }
 
     public func locate(_ key: ItemKey) async -> ActivationLocate {
         let snap = await platform.scan()
@@ -523,6 +548,8 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     }
 
     /// Menu-ish things currently attached to the item: AXMenu/AXPopover children with a real size, plus the app's AX windows.
+    /// Counting the app's windows is deliberate: popovers are windows, so any NEW app window after the click counts as the
+    /// menu (a side effect: an unrelated window the app opens meanwhile is also taken for one).
     /// A menu or popover is "present" when this count exceeds its value from before the click (some apps keep an empty,
     /// zero-sized AXMenu child around permanently).
     public func menuBaseline(_ t: ActivationTarget) -> Int { menuThings(t).count }
