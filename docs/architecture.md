@@ -207,3 +207,15 @@ restore afterwards).
 `Sources/SommelierCore/MenuBarActuator.swift`: `MenuBarActuator`, `Relation`, `ActuationResult`, `ActuationError`, `Capability`,
 `CapabilityProvider`, `CapabilityRules` (`ActuationError.conflictingManager(String)` for a running competing manager). `Sources/SommelierCore/FakeActuator.swift`: scriptable in-memory implementation.
 `Tests/SommelierCoreTests/ActuatorTests.swift`.
+
+## App shell
+- `AppDelegate` (main actor) creates `AppModel`, `StatusItemController` (NSStatusItem, autosave "Sommelier") and the
+  settings/onboarding windows. The main actor only renders `EngineState` and sends commands to the engine.
+- `LayoutEngine` (actor) does all scanning, planning and dragging off the main thread; `EngineFactory.makeLive` wires it
+  (drag-only: `allowFallback = false`), shared with `mbprobe apply`.
+- Startup: refresh permissions -> if Accessibility missing show onboarding and stop -> if Bartender runs, show "paused" and
+  poll every 5 s -> build engine, `start()` -> no layout file: initialize from one agreed scan (on bar visible, parked hidden)
+  -> `requestReconcile()` once -> `EngineTriggers.start()`.
+- Left click toggles the hidden section; right click shows the menu (rebuilt per open). Our own item is never scanned.
+- Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
+  re-grant calls `clearFailures()` and restarts.

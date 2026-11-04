@@ -494,37 +494,9 @@ func runHideShow(_ a: [String], hide: Bool) async {
 }
 
 /// Shared with the engine: two consecutive agreeing full scans (max 6 scans / 15 s).
-func makeObserver(platform: LivePlatform = LivePlatform()) -> AgreedScanObserver {
-    AgreedScanObserver(scanner: platform, resolve: { platform.resolve($0) }, maxScans: 6, deadline: 15,
-                       accessibilityTrusted: { platform.accessibilityTrusted() })
-}
+func makeObserver(platform: LivePlatform = LivePlatform()) -> AgreedScanObserver { EngineFactory.makeObserver(platform: platform) }
 
-/// Control Center tracked entries decide hideability (read-only).
-final class BundleIDs: @unchecked Sendable {
-    private let lock = NSLock()
-    private var map: [ItemKey: String] = [:]
-    func record(_ items: [ResolvedItem]) {
-        lock.lock(); defer { lock.unlock() }
-        for r in items { if let b = r.item.ownerBundleID { map[r.key] = b } }
-    }
-    func bundleID(_ k: ItemKey) -> String? { lock.lock(); defer { lock.unlock() }; return map[k] }
-}
-
-/// Records each observed item's bundle id (the Control Center tracked key can be the bundle id, not the owner key).
-struct RecordingObserver: MenuBarObserver {
-    let inner: any MenuBarObserver
-    let ids: BundleIDs
-    func observe() async throws -> [ResolvedItem] { let r = try await inner.observe(); ids.record(r); return r }
-}
-
-func makeCapabilityRules(bundleIDs: BundleIDs? = nil) -> CapabilityRules {
-    let tracked: Set<String>? = (try? ControlCenterTrackedAppsStore().entries())?.map(\.key).reduce(into: Set<String>()) { $0.insert($1) }
-    return CapabilityRules(hasTrackedEntry: { key in
-        guard let tracked else { return true }
-        if case .status(let owner, _) = key { return tracked.contains(owner) || (bundleIDs?.bundleID(key).map(tracked.contains) ?? false) }
-        return false
-    })
-}
+func makeCapabilityRules(bundleIDs: BundleIDs? = nil) -> CapabilityRules { EngineFactory.makeCapabilityRules(bundleIDs: bundleIDs) }
 
 func runPlan(_ a: [String]) async {
     var file = FileLayoutStore.defaultURL()

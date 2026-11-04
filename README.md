@@ -48,3 +48,11 @@ See docs/findings-positioning.md and docs/findings-visibility.md.
 - `mbprobe permissions [--prompt]` prints both states. `SOMMELIER_SHOW_ONBOARDING=1` forces the onboarding window at launch.
 
 The app is deliberately not sandboxed. License: MIT.
+
+## Developing
+
+`open build/Sommelier.app` goes through LaunchServices; that bundle has no Accessibility grant until a human gives one.
+A process started directly from the shell inherits the terminal's Accessibility trust (as `mbprobe` does), so for
+development use `make app-run`, which builds the bundle and runs `build/Sommelier.app/Contents/MacOS/Sommelier` in the
+background with logs in `build/sommelier.log` (look for `launch trusted=true`). Stop it with `pkill -x Sommelier`.
+Debug env vars: `SOMMELIER_DEBUG_MENU=1`, `SOMMELIER_OPEN_SETTINGS=1`, `SOMMELIER_TOGGLE_LOGIN=1`, `SOMMELIER_SHOW_ONBOARDING=1`.

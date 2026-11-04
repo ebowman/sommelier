@@ -1,4 +1,4 @@
-.PHONY: build test app run probe dummy dummy-stop clean
+.PHONY: build test app run app-run probe dummy dummy-stop clean
 
 APP := build/Sommelier.app
 DUMMY := build/MBDummy.app
@@ -28,6 +28,11 @@ app: build
 
 run: app
 	open $(APP)
+
+# Development: run the binary directly so it inherits the terminal's Accessibility trust (see README).
+app-run: app
+	-@pkill -x Sommelier || true
+	$(APP)/Contents/MacOS/Sommelier > build/sommelier.log 2>&1 &
 
 probe:
 	swift run mbprobe $(ARGS)
