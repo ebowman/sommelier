@@ -1080,3 +1080,18 @@ private final class FakePrefs: @unchecked Sendable {
     let o2 = await liveActuator(v).applyHiddenBatchDetailed([key("B"): true])
     #expect(o2.mechanism == .live && v.liveWrites.count == 1 && v.assumedRecords.isEmpty)
 }
+
+// gdu.47: a batch asking the opposite of a write made moments ago rescans before it trusts its pre-write snapshot.
+@Test func oppositeBatchRightAfterAWriteWaitsAndRescans() async {
+    let w = World(["A", "B", "C"])
+    var c = LiveActuator.Config()
+    c.recentWriteSettle = 1e6   // the fake clock only moves by sleeps: make "moments ago" cover the whole test
+    let a = LiveActuator(platform: w, config: c)
+    let hide = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(hide.result.isVerified)
+    let show = await a.applyHiddenBatchDetailed([key("B"): false])
+    #expect(show.result.isVerified)
+    #expect(await a.trace.contains { $0.contains("opposite of a write made") })
+    #expect(w.allowedWrites == [["tracked.B": false], ["tracked.B": true]])   // one write per direction
+    #expect(Set(w.order) == ["A", "B", "C"])
+}
