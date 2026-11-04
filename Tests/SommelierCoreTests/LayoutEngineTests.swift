@@ -489,3 +489,38 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(rep.outcome == .converged)
     }
 }
+
+// MARK: - transient reveal (gdu.17)
+
+@MainActor
+@Suite struct TransientRevealTests {
+    @Test func heldUnitOnTheBarIsNotHiddenThenIsAfterTheHoldEnds() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged)
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(await r.engine.isTransientlyRevealed(HideUnit(id: "com.x.B")))
+        await r.engine.endTransientReveal(HideUnit(id: "com.x.B"))
+        let rep2 = await r.engine.reconcileOnce()
+        #expect(rep2.outcome == .converged)
+        #expect(await r.actuator.calls.contains(.applyHiddenBatch([k("B"): true])))
+        #expect(await r.actuator.hidden == [k("B")])
+    }
+
+    @Test func heldUnitShowsAsPendingAndSecondHoldIsRefused() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        _ = await r.engine.reconcileOnce()   // learns the items
+        #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
+        #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)) == false)
+        #expect(r.state.perItem[k("B")] == .pending)
+        #expect(r.state.perItem[k("A")] == .inPlace)
+    }
+
+    @Test func holdExpiresByItself() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .milliseconds(1)))
+        let gone = await waitUntil { await !r.engine.isTransientlyRevealed(HideUnit(id: "com.x.B")) }
+        #expect(gone)
+    }
+}

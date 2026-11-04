@@ -182,3 +182,31 @@ takes ~2.6 s and has `hostedComplete=false onBarStale=8`); `engine: pass started
 `engine: observation unsettled; not actuating`; `engine: setLayout: abandoning the observation in progress`. setLayout latency check with
 MBDummy only: `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dummy-A|visible|0;status:MBDummy::Dummy-A|visible|6" SOMMELIER_ARRANGE_MOVE_INTERVAL=22`
 (a hide of MBDummy is rejected without a Control Center entry; use visible-to-visible moves), then grep `after setLayout|picked up|abandoning`.
+
+## Click-forwarding
+Live protocol (gdu.17, 2026-11-04, macOS 27.0.1; Bartender quit for the run and relaunched after; items the user keeps hidden through
+Control Center, `isAllowed=false`). `mbprobe activate <key> --escape-after 3` (CGEvent Escape closes the menu; the activator's own
+close detection noticed it: `closed_by=escape`). Times in ms: reveal = activation entry (which includes the full locating scan, 0.6-1.8 s)
+to the item being drawn; click->menu = click posted to a menu/popover child being present through Accessibility.
+
+| Item (key) | Mechanism | Reveal (entry -> drawn), 3 runs | Click -> menu | Menu location | Re-hide |
+|---|---|---|---|---|---|
+| Tot `status:com.iconfactory.Tot::Item-0` (popover) | revealClick | 736 / 1576 / 1766 (earlier runs 857, 698, 2652) | 88-130 (3 of 6 runs: not observed through AX; the popover was open per screenshot) | under the item, x 827-1353, y 26+ | yes, agent pid unchanged |
+| Yoink `status:at.EternalStorms.Yoink::Item-0` (menu) | revealClick | 764 / 797 / 682 / 1920 / 2521 | 36-52 | under the item (1071,31, 265x259) | yes |
+| Moom `status:com.manytricks.Moom::com.manytricks.Moom.StatusItem` (menu) | revealClick | 1563 / 783 / 2534 / 1060 | 22-56 | under the item (1077,31, 327x224) | yes |
+
+Click->menu is 22-130 ms, far inside the 700 ms target. The reveal part is dominated by the `LivePlatform.scan()` that locates the item
+(0.6-1.8 s, a follow-up bead covers caching it) plus a hosted-tree read that is sometimes incomplete; the live show itself lands in ~60-300 ms.
+The AXPress fallback (`--ax-press` or reveal timeout) opened Yoink's menu at the screen-left strip (-5, 34), as recorded in
+docs/findings-visibility.md; its AX press returned 0 here.
+Right click (`--right`): Moom opens its menu under the item (same as left); Yoink received the right click and showed no menu under the
+item (its shelf window opened off to the right, AX reported a window at x 1775); Tot not tried. Edge: Moom quit before activating ->
+`failed: the app is not running` (Moom relaunched with `open -b` afterwards).
+Through the app (`SOMMELIER_LAYOUT_FILE=<scratch>/layout.json SOMMELIER_ACTIVATE="status:com.iconfactory.Tot::Item-0"`, Sommelier binary run
+directly): log shows `engine: hold: com.iconfactory.Tot revealed from the overflow panel`, `menu observed 92 ms after the click`, then TWO
+engine passes during the 31 s the popover stayed open that planned `phase=converged actions=0` (Tot visible, layout hidden, not hidden), then
+after Escape `menu closed (escape)`, `unit hidden again`, `hold ... released; reconciling` and a plan `hide Tot` that fell back to one agent
+respawn (see the known limitation in docs/architecture.md; the respawn changed the MenuBarAgent pid, which does not happen with the activator
+alone).
+Caveats of the live runs: `mbprobe list` reports the three (identifier-less) items as ON the bar after a reveal+re-hide although they are not
+drawn (stale app-side frame); `mbprobe agent-restart` re-parks them. Screenshots of Tot's popover can contain private text: do not archive them.

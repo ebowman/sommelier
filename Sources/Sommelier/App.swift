@@ -30,6 +30,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["SOMMELIER_OPEN_PANEL"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { sc.openPanelForVerification() }
         }
+        if let spec = env["SOMMELIER_ACTIVATE"], !spec.isEmpty {
+            let right = spec.hasSuffix("|right")
+            let keyText = right ? String(spec.dropLast("|right".count)) : spec
+            Task { @MainActor [model] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let key = ItemKey(storeKey: keyText) else { NSLog("[Sommelier] activate: bad key %@", keyText); return }
+                for _ in 0..<40 where model.engine == nil { try? await Task.sleep(for: .milliseconds(250)) }
+                let t0 = Date()
+                let r = await model.activate(key, button: right ? .right : .left)
+                NSLog("[Sommelier] activate result for %@: %@ (total %d ms)", keyText, "\(r)", Int(Date().timeIntervalSince(t0) * 1000))
+            }
+        }
         if env["SOMMELIER_OPEN_ARRANGE"] == "1" { arrange.show() }
         if let spec = env["SOMMELIER_ARRANGE_MOVE"], !spec.isEmpty {
             arrange.viewModel.runEnvMove(spec, after: .seconds(2))

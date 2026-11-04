@@ -45,6 +45,26 @@ final class AppModel {
         }
     }
 
+    @ObservationIgnored private var activator: ItemActivator?
+
+    /// Opens the real menu of a hidden item (overflow panel click-forwarding). On a vanished item the engine refreshes.
+    func activate(_ key: ItemKey, button: ClickButton) async -> ActivationResult {
+        guard let engine else { return .failed(.unavailable("Sommelier is not running yet")) }
+        if activator == nil {
+            let ph = LivePlatform()
+            let live = LiveActivationPlatform(platform: ph, closeMonitor: NSEventCloseMonitor(),
+                                              filter: { EngineFactory.dropSelf($0, bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
+            activator = ItemActivator(platform: live, hold: engine, log: { NSLog("[Sommelier] activator: %@", $0) })
+        }
+        guard let activator else { return .failed(.unavailable("no activator")) }
+        let r = await activator.activate(key: key, button: button)
+        switch r {
+        case .failed(.notRunning), .failed(.notFound): await engine.requestReconcile(supersede: true, reason: "activation failed")
+        default: break
+        }
+        return r
+    }
+
     var isPaused: Bool { conflictingManager != nil }
 
     var trusted: Bool { permissions.isReady }

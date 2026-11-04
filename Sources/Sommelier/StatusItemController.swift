@@ -8,6 +8,9 @@ final class StatusItemController: NSObject {
     private lazy var panel: OverflowPanelController = OverflowPanelController(state: model.state, onArrange: { [weak self] in
         self?.panel.hide("arrange")
         self?.onArrange()
+    }, onActivate: { [weak self] key, button in
+        guard let self else { return .failed(.unavailable("Sommelier is closing")) }
+        return await self.model.activate(key, button: button)
     })
     private let onSettings: () -> Void
     private let onArrange: () -> Void

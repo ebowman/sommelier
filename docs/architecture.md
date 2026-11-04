@@ -335,3 +335,36 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   running are skipped. `OverflowPlacement.panelFrame` (pure) right-aligns the panel to the status item under the bar.
 - `OverflowPanelController` (app target) owns a non-activating `NSPanel` hosting `OverflowBarView`; it re-renders from
   the observed state and closes via monitors, a pointer poll and an inactivity timer (see docs/testing.md).
+
+## Click-forwarding: `ItemActivator` (gdu.17)
+Clicking an entry in the overflow panel opens the REAL item's menu or popover. Mechanisms, in the order the activator tries them
+(`ItemActivator`, `SommelierCore`; the app wires it through `AppModel.activate`):
+1. **Reveal + click (`revealClick`, adopted)**: take an engine hold on the item's hide unit (`LayoutEngine.beginTransientReveal`), show the
+   unit live (`setAllowedLive([tracked: true])`, ~25 ms agent reaction), wait until the item is really drawn, post a synthesized click
+   (CGEvent move/down/up via `.cghidEventTap`) at its centre (left or right), wait for the menu to close, hide the unit again
+   (`setAllowedLive([tracked: false])`) and release the hold. The menu opens exactly under the item. "Really drawn" is NOT the app-side
+   frame alone (a live-hidden item keeps a stale on-bar frame); it is the app-side frame on the strip AND MenuBarAgent hosting one more item
+   than before the write (`hostedBarCount`); without a usable baseline a stale on-bar frame is believed only 0.6 s after the write.
+   The reveal is per unit (app): siblings appear too while the menu is open.
+2. **`axPressParked` (fallback, left click only)**: `AXUIElementPerformAction(kAXPressAction)` on the app-side element while it stays parked.
+   Used when live hide/show is unavailable (no app-group entitlement), the item has no Control Center entry, the live write throws, or the
+   reveal does not land within 1.5 s. CAVEAT: the menu/popover appears at an unrelated place (the item's frame is the parked frame at
+   y ~1188: left screen edge below the bar, or mid-screen; docs/findings-visibility.md). The AX call may return -25204 although the menu
+   opened, so a press error counts as failure only if no menu/popover child appeared within 1.5 s. A right click cannot be forwarded this way
+   (`failed(.unavailable)`).
+3. **`axPressOverflow`**: an item macOS moved into its own overflow (kind `.notFitting`) is on the bar but not drawn: AXPress, no reveal.
+A drawn item (Control Center says allowed) is simply clicked (`barClick`).
+
+Menu close: a `CloseMonitoring` source (app: global `NSEvent` monitor for mouse-up and Escape, installed only during an activation;
+`mbprobe`: a listen-only CGEvent tap), OR the menu/popover child (counted against its count before the click, because some apps keep an empty
+zero-sized `AXMenu` child) disappearing, polled every 250 ms; then a 300 ms settle. An outside mouse-up is believed only if the menu is gone
+(a popover survives a click inside it); Escape is always believed. Hard cap 60 s. The re-hide is written once; a throwing write still releases
+the hold and the result carries `rehideFailed` (the engine's next pass hides it); the activator never retries.
+
+Engine hold: while a unit is held the engine hides `ObservedOrder` entries of that unit from the planner (it neither hides nor orders them), shows
+them as `.pending` in `EngineState.perItem`, and auto-expires the hold after the timeout (65 s). `endTransientReveal` requests a reconcile.
+KNOWN LIMITATION (bead filed): for items without an AX identifier/description (Tot, Yoink, Moom) the scanner cannot see a live hide, so after
+the hold ends the next pass sees the item "on the bar", plans a hide and the live verification fails, which falls back to ONE agent respawn
+(`live verify failed ... falling back to respawn`, ~4.5 s flash). The item itself is hidden again as soon as the live write lands.
+Debug: `SOMMELIER_ACTIVATE="<storeKey>[|right]"` (3 s after launch, result in `build/sommelier.log`); `mbprobe activate <key> [--right]
+[--ax-press] [--escape-after S]`.

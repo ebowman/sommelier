@@ -74,6 +74,9 @@ public actor LayoutEngine {
     private var requestedAt: ContinuousClock.Instant?
     private var requestReason = "request"
     private var requestedDuringPass = false
+    /// Hide units temporarily revealed on purpose (overflow-panel click-forwarding, gdu.17): hold token per unit.
+    private var transientReveals: [HideUnit: Int] = [:]
+    private var nextHoldToken = 0
 
     public init(observer: any MenuBarObserver, actuator: any MenuBarActuator, store: any LayoutStore,
                 capabilities: any CapabilityProvider, state: EngineState,
@@ -219,7 +222,52 @@ public actor LayoutEngine {
     }
 
     private func makePlan(_ obs: ObservedOrder) -> Plan {
-        Reconciler().plan(observed: obs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden)
+        Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden)
+    }
+
+    /// Keys of units under a transient reveal are invisible to the planner: it neither hides nor orders them.
+    func withoutTransient(_ obs: ObservedOrder) -> ObservedOrder {
+        guard !transientReveals.isEmpty else { return obs }
+        var o = obs
+        o.onBar = obs.onBar.filter { transientReveals[$0.hideUnit] == nil }
+        o.parked = obs.parked.filter { transientReveals[$0.hideUnit] == nil }
+        return o
+    }
+
+    // MARK: Transient reveal (a hold)
+
+    /// Marks `unit` as deliberately on the bar for up to `timeout`: passes leave it alone and `perItem` shows it as
+    /// `.pending` ("revealed from the overflow panel"). Returns false when the unit is already held. Expires by itself.
+    @discardableResult
+    public func beginTransientReveal(_ unit: HideUnit, timeout: Duration = .seconds(60)) async -> Bool {
+        guard transientReveals[unit] == nil else { return false }
+        nextHoldToken += 1
+        let token = nextHoldToken
+        transientReveals[unit] = token
+        log("hold: \(unit) revealed from the overflow panel (timeout \(timeout))")
+        let keys = itemInfo.keys.filter { $0.hideUnit == unit }
+        await publish { s in for k in keys { s.perItem[k] = .pending } }
+        Task { [weak self] in
+            try? await Task.sleep(for: timeout)   // wall clock on purpose: the injected `sleep` is a test seam for pacing
+            await self?.expireTransientReveal(unit, token: token)
+        }
+        return true
+    }
+
+    public func endTransientReveal(_ unit: HideUnit) async {
+        guard transientReveals.removeValue(forKey: unit) != nil else { return }
+        log("hold: \(unit) released; reconciling")
+        let keys = itemInfo.keys.filter { $0.hideUnit == unit }
+        await publish { s in for k in keys where s.perItem[k] == .pending { s.perItem[k] = .inPlace } }
+        requestReconcile(supersede: true, reason: "transient reveal ended")
+    }
+
+    public func isTransientlyRevealed(_ unit: HideUnit) -> Bool { transientReveals[unit] != nil }
+
+    private func expireTransientReveal(_ unit: HideUnit, token: Int) async {
+        guard transientReveals[unit] == token else { return }
+        log("hold: \(unit) expired")
+        await endTransientReveal(unit)
     }
 
     private func pruneFailures(_ obs: ObservedOrder) {
@@ -231,6 +279,7 @@ public actor LayoutEngine {
         var out: [ItemKey: ItemStatus] = [:]
         for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
+        for k in obs.onBar + obs.parked where transientReveals[k.hideUnit] != nil { out[k] = .pending }
         for s in plan.skipped where failures[s.key] == nil {
             out[s.key] = .unsupported(s.reason)
         }

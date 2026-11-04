@@ -60,6 +60,8 @@ and was killed (not respawned) by my first attempt; I relaunched it. `--restart-
 - AXPress works on parked items: the menu/popover opens, but at an unrelated location (Yoink: screen-left strip below the bar;
   Tot: x~710), so for the overflow panel we can trigger the real item's UI without un-hiding it, but cannot anchor it where
   we want; Escape via CGEvent dismisses. The AX return can be -25204 even when the menu opened (treat via observing children).
+  Superseded for click-forwarding by reveal + click (live show, synthesized click, live re-hide); AXPress stays the fallback: see
+  docs/architecture.md "Click-forwarding" and docs/testing.md "Click-forwarding" (gdu.17).
 
 **Recommendation for T07:** hide/show = `ControlCenterTrackedAppsStore.setAllowed` + one `killall MenuBarAgent` (batched with order
 writes); verify afterwards with the scanner (parked vs on bar). Cost: agent process restart, ~2-3 s typical, bar flash.

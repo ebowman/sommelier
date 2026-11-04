@@ -30,6 +30,7 @@ func usage() -> Never {
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
            mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback]      (ONE engine pass: executes the plan)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
+           mbprobe activate <key> [--right] [--ax-press] [--escape-after SECONDS]      (ItemActivator: reveal + click, or AXPress; waits for the menu to close)
 
     """.utf8))
     exit(2)
@@ -790,7 +791,40 @@ func runPermissions(_ a: [String]) {
     print("live hide/show: " + (AppGroupEntitlement.hasControlCenterGroup() ? "available" : "unavailable (no app-group entitlement)"))
 }
 
+struct NoHold: TransientRevealing {
+    func beginTransientReveal(_ unit: HideUnit, timeout: Duration) async -> Bool { true }
+    func endTransientReveal(_ unit: HideUnit) async {}
+}
+
+func runActivate(_ a: [String]) async {
+    guard let keyText = a.first(where: { !$0.hasPrefix("--") }) else { usage() }
+    let key = parseKey(keyText)
+    let right = a.contains("--right"), axPress = a.contains("--ax-press")
+    await MainActor.run { _ = NSApplication.shared }   // global NSEvent monitors need the AppKit event machinery
+    let platform = LiveActivationPlatform(closeMonitor: TapCloseMonitor())
+    let activator = ItemActivator(platform: platform, hold: NoHold(), log: { _ in })
+    let hostedBefore = await platform.hostedBarCount()
+    if let i = a.firstIndex(of: "--escape-after"), i + 1 < a.count, let secs = Double(a[i + 1]) {
+        // A CGEvent Escape (the same as postEscape in a failed drag), delivered while the activator waits for the menu to close.
+        Task.detached { try? await Task.sleep(for: .seconds(secs)); DragMover.postEscape(); print("  (escape posted)"); fflush(stdout) }
+    }
+    let r = await activator.activate(key: key, button: right ? .right : .left, forceAXPress: axPress,
+                                     progress: { print("  \($0)"); fflush(stdout) })
+    try? await Task.sleep(for: .seconds(2.5))
+    let hostedAfter = await platform.hostedBarCount()
+    print("hosted on bar before=\(hostedBefore.map(String.init) ?? "?") after=\(hostedAfter.map(String.init) ?? "?") (equal = hidden again)")
+    switch r {
+    case .opened(let o):
+        print("opened: mechanism=\(o.mechanism.rawValue) latency_ms=\(o.latencyMS) reveal_ms=\(o.revealMS.map(String.init) ?? "-") "
+              + "click_to_menu_ms=\(o.menuAppearMS.map(String.init) ?? "none") menu_frame=\(o.menuFrame.map { "\($0)" } ?? "-") "
+              + "closed_by=\(o.closedBy) rehide_failed=\(o.rehideFailed ?? "no")")
+    case .failed(let e):
+        print("failed: \(e)"); exit(3)
+    }
+}
+
 switch args.first {
+case "activate": await runActivate(Array(args.dropFirst()))
 case "permissions": runPermissions(Array(args.dropFirst()))
 case "layout": await runLayout(Array(args.dropFirst()))
 case "apply": await runApply(Array(args.dropFirst()))

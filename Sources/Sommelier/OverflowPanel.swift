@@ -13,10 +13,19 @@ final class OverflowNSPanel: NSPanel {
     }
 }
 
+/// Entries whose last activation failed (red outline + tooltip), cleared after a few seconds.
+@MainActor @Observable
+final class OverflowFeedback {
+    var errors: [ItemKey: String] = [:]
+}
+
 @MainActor
 final class OverflowPanelController {
     private let state: EngineState
     private let onArrange: () -> Void
+    private let onActivate: (ItemKey, ClickButton) async -> ActivationResult
+    private let feedback = OverflowFeedback()
+    private var clearTask: Task<Void, Never>?
     private var panel: OverflowNSPanel?
     private var hosting: NSHostingView<OverflowBarView>?
     private let probe: NSHostingView<OverflowBarView>
@@ -28,10 +37,35 @@ final class OverflowPanelController {
     private var lastActive = Date()
     private var outsideSince: Date?
 
-    init(state: EngineState, onArrange: @escaping () -> Void = {}) {
+    init(state: EngineState, onArrange: @escaping () -> Void = {},
+         onActivate: @escaping (ItemKey, ClickButton) async -> ActivationResult = { _, _ in .failed(.unavailable("not wired")) }) {
         self.state = state
         self.onArrange = onArrange
+        self.onActivate = onActivate
         probe = NSHostingView(rootView: OverflowBarView(state: state, size: nil, onArrange: onArrange))
+        probe.rootView.feedback = feedback
+    }
+
+    /// A click on an entry: the panel gets out of the way at once (the item's own menu opens where the item is), the
+    /// activator does the rest; a failure brings the panel back with the entry outlined in red.
+    private func activate(_ entry: OverflowEntry, _ button: ClickButton) {
+        if entry.kind == .notFitting, button == .right { return }
+        let (anchor, screen) = (self.anchor, self.screen)
+        hide("activate")
+        let key = entry.key
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let r = await self.onActivate(key, button)
+            guard case .failed(let e) = r else { return }
+            NSLog("[Sommelier] overflow activation of %@ failed: %@", "\(key)", e.description)
+            self.feedback.errors[key] = e.description
+            if let screen { self.show(anchoredTo: anchor, on: screen) }
+            self.clearTask?.cancel()
+            self.clearTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(4))
+                if !Task.isCancelled { self?.feedback.errors[key] = nil }
+            }
+        }
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -89,7 +123,7 @@ final class OverflowPanelController {
             lastLogged = f
             NSLog("[Sommelier] panel place: ideal=%@ cap=%.0f final=%@", NSStringFromSize(ideal), cap, NSStringFromRect(f))
         }
-        hosting.rootView = OverflowBarView(state: state, size: f.size, onArrange: onArrange)
+        hosting.rootView = OverflowBarView(state: state, size: f.size, onArrange: onArrange, feedback: feedback, onActivate: { [weak self] e, b in self?.activate(e, b) })
         if panel.frame != f { panel.setFrame(f, display: true) }
         hosting.frame = panel.contentView?.bounds ?? .zero
     }
@@ -116,7 +150,7 @@ final class OverflowPanelController {
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 10
         effect.layer?.masksToBounds = true
-        let host = NSHostingView(rootView: OverflowBarView(state: state, size: nil, onArrange: onArrange))
+        let host = NSHostingView(rootView: OverflowBarView(state: state, size: nil, onArrange: onArrange, feedback: feedback, onActivate: { [weak self] e, b in self?.activate(e, b) }))
         host.sizingOptions = []
         host.autoresizingMask = [.width, .height]
         host.frame = effect.bounds
@@ -177,6 +211,8 @@ struct OverflowBarView: View {
     /// nil = measure the ideal (uncapped) size; otherwise the final panel size (content scrolls horizontally).
     let size: CGSize?
     var onArrange: () -> Void = {}
+    var feedback: OverflowFeedback?
+    var onActivate: (OverflowEntry, ClickButton) -> Void = { _, _ in }
     @AppStorage("overflowShowNames") private var showNames = true
 
     var body: some View {
@@ -204,7 +240,8 @@ struct OverflowBarView: View {
             ForEach(Array(entries.enumerated()), id: \.element.key) { i, e in
                 if i > 0, entries[i - 1].unit != e.unit || entries[i - 1].kind != e.kind { Divider().frame(height: 16) }
                 OverflowEntryView(entry: e, showName: showNames,
-                                  together: e.unitSize > 1 ? entries.filter { $0.unit == e.unit }.map(\.displayName) : [])
+                                  together: e.unitSize > 1 ? entries.filter { $0.unit == e.unit }.map(\.displayName) : [],
+                                  error: feedback?.errors[e.key], onActivate: onActivate)
             }
         }
     }
@@ -215,6 +252,8 @@ struct OverflowEntryView: View {
     let showName: Bool
     /// Display names of every item hidden with this one (empty when the app has a single item).
     var together: [String] = []
+    var error: String?
+    var onActivate: (OverflowEntry, ClickButton) -> Void = { _, _ in }
     @State private var hovering = false
 
     var body: some View {
@@ -237,8 +276,18 @@ struct OverflowEntryView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(hovering ? Color.primary.opacity(0.08) : .clear))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { NSLog("[Sommelier] overflow click %@", "\(entry.key)") }
-        .help(entry.kind == .notFitting ? "Does not fit; macOS moved it into its overflow" : entry.pinnedHidden ? "Kept hidden (always-hidden sibling): " + (together.isEmpty ? entry.displayName : together.joined(separator: ", ")) : together.isEmpty ? entry.displayName : "Hidden together: " + together.joined(separator: ", "))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.red, lineWidth: error == nil ? 0 : 1.5))
+        .overlay(ClickCatcher { button in
+            NSLog("[Sommelier] overflow click %@ (%@)", "\(entry.key)", button == .left ? "left" : "right")
+            onActivate(entry, button)
+        })
+        .help(error.map { "Could not open: \($0)" } ?? helpText)
+    }
+
+    private var helpText: String {
+        if entry.kind == .notFitting { return "Does not fit; macOS moved it into its overflow" }
+        if entry.pinnedHidden { return "Kept hidden (always-hidden sibling): " + (together.isEmpty ? entry.displayName : together.joined(separator: ", ")) }
+        return together.isEmpty ? entry.displayName : "Hidden together: " + together.joined(separator: ", ")
     }
 
     @ViewBuilder private var icon: some View {
@@ -255,5 +304,20 @@ struct OverflowEntryView: View {
             return ws.icon(forFile: url.path)
         }
         return nil
+    }
+}
+
+
+/// Transparent overlay that reports left and right clicks (SwiftUI's tap gesture has no right button).
+struct ClickCatcher: NSViewRepresentable {
+    let onClick: (ClickButton) -> Void
+    func makeNSView(context: Context) -> CatcherView { let v = CatcherView(); v.onClick = onClick; return v }
+    func updateNSView(_ v: CatcherView, context: Context) { v.onClick = onClick }
+
+    final class CatcherView: NSView {
+        var onClick: (ClickButton) -> Void = { _ in }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { onClick(.left) }
+        override func rightMouseDown(with event: NSEvent) { onClick(.right) }
     }
 }
