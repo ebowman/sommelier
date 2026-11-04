@@ -286,7 +286,12 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   (the layout neighbours decide the slot), and the real capsule keeps its observed place with "⟳" until BOTH a pass has finished
   after the drop AND `placementMatches` (the observed drawn order equals the layout order, or the item is off the bar for the
   hidden sections) AND the engine status is in place; only then does it show "✓". The view model remembers the moved keys
-  (`awaiting`, siblings of the hide unit included); after 90 s without a match they show "⚠ not applied". (2) A badge is "✓" only
+  (`ArrangeTracker`, pure, in `ArrangeModel.swift`; siblings of the hide unit included). A drop is judged only by a pass that STARTED
+  after it (`EngineState.passesStarted` at drop time vs `passSequence`, re-stamped when the engine publishes the new layout); older
+  statuses are suppressed and shown as "⟳", so an old failure never appears on a new drop. After 90 s without a match the capsule shows
+  the timeout "⚠", cleared by a later match. Without a trustworthy observation (none yet, or `lastError` is an observe failure) the
+  Visible strip shows "No observation yet - ..." and no capsules, and drops that touch Visible are refused. Capabilities come only from
+  `ItemInfo`; a key without one is unknown and allowed (the engine decides). (2) A badge is "✓" only
   when the engine status says in place; failed -> "⚠" with the error text as tooltip, `.unsupported` -> "⊘" with the reason,
   `.notFitting` -> the does-not-fit marker; items whose app is not running carry no badge and sit in a collapsed "Not running (N)"
   group. Before the first observation rows make no claims. (3) Hidden and Always hidden follow the LAYOUT order and reorder
@@ -297,7 +302,8 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   (`Layout.move`) takes the whole unit, and every key it returns shows "⟳" too. Dropping beside a sibling is a no-op.
 - Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange line; items left of it are outlined
   and marked does-not-fit. Dropping left of it is allowed but flagged ("will stay behind the chevron"). Dropping right of the
-  trailing system block clamps to before it (`Layout.move` rules); dropping on the item's own position is a no-op.
+  trailing system block clamps to before it (`ArrangeDrop.index`, which also clamps after the LEADING anchors, e.g. Wi-Fi leftmost, so index 0 = first movable slot; the debug hook
+  `SOMMELIER_ARRANGE_MOVE` goes through the same function, 0-based among movable items); dropping on the item's own position is a no-op.
 - Capabilities (`CapabilityRules`, bundle ids from `EngineState.items`): modules cannot be dragged; items that cannot be hidden
   can be reordered but a drop into a hidden strip is rejected with the reason (also shown as a small "⊘" on the capsule).
 - Gestures: `draggable`/`dropDestination` with `ArrangePayload` (the store key as plain text); drop gaps between capsules draw the
@@ -306,7 +312,8 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   Reveal in menu bar (section-wide `setShowHiddenSection(true)` with auto re-hide after `autoRehideSeconds`; a per-item transient
   layout would be persisted by `setLayout`). Toolbar: Re-apply layout (`clearFailures` + `requestReconcile`), Adopt current order
   (confirmation; Visible = observed bar verbatim, Hidden = parked, Always hidden kept, not-running keys kept), Hide what does not
-  fit, filter. Every engine call is a `Task`; a 0.25 s timer logs "MAIN ACTOR STALL" if the main actor stalls.
+  fit, filter. Every engine call is a `Task`; a 0.25 s timer logs "MAIN ACTOR STALL" when it fires more than 100 ms late.
+  "Reveal in menu bar" is disabled for Always hidden items.
 
 ## Overflow panel
 - `EngineState.items` (`ItemInfo`, SommelierCore) carries display metadata (title, description, owner, width) for every

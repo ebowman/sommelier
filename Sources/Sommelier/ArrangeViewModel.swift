@@ -21,7 +21,6 @@ struct ArrangePayload: Transferable, Equatable {
 /// - Every engine call is a `Task`; the main actor only renders and submits.
 @MainActor @Observable
 final class ArrangeViewModel {
-    struct Awaiting { var pass: Int; var since: Date }
     enum Confirm: Identifiable {
         case adopt(ArrangeLayout)
         case hideNotFitting(ArrangeLayout, titles: [String], blocked: [String])
@@ -40,8 +39,8 @@ final class ArrangeViewModel {
     var confirm: Confirm?
     /// Slot currently targeted by a drag, for the insertion indicator.
     var hoverSlot: (section: LayoutSection, slot: Int)?
-    private(set) var awaiting: [ItemKey: Awaiting] = [:]
-    private(set) var timedOut: Set<ItemKey> = []
+    /// The waiting state machine (pure, in SommelierCore); this class only feeds it.
+    private(set) var tracker = ArrangeTracker()
     /// The layout we submitted until the engine has published it (so rapid consecutive drops build on each other).
     private(set) var pendingLayout: ArrangeLayout?
     private(set) var capabilities: CapabilityRules
@@ -62,20 +61,29 @@ final class ArrangeViewModel {
 
     var layout: ArrangeLayout { pendingLayout ?? state.layout }
 
+    var observationProblem: String? { ArrangeSections.observationProblem(lastError: state.lastError) }
+    /// False while the bar has no trustworthy observation (none yet, or the last one failed/disagreed).
+    var observationAvailable: Bool { !state.observed.onBar.isEmpty && observationProblem == nil }
+
     var content: ArrangeContent {
         ArrangeSections.make(observed: state.observed, layout: layout, items: state.items, perItem: state.perItem,
-                             capabilities: { [capabilities] in capabilities.capability(for: $0) },
-                             showHiddenSection: state.showHiddenSection, awaiting: Set(awaiting.keys), timedOut: timedOut, filter: filter)
+                             capabilities: cap, showHiddenSection: state.showHiddenSection,
+                             awaiting: tracker.awaiting, timedOut: tracker.timedOut,
+                             suppressedStatus: tracker.suppressed(passSequence: state.passSequence),
+                             observationProblem: observationProblem, filter: filter)
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
     var hasNotFitting: Bool { !state.observed.systemOverflow.isEmpty }
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
-                                   inFlight: state.inFlight != nil, pendingAwaiting: awaiting.count)
+                                   inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count)
     }
     var isPaused: Bool { model.isPaused }
-    private var cap: (ItemKey) -> Capability { { [capabilities] in capabilities.capability(for: $0) } }
+    /// Capability only from the engine's own data; a key without `ItemInfo` is unknown, hence allowed (engine decides).
+    private var cap: (ItemKey) -> Capability {
+        { [capabilities, items = state.items] in ArrangeCapabilities.resolve($0, items: items, rules: capabilities) }
+    }
 
     // MARK: lifecycle
 
@@ -103,34 +111,20 @@ final class ArrangeViewModel {
 
     private func tick() {
         let t = Date()
-        if let last = lastTick, t.timeIntervalSince(last) > 0.75 {
-            NSLog("[Sommelier] arrange: MAIN ACTOR STALL: %.2fs between 0.25s ticks", t.timeIntervalSince(last))
+        if let last = lastTick, t.timeIntervalSince(last) - 0.25 > 0.1 {
+            NSLog("[Sommelier] arrange: MAIN ACTOR STALL: timer %.0f ms late", (t.timeIntervalSince(last) - 0.25) * 1000)
         }
         lastTick = t
-        guard windowVisible || !awaiting.isEmpty || pendingLayout != nil else { return }
+        guard windowVisible || !tracker.isEmpty || pendingLayout != nil else { return }
         refreshCapabilities()
-        if let p = pendingLayout, state.layout == p { pendingLayout = nil }
-        let now = Date()
-        for (k, a) in awaiting {
-            guard layout.section(of: k) != nil else { awaiting[k] = nil; continue }
-            switch state.perItem[k] {
-            case .failed(let e)?:
-                awaiting[k] = nil
-                NSLog("[Sommelier] arrange: %@ FAILED after %.1fs: %@", "\(k)", now.timeIntervalSince(a.since), ArrangeSections.describe(e))
-            case .unsupported(let r)?:
-                awaiting[k] = nil
-                NSLog("[Sommelier] arrange: %@ unsupported after %.1fs: %@", "\(k)", now.timeIntervalSince(a.since), r)
-            case let st? where (st == .inPlace || st == .notFitting) && pendingLayout == nil && state.passCount > a.pass
-                && ArrangeSections.placementMatches(k, layout: layout, observed: state.observed, showHiddenSection: state.showHiddenSection):
-                awaiting[k] = nil
-                timedOut.remove(k)
-                NSLog("[Sommelier] arrange: %@ verified in place %.1fs after the drop (observed order matches)", "\(k)", now.timeIntervalSince(a.since))
-            default:
-                if now.timeIntervalSince(a.since) > Self.timeoutSeconds, !timedOut.contains(k) {
-                    timedOut.insert(k)
-                    NSLog("[Sommelier] arrange: %@ NOT applied after %.0fs", "\(k)", Self.timeoutSeconds)
-                }
-            }
+        if let p = pendingLayout, state.layout == p {
+            pendingLayout = nil
+            tracker.restamp(passesStarted: state.passesStarted)   // only passes that start with the new layout judge the drops
+        }
+        guard pendingLayout == nil else { if windowVisible { logRowsIfChanged() }; return }
+        for line in tracker.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
+                                   showHiddenSection: state.showHiddenSection, now: t) {
+            NSLog("[Sommelier] arrange: %@", line)
         }
         if windowVisible { logRowsIfChanged() }
     }
@@ -153,27 +147,32 @@ final class ArrangeViewModel {
         hoverSlot = nil
         guard !isFiltering, let p = payloads.first, let key = ItemKey(storeKey: p.storeKey) else { return false }
         let rows = content.strip(section).rows
-        let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap)
+        let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,
+                                       observationAvailable: observationAvailable)
         NSLog("[Sommelier] arrange: drop %@ -> %@ slot %d", "\(key)", section.rawValue, slot)
         return submit(outcome, key: key)
     }
 
     func move(_ key: ItemKey, to section: LayoutSection) {
-        _ = submit(ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap), key: key)
+        _ = submit(ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
+                                       observationAvailable: observationAvailable), key: key)
     }
 
     func canMove(_ key: ItemKey, to section: LayoutSection) -> Bool {
         guard layout.section(of: key) != section else { return false }   // already there (menu item stays disabled)
-        if case .move = ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap) { return true }
+        if case .move = ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
+                                            observationAvailable: observationAvailable) { return true }
         return false
     }
 
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
-        _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap), key: key)
+        _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
+                                    observationAvailable: observationAvailable), key: key)
     }
 
     func canStep(_ key: ItemKey, _ dir: ArrangeDrop.Direction) -> Bool {
-        if case .move = ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap) { return true }
+        if case .move = ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
+                                         observationAvailable: observationAvailable) { return true }
         return false
     }
 
@@ -199,8 +198,11 @@ final class ArrangeViewModel {
                 let index = Int(parts[parts.count - 1])
                 guard let section else { NSLog("[Sommelier] arrange env move: bad section in %@", one); continue }
                 self.ensureTimer()
-                NSLog("[Sommelier] arrange env move: %@ -> %@ index %@", "\(key)", section.rawValue, index.map(String.init) ?? "-")
-                _ = self.submit(ArrangeDrop.outcome(layout: self.layout, key: key, to: section, index: index, capabilities: self.cap), key: key)
+                NSLog("[Sommelier] arrange env move: %@ -> %@ movable index %@", "\(key)", section.rawValue, index.map(String.init) ?? "-")
+                // Same clamp as a UI drop; the index is 0-based among movable items (modules do not count).
+                let outcome = ArrangeDrop.drop(layout: self.layout, key: key, section: section, movableIndex: index,
+                                               capabilities: self.cap, observationAvailable: self.observationAvailable)
+                _ = self.submit(outcome, key: key)
                 if interval > 0 { try? await Task.sleep(for: .seconds(interval)) }
             }
         }
@@ -219,13 +221,14 @@ final class ArrangeViewModel {
             return false
         case .move(let l, let moved, let willNotFit):
             let old = layout
+            var track: [ItemKey] = []
             message = willNotFit ? "Dropped left of the overflow boundary: macOS will keep it behind the chevron." : nil
             for k in moved {
                 let was = old.section(of: k), now = l.section(of: k)
                 if was == now, now != .visible { continue }   // pure reorder inside a hidden strip: our data, nothing to verify
-                awaiting[k] = Awaiting(pass: state.passCount, since: Date())
-                timedOut.remove(k)
+                track.append(k)
             }
+            tracker.record(track, passesStarted: state.passesStarted, now: Date())
             NSLog("[Sommelier] arrange: submit layout; moved=%@", moved.map { "\($0)" }.joined(separator: ", "))
             apply(l)
             return true
@@ -243,13 +246,13 @@ final class ArrangeViewModel {
 
     func reapply() {
         guard let engine = model.engine else { return }
-        timedOut = []
+        tracker.retry(passesStarted: state.passesStarted, now: Date())
         Task { await engine.clearFailures(); await engine.requestReconcile() }
     }
 
     func retry(_ key: ItemKey) {
         guard let engine = model.engine else { return }
-        timedOut.remove(key)
+        tracker.retry(passesStarted: state.passesStarted, now: Date())
         Task { await engine.clearFailures(); await engine.requestReconcile() }
     }
 
@@ -267,12 +270,12 @@ final class ArrangeViewModel {
         switch c {
         case .adopt(let l):
             NSLog("[Sommelier] arrange: adopt current order")
-            awaiting = [:]; timedOut = []
+            tracker.removeAll()
             apply(l)
         case .hideNotFitting(let l, let titles, _):
             NSLog("[Sommelier] arrange: hide what does not fit: %@", titles.joined(separator: ", "))
             let old = layout
-            for k in l.hidden where old.section(of: k) == .visible { awaiting[k] = Awaiting(pass: state.passCount, since: Date()) }
+            tracker.record(l.hidden.filter { old.section(of: $0) == .visible }, passesStarted: state.passesStarted, now: Date())
             apply(l)
         }
     }

@@ -86,6 +86,9 @@ public struct ArrangeContent: Equatable, Sendable {
     public var alwaysHidden: ArrangeStrip
     /// False until the engine has published a first observation; rows then carry no claims.
     public var observedAvailable: Bool
+    /// Set instead of Visible capsules while there is no trustworthy observation of the bar: the layout is never drawn as
+    /// "the real menu bar".
+    public var visiblePlaceholder: String?
     public func strip(_ s: LayoutSection) -> ArrangeStrip {
         switch s { case .visible: return visible; case .hidden: return hidden; case .alwaysHidden: return alwaysHidden }
     }
@@ -117,7 +120,7 @@ public enum ArrangeSections {
         case .pending?, .moving?: return .moving
         case .inPlace?, nil: break
         }
-        if timedOut { return .failed("not applied: the menu bar still does not match the layout") }
+        if timedOut { return .failed(ArrangeTracker.timeoutText) }
         if pendingPlacement { return .moving }
         if isAnchor { return .none }
         return status == nil ? .none : .inPlace
@@ -164,12 +167,23 @@ public enum ArrangeSections {
         }
     }
 
+    /// Why the bar cannot be observed right now (nil = no known problem; an empty observation is then just "scanning").
+    public static func observationProblem(lastError: EngineError?) -> String? {
+        switch lastError {
+        case .observe(let m)?: return m
+        case .permissionDenied?: return "Accessibility permission required"
+        default: return nil
+        }
+    }
+
     /// Builds the three strips. Visible mirrors the OBSERVED bar (no optimistic reordering) with ghosts at the target slots
     /// of pending moves; Hidden/Always hidden follow the layout order (our own data, so they reorder optimistically).
     public static func make(observed: ObservedOrder, layout: Layout, items: [ItemKey: ItemInfo], perItem: [ItemKey: ItemStatus],
                             capabilities: (ItemKey) -> Capability, showHiddenSection: Bool = false,
-                            awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], filter: String = "") -> ArrangeContent {
-        let hasObs = !(items.isEmpty && observed.onBar.isEmpty && observed.parked.isEmpty)
+                            awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
+                            observationProblem: String? = nil, filter: String = "") -> ArrangeContent {
+        // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
+        let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
         let parked = Set(observed.parked)
 
@@ -182,7 +196,7 @@ public enum ArrangeSections {
             let info = items[k]
             let pending = ghost || awaiting.contains(k)
             let b = hasObs
-                ? badge(status: perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k))
+                ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k))
                 : .none
             return ArrangeRow(key: k, title: title(k), ownerName: info?.ownerName ?? "", ownerBundleID: info?.ownerBundleID ?? ownerBundleID(k),
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,
@@ -227,8 +241,6 @@ public enum ArrangeSections {
                 }
                 vRows.insert(g, at: insertAt!)
             }
-        } else {
-            vRows = layout.visible.map { row($0, ghost: false, running: true) }
         }
 
         // MARK: Hidden sections follow the layout
@@ -244,7 +256,8 @@ public enum ArrangeSections {
         }
 
         var out = ArrangeContent(visible: ArrangeStrip(section: .visible, rows: vRows, notRunning: vNot),
-                                 hidden: hiddenStrip(.hidden), alwaysHidden: hiddenStrip(.alwaysHidden), observedAvailable: hasObs)
+                                 hidden: hiddenStrip(.hidden), alwaysHidden: hiddenStrip(.alwaysHidden), observedAvailable: hasObs,
+                                 visiblePlaceholder: hasObs ? nil : "No observation yet — " + (observationProblem ?? "scanning…"))
         let f = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !f.isEmpty {
             func keep(_ r: ArrangeRow) -> Bool {
@@ -277,7 +290,20 @@ public enum ArrangeSections {
 
 // MARK: - Drops, steps and toolbar actions
 
+public enum ArrangeCapabilities {
+    /// Capability only from the engine's own data: a key without `ItemInfo` (no observation yet, or the app is not running)
+    /// is UNKNOWN, so everything is allowed and the engine decides (the capsule shows "⟳" until it reports). Modules are
+    /// anchors by kind. Known items get the real `CapabilityRules` answer (with the owning bundle id from `ItemInfo`).
+    public static func resolve(_ key: ItemKey, items: [ItemKey: ItemInfo], rules: any CapabilityProvider) -> Capability {
+        if case .module = key { return rules.capability(for: key) }
+        guard items[key] != nil else { return Capability(canMove: true, canHide: true) }
+        return rules.capability(for: key)
+    }
+}
+
 public enum ArrangeDrop {
+    public static let noObservation = "No observation of the menu bar yet: moving items needs one."
+
     public enum Direction: Sendable { case left, right }
 
     public enum Outcome: Equatable, Sendable {
@@ -292,7 +318,11 @@ public enum ArrangeDrop {
     /// Applies the move with capability checks. `index` is a position in `section` AFTER the unit is lifted out
     /// (`Layout.move` semantics); nil appends (Visible: before the trailing system block).
     public static func outcome(layout: Layout, key: ItemKey, to section: LayoutSection, index: Int?,
-                               capabilities: (ItemKey) -> Capability, willNotFit: Bool = false) -> Outcome {
+                               capabilities: (ItemKey) -> Capability, willNotFit: Bool = false, observationAvailable: Bool = true) -> Outcome {
+        // Only moves that stay inside our own data (Hidden <-> Always hidden) may proceed without an observation.
+        if !observationAvailable, section == .visible || layout.section(of: key) == .visible || layout.section(of: key) == nil {
+            return .rejected(noObservation)
+        }
         let cap = capabilities(key)
         guard cap.canMove else { return .rejected(cap.reason ?? "This item cannot be moved.") }
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
@@ -317,28 +347,54 @@ public enum ArrangeDrop {
             if !r.isGhost, rows.contains(where: { $0.key == r.key && $0.isGhost }) { continue }
             if let p = lifted.firstIndex(of: r.key) { idx = p; break }
         }
-        guard var i = idx else { return nil }
-        if section == .visible {
-            var start = lifted.count
-            while start > 0, case .module = lifted[start - 1] { start -= 1 }
-            i = min(i, start)
-        }
-        return i
+        guard let i = idx else { return nil }
+        return clamp(i, in: lifted, section: section)
+    }
+
+    /// Visible: an index is clamped into the movable span, after the leading run of anchors and before the trailing system
+    /// block (third-party items cannot sit right of it). `lifted` is the section without the moving unit.
+    static func clamp(_ i: Int, in lifted: [ItemKey], section: LayoutSection) -> Int {
+        guard section == .visible else { return i }
+        var lead = 0
+        while lead < lifted.count, case .module = lifted[lead] { lead += 1 }
+        var end = lifted.count
+        while end > 0, case .module = lifted[end - 1] { end -= 1 }
+        return max(min(i, end), min(lead, end))
+    }
+
+    /// Layout index for "the n-th MOVABLE position" (0-based; modules do not count): just before movable item n of the
+    /// section (unit lifted out), nil when n is past the last one. Index 0 is the first movable slot, after any leading
+    /// anchors. Used by the `SOMMELIER_ARRANGE_MOVE` hook so it goes through the same clamp as a UI drop.
+    public static func index(layout: Layout, movableIndex n: Int, key: ItemKey, section: LayoutSection) -> Int? {
+        let unit = key.hideUnit
+        let lifted = layout.keys(in: section).filter { $0.hideUnit != unit }
+        let movable = lifted.indices.filter { if case .module = lifted[$0] { return false } else { return true } }
+        guard n >= 0, n < movable.count else { return nil }
+        return clamp(movable[n], in: lifted, section: section)
+    }
+
+    /// The same drop as the UI, addressed by movable index (see above).
+    public static func drop(layout: Layout, key: ItemKey, section: LayoutSection, movableIndex: Int?,
+                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true) -> Outcome {
+        let idx = movableIndex.flatMap { index(layout: layout, movableIndex: $0, key: key, section: section) }
+        return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, observationAvailable: observationAvailable)
     }
 
     /// Full drop: slot in the displayed strip -> outcome.
     public static func drop(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection,
-                            capabilities: (ItemKey) -> Capability) -> Outcome {
+                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true) -> Outcome {
         let idx = index(layout: layout, rows: rows, slot: slot, key: key, section: section)
         let boundary = rows.firstIndex { $0.isBoundary }
         let notFit = boundary.map { slot <= $0 } ?? false
-        return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, willNotFit: notFit)
+        return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, willNotFit: notFit,
+                       observationAvailable: observationAvailable)
     }
 
     /// "Move left/right" inside Visible: past the next movable capsule (anchors, the boundary and ghosts are skipped; the
     /// trailing system block is therefore never crossed).
     public static func step(layout: Layout, rows: [ArrangeRow], key: ItemKey, _ dir: Direction,
-                            capabilities: (ItemKey) -> Capability) -> Outcome {
+                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true) -> Outcome {
+        guard observationAvailable else { return .rejected(noObservation) }
         guard let r = rows.firstIndex(where: { $0.key == key && !$0.isGhost }), layout.visible.contains(key) else { return .noop }
         let unit = key.hideUnit
         let lifted = layout.visible.filter { $0.hideUnit != unit }
@@ -388,5 +444,81 @@ public enum ArrangeDrop {
             }
         }
         return l.normalizedHideUnits().layout
+    }
+}
+
+// MARK: - Drop tracking (the waiting state machine)
+
+/// Tracks submitted moves until the real bar agrees. Pure: driven by the engine's published values and a clock.
+/// Rules: (1) a drop is judged only by a pass that STARTED after it (`passSequence > dropSequence`, where `dropSequence` is
+/// `passesStarted` at drop time); status from before that pass (an old failure, an old "in place") is suppressed and the
+/// capsule shows "⟳". (2) "✓" needs that pass AND an in-place status AND `placementMatches`; there is no path to "✓" from the
+/// engine status alone. (3) A failed/unsupported status from a judging pass ends the wait (the badge then shows it).
+/// (4) After `timeout` seconds without a match the capsule shows the timeout "⚠"; a later match clears it.
+/// (5) Retry resets the sequence so the retry is judged by a fresh pass.
+public struct ArrangeTracker: Equatable, Sendable {
+    public static let timeout: TimeInterval = 90
+    public static let timeoutText = "Arrange window timeout: the menu bar still does not match the layout after 90 s (the engine may still be working)"
+
+    public struct Entry: Equatable, Sendable { public var dropSequence: Int; public var since: Date }
+    public private(set) var entries: [ItemKey: Entry] = [:]
+    public private(set) var timedOut: Set<ItemKey> = []
+    public init() {}
+
+    public var awaiting: Set<ItemKey> { Set(entries.keys) }
+    public var isEmpty: Bool { entries.isEmpty }
+
+    /// Keys whose current engine status predates their judging pass.
+    public func suppressed(passSequence: Int) -> Set<ItemKey> {
+        Set(entries.filter { passSequence <= $0.value.dropSequence }.keys)
+    }
+
+    /// Records a submitted move (unit siblings together). Re-recording a key restarts its wait.
+    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date) {
+        for k in keys { entries[k] = Entry(dropSequence: passesStarted, since: now); timedOut.remove(k) }
+    }
+
+    public mutating func retry(passesStarted: Int, now: Date) {
+        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now) }
+        timedOut = []
+    }
+
+    /// The engine has now published the layout the drops were made against: only passes started from here count.
+    public mutating func restamp(passesStarted: Int) {
+        for k in entries.keys { entries[k]?.dropSequence = passesStarted }
+    }
+
+    public mutating func removeAll() { entries = [:]; timedOut = [] }
+
+    /// Advances the machine; returns log lines for resolved entries.
+    @discardableResult
+    public mutating func update(observed: ObservedOrder, layout: Layout, perItem: [ItemKey: ItemStatus], passSequence: Int,
+                                showHiddenSection: Bool, now: Date) -> [String] {
+        var log: [String] = []
+        for (k, e) in entries {
+            guard layout.section(of: k) != nil else { entries[k] = nil; timedOut.remove(k); continue }
+            let dt = now.timeIntervalSince(e.since)
+            if passSequence > e.dropSequence {
+                switch perItem[k] {
+                case .failed(let err)?:
+                    entries[k] = nil; timedOut.remove(k)
+                    log.append("\(k) FAILED \(String(format: "%.1f", dt))s after the drop: \(ArrangeSections.describe(err))")
+                    continue
+                case .unsupported(let r)?:
+                    entries[k] = nil; timedOut.remove(k)
+                    log.append("\(k) unsupported \(String(format: "%.1f", dt))s after the drop: \(r)")
+                    continue
+                case let st? where st == .inPlace || st == .notFitting:
+                    if ArrangeSections.placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {
+                        entries[k] = nil; timedOut.remove(k)
+                        log.append("\(k) verified in place \(String(format: "%.1f", dt))s after the drop (observed order matches)")
+                        continue
+                    }
+                default: break
+                }
+            }
+            if dt > Self.timeout, timedOut.insert(k).inserted { log.append("\(k) NOT applied after \(Int(Self.timeout))s") }
+        }
+        return log
     }
 }

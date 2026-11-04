@@ -243,7 +243,7 @@ public actor LayoutEngine {
     private func finish(_ report: PassReport, converged: Bool) async -> PassReport {
         let now = Date()
         await publish { s in
-            s.inFlight = nil; s.lastPassAt = now; s.passCount += 1; s.isConverged = converged
+            s.inFlight = nil; s.lastPassAt = now; s.passCount += 1; s.passSequence += 1; s.isConverged = converged
         }
         return report
     }
@@ -286,6 +286,7 @@ public actor LayoutEngine {
         defer { inPass = false }
         lastStart = .now
         var actionCount = 0
+        await publish { $0.passesStarted += 1 }
 
         // (a) busy pause
         if busy() {
@@ -297,6 +298,7 @@ public actor LayoutEngine {
             if busy() {
                 if scheduled, !busyRetried { busyRetried = true; pending = true }
                 log("user is busy; pass skipped")
+                await publish { $0.passSequence += 1 }
                 return PassReport(outcome: .skippedBusy)
             }
         }

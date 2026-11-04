@@ -47,7 +47,7 @@ struct ArrangeView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    StripView(vm: vm, strip: content.visible, title: "Visible", subtitle: "The real menu bar, left to right")
+                    StripView(vm: vm, strip: content.visible, placeholder: content.visiblePlaceholder, title: "Visible", subtitle: "The real menu bar, left to right")
                     StripView(vm: vm, strip: content.hidden, title: "Hidden", subtitle: "Shown on demand in the overflow panel")
                     StripView(vm: vm, strip: content.alwaysHidden, title: "Always hidden", subtitle: "Never shown")
                 }
@@ -111,6 +111,7 @@ struct ArrangeView: View {
 struct StripView: View {
     @Bindable var vm: ArrangeViewModel
     let strip: ArrangeStrip
+    var placeholder: String?
     let title: String
     let subtitle: String
     @State private var endTargeted = false
@@ -125,12 +126,16 @@ struct StripView: View {
             }
             // Left to right, wrapping onto further lines when the window is narrower than the bar (the order stays reading order).
             FlowLayout(lineSpacing: 4) {
-                ForEach(Array(strip.rows.enumerated()), id: \.element.id) { i, r in
+                if let placeholder {
+                    // No trustworthy observation: never draw the layout as "the real menu bar", and no drop targets.
+                    Text(placeholder).font(.system(size: 12)).foregroundStyle(.orange).padding(.horizontal, 8)
+                }
+                ForEach(Array((placeholder == nil ? strip.rows : []).enumerated()), id: \.element.id) { i, r in
                     DropGap(vm: vm, section: strip.section, slot: i)
                     if r.isBoundary { BoundaryLine() } else { CapsuleSlot(vm: vm, row: r, section: strip.section, slot: i) }
                 }
-                DropGap(vm: vm, section: strip.section, slot: strip.rows.count)
-                if strip.rows.isEmpty {
+                if placeholder == nil { DropGap(vm: vm, section: strip.section, slot: strip.rows.count) }
+                if strip.rows.isEmpty, placeholder == nil {
                     Text(vm.isFiltering ? "No match" : "Drop items here").font(.system(size: 12)).foregroundStyle(.tertiary).padding(.horizontal, 8)
                 }
             }
@@ -222,9 +227,12 @@ struct CapsuleSlot: View {
             Divider()
             Button("Retry") { vm.retry(row.key) }
         }
-        if section != .visible {
+        if section == .hidden {
             Divider()
             Button("Reveal in menu bar") { vm.reveal() }
+        } else if section == .alwaysHidden {
+            Divider()
+            Button("Reveal in menu bar (Always hidden items stay hidden)") {}.disabled(true)
         }
     }
 }

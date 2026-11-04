@@ -49,7 +49,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
     #expect(b(.notFitting, pending: true) == .notFitting)
     // anchors carry no tick
     #expect(b(.inPlace, anchor: true) == .none)
-    #expect(ArrangeSections.badge(status: .inPlace, running: true, pendingPlacement: false, isAnchor: false, timedOut: true) == .failed("not applied: the menu bar still does not match the layout"))
+    #expect(ArrangeSections.badge(status: .inPlace, running: true, pendingPlacement: false, isAnchor: false, timedOut: true) == .failed(ArrangeTracker.timeoutText))
     #expect(ArrangeBadge.failed("x").tooltip == "Failed: x")
     #expect(["✓", "⟳", "⚠", "⊘", "⇠"] == [ArrangeBadge.inPlace, .moving, .failed(""), .cannotChange(""), .notFitting].map(\.glyph))
 }
@@ -137,7 +137,73 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
     #expect(!c.observedAvailable)
     #expect((c.visible.rows + c.hidden.rows).allSatisfy { $0.badge == .none })
     #expect(c.visible.notRunning.isEmpty && c.hidden.notRunning.isEmpty)
+    #expect(c.visible.rows.isEmpty && c.visiblePlaceholder == "No observation yet — scanning…")
 }
+
+@Test func aFailedObservationNeverDrawsTheLayoutAsTheBar() {
+    let layout = Layout(visible: [k("a"), clock], hidden: [k("h")])
+    let o = ObservedOrder(onBar: [k("a"), clock], parked: [k("h")])      // stale data from before the failure
+    let c = ArrangeSections.make(observed: o, layout: layout, items: items([k("a"), clock, k("h")]), perItem: [:], capabilities: caps,
+                                 observationProblem: ArrangeSections.observationProblem(lastError: .observe("scans did not agree")))
+    #expect(!c.observedAvailable && c.visible.rows.isEmpty && c.visible.notRunning.isEmpty)
+    #expect(c.visiblePlaceholder == "No observation yet — scans did not agree")
+    #expect(c.hidden.rows.map(\.key) == [k("h")])                          // our data still renders
+    #expect(ArrangeSections.observationProblem(lastError: .permissionDenied) != nil)
+    #expect(ArrangeSections.observationProblem(lastError: .stoppedAfterFailures(3)) == nil)
+}
+
+@Test func withoutObservationDropsThatNeedTheBarAreRefusedButOurOwnDataMoves() {
+    let layout = Layout(visible: [k("a"), clock], hidden: [k("h")])
+    for (key, sec) in [(k("a"), LayoutSection.hidden), (k("h"), .visible)] {
+        #expect(ArrangeDrop.outcome(layout: layout, key: key, to: sec, index: nil, capabilities: caps, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
+    }
+    if case .move = ArrangeDrop.outcome(layout: layout, key: k("h"), to: .alwaysHidden, index: nil, capabilities: caps, observationAvailable: false) {} else { Issue.record("hidden -> always hidden is our own data") }
+    #expect(ArrangeDrop.step(layout: layout, rows: [], key: k("a"), .left, capabilities: caps, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
+}
+
+// MARK: capabilities are never fabricated
+
+private struct NoEntry: CapabilityProvider {
+    func capability(for key: ItemKey) -> Capability { Capability(canMove: true, canHide: false, reason: "macOS has no Control Center entry for this app yet, so it cannot be hidden.") }
+}
+
+@Test func unknownItemInfoMeansAllowedAndKnownUntrackedIsRefusedWithTheRealReason() {
+    let layout = Layout(visible: [k("a"), k("b"), clock])
+    let rules = NoEntry()
+    let known = [k("a"): info(k("a"))]
+    let cap: (ItemKey) -> Capability = { ArrangeCapabilities.resolve($0, items: known, rules: rules) }
+    // no ItemInfo for b: unknown -> the drop is allowed, the engine decides
+    if case .move = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .hidden, index: nil, capabilities: cap) {} else { Issue.record("unknown must be allowed") }
+    // a is known and untracked: refused with the real reason
+    #expect(ArrangeDrop.outcome(layout: layout, key: k("a"), to: .hidden, index: nil, capabilities: cap)
+            == .rejected("macOS has no Control Center entry for this app yet, so it cannot be hidden."))
+    // modules stay anchors by kind, with or without ItemInfo
+    #expect(!ArrangeCapabilities.resolve(clock, items: [:], rules: CapabilityRules(hasTrackedEntry: { _ in true })).canMove)
+    #expect(ArrangeCapabilities.resolve(k("zz"), items: [:], rules: rules) == Capability(canMove: true, canHide: true))
+}
+
+// MARK: clamping on both sides
+
+@Test func visibleDropIndexIsClampedAfterLeadingAnchorsAndBeforeTheTrailingBlock() {
+    let wifi = ItemKey.module(name: "WiFi")
+    let layout = Layout(visible: [wifi, k("a"), k("b"), k("c"), cc, clock])
+    let r = rows(layout)
+    // slot 0 (left of the leading WiFi anchor) maps to index 1: after it
+    #expect(ArrangeDrop.index(layout: layout, rows: r, slot: 0, key: k("c"), section: .visible) == 1)
+    #expect(ArrangeDrop.index(layout: layout, rows: r, slot: 1, key: k("c"), section: .visible) == 1)
+    // movable index 0 = first movable slot, 99 = before the trailing block
+    #expect(ArrangeDrop.index(layout: layout, movableIndex: 0, key: k("c"), section: .visible) == 1)
+    #expect(ArrangeDrop.index(layout: layout, movableIndex: 1, key: k("c"), section: .visible) == 2)
+    #expect(ArrangeDrop.index(layout: layout, movableIndex: 99, key: k("a"), section: .visible) == nil)
+    guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, key: k("c"), section: .visible, movableIndex: 0, capabilities: caps) else { Issue.record("no move"); return }
+    #expect(l.visible == [wifi, k("c"), k("a"), k("b"), cc, clock])
+    guard case .move(let l2, _, _) = ArrangeDrop.drop(layout: layout, key: k("a"), section: .visible, movableIndex: 99, capabilities: caps) else { Issue.record("no move"); return }
+    #expect(l2.visible == [wifi, k("b"), k("c"), k("a"), cc, clock])
+    // movable indexes skip modules in the middle of the bar
+    let mid = Layout(visible: [wifi, k("a"), cc, k("b"), k("c"), clock])
+    #expect(ArrangeDrop.index(layout: mid, movableIndex: 1, key: k("c"), section: .visible) == 3)
+}
+
 
 @Test func unitSiblingsAreGroupedWithAHidesTogetherTooltip() {
     let a1 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "one"), a2 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "two")
@@ -303,4 +369,95 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     #expect(s([k("a"): .failed(.timeout)]) == "1 failed")
     #expect(s([:], err: .stoppedAfterFailures(3)) == "Error: stopped after 3 failures")
     #expect(s([k("a"): .pending], err: .observe("boom")) == "Error: boom · 1 pending")
+}
+
+// MARK: the waiting state machine
+
+private func trackerFixture() -> (Layout, ObservedOrder, ObservedOrder) {
+    let layout = Layout(visible: [k("b"), k("a"), clock])
+    return (layout, ObservedOrder(onBar: [k("a"), k("b"), clock], parked: []), ObservedOrder(onBar: [k("b"), k("a"), clock], parked: []))
+}
+private let t0 = Date(timeIntervalSince1970: 1_000)
+
+@Test func checkRequiresAPassAfterTheDropAndAPlacementMatch() {
+    let (layout, wrong, right) = trackerFixture()
+    var t = ArrangeTracker()
+    t.record([k("b")], passesStarted: 5, now: t0)
+    // the pass that was in flight at the drop finishes (sequence 5): stale status is suppressed, nothing resolves
+    #expect(t.suppressed(passSequence: 5) == [k("b")])
+    #expect(t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 5, showHiddenSection: false, now: t0 + 1).isEmpty)
+    #expect(t.awaiting == [k("b")])
+    // a later pass says in place but the bar does not match: still waiting (no check from status alone)
+    #expect(t.update(observed: wrong, layout: layout, perItem: [k("b"): .inPlace], passSequence: 6, showHiddenSection: false, now: t0 + 2).isEmpty)
+    #expect(t.awaiting == [k("b")] && t.suppressed(passSequence: 6).isEmpty)
+    // pass after the drop + match: resolved
+    let log = t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 6, showHiddenSection: false, now: t0 + 3)
+    #expect(log.count == 1 && t.isEmpty)
+}
+
+@Test func aFailureFromBeforeTheDropIsIgnoredAndOneAfterItIsShownWithItsText() {
+    let (layout, wrong, _) = trackerFixture()
+    var t = ArrangeTracker()
+    let stale: [ItemKey: ItemStatus] = [k("b"): .failed(.notVerified(expected: "leftmost", observed: "unchanged"))]
+    t.record([k("b")], passesStarted: 3, now: t0)
+    t.update(observed: wrong, layout: layout, perItem: stale, passSequence: 3, showHiddenSection: false, now: t0 + 0.1)
+    #expect(t.awaiting == [k("b")])
+    let c = ArrangeSections.make(observed: wrong, layout: layout, items: items(wrong.onBar), perItem: stale, capabilities: caps,
+                                 awaiting: t.awaiting, suppressedStatus: t.suppressed(passSequence: 3))
+    #expect(c.visible.rows.first { $0.key == k("b") && !$0.isGhost }?.badge == .moving)    // not the old error
+    // the judging pass fails: the wait ends and the badge shows the error
+    let log = t.update(observed: wrong, layout: layout, perItem: stale, passSequence: 4, showHiddenSection: false, now: t0 + 9)
+    #expect(log.first?.contains("not verified: expected leftmost, saw unchanged") == true && t.isEmpty)
+    let c2 = ArrangeSections.make(observed: wrong, layout: layout, items: items(wrong.onBar), perItem: stale, capabilities: caps,
+                                  awaiting: t.awaiting, suppressedStatus: t.suppressed(passSequence: 4))
+    #expect(c2.visible.rows.first { $0.key == k("b") && !$0.isGhost }?.badge == .failed("not verified: expected leftmost, saw unchanged"))
+}
+
+@Test func unsupportedFromAJudgingPassEndsTheWait() {
+    let (layout, wrong, _) = trackerFixture()
+    var t = ArrangeTracker()
+    t.record([k("b")], passesStarted: 1, now: t0)
+    t.update(observed: wrong, layout: layout, perItem: [k("b"): .unsupported("nope")], passSequence: 2, showHiddenSection: false, now: t0 + 1)
+    #expect(t.isEmpty)
+}
+
+@Test func timeoutFiresAtNinetySecondsAndClearsOnALaterMatch() {
+    let (layout, wrong, right) = trackerFixture()
+    var t = ArrangeTracker()
+    t.record([k("b")], passesStarted: 1, now: t0)
+    t.update(observed: wrong, layout: layout, perItem: [k("b"): .inPlace], passSequence: 2, showHiddenSection: false, now: t0 + 89)
+    #expect(t.timedOut.isEmpty)
+    let log = t.update(observed: wrong, layout: layout, perItem: [k("b"): .inPlace], passSequence: 3, showHiddenSection: false, now: t0 + 91)
+    #expect(t.timedOut == [k("b")] && log.count == 1)
+    let c = ArrangeSections.make(observed: wrong, layout: layout, items: items(wrong.onBar), perItem: [k("b"): .inPlace], capabilities: caps,
+                                 awaiting: t.awaiting, timedOut: t.timedOut)
+    #expect(c.visible.rows.first { $0.key == k("b") && !$0.isGhost }?.badge == .failed(ArrangeTracker.timeoutText))
+    t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 4, showHiddenSection: false, now: t0 + 100)
+    #expect(t.isEmpty && t.timedOut.isEmpty)
+}
+
+@Test func retryResetsTheSequenceAndTheClockAndRestampOnlyMovesTheSequence() {
+    let (layout, wrong, _) = trackerFixture()
+    var t = ArrangeTracker()
+    t.record([k("b")], passesStarted: 1, now: t0)
+    t.update(observed: wrong, layout: layout, perItem: [k("b"): .inPlace], passSequence: 2, showHiddenSection: false, now: t0 + 95)
+    #expect(t.timedOut == [k("b")])
+    t.retry(passesStarted: 7, now: t0 + 96)
+    #expect(t.timedOut.isEmpty && t.suppressed(passSequence: 7) == [k("b")])
+    // a pre-retry failure does not end the retried wait
+    t.update(observed: wrong, layout: layout, perItem: [k("b"): .failed(.timeout)], passSequence: 7, showHiddenSection: false, now: t0 + 97)
+    #expect(t.awaiting == [k("b")])
+    t.restamp(passesStarted: 9)
+    #expect(t.entries[k("b")]?.dropSequence == 9 && t.entries[k("b")]?.since == t0 + 96)
+}
+
+@Test func unitSiblingsAreTrackedTogether() {
+    let a1 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "one"), a2 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "two")
+    let layout = Layout(visible: [a1, a2, clock])
+    let wrong = ObservedOrder(onBar: [a2, a1, clock], parked: [])
+    var t = ArrangeTracker()
+    t.record([a1, a2], passesStarted: 0, now: t0)
+    #expect(t.awaiting == [a1, a2] && t.suppressed(passSequence: 0) == [a1, a2])
+    t.update(observed: wrong, layout: layout, perItem: [a1: .failed(.timeout), a2: .inPlace], passSequence: 1, showHiddenSection: false, now: t0 + 1)
+    #expect(t.awaiting == [a2])      // a1's failure resolved, a2 still waits for its placement
 }

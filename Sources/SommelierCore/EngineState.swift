@@ -38,6 +38,11 @@ public final class EngineState {
     public var isConverged: Bool
     public var lastPassAt: Date?
     public var passCount: Int
+    /// Passes started / finished, monotonically increasing; passes run one at a time, so the pass that started right after
+    /// a UI action has finished exactly when `passSequence > passesStarted-at-that-moment` (the Arrange window judges a drop
+    /// only by such a pass; a pass already in flight when the action happened never counts).
+    public var passesStarted: Int = 0
+    public var passSequence: Int = 0
 
     public init(observed: ObservedOrder = ObservedOrder(onBar: [], parked: []), layout: Layout = .empty,
                 showHiddenSection: Bool = false) {

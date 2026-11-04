@@ -120,8 +120,8 @@ window shows, `arrange:` lines give drop -> verified timings). Act on MBDummy it
 Manual checklist (every step: the capsule shows "⟳" until `mbprobe list` agrees, then "✓"):
 1. Visible -> Hidden: drag Dummy A into the Hidden strip (or right-click > Move to Hidden). Dummy A AND Dummy B (same app = one hide
    unit) show "⟳", leave the bar (agent pid unchanged), appear in Hidden with "✓".
-2. Hidden -> Visible at index 0: drag Dummy A to the left edge of the Visible strip (log: `drop ... visible slot 0`). Both return to the
-   bar; `mbprobe list` shows them at the dropped position; "✓" only after that.
+2. Hidden -> Visible at the first movable slot (index 0 among movable items; with Wi-Fi leftmost that is right after it): drag Dummy A to
+   the left edge of the Visible strip. Both return to the bar; `mbprobe list` shows them at that position; "✓" only after that.
 3. Reorder within Visible: drag Dummy A two capsules right (real Cmd+drag, 5-15 s). Ghosts at the target while it runs; on a failure the
    capsule shows "⚠" with the error as tooltip and Retry in the menu.
 4. Always hidden: drag Dummy A into Always hidden; use "Reveal in menu bar" / left click on the Sommelier item: it stays hidden.
@@ -132,8 +132,9 @@ Manual checklist (every step: the capsule shows "⟳" until `mbprobe list` agree
    shows its confirmation. The Bartender banner appears while Bartender runs (the app is paused).
 
 Headless drop pipeline (no mouse): `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dummy-A|hidden|-"` (key as printed by `mbprobe list`; the
-index is a position in the target section's layout, "-" = append / before the trailing system block). Chain with `;`, spacing
-`SOMMELIER_ARRANGE_MOVE_INTERVAL`.
+index is 0-based among MOVABLE items of the target section (modules do not count; `mbprobe layout move` is 1-based), passes through
+`ArrangeDrop.index` exactly like a UI drop, so `0` = first movable slot (after leading anchors) and `99` = before the trailing system
+block; "-" = append). Chain with `;`, spacing `SOMMELIER_ARRANGE_MOVE_INTERVAL`.
 
 Results 2026-11-04 (live, Bartender quit, scratch layout, Dummy A/B only): hide `...|hidden|-`: drop -> "⟳" 0.13 s, verified
 membership 6.7 s actuation, "✓" 11.6 s after the drop, agent pid constant; `...|visible|1`: back at bar index 1/2 per
@@ -142,3 +143,11 @@ right-click > Move to Hidden driven by CGEvent clicks: "⟳" at 2 s, "✓" 5.6 s
 slot 2`, "✓" 2.5 s; 10 chained moves 1.5 s apart: no `MAIN ACTOR STALL`, window redrew throughout, final state converged and verified.
 A failed move was not provoked live (the badge mapping `.failed` -> "⚠"+error is unit-tested). End state: non-dummy order identical to
 the start (`init-from-current` before/after), real `layout.json` absent, `trackedApplications` blob equal to the backup.
+
+Corrective pass results (2026-11-04, same setup): (a) first seconds after launch: Visible shows "No observation yet - scanning..." with no
+capsules (log `arrange rows: V[]`, screenshot burst2.png), Hidden renders from the layout; (b) after observation Visible == `mbprobe list`
+(Sommelier's own item excluded); (c) `...Dummy-A|visible|0` -> bar index 1,2 right after Wi-Fi, "✓" 18.0 s after the drop, only after
+`mbprobe list` agreed; (d) `...|visible|99` -> bar index 22,23 directly before Control Center/Clock, "✓" at 20.8 s, no "⊘"; (e) two moves 1 s
+apart (`hidden`, then `visible|0`): capsules stayed "⟳" until a pass that started after the second drop reported; that pass FAILED
+("not verified: expected membership change, saw unchanged") and both capsules showed "⚠" with that text (an engine-level result of
+overlapping layouts, shown honestly). Stall detector now logs timer lateness > 100 ms; none seen.
