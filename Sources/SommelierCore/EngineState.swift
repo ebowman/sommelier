@@ -26,6 +26,8 @@ public enum EngineError: Equatable, Sendable {
 public final class EngineState {
     public var observed: ObservedOrder
     public var layout: Layout
+    /// Display metadata for currently known items (parked or on bar), refreshed with every adopted scan.
+    public var items: [ItemKey: ItemInfo] = [:]
     public var showHiddenSection: Bool
     public var inFlight: PlannedAction?
     public var perItem: [ItemKey: ItemStatus]

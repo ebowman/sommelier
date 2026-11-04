@@ -45,6 +45,7 @@ public actor LayoutEngine {
     private let capabilities: any CapabilityProvider
     private let state: EngineState
     private let busy: @Sendable () -> Bool
+    private var itemInfo: [ItemKey: ItemInfo] = [:]
     private let resolveSnapshot: @Sendable (MenuBarSnapshot) -> [ResolvedItem]
     private let sleep: @Sendable (Duration) async -> Void
     private let log: @Sendable (String) -> Void
@@ -224,7 +225,8 @@ public actor LayoutEngine {
 
     private func publishObserved(_ obs: ObservedOrder, _ plan: Plan? = nil) async {
         let st = plan.map { statuses(obs, $0) }
-        await publish { s in s.observed = obs; if let st { s.perItem = st } }
+        let info = itemInfo
+        await publish { s in s.observed = obs; s.items = info; if let st { s.perItem = st } }
     }
 
     private func setStatus(_ k: ItemKey, _ st: ItemStatus, inFlight: PlannedAction?) async {
@@ -244,6 +246,7 @@ public actor LayoutEngine {
             let r = try await observer.observe()
             let o = ObservedOrder(resolved: r)
             if o.onBar.isEmpty { return .failure(.empty) }
+            itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r))
             return .success(o)
         } catch let e as ObserveError {
             return .failure(e)
@@ -255,8 +258,12 @@ public actor LayoutEngine {
     /// Updates `obs` from an actuation result; false when no trustworthy observation could be obtained.
     private func adopt(_ snap: MenuBarSnapshot?, into obs: inout ObservedOrder) async -> Bool {
         if let snap {
-            let o = ObservedOrder(resolved: resolveSnapshot(snap))
-            if !o.onBar.isEmpty { obs = o; return true }
+            let resolved = resolveSnapshot(snap)
+            let o = ObservedOrder(resolved: resolved)
+            if !o.onBar.isEmpty {
+                itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved))
+                obs = o; return true
+            }
         }
         switch await observeOnce() {
         case .success(let o): obs = o; return true

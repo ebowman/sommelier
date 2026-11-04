@@ -5,6 +5,7 @@ import SommelierCore
 final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let model: AppModel
+    private lazy var panel = OverflowPanelController(state: model.state)
     private let onSettings: () -> Void
     private let onPermissions: () -> Void
 
@@ -26,8 +27,33 @@ final class StatusItemController: NSObject {
         if ev?.type == .rightMouseUp || ev?.modifierFlags.contains(.control) == true {
             showMenu()
         } else {
-            model.setShowHidden(!model.state.showHiddenSection)   // gdu.15 refines this
+            if UserDefaults.standard.string(forKey: "revealMode") == "inline" {
+                model.setShowHidden(!model.state.showHiddenSection)
+            } else {
+                togglePanel()
+            }
         }
+    }
+
+    func togglePanel() {
+        guard let w = statusItem.button?.window else { return }
+        guard let screen = w.screen ?? NSScreen.main else { return }
+        panel.toggle(anchoredTo: w.frame, on: screen)
+    }
+
+    /// Verification aid (SOMMELIER_OPEN_PANEL=1): open the panel and log its frame and entries.
+    func openPanelForVerification() {
+        if !panel.isVisible { togglePanel() }
+        logPanel()
+        for delay in [8.0, 16.0] {   // the engine needs a while to converge; log the live state again
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.logPanel() }
+        }
+    }
+
+    private func logPanel() {
+        let names = panel.entries.map(\.displayName).joined(separator: " | ")
+        NSLog("[Sommelier] panel frame=%@ item=%@ entries(%d)=%@", NSStringFromRect(panel.frame ?? .zero),
+              NSStringFromRect(statusItem.button?.window?.frame ?? .zero), panel.entries.count, names)
     }
 
     func showMenu() {

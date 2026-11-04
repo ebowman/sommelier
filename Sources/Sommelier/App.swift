@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["SOMMELIER_DEBUG_MENU"] == "1" {
             NSLog("[Sommelier] menu titles: %@", sc.buildMenu().items.map { $0.isSeparatorItem ? "---" : "\($0.title)[\($0.state == .on ? "x" : " ")]" }.joined(separator: " | "))
         }
+        if env["SOMMELIER_OPEN_PANEL"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { sc.openPanelForVerification() }
+        }
         if env["SOMMELIER_OPEN_SETTINGS"] == "1" { settings.show() }
         if env["SOMMELIER_TOGGLE_LOGIN"] == "1" {
             NSLog("[Sommelier] login status before=\(SMAppService.mainApp.status.rawValue)")
