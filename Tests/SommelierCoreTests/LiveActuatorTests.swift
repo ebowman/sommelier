@@ -653,3 +653,13 @@ private func actuator(_ w: World, fallback: Bool = true, forceFallback: Bool = f
     #expect(w.restarts == 1)
     #expect(await act.driftRepairs == 0)
 }
+
+@Test func visibilityVerdictAcceptsNotHostedAsHidden() {
+    let k = key("A")
+    var r = FakeMenuBar.resolved(onBar: [k])
+    r[0].item.notHostedByAgent = true
+    r[0].item.isOnMenuBar = false
+    #expect(r[0].item.hiddenReason == .notHosted)
+    #expect(ActuationVerifier.visibilityVerdict(key: k, hidden: true, resolved: r).ok)
+    #expect(!ActuationVerifier.visibilityVerdict(key: k, hidden: false, resolved: r).ok)
+}

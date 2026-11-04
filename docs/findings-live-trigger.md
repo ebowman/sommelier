@@ -49,8 +49,7 @@ running); see §5.
 After a live hide, the owning app's own AX frames stay ON-BAR (x=1036/1066, `"isOnMenuBar": true`; at most a 1 px shift, e.g. Dummy-A
 [[1066,3],[32,24]] -> [[1067,4],[22,22]]). The `stale` flag in `list --json` is UNRELIABLE (I saw it flip once; the reviewer's clean 10 s poll
 saw it stay false). Parked x in -1..3 only appears after a respawn. Detect a live hide via (a) the MenuBarAgent scene log
-(`Unregistering scene` / `Registered new scene` for the bundle), (b) MenuBarAgent's hosted AX window children (whether the item disappears
-from the agent's own list was NOT tested), or (c) a respawn. The earlier "no effect" rows were re-run with the scene log as the oracle
+(`Unregistering scene` / `Registered new scene` for the bundle), (b) MenuBarAgent's hosted AX window children (TESTED in gdu.38: 1.5 s after `ccset ... 0` the agent's hosted tree contains NO Dummy-A/Dummy-B elements at all - not parked, simply absent - while the app's own `AXExtrasMenuBar` still reports both at their on-bar frames (x=784, y=2, 32x24); after `ccset ... 1` both are hosted again within 2 s; this is the signal `MenuBarScanner` uses, see `MenuBarItem.hidden == .notHosted`; it is reported by the first COMPLETE full scan after the write, 1.0-4.1 s measured, and an incomplete first scan still reports on-bar, so poll until a complete read, see docs/testing.md), or (c) a respawn. The earlier "no effect" rows were re-run with the scene log as the oracle
 (`recheck.log`: zero "Unregistering scene" for every trigger except those that killed the agent).
 
 ## 5. Caveats / risks

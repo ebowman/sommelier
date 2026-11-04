@@ -10,6 +10,16 @@ public enum MenuBarItemSource: String, Codable, Sendable {
     case agentHostedOnly
 }
 
+/// Why an item is not on the bar (`MenuBarItem.hiddenReason`).
+public enum HiddenReason: String, Codable, Sendable {
+    /// The frame is off the strip or empty (the item is parked, e.g. x -1..3 / y ~1188).
+    case parkedFrame
+    /// MenuBarAgent no longer hosts the item although its owning app is running and still reports on-bar frames. This is
+    /// what a live (cfprefsd-notified) hide looks like: the agent unregisters the scene, the app's own AX frames and
+    /// the `stale` flag do not change (docs/findings-live-trigger.md section 4).
+    case notHosted
+}
+
 /// One menu bar item (status item / menu extra).
 public struct MenuBarItem: @unchecked Sendable {
     public var ownerPID: pid_t
@@ -22,6 +32,11 @@ public struct MenuBarItem: @unchecked Sendable {
     public var source: MenuBarItemSource
     /// True when the frame is non-empty and its midY lies within the menu bar strip.
     public var isOnMenuBar: Bool
+    /// True when the scanner concluded the item is hidden because a complete MenuBarAgent hosted read no longer
+    /// contains it (`isOnMenuBar` is then false although `frame` may still look on-bar). See `HiddenReason.notHosted`.
+    public var notHostedByAgent: Bool
+    /// nil when on the bar; otherwise why it is off it.
+    public var hiddenReason: HiddenReason? { isOnMenuBar ? nil : (notHostedByAgent ? .notHosted : .parkedFrame) }
     /// Opaque handle for later AX actions. Never serialized.
     public var axElement: AXUIElement?
     /// True when this item was carried forward from an earlier scan because a fresh read failed or missed its budget.
@@ -33,7 +48,8 @@ public struct MenuBarItem: @unchecked Sendable {
         ownerPID: pid_t, ownerBundleID: String?, ownerName: String,
         title: String, axDescription: String, axIdentifier: String,
         frame: CGRect, source: MenuBarItemSource, isOnMenuBar: Bool,
-        axElement: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0
+        axElement: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0,
+        notHostedByAgent: Bool = false
     ) {
         self.ownerPID = ownerPID
         self.ownerBundleID = ownerBundleID
@@ -44,6 +60,7 @@ public struct MenuBarItem: @unchecked Sendable {
         self.frame = frame
         self.source = source
         self.isOnMenuBar = isOnMenuBar
+        self.notHostedByAgent = notHostedByAgent
         self.axElement = axElement
         self.stale = stale
         self.staleCount = staleCount
@@ -53,7 +70,7 @@ public struct MenuBarItem: @unchecked Sendable {
 extension MenuBarItem: Codable {
     private enum CodingKeys: String, CodingKey {
         case ownerPID, ownerBundleID, ownerName, title, axDescription, axIdentifier
-        case frame, source, isOnMenuBar, stale, staleCount
+        case frame, source, isOnMenuBar, stale, staleCount, hidden
     }
 
     public init(from decoder: Decoder) throws {
@@ -70,7 +87,8 @@ extension MenuBarItem: Codable {
             isOnMenuBar: try c.decode(Bool.self, forKey: .isOnMenuBar),
             axElement: nil,
             stale: try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false,
-            staleCount: try c.decodeIfPresent(Int.self, forKey: .staleCount) ?? 0)
+            staleCount: try c.decodeIfPresent(Int.self, forKey: .staleCount) ?? 0,
+            notHostedByAgent: (try c.decodeIfPresent(HiddenReason.self, forKey: .hidden)) == .notHosted)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -86,6 +104,7 @@ extension MenuBarItem: Codable {
         try c.encode(isOnMenuBar, forKey: .isOnMenuBar)
         try c.encode(stale, forKey: .stale)
         try c.encode(staleCount, forKey: .staleCount)
+        try c.encodeIfPresent(hiddenReason, forKey: .hidden)
     }
 }
 

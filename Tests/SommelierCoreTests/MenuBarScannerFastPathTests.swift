@@ -291,3 +291,141 @@ private func a1Info() -> AXElementInfo { AXElementInfo(axDescription: "A one", i
     #expect(owners(fast) == owners(full))
     #expect(fast.items.first { $0.axIdentifier == "c1" }?.stale == false)
 }
+
+// MARK: - Live hide detection (hosted tree is the authority, gdu.38)
+// Note: tests of the notHosted transition first scan a tree that hosts A (A is "seen hosted"), then one that does not.
+
+private func a1(_ f: CGRect = bar(300)) -> AXElementInfo { AXElementInfo(axDescription: "A one", identifier: "a1", frame: f) }
+private func hostedWithoutA(failed: Int = 0, unnamed: Int = 0) -> AgentHostedTree {
+    tree([AXElementInfo(frame: bar(200)), AXElementInfo(axDescription: "Clock", identifier: "clock", frame: bar(900))],
+         failed: failed, unnamed: unnamed)
+}
+private func itemA(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.axIdentifier == "a1" } }
+
+@Test func liveHiddenItemAbsentFromCompleteHostedTreeIsNotOnBar() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.source = world(trees: [hostedWithoutA()])
+    let a = itemA(scanner.scan())
+    #expect(a?.isOnMenuBar == false)
+    #expect(a?.hiddenReason == .notHosted)
+    #expect(a?.frame == bar(300))                       // the app still claims an on-bar frame
+    #expect(scanner.scan().onBarLeftToRight.map(\.ownerName) == ["B", "Clock"])   // unnamed B is untouched
+}
+
+@Test func overlappingUnrelatedHostedElementDoesNotKeepAHiddenItemAlive() {
+    // A crowded bar stacks items; another item's element overlapping A's frame must not count as hosting A.
+    let t = tree([AXElementInfo(axDescription: "Other", identifier: "other", frame: bar(305)), AXElementInfo(frame: bar(200)),
+                  AXElementInfo(frame: bar(310))])
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.source = world(trees: [t])
+    let a = itemA(scanner.scan())
+    #expect(a?.isOnMenuBar == false)
+    #expect(a?.hiddenReason == .notHosted)
+}
+
+@Test func incompleteHostedReadKeepsTheFrameRule() {
+    for tr in [hostedWithoutA(failed: 1), hostedWithoutA(unnamed: 1)] {
+        let a = itemA(MenuBarScanner(source: world(trees: [tr])).scan())
+        #expect(a?.isOnMenuBar == true)
+        #expect(a?.hiddenReason == nil)
+    }
+}
+
+@Test func hiddenItemStaysHiddenThroughIncompleteReadsUntilHostedAgain() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.source = world(trees: [hostedWithoutA()])
+    #expect(itemA(scanner.scan())?.hiddenReason == .notHosted)
+    scanner.source = world(trees: [hostedWithoutA(failed: 3)])
+    #expect(itemA(scanner.scan())?.hiddenReason == .notHosted)
+    scanner.source = world(trees: [tree([a1(), AXElementInfo(frame: bar(200))], failed: 3)])   // partial tree, but A is in it
+    #expect(itemA(scanner.scan())?.isOnMenuBar == true)
+}
+
+@Test func hostedItemStaysOnBar() {
+    let a = itemA(MenuBarScanner(source: world()).scan())
+    #expect(a?.isOnMenuBar == true)
+    #expect(a?.hiddenReason == nil)
+}
+
+@Test func parkedFrameIsReportedAsParkedNotNotHosted() {
+    var s = world(trees: [hostedWithoutA()])
+    s.extras[10] = [a1(CGRect(x: -1, y: 1188, width: 24, height: 24))]
+    let a = itemA(MenuBarScanner(source: s).scan())
+    #expect(a?.isOnMenuBar == false)
+    #expect(a?.hiddenReason == .parkedFrame)
+}
+
+@Test func emptyHostedTreeNeverMeansHidden() {
+    var s = world(trees: [tree([])])
+    s.extras[11] = []
+    #expect(itemA(MenuBarScanner(source: s).scan())?.isOnMenuBar == true)
+}
+
+@Test func fastPathReportsPreviouslyHostedItemAbsentFromCompleteReadAsHidden() {
+    var scanner = MenuBarScanner(source: world())
+    #expect(itemA(scanner.scan())?.isOnMenuBar == true)
+    scanner.source = world(trees: [hostedWithoutA()])        // live hide: agent drops A, app frames unchanged
+    let fast = scanner.scanVisible()
+    #expect(itemA(fast)?.isOnMenuBar == false)
+    #expect(itemA(fast)?.hiddenReason == .notHosted)
+    #expect(fast.onBarLeftToRight.map(\.ownerName) == ["B", "Clock"])
+    // A full scan in between must not make the fast path forget the hidden item.
+    _ = scanner.scan()
+    #expect(itemA(scanner.scanVisible())?.hiddenReason == .notHosted)
+    // Hosted again: back on the bar.
+    scanner.source = world()
+    #expect(itemA(scanner.scanVisible())?.isOnMenuBar == true)
+}
+
+@Test func fastPathIncompleteReadDoesNotInventHiddenItems() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.source = world(trees: [hostedWithoutA(failed: 1)])
+    let fast = scanner.scanVisible()
+    #expect(itemA(fast)?.hiddenReason == nil)
+}
+
+@Test func notHostedItemSurvivesCodableAndOldJSONDecodes() throws {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.source = world(trees: [hostedWithoutA()])
+    let a = try #require(itemA(scanner.scan()))
+    let back = try JSONDecoder().decode(MenuBarItem.self, from: JSONEncoder().encode(a))
+    #expect(back.hiddenReason == .notHosted)
+    let old = #"{"ownerPID":1,"ownerName":"x","title":"","axDescription":"","axIdentifier":"i","frame":[[0,0],[1,1]],"source":"appExtras","isOnMenuBar":false}"#
+    #expect(try JSONDecoder().decode(MenuBarItem.self, from: Data(old.utf8)).hiddenReason == .parkedFrame)
+}
+
+@Test func neverSeenHostedItemStaysFrameRuledUntilOnceHosted() {
+    var scanner = MenuBarScanner(source: world(trees: [hostedWithoutA()]))
+    #expect(itemA(scanner.scan())?.isOnMenuBar == true)             // never hosted: frame rule, not "hidden"
+    #expect(itemA(scanner.scan())?.isOnMenuBar == true)
+    scanner.source = world()                                        // one complete read where A IS hosted
+    #expect(itemA(scanner.scan())?.isOnMenuBar == true)
+    scanner.source = world(trees: [hostedWithoutA()])               // now absent: notHosted
+    #expect(itemA(scanner.scan())?.hiddenReason == .notHosted)
+}
+
+@Test func completeReadPrunesKeysOfQuitOwners() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("scan-cache-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    var scanner = MenuBarScanner(source: world(), cacheURL: url)
+    _ = scanner.scan()
+    scanner.source = world(trees: [hostedWithoutA()])
+    #expect(itemA(scanner.scan())?.hiddenReason == .notHosted)
+    func keys(_ f: String) throws -> [String] {
+        let d = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+        return d[f] as? [String] ?? []
+    }
+    #expect(try keys("hiddenKeys").contains { $0.hasPrefix("10|") })
+    #expect(try keys("seenHostedKeys").contains { $0.hasPrefix("10|") })
+    var gone = world(trees: [hostedWithoutA()])
+    gone.apps = [agentApp, appB]                                    // A's owner (pid 10) quit
+    scanner.source = gone
+    _ = scanner.scan()
+    #expect(try !keys("hiddenKeys").contains { $0.hasPrefix("10|") })
+    #expect(try !keys("seenHostedKeys").contains { $0.hasPrefix("10|") })
+}

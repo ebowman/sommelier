@@ -44,6 +44,7 @@ func row(_ idx: Int, _ r: ResolvedItem) -> String {
     let pad = { (s: String, n: Int) in s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
     return "\(pad(String(idx), 3)) x=\(pad(String(Int(i.frame.minX)), 6)) w=\(pad(String(Int(i.frame.width)), 4)) "
         + "\(pad(clip(i.ownerName, 28), 28)) \(pad(i.ownerBundleID ?? "-", 40)) \(r.confidence.marker) \(pad(r.key.description, 78)) \(label)  [\(i.source.rawValue)]"
+        + (i.hiddenReason.map { " hidden=\($0.rawValue)" } ?? "")
 }
 
 func runList(_ rawFlags: [String]) {

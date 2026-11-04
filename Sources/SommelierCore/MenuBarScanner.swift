@@ -154,7 +154,7 @@ public struct MenuBarScanner {
             for info in c.infos { candidates.append(Candidate(app: c.app, info: info)) }
         }
         state.save()
-        return assemble(agent: agent, tree: tree, candidates: candidates, failedApps: [], verifiedOnly: true,
+        return assemble(agent: agent, tree: tree, candidates: candidates, failedApps: [], running: Set(apps.map(\.pid)), verifiedOnly: true,
                         carryUnverified: tree.failedReads > 0 && tree.unnamedTimeouts > 0)
     }
 
@@ -234,7 +234,7 @@ public struct MenuBarScanner {
         state.chronic = Set(failedApps.map(\.pid))
         state.hasFullScan = true
         state.save()
-        return assemble(agent: agent, tree: tree, candidates: candidates, failedApps: failedApps)
+        return assemble(agent: agent, tree: tree, candidates: candidates, failedApps: failedApps, running: Set(apps.map(\.pid)))
     }
 
     /// An app whose read failed or missed the budget keeps its items from the previous scan (marked stale).
@@ -249,7 +249,7 @@ public struct MenuBarScanner {
     // MARK: - Join
 
     private func assemble(agent: RunningAppInfo?, tree: AgentHostedTree, candidates: [Candidate],
-                          failedApps: [RunningAppInfo], verifiedOnly: Bool = false,
+                          failedApps: [RunningAppInfo], running: Set<pid_t>, verifiedOnly: Bool = false,
                           carryUnverified: Bool = false) -> MenuBarSnapshot {
         let strip = tree.stripFrame ?? state.lastStrip ?? fallbackStrip
 
@@ -304,8 +304,55 @@ public struct MenuBarScanner {
             f.width > 0 && f.height > 0 && f.midY >= strip.minY && f.midY <= strip.maxY
         }
 
+        // Live-hide detection (docs/findings-live-trigger.md section 4). After a cfprefsd-notified hide MenuBarAgent drops
+        // the app's scenes at once (its hosted tree no longer contains the item at all), but the owning app's own
+        // AXExtrasMenuBar children keep their on-bar frames and the `stale` flag stays false, so the frame rule alone
+        // reports the item on the bar. The agent's hosted tree is the authority: an app-extras candidate whose owner is
+        // running (it was read, not carried), whose frame says "on bar", and which has a NAME the hosted tree should
+        // mirror, but for which a COMPLETE hosted read has no element of that name, is hidden: `notHosted`.
+        //  - Name rule (owner bundle + AX identifier or description; the autosave name is what the app publishes as
+        //    AXIdentifier and the agent mirrors it): with an identifier, no hosted element carries that identifier. The
+        //    frame join is NOT consulted, because a crowded bar stacks unrelated items on top of each other and a frame
+        //    overlap with another item's element must not keep a hidden item alive. Without an identifier, the
+        //    description-only candidate must be unmatched by the joins and share no title with an unmatched hosted element.
+        //  - Only an item previously seen hosted by name (`ScanState.seenHostedKeys`: identifier, else description, positively
+        //    present in an earlier read) can become `notHosted`; never-seen items stay frame-ruled, because a false "visible"
+        //    resolves after one action while a false "hidden" would make the engine try to show it forever.
+        //  - Candidates with neither identifier nor description are never judged (the join cannot be trusted): frame rule.
+        //  - Complete = agent present, non-empty tree, no failed reads, no unnamed timeouts. Any flaky read keeps the frame
+        //    rule, so a slow AX call never produces a false "hidden"; the one exception is sticky: an item an earlier complete
+        //    read proved hidden stays hidden through incomplete reads unless the partial tree shows it hosted.
+        //  - Width <= 1 candidates (main-menu noise) are never judged. The parked-frame rule (x -1..3, y ~1188..1204) stays
+        //    the second signal and wins when the frame is off the strip (`parkedFrame`).
+        let hostedComplete = agent != nil && !hosted.isEmpty && tree.failedReads == 0 && tree.unnamedTimeouts == 0
+        let hostedIdentifiers = Set(hosted.map(\.identifier).filter { !$0.isEmpty })
+        let hostedDescriptions = Set(hosted.map(\.axDescription).filter { !$0.isEmpty })
+        // Positive evidence that the agent mirrors this item's name; only such items may later become `notHosted`
+        // (an app whose hosted element carries another or no identifier stays frame-ruled instead of looping as "hidden").
+        func nameHosted(_ c: Candidate) -> Bool {
+            !c.info.identifier.isEmpty ? hostedIdentifiers.contains(c.info.identifier)
+                : (!c.info.axDescription.isEmpty && hostedDescriptions.contains(c.info.axDescription))
+        }
+        let unmatchedHostedTitles = Set(hosted.indices.filter { !matchedHosted.contains($0) }.map { hosted[$0].title }.filter { !$0.isEmpty })
+        func provablyNotHosted(_ ci: Int) -> Bool {
+            let c = candidates[ci]
+            guard agent != nil, !c.stale, c.info.frame.width > 1, onBar(c.info.frame) else { return false }
+            let named = !c.info.identifier.isEmpty || !c.info.axDescription.isEmpty
+            guard named else { return false }
+            // Never seen hosted by name in an earlier read: no evidence the agent ever mirrors this item, so frame rule.
+            guard state.seenHostedKeys.contains("\(c.app.pid)|\(c.info.identityKey)") else { return false }
+            // Incomplete read: it proves nothing by absence, so an item already known to be live-hidden stays hidden until
+            // a read shows it hosted again (no flip-flop on flaky scans); everything else keeps the frame rule.
+            if !hostedComplete && !state.hiddenKeys.contains("\(c.app.pid)|\(c.info.identityKey)") { return false }
+            if !c.info.identifier.isEmpty { return !hostedIdentifiers.contains(c.info.identifier) }
+            guard matchedCandidates[ci] == nil else { return false }
+            // An unmatched hosted element with the same (non-empty) title may be this item under a drifted description.
+            return c.info.title.isEmpty || !unmatchedHostedTitles.contains(c.info.title)
+        }
+
         var items: [MenuBarItem] = []
         var carriedUnverified: [String: Int] = [:]
+        var newHidden = Set<String>()
         for (ci, c) in candidates.enumerated() {
             // The fast path never re-reads apps, so a cached app item the agent tree does not show is unverified.
             // Exception: while some agent group provably timed out, an on-bar cached item (freshly read from its
@@ -313,25 +360,33 @@ public struct MenuBarScanner {
             var carriedCount = 0
             if let h = matchedCandidates[ci], h.stale { carriedUnverified["\(c.app.pid)|\(c.info.identityKey)"] = h.staleCount }
             let ckey = "\(c.app.pid)|\(c.info.identityKey)"
+            let notHosted = provablyNotHosted(ci)
+            if notHosted { newHidden.insert(ckey) }
             // Only items that the agent tree showed in the last full scan are expected there; app-only items (e.g.
-            // SystemUIServer's) never appear in it and are taken from the cache as before.
-            if verifiedOnly && matchedCandidates[ci] == nil && state.hostedKeys.contains(ckey) {
+            // SystemUIServer's) never appear in it and are taken from the cache as before. An item that a complete read
+            // proves absent is not dropped but reported as hidden (`notHosted`), so order observers see it leave the bar.
+            let expectedHosted = state.hostedKeys.contains(ckey) || state.hiddenKeys.contains(ckey)
+            if verifiedOnly && matchedCandidates[ci] == nil && expectedHosted && !(notHosted && expectedHosted) {
                 let key = ckey
                 let n = (state.unverifiedCount[key] ?? 0) + 1
                 guard carryUnverified, onBar(c.info.frame), n <= Self.maxStaleScans else { continue }
                 carriedUnverified[key] = n
                 carriedCount = n
             }
+            // The fast path only trusts a "not hosted" verdict for items it knew to be hosted (or already hidden).
+            let reportNotHosted = notHosted && (!verifiedOnly || expectedHosted)
+            if !reportNotHosted { newHidden.remove(ckey) }
             // A candidate verified by the hosted tree takes the hosted (authoritative, fresh) frame and is not stale.
-            let h = matchedCandidates[ci]
+            let h = reportNotHosted ? nil : matchedCandidates[ci]
             let frame = h?.frame ?? c.info.frame
             items.append(MenuBarItem(
                 ownerPID: c.app.pid, ownerBundleID: c.app.bundleID, ownerName: c.app.name,
                 title: c.info.title, axDescription: c.info.axDescription,
                 axIdentifier: c.info.identifier, frame: frame,
-                source: .appExtras, isOnMenuBar: onBar(frame), axElement: c.info.element,
+                source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted, axElement: c.info.element,
                 stale: h == nil ? (c.stale || carriedCount > 0) : h!.stale,
-                staleCount: h?.staleCount ?? carriedCount))
+                staleCount: h?.staleCount ?? carriedCount,
+                notHostedByAgent: reportNotHosted))
         }
         for (hi, owner) in attributed {
             let h = hosted[hi]
@@ -351,12 +406,23 @@ public struct MenuBarScanner {
             }
         }
 
+        let matchedKeys = Set(matchedCandidates.keys.map { "\(candidates[$0].app.pid)|\(candidates[$0].info.identityKey)" })
         if verifiedOnly {
             state.unverifiedCount = carriedUnverified
         } else {
-            let matchedKeys = Set(matchedCandidates.keys.map { "\(candidates[$0].app.pid)|\(candidates[$0].info.identityKey)" })
             state.hostedKeys = tree.failedReads == 0 ? matchedKeys : state.hostedKeys.union(matchedKeys)
         }
+        // Remembered so the fast path keeps reporting a live-hidden item as hidden after a full scan dropped it from
+        // `hostedKeys`; an item the agent hosts again leaves the set. An incomplete read leaves the set as it was.
+        if hostedComplete { state.hiddenKeys = state.hiddenKeys.subtracting(matchedKeys).union(newHidden) }
+        for c in candidates where !c.stale && nameHosted(c) { state.seenHostedKeys.insert("\(c.app.pid)|\(c.info.identityKey)") }
+        if hostedComplete {
+            // Drop keys of owners that are no longer running.
+            func alive(_ k: String) -> Bool { Int32(k.prefix { $0 != "|" }).map(running.contains) ?? false }
+            state.hiddenKeys = state.hiddenKeys.filter(alive)
+            state.seenHostedKeys = state.seenHostedKeys.filter(alive)
+        }
+        state.save()   // writes only if the cache content changed
 
         // Stable partition: on-bar sorted by minX (ties keep discovery order), parked in discovery order.
         let indexed = Array(items.enumerated())

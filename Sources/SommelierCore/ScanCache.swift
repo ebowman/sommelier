@@ -21,6 +21,12 @@ final class ScanState: @unchecked Sendable {
     var hasFullScan = false
     /// Cached app items that the agent tree showed in the last full scan ("pid|identity"); persisted.
     var hostedKeys: Set<String> = []
+    /// Cached app items a complete hosted read proved absent while their owner runs (live-hidden); persisted.
+    var hiddenKeys: Set<String> = []
+    /// Cached app items that were positively matched to a hosted element BY NAME (identifier, else description) in some
+    /// read. Only these may become `notHosted`; persisted.
+    var seenHostedKeys: Set<String> = []
+    private var lastSaved: Data?
     /// Consecutive fast scans each unverified cached item has been shown as stale (in-memory only).
     var unverifiedCount: [String: Int] = [:]
     private var loaded = false
@@ -34,7 +40,7 @@ final class ScanState: @unchecked Sendable {
         init(_ i: AXElementInfo) { title = i.title; axDescription = i.axDescription; identifier = i.identifier; frame = i.frame }
         var info: AXElementInfo { AXElementInfo(title: title, axDescription: axDescription, identifier: identifier, frame: frame) }
     }
-    private struct File: Codable { var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]? }
+    private struct File: Codable { var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]?; var hiddenKeys: [String]?; var seenHostedKeys: [String]? }
 
     func loadIfNeeded() {
         guard !loaded else { return }
@@ -47,6 +53,8 @@ final class ScanState: @unchecked Sendable {
         lastStrip = f.strip
         chronic = Set(f.chronic ?? [])
         hostedKeys = Set(f.hostedKeys ?? [])
+        hiddenKeys = Set(f.hiddenKeys ?? [])
+        seenHostedKeys = Set(f.seenHostedKeys ?? [])
         hasFullScan = !f.apps.isEmpty
     }
 
@@ -54,9 +62,11 @@ final class ScanState: @unchecked Sendable {
         guard let url else { return }
         let f = File(apps: perApp.values.filter { !$0.infos.isEmpty }.sorted { $0.app.pid < $1.app.pid }.map {
             FileApp(pid: $0.app.pid, bundleID: $0.app.bundleID, name: $0.app.name, infos: $0.infos.map(FileInfo.init))
-        }, hosted: lastHosted.filter { !$0.stale }.map(FileInfo.init), strip: lastStrip, chronic: chronic.sorted(), hostedKeys: hostedKeys.sorted())
+        }, hosted: lastHosted.filter { !$0.stale }.map(FileInfo.init), strip: lastStrip, chronic: chronic.sorted(), hostedKeys: hostedKeys.sorted(), hiddenKeys: hiddenKeys.sorted(), seenHostedKeys: seenHostedKeys.sorted())
+        // Written only when the content changed since the last write by this process.
+        guard let data = try? JSONEncoder().encode(f), data != lastSaved else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(f) { try? data.write(to: url, options: .atomic) }
+        if (try? data.write(to: url, options: .atomic)) != nil { lastSaved = data }
     }
 
     /// Cached entries whose pid is running with the same bundle id (guards pid reuse across reboots).
