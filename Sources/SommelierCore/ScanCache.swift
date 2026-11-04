@@ -61,6 +61,11 @@ final class ScanState: @unchecked Sendable {
     var selfPositioningGroups: [pid_t: [SPGroup]] = [:]
     /// Bundle id recorded with each pid's groups (pid reuse guard; persisted).
     var selfPositioningBundles: [pid_t: String] = [:]
+    /// When a COMPLETE read last refreshed each pid's record (gdu.54; persisted). A record older than the scanner's maximum
+    /// age stops attributing unnamed timeouts until the next complete read.
+    var selfPositioningRefreshed: [pid_t: Date] = [:]
+    /// Pids whose expired record was already logged (once until the next refresh; in-memory only).
+    var expiredRecordLogged: Set<pid_t> = []
     private var lastSaved: Data?
     /// Consecutive fast scans each unverified cached item has been shown as stale (in-memory only).
     var unverifiedCount: [String: Int] = [:]
@@ -82,7 +87,7 @@ final class ScanState: @unchecked Sendable {
         init(_ i: AXElementInfo) { title = i.title; axDescription = i.axDescription; identifier = i.identifier; frame = i.frame }
         var info: AXElementInfo { AXElementInfo(title: title, axDescription: axDescription, identifier: identifier, frame: frame) }
     }
-    private struct FileSP: Codable { var pid: Int32; var bundleID: String?; var groups: [SPGroup] }
+    private struct FileSP: Codable { var pid: Int32; var bundleID: String?; var groups: [SPGroup]; var refreshed: Date? }
     private struct File: Codable { var spGroups: [FileSP]?; var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]?; var hiddenKeys: [String]?; var seenHostedKeys: [String]?; var assumedHidden: [AssumedHidden]? }
 
     func loadIfNeeded() {
@@ -102,13 +107,14 @@ final class ScanState: @unchecked Sendable {
         for g in f.spGroups ?? [] {
             selfPositioningGroups[g.pid] = g.groups
             if let b = g.bundleID { selfPositioningBundles[g.pid] = b }
+            selfPositioningRefreshed[g.pid] = g.refreshed ?? Date()    // files written before gdu.54 carry no timestamp
         }
         hasFullScan = !f.apps.isEmpty
     }
 
     func save() {
         guard let url else { return }
-        let sp = selfPositioningGroups.keys.sorted().map { FileSP(pid: $0, bundleID: selfPositioningBundles[$0], groups: selfPositioningGroups[$0] ?? []) }
+        let sp = selfPositioningGroups.keys.sorted().map { FileSP(pid: $0, bundleID: selfPositioningBundles[$0], groups: selfPositioningGroups[$0] ?? [], refreshed: selfPositioningRefreshed[$0]) }
         let f = File(spGroups: sp, apps: perApp.values.filter { !$0.infos.isEmpty }.sorted { $0.app.pid < $1.app.pid }.map {
             FileApp(pid: $0.app.pid, bundleID: $0.app.bundleID, name: $0.app.name, infos: $0.infos.map(FileInfo.init))
         }, hosted: lastHosted.filter { !$0.stale }.map(FileInfo.init), strip: lastStrip, chronic: chronic.sorted(), hostedKeys: hostedKeys.sorted(), hiddenKeys: hiddenKeys.sorted(), seenHostedKeys: seenHostedKeys.sorted(), assumedHidden: assumedHidden.values.sorted { $0.pid < $1.pid })

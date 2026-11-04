@@ -129,6 +129,11 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var cachedLayout: [HostedEntry]?         // what the scanner cache offers as a recent complete layout
     var hostedReads = 0
     var dropAfterWrite = ""                  // after the live write this item reads as parked app-side (hosted tree unchanged)
+    var vanishing: Set<pid_t>?               // what the actuator told the scanner to expect (nil = not set / cleared)
+    var vanishAtWrite: Set<pid_t>??          // `vanishing` at the moment of the live write (nil = no write happened)
+    var vanishSets = 0, vanishClears = 0
+    func expectToVanish(pids: Set<pid_t>) { vanishing = pids; vanishSets += 1 }
+    func clearExpectedToVanish() { vanishing = nil; vanishClears += 1 }
     var assumedPIDs: Set<pid_t> = [], assumedRecords: [(owners: [AssumedHiddenOwner], after: Int?)] = [], clearedPIDs: [Set<pid_t>] = []
     func pidOf(_ n: String) -> pid_t { item(n, x: 0).ownerPID }
     func layout(attributed: Bool) -> [HostedEntry] {
@@ -149,6 +154,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
 
     var liveHideShowAvailable: Bool { liveAvailable }
     func setAllowedLive(_ c: [String: Bool]) throws {
+        vanishAtWrite = .some(vanishing)
         if liveThrows { throw PreferenceWriterError.writeFailed("injected live failure") }
         liveWrites.append(c)
         if !dropAfterWrite.isEmpty { flickerName = dropAfterWrite; flickerScans = 5 }
@@ -761,6 +767,24 @@ private func liveActuator(_ w: World, live: Bool = true) -> LiveActuator {
     #expect(w.liveWrites == [["tracked.B": false]])
     #expect(w.order == ["A", "C"] && w.hidden == ["B"])
     #expect((out.elapsedMS ?? 0) >= 1000)          // two polls of 0.5 s on the fake clock
+}
+
+// gdu.54: the unit's owners are expected to vanish BEFORE the hide write and the expectation is cleared on every exit.
+@Test func expectedToVanishIsSetBeforeTheHideWriteAndClearedOnEveryExit() async {
+    func hide(_ configure: (World) -> Void) async -> World {
+        let w = World(["A", "B", "C"]); w.liveAvailable = true; configure(w)
+        _ = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+        return w
+    }
+    let b: Set<pid_t> = [World(["B"]).pidOf("B")]
+    let verified = await hide { _ in }                                              // live, verified
+    #expect(verified.liveWrites.count == 1 && verified.vanishAtWrite == .some(b) && verified.vanishing == nil && verified.vanishSets == 1)
+    let unsatisfied = await hide { $0.liveApplyAfterScans = nil }                   // verify failure -> respawn fallback
+    #expect(unsatisfied.vanishAtWrite == .some(b) && unsatisfied.vanishing == nil && unsatisfied.restarts == 1)
+    let throwing = await hide { $0.liveThrows = true }                              // write failure -> respawn fallback
+    #expect(throwing.vanishAtWrite == .some(b) && throwing.vanishSets == 1 && throwing.vanishing == nil && throwing.restarts == 1)
+    let unavailable = await hide { $0.liveAvailable = false }                       // no live path: never set, never left set
+    #expect(unavailable.vanishSets == 0 && unavailable.vanishing == nil)
 }
 
 @Test func liveUnavailableUsesRespawnExactlyAsBefore() async {
