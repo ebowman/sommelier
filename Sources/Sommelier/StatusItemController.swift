@@ -5,12 +5,16 @@ import SommelierCore
 final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let model: AppModel
-    private lazy var panel = OverflowPanelController(state: model.state)
+    private lazy var panel: OverflowPanelController = OverflowPanelController(state: model.state, onArrange: { [weak self] in
+        self?.panel.hide("arrange")
+        self?.onArrange()
+    })
     private let onSettings: () -> Void
+    private let onArrange: () -> Void
     private let onPermissions: () -> Void
 
-    init(model: AppModel, onSettings: @escaping () -> Void, onPermissions: @escaping () -> Void) {
-        self.model = model; self.onSettings = onSettings; self.onPermissions = onPermissions
+    init(model: AppModel, onSettings: @escaping () -> Void, onArrange: @escaping () -> Void, onPermissions: @escaping () -> Void) {
+        self.model = model; self.onSettings = onSettings; self.onArrange = onArrange; self.onPermissions = onPermissions
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.autosaveName = "Sommelier"
         super.init()
@@ -72,9 +76,7 @@ final class StatusItemController: NSObject {
         let show = item("Show hidden items", #selector(toggleHidden))
         show.state = model.state.showHiddenSection ? .on : .off
         m.addItem(show)
-        let arrange = NSMenuItem(title: "Arrange…", action: nil, keyEquivalent: "")
-        arrange.isEnabled = false   // gdu.19
-        m.addItem(arrange)
+        m.addItem(item("Arrange…", #selector(openArrange)))
         m.addItem(item("Settings…", #selector(openSettings), key: ","))
         let login = item("Start at login", #selector(toggleLogin))
         login.state = LoginItem.isEnabled ? .on : .off
@@ -92,6 +94,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func toggleHidden() { model.setShowHidden(!model.state.showHiddenSection) }
+    @objc private func openArrange() { onArrange() }
     @objc private func openSettings() { onSettings() }
     @objc private func toggleLogin() { LoginItem.set(!LoginItem.isEnabled) }
     @objc private func openPermissions() { onPermissions() }

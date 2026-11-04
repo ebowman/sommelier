@@ -39,10 +39,15 @@ public enum EngineFactory {
 
     /// Control Center tracked entries decide hideability (read-only).
     public static func makeCapabilityRules(bundleIDs: BundleIDs? = nil) -> CapabilityRules {
+        makeCapabilityRules(bundleID: { bundleIDs?.bundleID($0) })
+    }
+
+    /// Same rules, with the owning bundle id supplied by `bundleID` (the Arrange window reads it from `EngineState.items`).
+    public static func makeCapabilityRules(bundleID: @escaping @Sendable (ItemKey) -> String?) -> CapabilityRules {
         let tracked: Set<String>? = (try? ControlCenterTrackedAppsStore().entries())?.map(\.key).reduce(into: Set<String>()) { $0.insert($1) }
         return CapabilityRules(hasTrackedEntry: { key in
             guard let tracked else { return true }
-            if case .status(let owner, _) = key { return tracked.contains(owner) || (bundleIDs?.bundleID(key).map(tracked.contains) ?? false) }
+            if case .status(let owner, _) = key { return tracked.contains(owner) || (bundleID(key).map(tracked.contains) ?? false) }
             return false
         })
     }

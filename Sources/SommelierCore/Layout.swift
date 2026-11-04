@@ -107,7 +107,7 @@ public struct Layout: Codable, Equatable, Sendable {
         return group
     }
 
-    /// "Hide what does not fit" (gdu.45; called by the Arrange window, gdu.19; wired to nothing yet): moves each key, with its
+    /// "Hide what does not fit" (gdu.45; called by the Arrange window toolbar, gdu.19): moves each key, with its
     /// hide-unit siblings, to the end of `hidden`, in the order given. Keys not in the layout or already hidden/always
     /// hidden are ignored. Returns every key that actually moved (siblings included), in the order moved.
     @discardableResult

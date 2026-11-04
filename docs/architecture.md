@@ -272,9 +272,41 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as
   unsupported. To bring one into view, hide something else or use the future "hide what does not fit" action.
 - Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
-  warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. A future one-click
-  "Hide what does not fit" in the Arrange window (gdu.19) calls `Layout.hideNotFitting(_:)` (already implemented and tested,
-  wired to nothing) to move that tail to `hidden`.
+  warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. The Arrange window's
+  "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls
+  `Layout.hideNotFitting(_:)` to move that tail to `hidden`; overflowed items that cannot be hidden (Apple, untracked apps) are
+  listed as staying.
+
+## Arrange window (gdu.19)
+`ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`
+(`@MainActor @Observable`), which feeds the pure `ArrangeModel.swift` in SommelierCore (`ArrangeSections.make`, `.badge`,
+`.placementMatches`, `ArrangeDrop.drop/step/hideNotFitting/adopt`; unit-tested without AppKit).
+- Truthfulness rules. (1) The Visible strip is the OBSERVED bar (`EngineState.observed.onBar`, system modules as greyed,
+  non-draggable anchors) and is never reordered optimistically. A requested move shows a dashed ghost "⟳" at the target slot
+  (the layout neighbours decide the slot), and the real capsule keeps its observed place with "⟳" until BOTH a pass has finished
+  after the drop AND `placementMatches` (the observed drawn order equals the layout order, or the item is off the bar for the
+  hidden sections) AND the engine status is in place; only then does it show "✓". The view model remembers the moved keys
+  (`awaiting`, siblings of the hide unit included); after 90 s without a match they show "⚠ not applied". (2) A badge is "✓" only
+  when the engine status says in place; failed -> "⚠" with the error text as tooltip, `.unsupported` -> "⊘" with the reason,
+  `.notFitting` -> the does-not-fit marker; items whose app is not running carry no badge and sit in a collapsed "Not running (N)"
+  group. Before the first observation rows make no claims. (3) Hidden and Always hidden follow the LAYOUT order and reorder
+  optimistically, because their order is our own data (there is no observation to wait for; only the membership change itself is
+  verified, shown as a ghost in the destination strip and "⟳" on the capsule still on the bar). (4) The layout the window submits
+  is shown at once (`pendingLayout`) so consecutive drops build on each other; everything else is the engine's state.
+- Units: capsules of one hide unit get a link marker and an outline; the tooltip says "Hides together with ...". A move
+  (`Layout.move`) takes the whole unit, and every key it returns shows "⟳" too. Dropping beside a sibling is a no-op.
+- Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange line; items left of it are outlined
+  and marked does-not-fit. Dropping left of it is allowed but flagged ("will stay behind the chevron"). Dropping right of the
+  trailing system block clamps to before it (`Layout.move` rules); dropping on the item's own position is a no-op.
+- Capabilities (`CapabilityRules`, bundle ids from `EngineState.items`): modules cannot be dragged; items that cannot be hidden
+  can be reordered but a drop into a hidden strip is rejected with the reason (also shown as a small "⊘" on the capsule).
+- Gestures: `draggable`/`dropDestination` with `ArrangePayload` (the store key as plain text); drop gaps between capsules draw the
+  insertion bar, dropping on a capsule inserts before/after it by half. Drops are disabled while the filter is active. Context menu:
+  Move to Visible/Hidden/Always hidden, Move left/right (skips anchors, never crosses the trailing block), Retry (failed),
+  Reveal in menu bar (section-wide `setShowHiddenSection(true)` with auto re-hide after `autoRehideSeconds`; a per-item transient
+  layout would be persisted by `setLayout`). Toolbar: Re-apply layout (`clearFailures` + `requestReconcile`), Adopt current order
+  (confirmation; Visible = observed bar verbatim, Hidden = parked, Always hidden kept, not-running keys kept), Hide what does not
+  fit, filter. Every engine call is a `Task`; a 0.25 s timer logs "MAIN ACTOR STALL" if the main actor stalls.
 
 ## Overflow panel
 - `EngineState.items` (`ItemInfo`, SommelierCore) carries display metadata (title, description, owner, width) for every

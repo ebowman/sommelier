@@ -109,3 +109,36 @@ phase: order  (observed 53 on bar, 28 parked; showHidden=false)  systemOverflow=
 actions (1):  1. move status:MBDummy::Dummy-N after status:MBDummy::Dummy-M      skipped (0)
 ```
 No action names the chevron or an overflowed item. `apply` not run; the real layout.json was not touched.
+
+## Arrange window
+
+Dev safety: always run with `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json` (README "Developing"). Quit Bartender first
+(`osascript -e 'tell application "Bartender 7" to quit'`), `make dummy`, `make app`, then
+`SOMMELIER_LAYOUT_FILE=... SOMMELIER_OPEN_ARRANGE=1 make app-run` (log: `build/sommelier.log`; the line `arrange rows:` is what the
+window shows, `arrange:` lines give drop -> verified timings). Act on MBDummy items only. Relaunch Bartender at the end.
+
+Manual checklist (every step: the capsule shows "⟳" until `mbprobe list` agrees, then "✓"):
+1. Visible -> Hidden: drag Dummy A into the Hidden strip (or right-click > Move to Hidden). Dummy A AND Dummy B (same app = one hide
+   unit) show "⟳", leave the bar (agent pid unchanged), appear in Hidden with "✓".
+2. Hidden -> Visible at index 0: drag Dummy A to the left edge of the Visible strip (log: `drop ... visible slot 0`). Both return to the
+   bar; `mbprobe list` shows them at the dropped position; "✓" only after that.
+3. Reorder within Visible: drag Dummy A two capsules right (real Cmd+drag, 5-15 s). Ghosts at the target while it runs; on a failure the
+   capsule shows "⚠" with the error as tooltip and Retry in the menu.
+4. Always hidden: drag Dummy A into Always hidden; use "Reveal in menu bar" / left click on the Sommelier item: it stays hidden.
+5. System items: Clock/Control Center/Focus are greyed anchors with a "⊘" (tooltip: modules cannot be moved or hidden); there is no
+   drag. They never show "⚠" because nothing is attempted on them.
+6. Toolbar: "Hide what does not fit" is disabled unless macOS has an overflow chevron on the bar (`mbprobe list` shows "overflow");
+   with a full bar (`make dummy ARGS="--count 31"`) it is enabled and its sheet lists the units that will hide. "Adopt current order"
+   shows its confirmation. The Bartender banner appears while Bartender runs (the app is paused).
+
+Headless drop pipeline (no mouse): `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dummy-A|hidden|-"` (key as printed by `mbprobe list`; the
+index is a position in the target section's layout, "-" = append / before the trailing system block). Chain with `;`, spacing
+`SOMMELIER_ARRANGE_MOVE_INTERVAL`.
+
+Results 2026-11-04 (live, Bartender quit, scratch layout, Dummy A/B only): hide `...|hidden|-`: drop -> "⟳" 0.13 s, verified
+membership 6.7 s actuation, "✓" 11.6 s after the drop, agent pid constant; `...|visible|1`: back at bar index 1/2 per
+`mbprobe list`, "✓" 13.2 s (the order phase did a real drag); `...|visible|3` (past SystemUIServer and Focus): two real drags, "✓" 16.8 s;
+right-click > Move to Hidden driven by CGEvent clicks: "⟳" at 2 s, "✓" 5.6 s; a real mouse drag from Hidden to Visible (CGEvent): `drop ... visible
+slot 2`, "✓" 2.5 s; 10 chained moves 1.5 s apart: no `MAIN ACTOR STALL`, window redrew throughout, final state converged and verified.
+A failed move was not provoked live (the badge mapping `.failed` -> "⚠"+error is unit-tested). End state: non-dummy order identical to
+the start (`init-from-current` before/after), real `layout.json` absent, `trackedApplications` blob equal to the backup.

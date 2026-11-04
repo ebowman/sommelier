@@ -16,9 +16,10 @@ final class OverflowNSPanel: NSPanel {
 @MainActor
 final class OverflowPanelController {
     private let state: EngineState
+    private let onArrange: () -> Void
     private var panel: OverflowNSPanel?
     private var hosting: NSHostingView<OverflowBarView>?
-    private let probe = NSHostingView(rootView: OverflowBarView(state: EngineState(), size: nil))
+    private let probe: NSHostingView<OverflowBarView>
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var timer: Timer?
@@ -27,9 +28,10 @@ final class OverflowPanelController {
     private var lastActive = Date()
     private var outsideSince: Date?
 
-    init(state: EngineState) {
+    init(state: EngineState, onArrange: @escaping () -> Void = {}) {
         self.state = state
-        probe.rootView = OverflowBarView(state: state, size: nil)
+        self.onArrange = onArrange
+        probe = NSHostingView(rootView: OverflowBarView(state: state, size: nil, onArrange: onArrange))
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -87,7 +89,7 @@ final class OverflowPanelController {
             lastLogged = f
             NSLog("[Sommelier] panel place: ideal=%@ cap=%.0f final=%@", NSStringFromSize(ideal), cap, NSStringFromRect(f))
         }
-        hosting.rootView = OverflowBarView(state: state, size: f.size)
+        hosting.rootView = OverflowBarView(state: state, size: f.size, onArrange: onArrange)
         if panel.frame != f { panel.setFrame(f, display: true) }
         hosting.frame = panel.contentView?.bounds ?? .zero
     }
@@ -114,7 +116,7 @@ final class OverflowPanelController {
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 10
         effect.layer?.masksToBounds = true
-        let host = NSHostingView(rootView: OverflowBarView(state: state, size: nil))
+        let host = NSHostingView(rootView: OverflowBarView(state: state, size: nil, onArrange: onArrange))
         host.sizingOptions = []
         host.autoresizingMask = [.width, .height]
         host.frame = effect.bounds
@@ -174,6 +176,7 @@ struct OverflowBarView: View {
     let state: EngineState
     /// nil = measure the ideal (uncapped) size; otherwise the final panel size (content scrolls horizontally).
     let size: CGSize?
+    var onArrange: () -> Void = {}
     @AppStorage("overflowShowNames") private var showNames = true
 
     var body: some View {
@@ -182,7 +185,7 @@ struct OverflowBarView: View {
             if entries.isEmpty {
                 HStack(spacing: 10) {
                     Text("Nothing hidden").font(.system(size: 12)).foregroundStyle(.secondary)
-                    Button("Arrange…") {}.disabled(true)   // gdu.19
+                    Button("Arrange…") { onArrange() }
                 }
                 .padding(8)
             } else if let size {

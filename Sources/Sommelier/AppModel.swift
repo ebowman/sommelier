@@ -15,11 +15,18 @@ final class AppModel {
     @ObservationIgnored private var errorTask: Task<Void, Never>?
     @ObservationIgnored private var tokens: [any NSObjectProtocol] = []
     @ObservationIgnored private let platform = LivePlatform()
-    @ObservationIgnored private let store = FileLayoutStore(url: FileLayoutStore.defaultURL())
+    /// `SOMMELIER_LAYOUT_FILE=<path>` keeps dev runs away from ~/Library/Application Support/Sommelier/layout.json.
+    @ObservationIgnored private let store: FileLayoutStore
 
     init(permissions: PermissionsModel, state: EngineState = EngineState()) {
         self.permissions = permissions
         self.state = state
+        if let p = ProcessInfo.processInfo.environment["SOMMELIER_LAYOUT_FILE"], !p.isEmpty {
+            store = FileLayoutStore(url: URL(fileURLWithPath: (p as NSString).expandingTildeInPath))
+        } else {
+            store = FileLayoutStore(url: FileLayoutStore.defaultURL())
+        }
+        NSLog("[Sommelier] layout file: %@", store.url.path)
         permissions.onAccessibilityGranted = { [weak self] in
             NSLog("[Sommelier] accessibility granted")
             Task { @MainActor in
@@ -37,6 +44,8 @@ final class AppModel {
             })
         }
     }
+
+    var isPaused: Bool { conflictingManager != nil }
 
     var trusted: Bool { permissions.isReady }
 
