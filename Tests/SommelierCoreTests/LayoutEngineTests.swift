@@ -518,6 +518,14 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         try? await Task.sleep(for: .milliseconds(300))
         #expect(r.state.passCount <= 3)                   // the requested pass plus at most 2 chained ones
         #expect(await r.actuator.calls.count <= 3)
+        // Bounded follow-ups, then explicit passes until the key is struck out: it ends `.failed` and is not retried any more.
+        for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
+        #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
+        let settled = await r.actuator.calls.count
+        #expect(settled <= 3)
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == settled)   // suppressed
+        #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
     }
 }
 

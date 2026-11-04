@@ -255,7 +255,7 @@ replaced). Final: non-dummy order equals the baseline, dummies hidden as in the 
 `--allow-respawn`). One layout limitation: both dummies are one hide unit (one app), so "Dummy-A visible, Dummy-B hidden" cannot exist; the phases cover
 visible and hidden for the unit instead.
 
-Results (2026-11-04, Bartender quit, MenuBarAgent pid 73223, ~6 min):
+Results (2026-11-04, Bartender quit, MenuBarAgent pid 34707, ~6 min):
 | phase | attempts | ok | fail | max s to converge |
 |---|---|---|---|---|
 | V (dummies visible, relaunch) | 5 | 5 | 0 | 3 |
@@ -276,7 +276,7 @@ complete reads with 4 stale on-bar items (no agreement), then agreement at 07.43
 incomplete scans); watcher `agent restarted: pid 73223 -> 34707` at 07.91 (the next poll; the NSWorkspace notification never arrives for the agent);
 `pass started 0 ms after agent restarted` at 10.01 (2 s settle), observations 11.60 (incomplete), 12.50, 12.97 (agree), `plan: converged` at 12.97 =
 **8.7 s after the agent was back**, layout intact: the 15 compared on-bar items identical to before (iStat and heuristic items exempt), the 28 real
-hidden items still not on the bar. Because detection was poll-bound, the default poll was then lowered to 2 s (not re-measured: the restart is run once).
+hidden items still not on the bar. Reviewer's independent run (poll then 2 s): kill -> watcher `agent restarted` 1.2 s -> converged 4.3 s after the kill. Because detection was poll-bound, the default poll was then lowered to 2 s (not re-measured: the restart is run once).
 
 ### Display change and sleep/wake (human-assisted; NOT run by an agent)
 **Status: display unplug/replug and sleep/wake remain human-assisted and UNTESTED by the loop; the bead's done criterion for the display change is only partially met until a human runs the steps below.**
@@ -292,3 +292,5 @@ Also check by hand: launch a new third-party menu bar app that is not in the lay
 the policy) for ~10 s and the log has the same text.
 
 Corrective soak run (2026-11-04 18:1x, baseline captured before the app starts and compared in full, every stop waits for an idle engine): V 5/5, H 6/6, R 20/20, final 1/1, no respawn, `SOAK PASS`. The app log of that run ends with `plan: phase=converged` before the stop (the last line is an observation-only poll pass); no kill happened inside a batch or drag. A first corrective run failed 3 times only because `module:WiFi` flickers out of the read; it is now excluded from the comparison like the other volatile modules.
+
+Soak script corrections (corrective pass 2): the Wi-Fi exclusion used `$` inside a `grep -v` alternation, which macOS grep ignores, so Wi-Fi was still compared; the filter is now `grep -Ev` with one `-e` per pattern and a start-of-script self-test. Convergence waits are 90 s; a wait that ends while the latest observation in the app log is unsettled, incomplete or has stale on-bar items (e.g. `hostedComplete=false onBarStale=8`, all iStat items stale; the engine correctly does nothing) is recorded INCONCLUSIVE with the reason, shown in the summary and not counted as a failure; more than 3 inconclusive phases fail the soak. A failure to stop the app safely now sets the exit code (decided inside the EXIT trap). This pass was NOT re-run live (the bar was needed elsewhere); the live re-run is pending.

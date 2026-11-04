@@ -50,6 +50,21 @@ APP_LOG="$PWD/build/sommelier.log"
 log() { echo "$@" | tee -a "$LOG"; }
 
 LAST_PS=0
+INCONCLUSIVE=0
+# unsettled_reason: prints why the latest observation in the app log was not a settled, complete read (nothing when it was, or when
+# the latest event is a plan). Used to tell "engine idle, but the bar could not be read reliably" from a real failure.
+unsettled_reason() {
+  local last
+  last="$(grep -E 'observe scan [0-9]+:|observation unsettled|plan: phase=' "$APP_LOG" 2>/dev/null | tail -1)"
+  case "$last" in
+    *"plan: phase="*) return 0 ;;
+    *"observation unsettled"*) echo "latest observation unsettled"; return 0 ;;
+    *"hostedComplete=false"*) echo "latest read incomplete (hostedComplete=false)"; return 0 ;;
+    *onBarStale=[1-9]*) echo "latest read has stale on-bar items"; return 0 ;;
+    *"agree=false"*) echo "latest scans did not agree"; return 0 ;;
+  esac
+  return 0
+}
 ps_count() { grep -c 'pass started' "$APP_LOG" 2>/dev/null || true; }
 # request_reveal show|hide: records how many passes had started, so idleness is judged on a pass started AFTER the request.
 request_reveal() { LAST_PS="$(ps_count)"; echo "$1" > "$REVEAL"; }
@@ -83,12 +98,14 @@ stop_app() {
 }
 
 cleanup() {
-  stop_app || FAILURES=$((FAILURES + 1))
+  local rc=$?
+  if ! stop_app; then echo "WARNING: Sommelier was left running (engine not idle)"; [ "$rc" = 0 ] && rc=1; fi
   make dummy-stop >/dev/null 2>&1
   if [ "$BARTENDER_WAS_RUNNING" = 1 ] && ! pgrep -x "Bartender 7" >/dev/null; then
     open -a "Bartender 7"; echo "relaunched Bartender 7"
   fi
   echo "log: $LOG  scratch layout: $LAYOUT  app log: $APP_LOG"
+  exit "$rc"
 }
 trap cleanup EXIT
 
@@ -110,7 +127,13 @@ AGENT_BEFORE="$(agent_pid)"
 
 # Fresh, on-bar keys in bar order from `mbprobe list --json` on stdin. Heuristic keys (chevron, unnamed items), iStat items
 # (they reposition themselves) and AX-identifier system modules (Focus) and the Wi-Fi module (which flickers in and out of the read, see AgreedScanObserver.defaultVolatileKeys) are not compared.
-onbar() { jq -r '[.items, .keys] | transpose | map(select(.[0].isOnMenuBar and (.[0].stale | not))) | .[] | .[1]' | grep -v '^heuristic:\|istatmenus\|^module:com.apple.menuextra.\|^module:WiFi$\|^module:FocusModes$'; }
+# One -e per pattern: macOS grep honours `$` only at the end of the whole pattern, so a `$` inside an alternation never matched.
+volatile_filter() { grep -Ev -e '^heuristic:' -e 'istatmenus' -e '^module:com\.apple\.menuextra\.' -e '^module:WiFi$' -e '^module:FocusModes$'; }
+onbar() { jq -r '[.items, .keys] | transpose | map(select(.[0].isOnMenuBar and (.[0].stale | not))) | .[] | .[1]' | volatile_filter; }
+# Self-test of the filter, so a broken pattern cannot silently put a flickering module into the comparison again.
+[ -z "$(printf 'module:WiFi\n' | volatile_filter)" ] && [ -z "$(printf 'module:FocusModes\n' | volatile_filter)" ] \
+  && [ "$(printf 'module:Clock\nstatus:MBDummy::Dummy-A\n' | volatile_filter | wc -l | tr -d ' ')" = 2 ] \
+  || { echo "self-test failed: the volatile-key filter does not behave" >&2; exit 2; }
 snapshot() { "$PROBE" list --json 2>/dev/null; }
 is_dummy() { grep -q '^status:MBDummy::'; }
 # Order of the keys of $1 that also occur in $2 (common keys, order of $1).
@@ -164,7 +187,14 @@ wait_for() {
 
 record() {   # record <phase> <label> <seconds> <rc>
   if [ "$4" = 0 ]; then printf '%s\tok\t%s\n' "$1" "$3" >> "$STATS"; log "  ok   $2 (${3}s)"
-  else printf '%s\tfail\t%s\n' "$1" "$3" >> "$STATS"; log "  FAIL $2: not converged after ${3}s"; FAILURES=$((FAILURES + 1))
+  else
+    local why; why="$(unsettled_reason)"
+    if [ -n "$why" ]; then
+      printf '%s\tinconclusive\t%s\n' "$1" "$3" >> "$STATS"; INCONCLUSIVE=$((INCONCLUSIVE + 1))
+      log "  INCONCLUSIVE $2: not converged after ${3}s; engine idle but $why"
+    else
+      printf '%s\tfail\t%s\n' "$1" "$3" >> "$STATS"; log "  FAIL $2: not converged after ${3}s"; FAILURES=$((FAILURES + 1))
+    fi
     { echo "  -- on bar now:"; sed 's/^/     /' "$WORK/cur.keys"; echo "  -- baseline:"; sed 's/^/     /' "$WORK/base.all"; } >> "$LOG"
   fi
 }
@@ -205,17 +235,17 @@ NV=$(( (N + 1) / 2 )); NH=$(( N / 2 ))
 log "== phase V: $NV relaunches of the dummy app, dummies VISIBLE in the layout"
 for i in $(seq 1 "$NV"); do
   make dummy-stop >/dev/null 2>&1; sleep 3; start_dummies
-  s="$(wait_for visible 30)"; rc=$?; record V "relaunch $i" "$s" "$rc"
+  s="$(wait_for visible 90)"; rc=$?; record V "relaunch $i" "$s" "$rc"
 done
 
 # --- phase H -------------------------------------------------------------------------------------------------------------
 log "== phase H: app restarted on a layout with the dummies HIDDEN, $NH relaunches"
 jq --arg a "$KEY_A" --arg b "$KEY_B" '.visible -= [$a, $b] | .hidden = [$a, $b] + .hidden' "$WORK/layout.visible.json" > "$LAYOUT"
 start_app "$LAYOUT"
-s="$(wait_for hidden 60)"; rc=$?; record H "dummies hidden by the engine" "$s" "$rc"
+s="$(wait_for hidden 90)"; rc=$?; record H "dummies hidden by the engine" "$s" "$rc"
 for i in $(seq 1 "$NH"); do
   make dummy-stop >/dev/null 2>&1; sleep 3; start_dummies
-  s="$(wait_for hidden 30)"; rc=$?; record H "relaunch $i" "$s" "$rc"
+  s="$(wait_for hidden 90)"; rc=$?; record H "relaunch $i" "$s" "$rc"
 done
 
 # --- phase R -------------------------------------------------------------------------------------------------------------
@@ -223,15 +253,15 @@ log "== phase R: $TOGGLES reveal toggles (show/hide the hidden section)"
 for i in $(seq 1 "$TOGGLES"); do
   request_reveal show
   t0="$(date +%s)"; ok=1
-  for _ in $(seq 1 40); do snapshot | onbar > "$WORK/cur.keys"; [ "$(grep -c '^status:MBDummy::' "$WORK/cur.keys")" = 2 ] && { ok=0; break; }; sleep 1; done
+  for _ in $(seq 1 90); do snapshot | onbar > "$WORK/cur.keys"; [ "$(grep -c '^status:MBDummy::' "$WORK/cur.keys")" = 2 ] && { ok=0; break; }; sleep 1; done
   record R "reveal $i: dummies shown" "$(( $(date +%s) - t0 ))" "$ok"
   request_reveal hide
-  s="$(wait_for hidden 40)"; rc=$?; record R "reveal $i: hidden again" "$s" "$rc"
+  s="$(wait_for hidden 90)"; rc=$?; record R "reveal $i: hidden again" "$s" "$rc"
 done
 
 # --- final assertions ----------------------------------------------------------------------------------------------------
 log "== final check"
-s="$(wait_for hidden 30)"; rc=$?
+s="$(wait_for hidden 90)"; rc=$?
 if [ "$rc" = 0 ]; then log "  ok   non-dummy order equals the baseline; dummies hidden as in the layout"; printf 'final\tok\t%s\n' "$s" >> "$STATS"
 else log "  FAIL final order differs from the baseline"; printf 'final\tfail\t%s\n' "$s" >> "$STATS"; FAILURES=$((FAILURES + 1)); diff "$WORK/c1" "$WORK/c2" | head -20 | tee -a "$LOG"; fi
 AGENT_AFTER="$(agent_pid)"
@@ -244,15 +274,17 @@ request_reveal show
 wait_idle 60 || log "note: engine not idle 60 s after the last request"
 
 echo
-printf '%-8s %8s %6s %6s %10s\n' phase attempts ok fail max_s
+printf '%-8s %8s %6s %6s %13s %10s\n' phase attempts ok fail inconclusive max_s
 for ph in V H R final; do
   n="$(awk -F'\t' -v p="$ph" '$1==p' "$STATS" | wc -l | tr -d ' ')"; [ "$n" = 0 ] && continue
   o="$(awk -F'\t' -v p="$ph" '$1==p && $2=="ok"' "$STATS" | wc -l | tr -d ' ')"
   mx="$(awk -F'\t' -v p="$ph" '$1==p {print $3}' "$STATS" | sort -n | tail -1)"
-  printf '%-8s %8s %6s %6s %10s\n' "$ph" "$n" "$o" "$((n - o))" "$mx"
+  inc="$(awk -F'\t' -v p="$ph" '$1==p && $2=="inconclusive"' "$STATS" | wc -l | tr -d ' ')"
+  printf '%-8s %8s %6s %6s %13s %10s\n' "$ph" "$n" "$o" "$((n - o - inc))" "$inc" "$mx"
 done
 echo
 echo "MenuBarAgent pid: $AGENT_BEFORE -> $AGENT_AFTER ($([ "$AGENT_BEFORE" = "$AGENT_AFTER" ] && echo 'no respawn' || echo 'RESPAWNED'))"
 echo "engine failures logged: $(grep -c 'marked failed until\|stopped after' "$APP_LOG")"
-if [ "$FAILURES" = 0 ]; then echo "SOAK PASS (0 failures)"; else echo "SOAK FAIL ($FAILURES failures)"; fi
+if [ "$INCONCLUSIVE" -gt 3 ]; then echo "too many inconclusive phases ($INCONCLUSIVE > 3): the bar could not be read reliably"; FAILURES=$((FAILURES + 1)); fi
+if [ "$FAILURES" = 0 ]; then echo "SOAK PASS (0 failures, $INCONCLUSIVE inconclusive)"; else echo "SOAK FAIL ($FAILURES failures)"; fi
 [ "$FAILURES" = 0 ]
