@@ -260,12 +260,12 @@ a not-running Tot refreshed the entries (entry gone, log `failed: the app is not
 outline run. `mbprobe activate` refuses while a Sommelier process runs (no engine hold) unless `--force`.
 
 ### Click-forwarding polish (gdu.49) reviewer steps
-Unit tests: `OverflowFeedbackTests` (one clear task per key; a not-running entry stays rendered until its error clears), `ItemActivatorTests` (hard cap posts Escape then re-hides with `menuStillOpenAtCap`; Escape that closes the menu leaves no note; cancellation during the baseline read -> `.cancelled`, hold released, nothing written). Live (reviewer; menu-bar interaction is deferred to here):
+Unit tests: `OverflowFeedbackModelTests` (one clear task per key; a not-running entry stays rendered until its error clears), `ItemActivatorTests` (hard cap posts Escape then re-hides with `menuStillOpenAtCap`; Escape that closes the menu leaves no note; cancellation during the baseline read -> `.cancelled`, hold released, nothing written). Live (reviewer; menu-bar interaction is deferred to here):
 1. Make two different entries fail back to back (e.g. quit two apps that have panel entries, or click two not-running ones within 4 s): two red captions appear and each clears about 4 s after ITS OWN failure (the first must not stay on screen).
 2. Click the entry of an app quit after the panel opened: the entry stays outlined with its caption (`the app is not running`) for the full 4 s, then disappears with the refresh.
 3. Open a menu from a panel entry (Moom) and leave it open past 60 s: the log shows `hard cap reached; posting Escape before re-hide`, the menu closes, then `unit hidden again`. (`menu still open after Escape` should not appear unless the app ignores Escape.)
 4. If drivable: `SOMMELIER_ACTIVATE=<parked key>` and quit/cancel while the baseline is read -> `.cancelled`, no `unit shown` line, hold released.
-5. `swift test`: 468 baseline plus the new tests.
+5. `swift test`: 476 tests.
 
 ### Identifier-less live hide: hosted-element evidence (of7)
 Unit tests: `LiveActuatorTests` (exact elements vanished -> live + assumed recorded + show clears; a coincidental vanish with a matching count -> ambiguous, no record, one respawn; another item leaving the bar rejects the evidence; incomplete baseline -> retried scan / scanner cache; poll-scan evidence when the timed probes fail), `MenuBarScannerFastPathTests` (assumed hidden on full and fast scans, never without evidence, readback clears, quit/2 h expiry/readback/pid-reuse, persistence, attributed hosted layout, `HostedEvidence`), `ItemActivatorTests` (re-hide records when the tree is restored, not on a same-count different tree), `LayoutEngineTests` (a hold plans nothing and records no new item). `make test` 381 tests.
