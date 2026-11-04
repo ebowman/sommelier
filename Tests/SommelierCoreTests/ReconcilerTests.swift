@@ -78,6 +78,43 @@ struct ReconcilerTests {
         #expect(rec.plan(observed: o, layout: layout, capabilities: caps).phase == .converged)
         #expect(o.onBar.firstIndex(of: anchor) == 2)
     }
+    /// Regression (gdu.12 live): the agent re-showed two items at the left end, next to immovable modules. The planner
+    /// must move those two right, not drag every other item left past the modules.
+    @Test func anchorsArePartOfTheTarget() {
+        let mods: Set<ItemKey> = [k("wifi"), k("focus"), k("av")]
+        let caps = { (key: ItemKey) in mods.contains(key) ? Capability(canMove: false, canHide: false, reason: "module") : Capability(canMove: true, canHide: true) }
+        let target = ["wifi", "tm", "focus", "av", "x", "y", "z", "a", "b"]
+        let layout = lay(v: target)
+        var o = obs(["wifi", "a", "b", "tm", "focus", "av", "x", "y", "z"])
+        let p = rec.plan(observed: o, layout: layout, capabilities: caps)
+        #expect(p.phase == .order)
+        #expect(p.actions.count == 2)
+        #expect(p.skipped.isEmpty)
+        #expect(p.desiredOnBar == target.map(k))
+        for a in p.actions { o = PlanSimulator.apply(a, to: o) }
+        #expect(o.onBar == target.map(k))
+        #expect(rec.plan(observed: o, layout: layout, capabilities: caps).phase == .converged)
+    }
+
+    @Test func anchorsInWrongRelativeOrderAreReportedAndRestConverges() {
+        let mods: Set<ItemKey> = [k("m1"), k("m2")]
+        let caps = { (key: ItemKey) in mods.contains(key) ? Capability(canMove: false, canHide: false, reason: "module") : Capability(canMove: true, canHide: true) }
+        // Layout wants m2 before m1; the bar has m1 before m2 and cannot be changed.
+        let layout = lay(v: ["c", "m2", "a", "m1", "b"])
+        var o = obs(["a", "m1", "b", "m2", "c"])
+        let p = rec.plan(observed: o, layout: layout, capabilities: caps)
+        #expect(!p.skipped.isEmpty)
+        #expect(p.skipped.allSatisfy { $0.reason == "immovable item is out of layout order" && mods.contains($0.key) })
+        for _ in 0..<3 {
+            let q = rec.plan(observed: o, layout: layout, capabilities: caps)
+            for a in q.actions { if case .move(let key, _) = a { #expect(!mods.contains(key)) }; o = PlanSimulator.apply(a, to: o) }
+        }
+        #expect(rec.plan(observed: o, layout: layout, capabilities: caps).phase == .converged)
+        #expect(o.onBar.firstIndex(of: k("m1"))! < o.onBar.firstIndex(of: k("m2"))!)
+        // Movables keep their desired relative order: c, a, b.
+        #expect(o.onBar.filter { !mods.contains($0) } == ["c", "a", "b"].map(k))
+    }
+
     @Test func unhideableHiddenIsSkippedAndAnchored() {
         let u = k("u")
         let caps = { (key: ItemKey) in key == u ? Capability(canMove: true, canHide: false, reason: "no entry") : Capability(canMove: true, canHide: true) }
@@ -190,6 +227,12 @@ struct ReconcilerRandomTests {
                 for a in p.actions {
                     switch a {
                     case .move(let key, let rel):
+                        if case .before(let t) = rel, case let idx = p.actions.firstIndex(of: a)!, p.actions[(idx + 1)...].contains(where: { if case .move(t, _) = $0 { true } else { false } }) {
+                            Issue.record(fail("relation target \(t) is not yet in its final place"))
+                        }
+                        if case .after(let t) = rel, case let idx = p.actions.firstIndex(of: a)!, p.actions[(idx + 1)...].contains(where: { if case .move(t, _) = $0 { true } else { false } }) {
+                            Issue.record(fail("relation target \(t) is not yet in its final place"))
+                        }
                         #expect(caps(key).canMove, fail("moved immovable \(key)"))
                         #expect(p.phase == .order, fail("move outside order phase"))
                         switch rel {
@@ -203,6 +246,22 @@ struct ReconcilerRandomTests {
                     o = PlanSimulator.apply(a, to: o, showInsertion: { c in s % (c + 1) })
                     shown = shown &* 31 &+ 7
                 }
+            }
+            if converged {
+                // Independent oracle: the layout-derived order of the keys now on the bar.
+                var want = layout.visible + (showHidden ? layout.hidden : [])
+                if layout.newItemPolicy == .visibleAtEnd { want += observedKeys.filter { layout.section(of: $0) == nil } }
+                let onFinal = Set(o.onBar)
+                want = want.filter { onFinal.contains($0) }
+                let last = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
+                let reachable = last.skipped.allSatisfy { $0.reason != "immovable item is out of layout order" }
+                let movables = o.onBar.filter { !anchorSet.contains($0) && Set(want).contains($0) }
+                #expect(movables == want.filter { !anchorSet.contains($0) }, fail("movable order differs from layout"))
+                if reachable {
+                    // Everything the layout places (anchors included) is in layout order; unplaced anchors sit in between.
+                    #expect(o.onBar.filter { Set(want).contains($0) } == want, fail("final order differs from layout"))
+                }
+                #expect(last.desiredOnBar == o.onBar, fail("final order differs from the planner's target"))
             }
             if !converged {
                 converged = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden).phase == .converged

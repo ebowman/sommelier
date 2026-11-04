@@ -1,0 +1,363 @@
+import Testing
+import Foundation
+@testable import SommelierCore
+
+private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosaveName: n) }
+private let clock = ItemKey.module(name: "Clock")
+
+private struct Caps: CapabilityProvider {
+    func capability(for key: ItemKey) -> Capability {
+        if case .module = key { return Capability(canMove: false, canHide: false, reason: "system module") }
+        return Capability(canMove: true, canHide: true)
+    }
+}
+
+private final class Sleeps: @unchecked Sendable {
+    private let lock = NSLock()
+    private var d: [Duration] = []
+    func add(_ x: Duration) { lock.lock(); d.append(x); lock.unlock() }
+    var all: [Duration] { lock.lock(); defer { lock.unlock() }; return d }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func next() -> Int { lock.lock(); defer { lock.unlock() }; n += 1; return n }
+}
+
+/// Observes whatever the fake actuator currently holds (the truth the real observer would see).
+private struct ActuatorObserver: MenuBarObserver {
+    let actuator: FakeActuator
+    func observe() async throws -> [ResolvedItem] {
+        let order = await actuator.order, hidden = await actuator.hidden
+        return FakeMenuBar.resolve(FakeMenuBar.snapshot(order: order, hidden: hidden))
+    }
+}
+
+/// First `observe()` blocks until `release()`; later ones return immediately.
+private actor GateObserver: MenuBarObserver {
+    let items: [ResolvedItem]
+    private(set) var calls = 0
+    private var gate: CheckedContinuation<Void, Never>?
+    private var released = false
+    init(items: [ResolvedItem]) { self.items = items }
+    func observe() async throws -> [ResolvedItem] {
+        calls += 1
+        if calls == 1, !released { await withCheckedContinuation { gate = $0 } }
+        return items
+    }
+    func release() { released = true; gate?.resume(); gate = nil }
+}
+
+private struct Rig {
+    let engine: LayoutEngine
+    let state: EngineState
+    let actuator: FakeActuator
+    let store: InMemoryLayoutStore
+    let sleeps: Sleeps
+}
+
+@MainActor
+private func rig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout,
+                 observer: (any MenuBarObserver)? = nil, busy: @escaping @Sendable () -> Bool = { false },
+                 config: LayoutEngine.Config = .init(), failOn: [(Int, ActuationError)] = []) async -> Rig {
+    let act = FakeActuator(order: order, hidden: hidden, capabilities: Caps(),
+                           makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+    for (n, e) in failOn { await act.failOnCall(n, e) }
+    let store = InMemoryLayoutStore(layout)
+    let state = EngineState()
+    let sleeps = Sleeps()
+    let engine = LayoutEngine(observer: observer ?? ActuatorObserver(actuator: act), actuator: act, store: store,
+                              capabilities: Caps(), state: state, busy: busy,
+                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { sleeps.add($0) },
+                              config: config)
+    await engine.start()
+    return Rig(engine: engine, state: state, actuator: act, store: store, sleeps: sleeps)
+}
+
+private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bool {
+    for _ in 0..<400 {
+        if await cond() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return false
+}
+
+@MainActor
+@Suite struct LayoutEngineTests {
+    @Test func convergesInOnePass() async {
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["C", "B", "A"].map(k)))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged)
+        #expect(rep.actionCount == 2)
+        #expect(await r.actuator.order == ["C", "B", "A"].map(k))
+        #expect(r.state.observed.onBar == ["C", "B", "A"].map(k))
+        #expect(r.state.isConverged)
+        #expect(r.state.passCount == 1)
+        #expect(r.state.perItem.values.allSatisfy { $0 == .inPlace })
+        #expect(r.state.inFlight == nil)
+    }
+
+    @Test func failedItemIsNotRetriedUntilCleared() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+                          failOn: [(1, .mechanismFailed("boom"))])
+        let first = await r.engine.reconcileOnce()
+        #expect(first.outcome == .incomplete)
+        #expect(await r.actuator.order == ["B", "A"].map(k))   // the other item was moved around the failed anchor
+        guard case .move(let failedKey, _)? = await r.actuator.calls.first.flatMap({ c -> PlannedAction? in
+            if case .move(let key, let rel) = c { return .move(key, rel) } else { return nil } }) else {
+            Issue.record("expected a move call"); return
+        }
+        #expect(r.state.perItem[failedKey] == .failed(.mechanismFailed("boom")))
+        #expect(!r.state.isConverged)
+        let n = await r.actuator.calls.count
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == n)   // suppressed: no retry in the next pass
+        #expect(r.state.perItem[failedKey] == .failed(.mechanismFailed("boom")))
+        await r.engine.clearFailures()
+        let again = await r.engine.reconcileOnce()
+        // The failed key was an anchor while suppressed: the other item was moved around it, so nothing is left to retry.
+        #expect(await r.actuator.calls.count == n)
+        #expect(again.outcome == .converged)
+        #expect(r.state.perItem[failedKey] == .inPlace)
+    }
+
+    @Test func unknownItemPersistedVisibleAtEnd() async {
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged)
+        #expect((try? r.store.load().visible) == ["A", "B", "C"].map(k))
+        #expect(r.state.layout.visible == ["A", "B", "C"].map(k))
+    }
+
+    @Test func unknownItemPersistedHiddenPolicyThenHidden() async {
+        let r = await rig(order: ["A", "B", "C"].map(k),
+                          layout: Layout(visible: ["A", "B"].map(k), newItemPolicy: .hidden))
+        let rep = await r.engine.reconcileOnce()
+        #expect((try? r.store.load().hidden) == [k("C")])
+        #expect(rep.outcome == .converged)
+        #expect(await r.actuator.hidden == [k("C")])
+        #expect(r.state.observed.parked == [k("C")])
+    }
+
+    @Test func busyPausesThenRuns() async {
+        let c = Counter()
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), busy: { c.next() <= 5 })
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged)
+        #expect(r.sleeps.all.contains(.milliseconds(100)))
+        #expect(await r.actuator.calls.count == 1)
+    }
+
+    @Test func busyForeverSkips() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), busy: { true })
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .skippedBusy)
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(r.sleeps.all.count == 30)
+    }
+
+    @Test func permissionDeniedStopsUntilCleared() async {
+        let obs = FixtureObserver(throwing: .permissionDenied)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), observer: obs)
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .permissionDenied)
+        #expect(r.state.lastError == .permissionDenied)
+        #expect(await r.actuator.calls.isEmpty)
+        await r.engine.requestReconcile()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(obs.calls == 1)
+        await r.engine.clearFailures()
+        await r.engine.requestReconcile()
+        #expect(await waitUntil { obs.calls == 2 })
+    }
+
+    @Test func observeEmptyIsAnErrorWithoutActions() async {
+        let r = await rig(order: ["A"].map(k), layout: Layout(visible: [k("A")]), observer: FixtureObserver([[]]))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .observeFailed)
+        if case .observe? = r.state.lastError {} else { Issue.record("expected .observe error") }
+        #expect(await r.actuator.calls.isEmpty)
+    }
+
+    @Test func corruptLayoutStopsEngine() async {
+        struct BadStore: LayoutStore {
+            func load() throws -> Layout { throw LayoutError.badKey("x") }
+            func save(_ layout: Layout) throws {}
+        }
+        let act = FakeActuator(order: [k("A")])
+        let state = EngineState()
+        let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: BadStore(), capabilities: Caps(),
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+        await engine.start()
+        if case .observe? = state.lastError {} else { Issue.record("expected .observe error") }
+        #expect(await engine.reconcileOnce().outcome == .stopped)
+        #expect(await act.calls.isEmpty)
+    }
+
+    @Test func unsupportedCapabilityDoesNotBlockConvergence() async {
+        let r = await rig(order: [k("B"), k("A"), clock], layout: Layout(visible: ["A", "B"].map(k), alwaysHidden: [clock]))
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged)
+        #expect(r.state.isConverged)
+        if case .unsupported? = r.state.perItem[clock] {} else { Issue.record("Clock should be unsupported") }
+        #expect(r.state.perItem[k("A")] == .inPlace)
+        #expect(r.state.observed.onBar == [k("A"), k("B"), clock])
+    }
+
+    @Test func membershipBatchThenOrderInSamePass() async {
+        let r = await rig(order: ["A", "B", "C"].map(k), hidden: [k("B")],
+                          layout: Layout(visible: ["B", "A", "C"].map(k)))
+        let rep = await r.engine.reconcileOnce()
+        let calls = await r.actuator.calls
+        #expect(calls.first == .applyHiddenBatch([k("B"): false]))
+        #expect(calls.filter { if case .applyHiddenBatch = $0 { true } else { false } }.count == 1)
+        #expect(calls.count >= 2)
+        #expect(rep.outcome == .converged)
+        #expect(r.state.observed.onBar == ["B", "A", "C"].map(k))
+    }
+
+    @Test func failedMembershipBatchMarksKeyFailedAndContinues() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .mechanismFailed("restart"))])
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .incomplete)
+        #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
+        #expect(await r.actuator.calls.count == 1)
+    }
+
+    @Test func concurrentTriggersCoalesce() async {
+        let items = FakeMenuBar.resolved(onBar: ["A", "B", "C"].map(k))
+        let gate = GateObserver(items: items)
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["A", "B", "C"].map(k)), observer: gate)
+        await r.engine.requestReconcile()
+        #expect(await waitUntil { await gate.calls == 1 })
+        await r.engine.requestReconcile()
+        await r.engine.requestReconcile()
+        await r.engine.requestReconcile()
+        await gate.release()
+        let state = r.state
+        #expect(await waitUntil { await MainActor.run { state.passCount } == 2 })
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await gate.calls == 2)
+        #expect(r.state.passCount == 2)
+    }
+
+    @Test func maxActionsPerPassRespected() async {
+        var cfg = LayoutEngine.Config()
+        cfg.maxActionsPerPass = 1
+        let r = await rig(order: ["A", "B", "C", "D"].map(k), layout: Layout(visible: ["D", "C", "B", "A"].map(k)), config: cfg)
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .incomplete)
+        #expect(rep.actionCount == 1)
+        #expect(await r.actuator.calls.count == 1)
+    }
+
+    @Test func userBusyEndsPassWithoutSuppressing() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+                          failOn: [(1, .userBusy)])
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .incomplete)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else { true } })
+        let again = await r.engine.reconcileOnce()
+        #expect(again.outcome == .converged)
+    }
+
+    @Test func stopsAfterThreeConsecutiveFailures() async {
+        let names = ["A", "B", "C", "D", "E", "F"]
+        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
+                          failOn: [(1, .mechanismFailed("x")), (2, .mechanismFailed("x")), (3, .mechanismFailed("x"))])
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .incomplete)
+        #expect(rep.actionCount == 3)
+        #expect(await r.actuator.calls.count == 3)
+        #expect(r.state.lastError == .stoppedAfterFailures(3))
+        let failed = r.state.perItem.values.filter { if case .failed = $0 { true } else { false } }.count
+        #expect(failed == 3)
+        #expect(r.state.perItem.values.contains(.pending))
+        // No chained pass follows.
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await r.actuator.calls.count == 3)
+    }
+
+    @Test func neverRunsWithoutALoadedLayout() async {
+        final class CountingStore: LayoutStore, @unchecked Sendable {
+            let lock = NSLock(); var saves = 0
+            func load() throws -> Layout { throw LayoutError.badKey("x") }
+            func save(_ layout: Layout) throws { lock.lock(); saves += 1; lock.unlock() }
+        }
+        let store = CountingStore()
+        let act = FakeActuator(order: [k("A")])
+        let obs = FixtureObserver([FakeMenuBar.resolved(onBar: [k("A")])])
+        let state = EngineState()
+        let engine = LayoutEngine(observer: obs, actuator: act, store: store, capabilities: Caps(), state: state,
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+        await engine.start()
+        await engine.clearFailures()
+        await engine.requestReconcile()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(obs.calls == 0)
+        #expect(store.saves == 0)
+        #expect(state.lastError == .observe("layout not loaded"))
+        #expect(await engine.reconcileOnce().outcome == .stopped)
+        #expect(obs.calls == 0)
+        #expect(await act.calls.isEmpty)
+    }
+
+    @Test func stoppedAfterFailuresSurvivesObserveAndIsClearedExplicitly() async {
+        let names = ["A", "B", "C", "D", "E"]
+        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
+                          failOn: [(1, .mechanismFailed("x")), (2, .mechanismFailed("x")), (3, .mechanismFailed("x"))])
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastError == .stoppedAfterFailures(3))
+        _ = await r.engine.reconcileOnce()   // a successful observe must not clear it
+        #expect(r.state.lastError == .stoppedAfterFailures(3))
+        await r.engine.clearFailures()
+        #expect(r.state.lastError == nil)
+        _ = await r.engine.reconcileOnce()
+        await r.engine.setLayout(Layout(visible: names.map(k)))
+        #expect(r.state.lastError == nil)
+    }
+
+    @Test func chainedPassesAreCappedAtTwoAndRespectMinInterval() async {
+        var cfg = LayoutEngine.Config()
+        cfg.maxActionsPerPass = 1
+        let names = ["A", "B", "C", "D", "E"]
+        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)), config: cfg)
+        await r.engine.requestReconcile()
+        let state = r.state
+        #expect(await waitUntil { await MainActor.run { state.passCount } >= 3 })
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(r.state.passCount == 3)             // the requested pass plus at most 2 chained ones
+        #expect(await r.actuator.calls.count == 3)
+        let gaps = r.sleeps.all.filter { $0 > .milliseconds(400) && $0 <= .milliseconds(500) }
+        #expect(gaps.count >= 2)                    // 500 ms minimum between pass starts, via the injected sleep
+    }
+
+    @Test func suppressedKeyIsDroppedWhenItDisappears() async {
+        let both = FakeMenuBar.resolved(onBar: [k("A"), k("B")])
+        let onlyA = FakeMenuBar.resolved(onBar: [k("A")])
+        let obs = FixtureObserver([both, onlyA, both])
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]), observer: obs,
+                          failOn: [(1, .mechanismFailed("restart"))])
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
+        #expect(await r.actuator.calls.count == 1)
+        _ = await r.engine.reconcileOnce()           // B gone: its suppression is dropped
+        #expect(r.state.perItem[k("B")] == nil)
+        _ = await r.engine.reconcileOnce()           // B is back: retried
+        #expect(await r.actuator.calls.count == 2)
+    }
+
+    @Test func failedMembershipIsRetriedOnlyAfterClearFailures() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .mechanismFailed("restart"))])
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 1)
+        await r.engine.clearFailures()
+        let rep = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 2)
+        #expect(rep.outcome == .converged)
+    }
+}

@@ -97,6 +97,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var staleName = ""
     var trusted = true, buttons = 0, bartender: String? = nil
     var untracked: Set<String> = []
+    var modules: Set<String> = []          // item names that resolve to `.module` keys
     var shared: [String: String] = [:]     // item name -> shared tracked key (several items per app)
     func tracked(_ n: String) -> String { shared[n] ?? "tracked.\(n)" }
     var dragScript: [DragBehavior] = []
@@ -129,7 +130,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func pressedMouseButtons() -> Int { buttons }
     func conflictingManager() -> String? { bartender }
     func resolve(_ s: MenuBarSnapshot) -> [ResolvedItem] {
-        s.items.map { ResolvedItem(item: $0, key: key($0.axIdentifier), confidence: .exact) }
+        s.items.map { ResolvedItem(item: $0, key: modules.contains($0.axIdentifier) ? .module(name: $0.axIdentifier) : key($0.axIdentifier), confidence: .exact) }
     }
     func trackedKey(for r: ResolvedItem) -> String? { untracked.contains(r.item.axIdentifier) ? nil : tracked(r.item.axIdentifier) }
     func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {
@@ -280,6 +281,15 @@ private func actuator(_ w: World, fallback: Bool = true, forceFallback: Bool = f
     #expect(w.dragCalls.count == 1)
     #expect(w.dragCalls[0].steps == 10)
     #expect(w.restarts == 0)
+}
+
+@Test func moveRelativeToModuleTargetUsesDragWithoutFallback() async {
+    let w = World(["WiFi", "A", "B", "C"])
+    w.modules = ["WiFi"]
+    let r = await actuator(w, fallback: false).move(key("C"), relation: .after(.module(name: "WiFi")))
+    #expect(r.isVerified)
+    #expect(w.order == ["WiFi", "C", "A", "B"])
+    #expect(w.dragCalls.count == 1 && w.restarts == 0 && w.storeWrites.isEmpty)
 }
 
 @Test func moveLeftmostRightmost() async {

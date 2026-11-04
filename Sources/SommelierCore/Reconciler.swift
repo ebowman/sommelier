@@ -124,11 +124,20 @@ public struct Reconciler: Sendable {
         let hideSet = Set(hides)
         let base = onBar.filter { !hideSet.contains($0) } + shows
         let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
-        let movableDesired = desired.filter { !anchors.contains($0) }
-        // Target: anchors keep their slots; movable slots are filled by the desired order. Unhideable keys that are
-        // not in `desired` are anchors, so every non-anchor base key is in movableDesired.
-        var fill = movableDesired.makeIterator()
-        let target: [ItemKey] = base.map { anchors.contains($0) ? $0 : (fill.next() ?? $0) }
+        var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
+        // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
+        // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.
+        let anchorsInBase = base.filter { anchors.contains($0) }
+        let tIdx = Dictionary(uniqueKeysWithValues: target.enumerated().map { ($1, $0) })
+        let seq = anchorsInBase.map { tIdx[$0]! }
+        if zip(seq, seq.dropFirst()).contains(where: { $0 >= $1 }) {
+            let keep = Set(Self.lis(seq))
+            for k in anchorsInBase where !keep.contains(tIdx[k]!) {
+                skipped.append(SkippedAction(k, "immovable item is out of layout order"))
+            }
+            var fill = desired.filter { !anchors.contains($0) }.makeIterator()
+            target = base.map { anchors.contains($0) ? $0 : (fill.next() ?? $0) }
+        }
 
         var actions: [PlannedAction] = hides.map { .hide($0) } + shows.map { .show($0) }
         let phase: PlanPhase
@@ -139,6 +148,15 @@ public struct Reconciler: Sendable {
             phase = actions.isEmpty ? .converged : .order
         }
         return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: target)
+    }
+
+    /// The full left-to-right order the layout asks for, anchors included. Anchors the layout does not place (not in
+    /// `desired`, e.g. an unhideable item the layout wants hidden) keep their observed slot; every other slot is filled
+    /// with `desired` in order.
+    static func layoutTarget(base: [ItemKey], desired: [ItemKey], anchors: Set<ItemKey>) -> [ItemKey] {
+        let placed = Set(desired)
+        var fill = desired.makeIterator()
+        return base.map { (anchors.contains($0) && !placed.contains($0)) ? $0 : (fill.next() ?? $0) }
     }
 
     /// Minimal moves turning `current` into `target` (same key set) with `anchors` never moved.

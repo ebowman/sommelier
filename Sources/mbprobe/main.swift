@@ -25,6 +25,7 @@ func usage() -> Never {
            mbprobe layout move <key> <visible|hidden|always> [index(1-based)] [--file PATH]
            mbprobe layout remove <key> [--file PATH]
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
+           mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback]      (ONE engine pass: executes the plan)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
 
     """.utf8))
@@ -491,36 +492,40 @@ func runHideShow(_ a: [String], hide: Bool) async {
     exit(out.result.isVerified ? 0 : 1)
 }
 
-/// Polls full scans until two consecutive fresh scans agree (same on-bar order, same parked set), or gives up.
-/// Returns the agreed resolved items and the number of scans performed.
-func agreedResolvedScanCounting(maxScans: Int, deadline: Date) -> (items: [ResolvedItem]?, scans: Int) {
-    let scanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL)
-    func signature(_ r: [ResolvedItem]) -> String {
-        let on = r.filter { $0.item.isOnMenuBar }.map { $0.key.description }.joined(separator: "\n")
-        let off = r.filter { !$0.item.isOnMenuBar }.map { $0.key.description }.sorted().joined(separator: "\n")
-        return on + "\n--\n" + off
-    }
-    var scans = 0
-    var prevSig: String? = nil
-    var agreed: [ResolvedItem]? = nil
-    while scans < maxScans, Date() < deadline {
-        let snap = scanner.scan()
-        scans += 1
-        let res = IdentityResolver().resolve(snapshot: snap)
-        let stale = res.contains { $0.item.stale }
-        let sig = signature(res)
-        if !stale, !snap.onBarLeftToRight.isEmpty, sig == prevSig { agreed = res; break }
-        prevSig = stale ? nil : sig
-        Thread.sleep(forTimeInterval: 0.3)
-    }
-    return (agreed, scans)
+/// Shared with the engine: two consecutive agreeing full scans (max 6 scans / 15 s).
+func makeObserver(platform: LivePlatform = LivePlatform()) -> AgreedScanObserver {
+    AgreedScanObserver(scanner: platform, resolve: { platform.resolve($0) }, maxScans: 6, deadline: 15,
+                       accessibilityTrusted: { platform.accessibilityTrusted() })
 }
 
-func agreedResolvedScan(maxScans: Int, deadline: Date) -> [ResolvedItem]? {
-    agreedResolvedScanCounting(maxScans: maxScans, deadline: deadline).items
+/// Control Center tracked entries decide hideability (read-only).
+final class BundleIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var map: [ItemKey: String] = [:]
+    func record(_ items: [ResolvedItem]) {
+        lock.lock(); defer { lock.unlock() }
+        for r in items { if let b = r.item.ownerBundleID { map[r.key] = b } }
+    }
+    func bundleID(_ k: ItemKey) -> String? { lock.lock(); defer { lock.unlock() }; return map[k] }
 }
 
-func runPlan(_ a: [String]) {
+/// Records each observed item's bundle id (the Control Center tracked key can be the bundle id, not the owner key).
+struct RecordingObserver: MenuBarObserver {
+    let inner: any MenuBarObserver
+    let ids: BundleIDs
+    func observe() async throws -> [ResolvedItem] { let r = try await inner.observe(); ids.record(r); return r }
+}
+
+func makeCapabilityRules(bundleIDs: BundleIDs? = nil) -> CapabilityRules {
+    let tracked: Set<String>? = (try? ControlCenterTrackedAppsStore().entries())?.map(\.key).reduce(into: Set<String>()) { $0.insert($1) }
+    return CapabilityRules(hasTrackedEntry: { key in
+        guard let tracked else { return true }
+        if case .status(let owner, _) = key { return tracked.contains(owner) || (bundleIDs?.bundleID(key).map(tracked.contains) ?? false) }
+        return false
+    })
+}
+
+func runPlan(_ a: [String]) async {
     var file = FileLayoutStore.defaultURL()
     var showHidden = false, json = false
     var i = 0
@@ -539,17 +544,13 @@ func runPlan(_ a: [String]) {
     }
     let layout: Layout
     do { layout = try FileLayoutStore(url: file).load() } catch { fail("cannot load \(file.path): \(error)") }
-    guard let res = agreedResolvedScan(maxScans: 6, deadline: Date().addingTimeInterval(15)) else {
+    let res: [ResolvedItem]
+    do { res = try await makeObserver().observe() } catch {
+        if case ObserveError.permissionDenied = error { fail("\(error)") }
         fail("scans did not agree; not planning")
     }
     let observed = ObservedOrder(resolved: res)
-    // Read-only: a key is hideable only if Control Center tracks its app.
-    let tracked: Set<String>? = (try? ControlCenterTrackedAppsStore().entries())?.map(\.key).reduce(into: Set<String>()) { $0.insert($1) }
-    let rules = CapabilityRules(hasTrackedEntry: { key in
-        guard let tracked else { return true }
-        if case .status(let owner, _) = key { return tracked.contains(owner) }
-        return false
-    })
+    let rules = makeCapabilityRules()
     let plan = Reconciler().plan(observed: observed, layout: layout, capabilities: { rules.capability(for: $0) },
                                  showHiddenSection: showHidden)
     func act(_ x: PlannedAction) -> String {
@@ -589,7 +590,84 @@ func runPlan(_ a: [String]) {
     for (n, k) in plan.desiredOnBar.enumerated() { print("  \(n + 1). \(k)") }
 }
 
-func runLayout(_ a: [String]) {
+@MainActor
+func runApply(_ a: [String]) async {
+    var file: URL?
+    var showHidden = false, fake = false, allowFallback = false
+    var maxActions = LayoutEngine.Config().maxActionsPerPass
+    var i = 0
+    while i < a.count {
+        switch a[i] {
+        case "--show-hidden": showHidden = true
+        case "--fake": fake = true
+        case "--allow-fallback": allowFallback = true
+        case "--file": i += 1; guard i < a.count else { usage() }; file = URL(fileURLWithPath: a[i])
+        case "--max-actions": i += 1; guard i < a.count, let n = Int(a[i]), n > 0 else { usage() }; maxActions = n
+        default: usage()
+        }
+        i += 1
+    }
+    guard let file else {
+        FileHandle.standardError.write(Data("pass --file; refusing to use the real layout.json during development\n".utf8))
+        exit(2)
+    }
+    let platform = LivePlatform()
+    if !fake, let m = platform.conflictingManager() {
+        FileHandle.standardError.write(Data("\(m); quit it first. Nothing was touched.\n".utf8))
+        exit(1)
+    }
+    let ids = BundleIDs()
+    let rules = makeCapabilityRules(bundleIDs: ids)
+    let logger: @Sendable (String) -> Void = { print("engine: " + $0); fflush(stdout) }
+    let observer: any MenuBarObserver
+    let actuator: any MenuBarActuator
+    let resolver: @Sendable (MenuBarSnapshot) -> [ResolvedItem]
+    if fake {
+        let res: [ResolvedItem]
+        do { res = try await makeObserver(platform: platform).observe(); ids.record(res) } catch { fail("cannot observe: \(error)") }
+        let o = ObservedOrder(resolved: res)
+        observer = FixtureObserver([FakeMenuBar.resolved(onBar: o.onBar, parked: o.parked)])
+        actuator = FakeActuator(order: o.onBar + o.parked, hidden: Set(o.parked), capabilities: rules,
+                                makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        resolver = { FakeMenuBar.resolve($0) }
+    } else {
+        observer = RecordingObserver(inner: makeObserver(platform: platform), ids: ids)
+        var lc = LiveActuator.Config()
+        lc.allowFallback = allowFallback   // default drag-only: the order-store fallback needs an explicit opt-in
+        actuator = LiveActuator(platform: platform, config: lc, log: { FileHandle.standardError.write(Data(("actuator: " + $0 + "\n").utf8)) })
+        resolver = { platform.resolve($0) }
+    }
+    let state = EngineState(showHiddenSection: showHidden)
+    var cfg = LayoutEngine.Config()
+    cfg.maxActionsPerPass = maxActions
+    let engine = LayoutEngine(observer: observer, actuator: actuator, store: FileLayoutStore(url: file), capabilities: rules,
+                              state: state, busy: { platform.pressedMouseButtons() != 0 }, resolveSnapshot: resolver,
+                              log: logger, showHiddenSection: showHidden, config: cfg)
+    await engine.start()
+    if let e = state.lastError { fail("\(e)") }
+    let t0 = Date()
+    let report = await engine.reconcileOnce()
+    let view = Reconciler().plan(observed: state.observed, layout: state.layout, capabilities: { rules.capability(for: $0) },
+                                 showHiddenSection: showHidden)
+    var shown = Set<ItemKey>()
+    for k in view.desiredOnBar + state.observed.onBar + state.observed.parked where shown.insert(k).inserted {
+        switch state.perItem[k] ?? .inPlace {
+        case .inPlace: print("= \(k)")
+        case .pending: print("~ \(k)")
+        case .moving: print("> \(k)")
+        case .failed(let e): print("x \(k) failed(\(e))")
+        case .unsupported(let r): print("! \(k) unsupported(\(r))")
+        }
+    }
+    if let e = state.lastError { print("error: \(e)") }
+    print(String(format: "ELAPSED_MS %.0f", Date().timeIntervalSince(t0) * 1000))
+    print("phase: \(report.phase.map { "\($0)" } ?? "-")  outcome: \(report.outcome)  actions: \(report.actionCount)")
+    let ok = report.outcome == .converged
+    print(ok ? "converged" : "not converged")
+    exit(ok ? 0 : 1)
+}
+
+func runLayout(_ a: [String]) async {
     var a = a
     var file: URL = FileLayoutStore.defaultURL()
     var force = false, json = false
@@ -642,10 +720,11 @@ func runLayout(_ a: [String]) {
         if !force, FileManager.default.fileExists(atPath: file.path), !load().allKeys.isEmpty {
             fail("\(file.path) already has a non-empty layout; use --force to overwrite")
         }
-        let (agreed, scans) = agreedResolvedScanCounting(maxScans: 6, deadline: Date().addingTimeInterval(15))
-        guard let res = agreed else {
-            fail("scans did not agree after \(scans) attempts; not writing")
-        }
+        let res: [ResolvedItem]
+        let scans: Int
+        do { (res, scans) = try await makeObserver().observeCounting() } catch ObserveError.noAgreement(let n) {
+            fail("scans did not agree after \(n) attempts; not writing")
+        } catch { fail("\(error); not writing") }
         let stale = res.filter { $0.item.stale }.map { $0.key.description }
         if !stale.isEmpty { fail("stale items, not writing: " + stale.joined(separator: ", ")) }
         let (l, excluded) = LayoutBuilder.build(from: res)
@@ -682,8 +761,9 @@ func runLayout(_ a: [String]) {
 }
 
 switch args.first {
-case "layout": runLayout(Array(args.dropFirst()))
-case "plan": runPlan(Array(args.dropFirst()))
+case "layout": await runLayout(Array(args.dropFirst()))
+case "apply": await runApply(Array(args.dropFirst()))
+case "plan": await runPlan(Array(args.dropFirst()))
 case "move": await runMove(Array(args.dropFirst()))
 case "hide": await runHideShow(Array(args.dropFirst()), hide: true)
 case "show": await runHideShow(Array(args.dropFirst()), hide: false)

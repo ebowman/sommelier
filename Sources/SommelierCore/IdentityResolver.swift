@@ -6,6 +6,9 @@ public struct ResolvedItem: Sendable {
     public var item: MenuBarItem
     public var key: ItemKey
     public var confidence: KeyConfidence
+    public init(item: MenuBarItem, key: ItemKey, confidence: KeyConfidence) {
+        self.item = item; self.key = key; self.confidence = confidence
+    }
     /// The owner key actually matched in the store/defaults (nil for heuristic/module keys).
     public var ownerKey: String? {
         if case .status(let o, _) = key { return o }

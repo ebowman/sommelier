@@ -125,13 +125,30 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
 - Phases: `.membership` returns only hides then shows (one batch; MenuBarAgent picks where a shown item lands, so order cannot
   be planned yet); `.order` returns only moves; `.converged` returns nothing. Expect at most 3 plans.
 - Anchors never move: `canMove == false` items and items that should be hidden but have `canHide == false` (reported in `skipped`).
-  The target order keeps each anchor in its observed slot and fills the other slots with the desired order.
+  Anchors are part of the target: the target is the layout's full on-bar order including anchors, so movable items are arranged
+  around them (an anchor the layout does not place keeps its observed slot). Convergence means the observed order equals `desiredOnBar`
+  with anchors included. If the anchors' relative order on the bar differs from the layout's, that part is unreachable: each offending
+  anchor goes into `skipped` ("immovable item is out of layout order"; the engine shows `.unsupported`) and the rest is planned with
+  every anchor in its observed slot.
 - Unknown keys (not in the layout) follow `newItemPolicy` and are returned in `newItems` (the planner never mutates the layout);
   unknown parked keys are never shown. Layout keys not observed are listed in `absent` and ignored.
-- Minimality: per gap between anchors, a longest increasing subsequence stays put; moves == misplaced items. Moves are emitted
+- Minimality: anchors are always kept; per gap between anchors, a longest increasing subsequence of movables stays put; moves == misplaced items. Moves are emitted
   left to right in target order, preferring `.after(left neighbour)`, then `.before(right)`, and `.leftmost`/`.rightmost` only as a last resort.
 - `PlanSimulator.apply` replays actions on an `ObservedOrder` (show slot injectable); `ReconcilerRandomTests` uses it for seeded convergence checks.
 - Dev tool: `mbprobe plan [--show-hidden] [--file PATH] [--json]` prints the plan and executes nothing.
+
+### LayoutEngine
+
+`LayoutEngine` (actor, `LayoutEngine.swift`) runs the observe -> plan -> act -> verify loop; `EngineState` (`@MainActor @Observable`) is the only thing the UI binds to.
+
+- **Pass**: (1) if the mouse is down (`busy`), wait up to 3 s polling every 0.1 s, else skip and retry once; (2) `observe()` (two agreeing full scans); (3) plan with failed keys forced to `canMove = canHide = false` (they become anchors); (4) persist `newItems` into the layout (once per pass) per `newItemPolicy`; (5) act; (6) publish.
+- **Two phases**: *membership* is one `applyHiddenBatch` (one agent restart, never called with an empty batch), then re-observe and re-plan; *order* is one `move` at a time, re-planning from the verified snapshot after each. Both continue in the same pass when the post-membership plan is `.order`. At most `maxActionsPerPass` (50) actuator calls per pass; 3 consecutive failures stop the pass (`lastError`, no chaining); at most 2 chained passes. `mbprobe apply` runs the actuator drag-only unless `--allow-fallback`.
+- **Observed truth only**: `EngineState.observed` is set solely from an actuator-returned snapshot or a fresh observe, never from the plan. `perItem` is `.inPlace/.pending/.moving/.failed/.unsupported`; `unsupported` (capability skips) does not block `isConverged`, `failed` does.
+- **Suppression**: a key whose actuation failed stays suppressed until `setLayout`, `clearFailures()`, or its app disappears from the bar. This stops the 10 s poll from re-running a failing agent restart forever. `userBusy` is not a failure and is not suppressed.
+- **Fatal errors**: no Accessibility permission or a competing manager (Bartender) sets `lastError`, makes no actuator call and stops the engine until `clearFailures()`.
+- **Scheduling**: `requestReconcile()` sets a pending flag; concurrent triggers coalesce into one follow-up pass; pass starts are at least 0.5 s apart. `reconcileOnce()` runs exactly one pass (`mbprobe apply`, tests).
+- **Triggers** (`EngineTriggers`, AppKit): app launch/terminate (debounced 1 s) and a 10 s poll that fires only when a fast scan differs from `state.observed`. The live `busy` closure is `NSEvent.pressedMouseButtons != 0`.
+- **UI binds to**: `observed`, `layout`, `perItem`, `inFlight`, `lastError`, `isConverged`, `lastPassAt`, `passCount`; it changes the bar only via `setLayout` / `setShowHiddenSection`.
 
 ## (e) What cannot be done, and how the UI shows it
 
