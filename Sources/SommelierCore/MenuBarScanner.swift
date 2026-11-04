@@ -521,7 +521,9 @@ public struct MenuBarScanner {
         let off = indexed.filter { !$0.element.isOnMenuBar }
         // Apple's own overflow (gdu.45): items left of the chevron, or stacked on one another, are reported on the bar but
         // not drawn. Flagged here, once, so every consumer (resolver, planner, verifier, UI) reads the same truth.
-        let marked = SystemOverflow.mark((on + off).map(\.element))
+        // Our own hosted status item is counted in `hostedLayout` (evidence) but is not an item to report (unless asked for).
+        let reported = (on + off).map(\.element).filter { includeSelf || $0.axIdentifier != Self.ownStatusItemIdentifier }
+        let marked = SystemOverflow.mark(reported)
         return MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout)
     }
 }

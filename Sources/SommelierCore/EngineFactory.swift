@@ -36,8 +36,14 @@ public enum EngineFactory {
     /// from MenuBarAgent's hosted children), so drop it by key/bundle id: Sommelier never plans or moves itself.
     public static func dropSelf(_ items: [ResolvedItem], bundleID: String, moduleName: String) -> [ResolvedItem] {
         items.filter { r in
-            r.key != .module(name: moduleName) && r.item.ownerBundleID != bundleID && r.ownerKey != bundleID
+            r.key != .module(name: moduleName) && r.item.ownerBundleID != bundleID && r.ownerKey != bundleID && !isOwnHosted(r)
         }
+    }
+
+    /// Our own status item as the agent hosts it: the AX identifier we set on the button (the resolver then keys it
+    /// `module:<identifier>`, owner MenuBarAgent), whatever key it got. Never planned, moved or written into a layout.
+    public static func isOwnHosted(_ r: ResolvedItem) -> Bool {
+        r.item.axIdentifier == MenuBarScanner.ownStatusItemIdentifier || r.key == .module(name: MenuBarScanner.ownStatusItemIdentifier)
     }
 
     public static func makeObserver(platform: LivePlatform, log: @escaping @Sendable (String) -> Void = { _ in }) -> AgreedScanObserver {

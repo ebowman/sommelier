@@ -16,6 +16,7 @@ public enum LayoutBuilder {
         var excluded: [String] = []
         var seen = Set<ItemKey>()
         for r in resolved {
+            if EngineFactory.isOwnHosted(r) { continue }   // our own status item is never part of a layout
             if r.item.frame.width <= 1 {
                 excluded.append("\(r.key) (\(r.item.title))")
                 continue
