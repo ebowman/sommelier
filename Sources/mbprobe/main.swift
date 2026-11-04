@@ -9,7 +9,8 @@ let args = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
     FileHandle.standardError.write(Data("""
-    usage: mbprobe keys <ownerKey|bundleID>
+    usage: mbprobe permissions [--prompt]
+           mbprobe keys <ownerKey|bundleID>
            mbprobe list [--json] [--include-self] [--timing] [--debug] [--fast] [--repeat N]
            mbprobe set-position <bundleID> <autosaveName> <number> [--host] [--store legacy|agent]
            mbprobe watch [--seconds N]
@@ -760,7 +761,16 @@ func runLayout(_ a: [String]) async {
     }
 }
 
+func runPermissions(_ a: [String]) {
+    let checker = LivePermissionChecker()
+    let prompt = a.contains("--prompt")
+    let ax = checker.accessibility(prompt: prompt)
+    print("accessibility: \(ax)")
+    print("screenRecording: \(checker.screenRecording())")
+}
+
 switch args.first {
+case "permissions": runPermissions(Array(args.dropFirst()))
 case "layout": await runLayout(Array(args.dropFirst()))
 case "apply": await runApply(Array(args.dropFirst()))
 case "plan": await runPlan(Array(args.dropFirst()))

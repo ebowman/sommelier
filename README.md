@@ -36,7 +36,15 @@ Open-source menu bar item manager for macOS 26+ (work in progress).
 
 See docs/findings-positioning.md and docs/findings-visibility.md.
 
-Accessibility permission for `build/Sommelier.app` must be granted by the human in
-System Settings > Privacy & Security > Accessibility. Ad-hoc re-signing may require re-granting.
+## Permissions
+
+- **Accessibility (required)**: needed to read and arrange menu bar items. Grant it in System Settings > Privacy & Security > Accessibility
+  (`x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`). Sommelier opens an onboarding window until it is granted,
+  and starts working without relaunch once it is.
+- **Screen Recording (optional)**: only enables live item images in the overflow panel
+  (`x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`). Denied is not an error.
+- After rebuilding, the ad-hoc signature changes and macOS may require granting again. Fix:
+  `tccutil reset Accessibility ie.boboco.sommelier`, relaunch, and re-grant.
+- `mbprobe permissions [--prompt]` prints both states. `SOMMELIER_SHOW_ONBOARDING=1` forces the onboarding window at launch.
 
 The app is deliberately not sandboxed. License: MIT.
