@@ -429,3 +429,92 @@ private func itemA(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ax
     #expect(try !keys("hiddenKeys").contains { $0.hasPrefix("10|") })
     #expect(try !keys("seenHostedKeys").contains { $0.hasPrefix("10|") })
 }
+
+// MARK: - Assumed-hidden state for identifier-less items (of7)
+// B (pid 11) has neither identifier nor description: the name rule cannot judge it. Only our own write-time evidence can.
+
+private func hostedWithoutB(shiftA: Bool = false) -> AgentHostedTree {
+    tree([AXElementInfo(axDescription: "A one", identifier: "a1", frame: bar(shiftA ? 200 : 300)),
+          AXElementInfo(axDescription: "Clock", identifier: "clock", frame: bar(900))])
+}
+private func itemB(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ownerPID == 11 } }
+
+@Test func unnamedItemIsNeverJudgedHiddenWithoutOurEvidence() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.source = world(trees: [hostedWithoutB()])               // B absent from a complete read, but we never hid it
+    #expect(itemB(scanner.scan())?.isOnMenuBar == true)
+}
+
+@Test func assumedHiddenUnnamedItemIsReportedHiddenOnFullAndFastScans() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2)
+    scanner.source = world(trees: [hostedWithoutB()])
+    let b = itemB(scanner.scan())
+    #expect(b?.isOnMenuBar == false && b?.hiddenReason == .assumedNotHosted)
+    #expect(b?.frame == bar(200))                                   // the app still claims an on-bar frame
+    #expect(scanner.scan().onBarLeftToRight.map(\.ownerName) == ["A", "Clock"])
+    let fast = itemB(scanner.scanVisible())
+    #expect(fast?.hiddenReason == .assumedNotHosted)
+    let back = try? JSONDecoder().decode(MenuBarItem.self, from: JSONEncoder().encode(b!))
+    #expect(back?.hiddenReason == .assumedNotHosted)
+}
+
+@Test func contradictingCompleteReadClearsTheAssumption() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2)
+    scanner.source = world(trees: [hostedWithoutB()])
+    #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)
+    // B is hosted again on its frame (same width) and the count is back to 3: shown by someone else.
+    scanner.source = world()
+    let b = itemB(scanner.scan())
+    #expect(b?.isOnMenuBar == true)
+    #expect(scanner.assumedHiddenPIDs.isEmpty)
+}
+
+@Test func frameCoincidenceWithoutTheCountBackDoesNotClearTheAssumption() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2)
+    // After the hide A shifts onto B's old frame (same width): count is still 2 (< 2 + 1), B stays hidden, A is untouched.
+    scanner.source = world(trees: [hostedWithoutB(shiftA: true)])
+    let s = scanner.scan()
+    #expect(itemB(s)?.hiddenReason == .assumedNotHosted)
+    #expect(s.items.first { $0.axIdentifier == "a1" }?.isOnMenuBar == true)
+    #expect(scanner.assumedHiddenPIDs == [11])
+}
+
+@Test func assumedHiddenIsPrunedWhenTheOwnerQuitsAndExpires() {
+    var scanner = MenuBarScanner(source: world())
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2)
+    var gone = world(trees: [hostedWithoutB()])
+    gone.apps = [agentApp, appA]
+    scanner.source = gone
+    _ = scanner.scan()
+    #expect(scanner.assumedHiddenPIDs.isEmpty)
+
+    scanner.source = world()
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-601))
+    scanner.source = world(trees: [hostedWithoutB()])
+    #expect(itemB(scanner.scan())?.isOnMenuBar == true)             // expired: back to the frame rule
+    #expect(scanner.assumedHiddenPIDs.isEmpty)
+}
+
+@Test func clearAssumedHiddenAndPersistence() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("scan-cache-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    var scanner = MenuBarScanner(source: world(), cacheURL: url)
+    _ = scanner.scan()
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2)
+    var fresh = MenuBarScanner(source: world(trees: [hostedWithoutB()]), cacheURL: url)   // a new process (mbprobe list)
+    #expect(fresh.assumedHiddenPIDs == [11])
+    #expect(itemB(fresh.scan())?.hiddenReason == .assumedNotHosted)
+    scanner.clearAssumedHidden(pids: [11])
+    scanner.source = world(trees: [hostedWithoutB()])
+    #expect(itemB(scanner.scan())?.isOnMenuBar == true)
+    fresh.source = world()
+}

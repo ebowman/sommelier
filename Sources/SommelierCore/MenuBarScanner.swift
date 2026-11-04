@@ -43,6 +43,32 @@ public struct MenuBarScanner {
 
     static let maxConcurrency = 8
 
+    /// How long an assumed-hidden record is believed without us touching the owner again (of7).
+    static let assumedHiddenTTL: TimeInterval = 600
+
+    /// Records that WE hid `pid`'s identifier-less items with a live write and a complete hosted-count drop confirmed it
+    /// (`LiveActuator`, `ItemActivator`). Until contradicted (see `assemble`) such an owner's on-bar-framed, identifier-less
+    /// candidates are reported hidden (`HiddenReason.assumedNotHosted`). Called ONLY with write-time evidence, never from frames.
+    public func recordAssumedHidden(pid: pid_t, bundleID: String?, items: Int, hostedAfter: Int?, at: Date = Date()) {
+        state.loadIfNeeded()
+        state.assumedHidden[pid] = AssumedHidden(pid: pid, bundleID: bundleID, at: at, hostedAfter: hostedAfter, items: items)
+        log("assumed-hidden: recorded pid \(pid) (\(items) item(s), hosted after \(hostedAfter.map(String.init) ?? "?"))")
+        state.save()
+    }
+
+    /// Forgets the assumed-hidden state of these owners (a show by us, a respawn, a failed attempt).
+    public func clearAssumedHidden(pids: Set<pid_t>) {
+        state.loadIfNeeded()
+        let had = pids.filter { state.assumedHidden[$0] != nil }
+        guard !had.isEmpty else { return }
+        for p in had { state.assumedHidden[p] = nil }
+        log("assumed-hidden: cleared pid(s) \(had.sorted().map(String.init).joined(separator: ","))")
+        state.save()
+    }
+
+    /// Owners currently assumed live-hidden (diagnostics, tests).
+    public var assumedHiddenPIDs: Set<pid_t> { state.loadIfNeeded(); return Set(state.assumedHidden.keys) }
+
     private struct Candidate {
         var app: RunningAppInfo
         var info: AXElementInfo
@@ -259,13 +285,40 @@ public struct MenuBarScanner {
             $0.frame == e.frame && $0.identifier == e.identifier && $0.axDescription == e.axDescription && $0.title == e.title
         }) { hosted.append(e) }
 
+        func onBar(_ f: CGRect) -> Bool {
+            f.width > 0 && f.height > 0 && f.midY >= strip.minY && f.midY <= strip.maxY
+        }
+        let hostedComplete = agent != nil && !hosted.isEmpty && tree.failedReads == 0 && tree.unnamedTimeouts == 0
+
+        // Assumed-hidden state (of7). Identifier-less items (Tot, Yoink, Moom) cannot be judged by name, so after a live
+        // hide their stale on-bar app-side frame looks "on the bar". When WE just hid such an owner with a live write and a
+        // complete hosted-count drop confirmed it (`recordAssumedHidden`), its unnamed on-bar-framed candidates are reported
+        // hidden until: the owner quits, 10 minutes pass, we show it (actuator clears), or a complete read contradicts it
+        // (a hosted element of the same width on the candidate's frame while the hosted count is back to at least
+        // `hostedAfter + items`). The flag is set ONLY by our own successful write plus count evidence, never inferred from
+        // frames, so it cannot produce a false hidden on an untouched bar. A wrongly cleared flag only restores the old
+        // behaviour (reported on-bar, respawn fallback).
+        let nowT = Date()
+        for (pid, rec) in state.assumedHidden {
+            if !running.contains(pid) { state.assumedHidden[pid] = nil; log("assumed-hidden: pid \(pid) quit; dropped") }
+            else if nowT.timeIntervalSince(rec.at) > Self.assumedHiddenTTL {
+                state.assumedHidden[pid] = nil; log("assumed-hidden: pid \(pid) expired after \(Int(nowT.timeIntervalSince(rec.at))) s; dropped")
+            }
+        }
+        var assumedIdx = Set<Int>()
+        for (i, c) in candidates.enumerated()
+        where state.assumedHidden[c.app.pid] != nil && !c.stale && c.info.identifier.isEmpty && c.info.axDescription.isEmpty
+            && c.info.frame.width > 1 && onBar(c.info.frame) {
+            assumedIdx.insert(i)
+        }
+
         // Join: identifier, then description, then frame intersection. Each app item matches at most once.
         var matchedCandidates: [Int: AXElementInfo] = [:]
         var matchedHosted = Set<Int>()
         func pass(_ matches: (AXElementInfo, AXElementInfo) -> Bool) {
             for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) {
                 if let ci = candidates.indices.first(where: {
-                    matchedCandidates[$0] == nil && matches(h, candidates[$0].info)
+                    matchedCandidates[$0] == nil && !assumedIdx.contains($0) && matches(h, candidates[$0].info)
                 }) {
                     matchedHosted.insert(hi); matchedCandidates[ci] = h
                 }
@@ -278,6 +331,33 @@ public struct MenuBarScanner {
             let i = h.frame.intersection(c.frame)
             return !i.isNull && i.width > 0 && i.height > 0
         }
+
+        // Contradiction (a): a complete read whose hosted element on the strip matches an assumed candidate's width and
+        // overlaps its frame, with the hosted count back to (at least) what it was before the hide.
+        if hostedComplete, !assumedIdx.isEmpty {
+            let stripCount = hosted.filter { !$0.stale && $0.frame.width > 1 && onBar($0.frame) }.count
+            var cleared = Set<pid_t>()
+            for pid in Set(assumedIdx.map { candidates[$0].app.pid }) {
+                guard let rec = state.assumedHidden[pid] else { continue }
+                if let after = rec.hostedAfter, stripCount < after + rec.items { continue }
+                for ci in assumedIdx.sorted() where candidates[ci].app.pid == pid && matchedCandidates[ci] == nil {
+                    let cf = candidates[ci].info.frame
+                    if let hi = hosted.indices.first(where: {
+                        let hf = hosted[$0].frame
+                        let i = hf.intersection(cf)
+                        return !matchedHosted.contains($0) && !hosted[$0].stale && onBar(hf) && abs(hf.width - cf.width) <= 1
+                            && !i.isNull && i.width > 0 && i.height > 0
+                    }) {
+                        matchedHosted.insert(hi); matchedCandidates[ci] = hosted[hi]; cleared.insert(pid); break
+                    }
+                }
+            }
+            for pid in cleared {
+                state.assumedHidden[pid] = nil
+                log("assumed-hidden: pid \(pid) contradicted by a complete read (hosted element on its frame, \(stripCount) hosted); cleared")
+            }
+        }
+        let activeAssumed = assumedIdx.filter { state.assumedHidden[candidates[$0].app.pid] != nil }
 
         // Identifier-prefix attribution: hosted element id "com.bjango.istatmenus.weather" belongs to a
         // failed-read app whose bundle id is a reverse-DNS prefix relative (com.bjango.istatmenus.status).
@@ -300,10 +380,6 @@ public struct MenuBarScanner {
             }
         }
 
-        func onBar(_ f: CGRect) -> Bool {
-            f.width > 0 && f.height > 0 && f.midY >= strip.minY && f.midY <= strip.maxY
-        }
-
         // Live-hide detection (docs/findings-live-trigger.md section 4). After a cfprefsd-notified hide MenuBarAgent drops
         // the app's scenes at once (its hosted tree no longer contains the item at all), but the owning app's own
         // AXExtrasMenuBar children keep their on-bar frames and the `stale` flag stays false, so the frame rule alone
@@ -324,7 +400,6 @@ public struct MenuBarScanner {
         //    read proved hidden stays hidden through incomplete reads unless the partial tree shows it hosted.
         //  - Width <= 1 candidates (main-menu noise) are never judged. The parked-frame rule (x -1..3, y ~1188..1204) stays
         //    the second signal and wins when the frame is off the strip (`parkedFrame`).
-        let hostedComplete = agent != nil && !hosted.isEmpty && tree.failedReads == 0 && tree.unnamedTimeouts == 0
         let hostedIdentifiers = Set(hosted.map(\.identifier).filter { !$0.isEmpty })
         let hostedDescriptions = Set(hosted.map(\.axDescription).filter { !$0.isEmpty })
         // Positive evidence that the agent mirrors this item's name; only such items may later become `notHosted`
@@ -361,12 +436,13 @@ public struct MenuBarScanner {
             if let h = matchedCandidates[ci], h.stale { carriedUnverified["\(c.app.pid)|\(c.info.identityKey)"] = h.staleCount }
             let ckey = "\(c.app.pid)|\(c.info.identityKey)"
             let notHosted = provablyNotHosted(ci)
+            let assumed = activeAssumed.contains(ci)
             if notHosted { newHidden.insert(ckey) }
             // Only items that the agent tree showed in the last full scan are expected there; app-only items (e.g.
             // SystemUIServer's) never appear in it and are taken from the cache as before. An item that a complete read
             // proves absent is not dropped but reported as hidden (`notHosted`), so order observers see it leave the bar.
             let expectedHosted = state.hostedKeys.contains(ckey) || state.hiddenKeys.contains(ckey)
-            if verifiedOnly && matchedCandidates[ci] == nil && expectedHosted && !(notHosted && expectedHosted) {
+            if verifiedOnly && matchedCandidates[ci] == nil && expectedHosted && !(notHosted && expectedHosted) && !assumed {
                 let key = ckey
                 let n = (state.unverifiedCount[key] ?? 0) + 1
                 guard carryUnverified, onBar(c.info.frame), n <= Self.maxStaleScans else { continue }
@@ -374,7 +450,7 @@ public struct MenuBarScanner {
                 carriedCount = n
             }
             // The fast path only trusts a "not hosted" verdict for items it knew to be hosted (or already hidden).
-            let reportNotHosted = notHosted && (!verifiedOnly || expectedHosted)
+            let reportNotHosted = (notHosted && (!verifiedOnly || expectedHosted)) || assumed
             if !reportNotHosted { newHidden.remove(ckey) }
             // A candidate verified by the hosted tree takes the hosted (authoritative, fresh) frame and is not stale.
             let h = reportNotHosted ? nil : matchedCandidates[ci]
@@ -386,7 +462,7 @@ public struct MenuBarScanner {
                 source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted, axElement: c.info.element,
                 stale: h == nil ? (c.stale || carriedCount > 0) : h!.stale,
                 staleCount: h?.staleCount ?? carriedCount,
-                notHostedByAgent: reportNotHosted))
+                notHostedByAgent: reportNotHosted, assumedNotHosted: assumed))
         }
         for (hi, owner) in attributed {
             let h = hosted[hi]

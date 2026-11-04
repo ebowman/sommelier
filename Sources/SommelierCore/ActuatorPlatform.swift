@@ -46,6 +46,26 @@ public protocol ActuatorPlatform: SnapshotScanning {
     func restartAgent(timeout: TimeInterval, expectedChange: Int) async -> AgentRestartOutcome
     func sleep(_ seconds: TimeInterval) async
     func now() -> Date
+    /// Number of items MenuBarAgent hosts on the strip right now; nil when the read was incomplete (of7 write-time evidence).
+    func hostedBarCount() async -> Int?
+    /// Records that these owners' identifier-less items were live-hidden by us and confirmed by a hosted-count drop.
+    func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?)
+    /// Forgets the assumed-hidden state of these owners (show, respawn, failed attempt).
+    func clearAssumedHidden(pids: Set<pid_t>)
+}
+
+public struct AssumedHiddenOwner: Equatable, Sendable {
+    public var pid: pid_t
+    public var bundleID: String?
+    /// Number of the owner's items that were on the bar before the hide.
+    public var items: Int
+    public init(pid: pid_t, bundleID: String?, items: Int) { self.pid = pid; self.bundleID = bundleID; self.items = items }
+}
+
+extension ActuatorPlatform {
+    public func hostedBarCount() async -> Int? { nil }
+    public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
+    public func clearAssumedHidden(pids: Set<pid_t>) {}
 }
 
 private final class ScannerBox: @unchecked Sendable { let v: MenuBarScanner; init(_ v: MenuBarScanner) { self.v = v } }
@@ -180,4 +200,33 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
 
     public func sleep(_ seconds: TimeInterval) async { try? await Task.sleep(for: .seconds(seconds)) }
     public func now() -> Date { Date() }
+
+    public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {
+        for o in owners { scanner.recordAssumedHidden(pid: o.pid, bundleID: o.bundleID, items: o.items, hostedAfter: hostedAfter) }
+    }
+
+    public func clearAssumedHidden(pids: Set<pid_t>) { scanner.clearAssumedHidden(pids: pids) }
+
+    public func hostedBarCount() async -> Int? {
+        // Bounded by wall clock: an AX read can stall while the agent is re-registering scenes right after a hide/show.
+        final class Once: @unchecked Sendable {
+            let lock = NSLock(); var done = false
+            func take() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+        }
+        return await withCheckedContinuation { c in
+            let once = Once()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let src = LiveAccessibilitySource()
+                var out: Int?
+                if let agent = src.runningApps().first(where: { $0.bundleID == menuBarAgentBundleID }) {
+                    let tree = src.agentHostedTree(for: agent, retry: true)
+                    if tree.failedReads == 0, tree.unnamedTimeouts == 0, !tree.elements.isEmpty {
+                        out = tree.elements.filter { !$0.stale && $0.frame.width > 1 && $0.frame.midY < 30 }.count
+                    }
+                }
+                if once.take() { c.resume(returning: out) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.6) { if once.take() { c.resume(returning: nil) } }
+        }
+    }
 }

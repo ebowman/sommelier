@@ -115,11 +115,34 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var liveWrites: [[String: Bool]] = []
     var livePending: [String: Bool]?
     var liveScanCount = 0
+    // Identifier-less items (of7): the live hide is applied at write time (the agent takes ~25 ms) but the app-side frame of
+    // an unnamed item stays on-bar ("ghost") unless the actuator recorded it as assumed-hidden.
+    var unnamed: Set<String> = []
+    var liveInstant = false
+    var ghosts: Set<String> = []
+    var hostedSkew = 0                       // added to hosted counts read after the live write (ambiguity scripting)
+    var hostedReads = 0
+    var assumedPIDs: Set<pid_t> = [], assumedRecords: [(owners: [AssumedHiddenOwner], after: Int?)] = [], clearedPIDs: [Set<pid_t>] = []
+    func pidOf(_ n: String) -> pid_t { item(n, x: 0).ownerPID }
+    func hostedBarCount() async -> Int? { hostedReads += 1; return order.count + (liveWrites.isEmpty ? 0 : hostedSkew) }
+    func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {
+        assumedRecords.append((owners, hostedAfter)); for o in owners { assumedPIDs.insert(o.pid) }
+    }
+    func clearAssumedHidden(pids: Set<pid_t>) { clearedPIDs.append(pids); assumedPIDs.subtract(pids) }
+    func nameOf(_ i: MenuBarItem) -> String { i.axIdentifier.isEmpty ? i.ownerName : i.axIdentifier }
 
     var liveHideShowAvailable: Bool { liveAvailable }
     func setAllowedLive(_ c: [String: Bool]) throws {
         if liveThrows { throw PreferenceWriterError.writeFailed("injected live failure") }
-        liveWrites.append(c); livePending = c; liveScanCount = 0
+        liveWrites.append(c)
+        if liveInstant {
+            let before = Set(order)
+            applyLive(c)
+            ghosts.formUnion(before.subtracting(order).intersection(unnamed))
+            ghosts.formIntersection(hidden)
+            return
+        }
+        livePending = c; liveScanCount = 0
     }
     private func applyLive(_ allowedByTracked: [String: Bool]) {
         for n in Array(order) + Array(hidden).sorted() {
@@ -137,8 +160,14 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func snapshot() -> MenuBarSnapshot {
         if emptyScans > 0 { emptyScans -= 1; return MenuBarSnapshot(items: [], capturedAt: clock) }
         var items = order.enumerated().filter { !(dropScans > 0 && $1 == dropName) }.map {
-            item($1, x: 100 + CGFloat($0) * 40, onBar: !(flickerScans > 0 && $1 == flickerName), stale: staleScans > 0 && $1 == staleName) }
-        items += hidden.sorted().map { item($0, x: 0, onBar: false) }
+            item($1, x: 100 + CGFloat($0) * 40, onBar: !(flickerScans > 0 && $1 == flickerName), stale: staleScans > 0 && $1 == staleName,
+                 ident: unnamed.contains($1) ? "" : nil) }
+        items += hidden.sorted().map { n in
+            let g = ghosts.contains(n) && !assumedPIDs.contains(pidOf(n))
+            var i = item(n, x: g ? 500 : 0, onBar: g, ident: unnamed.contains(n) ? "" : nil)
+            if !g { i.frame = CGRect(x: -1, y: 0, width: 30, height: 24) }
+            return i
+        }
         if staleScans > 0 { staleScans -= 1 }
         if dropScans > 0 { dropScans -= 1 }
         if flickerScans > 0 { flickerScans -= 1 }
@@ -161,9 +190,9 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func pressedMouseButtons() -> Int { buttons }
     func conflictingManager() -> String? { bartender }
     func resolve(_ s: MenuBarSnapshot) -> [ResolvedItem] {
-        s.items.map { ResolvedItem(item: $0, key: modules.contains($0.axIdentifier) ? .module(name: $0.axIdentifier) : key($0.axIdentifier), confidence: .exact) }
+        s.items.map { ResolvedItem(item: $0, key: modules.contains(nameOf($0)) ? .module(name: nameOf($0)) : key(nameOf($0)), confidence: .exact) }
     }
-    func trackedKey(for r: ResolvedItem) -> String? { untracked.contains(r.item.axIdentifier) ? nil : tracked(r.item.axIdentifier) }
+    func trackedKey(for r: ResolvedItem) -> String? { untracked.contains(nameOf(r.item)) ? nil : tracked(nameOf(r.item)) }
     func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {
                 dragCalls.append((steps, toX))
         let b = dragScript.isEmpty ? DragBehavior.apply : dragScript.removeFirst()
@@ -192,6 +221,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func readAllowed(_ keys: [String]) throws -> [String: Bool] { pendingAllowed.filter { keys.contains($0.key) } }
     func restartAgent(timeout: TimeInterval, expectedChange: Int) async -> AgentRestartOutcome {
         restarts += 1
+        ghosts = []
         flickerScans = flickerAfterRestart
         if restartAppliesAllowed {
             for n in Array(order) + Array(hidden).sorted() {
@@ -928,4 +958,41 @@ private final class FakePrefs: @unchecked Sendable {
     #expect(ActuationVerifier.overflowed([a, b, c]).isEmpty)
     var s = b; s.item.frame.origin.x = 100                        // B stacked exactly on A, no chevron read
     #expect(ActuationVerifier.overflowed([a, s, c]) == [key("A"), key("B")])
+}
+
+// MARK: - identifier-less items: write-time hosted-count evidence (of7)
+
+@Test func unnamedLiveHideIsVerifiedByHostedCountDrop() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .live)
+    #expect(w.restarts == 0 && w.allowedWrites.isEmpty)
+    #expect(w.assumedPIDs == [w.pidOf("B")])
+    #expect(w.assumedRecords.first?.owners == [AssumedHiddenOwner(pid: w.pidOf("B"), bundleID: "app.B", items: 1)])
+    #expect(w.assumedRecords.first?.after == 2)
+    #expect(await a.trace.contains { $0.contains("verified by hosted-count drop 1") })
+    // A show by us clears the state before the verification scans.
+    let back = await a.applyHiddenBatchDetailed([key("B"): false])
+    #expect(back.result.isVerified && back.mechanism == .live && w.restarts == 0)
+    #expect(w.assumedPIDs.isEmpty && w.clearedPIDs.contains([w.pidOf("B")]))
+}
+
+@Test func unnamedWithoutTheEvidenceDoesNotAssumeAnything() async {
+    // Another item vanished at the same time: the count drops by 2, not 1 -> ambiguous -> nothing recorded, ghost stays on-bar,
+    // the complete-read poll cannot confirm it and the pre-existing respawn runs once.
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]; w.hostedSkew = -1
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(w.assumedRecords.isEmpty && w.assumedPIDs.isEmpty)
+    #expect(out.mechanism == .respawn && w.restarts == 1)
+    #expect(out.result.isVerified)
+}
+
+@Test func namedItemsNeverReadTheHostedCount() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveApplyAfterScans = 1
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .live && w.hostedReads == 0 && w.assumedRecords.isEmpty)
 }

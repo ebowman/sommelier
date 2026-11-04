@@ -18,6 +18,9 @@ public enum HiddenReason: String, Codable, Sendable {
     /// what a live (cfprefsd-notified) hide looks like: the agent unregisters the scene, the app's own AX frames and
     /// the `stale` flag do not change (docs/findings-live-trigger.md section 4).
     case notHosted
+    /// Our own successful live hide of the owner's identifier-less items was confirmed by a hosted-count drop, and nothing
+    /// has contradicted it since; the app-side frame still says "on the bar" (of7). Never inferred from frames alone.
+    case assumedNotHosted
 }
 
 /// One menu bar item (status item / menu extra).
@@ -38,8 +41,12 @@ public struct MenuBarItem: @unchecked Sendable {
     /// True when the scanner concluded the item is hidden because a complete MenuBarAgent hosted read no longer
     /// contains it (`isOnMenuBar` is then false although `frame` may still look on-bar). See `HiddenReason.notHosted`.
     public var notHostedByAgent: Bool
+    /// True when the item is reported hidden only because of the assumed-hidden state (`HiddenReason.assumedNotHosted`).
+    public var assumedNotHosted: Bool
     /// nil when on the bar; otherwise why it is off it.
-    public var hiddenReason: HiddenReason? { isOnMenuBar ? nil : (notHostedByAgent ? .notHosted : .parkedFrame) }
+    public var hiddenReason: HiddenReason? {
+        isOnMenuBar ? nil : (assumedNotHosted ? .assumedNotHosted : (notHostedByAgent ? .notHosted : .parkedFrame))
+    }
     /// True for the agent's overflow chevron ("<<", `overflowChevronName` in English): the control MenuBarAgent hosts when
     /// the bar is full. Detected structurally (see `AXElementInfo.isOverflowChevron`), so it is the same under any locale.
     public var isOverflowChevron: Bool
@@ -59,8 +66,10 @@ public struct MenuBarItem: @unchecked Sendable {
         title: String, axDescription: String, axIdentifier: String,
         frame: CGRect, source: MenuBarItemSource, isOnMenuBar: Bool,
         axElement: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0,
-        notHostedByAgent: Bool = false, isOverflowChevron: Bool = false, systemOverflow: Bool = false
+        notHostedByAgent: Bool = false, isOverflowChevron: Bool = false, systemOverflow: Bool = false,
+        assumedNotHosted: Bool = false
     ) {
+        self.assumedNotHosted = assumedNotHosted
         self.isOverflowChevron = isOverflowChevron
         self.systemOverflow = systemOverflow
         self.ownerPID = ownerPID
@@ -87,6 +96,7 @@ extension MenuBarItem: Codable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let reason = try c.decodeIfPresent(HiddenReason.self, forKey: .hidden)
         self.init(
             ownerPID: try c.decode(pid_t.self, forKey: .ownerPID),
             ownerBundleID: try c.decodeIfPresent(String.self, forKey: .ownerBundleID),
@@ -100,9 +110,10 @@ extension MenuBarItem: Codable {
             axElement: nil,
             stale: try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false,
             staleCount: try c.decodeIfPresent(Int.self, forKey: .staleCount) ?? 0,
-            notHostedByAgent: (try c.decodeIfPresent(HiddenReason.self, forKey: .hidden)) == .notHosted,
+            notHostedByAgent: reason == .notHosted || reason == .assumedNotHosted,
             isOverflowChevron: try c.decodeIfPresent(Bool.self, forKey: .overflowChevron) ?? false,
-            systemOverflow: try c.decodeIfPresent(Bool.self, forKey: .systemOverflow) ?? false)
+            systemOverflow: try c.decodeIfPresent(Bool.self, forKey: .systemOverflow) ?? false,
+            assumedNotHosted: reason == .assumedNotHosted)
     }
 
     public func encode(to encoder: Encoder) throws {

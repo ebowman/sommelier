@@ -134,11 +134,19 @@ public protocol ActivationPlatform: Sendable {
     /// incomplete. A live-hidden item keeps its stale on-bar app-side frame (docs/findings-live-trigger.md), so the
     /// frame alone cannot say that a reveal has landed: the count rising above its pre-reveal value does.
     func hostedBarCount() async -> Int?
+    /// Of7: records the owner as assumed live-hidden (our own re-hide write, confirmed by a hosted-count drop) / forgets it.
+    func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?)
+    func clearAssumedHidden(pids: Set<pid_t>)
     func menuBaseline(_ target: ActivationTarget) -> Int
     func menuState(_ target: ActivationTarget, baseline: Int) -> ActivationMenuState
     var closeMonitor: (any CloseMonitoring)? { get }
     func sleep(_ seconds: TimeInterval) async
     func now() -> Date
+}
+
+extension ActivationPlatform {
+    public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
+    public func clearAssumedHidden(pids: Set<pid_t>) {}
 }
 
 /// The engine side of a transient reveal (`LayoutEngine` conforms).
@@ -171,6 +179,8 @@ public actor ItemActivator {
     private let config: Config
     private let log: @Sendable (String) -> Void
     private var inFlight = false
+    /// Of7: set while a unit is revealed: owner, complete hosted count before the reveal, items the reveal added.
+    private var reveal: (pid: pid_t, before: Int, items: Int)?
 
     public init(platform: any ActivationPlatform, hold: any TransientRevealing, config: Config = Config(),
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -233,6 +243,8 @@ public actor ItemActivator {
             guard button == .left else { return .failed(.unavailable("the menu bar could not be read completely; a right click needs the reveal")) }
             return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: false, say: say)
         }
+        platform.clearAssumedHidden(pids: [target.ownerPID])   // we are showing it: any assumed-hidden state is void
+        reveal = (target.ownerPID, hostedBefore, 1)
         do { try platform.setAllowedLive([tracked: true]) }
         catch {
             await hold.endTransientReveal(unit)
@@ -252,7 +264,9 @@ public actor ItemActivator {
             if Task.isCancelled { cancelled = true; break }
             if let f = platform.frame(of: target), Self.isSettledOnBar(f) {
                 if let p = previous, Self.sameFrame(p, f) {
-                    if let now = await platform.hostedBarCount(), now > hostedBefore { landed = f; break }
+                    if let now = await platform.hostedBarCount(), now > hostedBefore {
+                        landed = f; reveal?.items = now - hostedBefore; break
+                    }
                 } else { previous = f }
             } else { previous = nil }
             if platform.now().timeIntervalSince(shownAt) > config.revealTimeout { break }
@@ -391,7 +405,27 @@ public actor ItemActivator {
     /// Writes the re-hide and releases the hold either way. Returns the failure text, nil on success.
     private func rehide(tracked: String, unit: HideUnit, say: (String) -> Void) async -> String? {
         var note: String?
-        do { try platform.setAllowedLive([tracked: false]); say("unit hidden again (write done)") }
+        let info = reveal
+        reveal = nil
+        do {
+            try platform.setAllowedLive([tracked: false]); say("unit hidden again (write done)")
+            // Of7: identifier-less items keep a stale on-bar frame after this live hide. If the complete hosted count returns
+            // to its pre-reveal value, record the owner as assumed-hidden (still under the hold) so the engine's next pass
+            // reads the unit as hidden instead of planning a hide that ends in a respawn.
+            if let info {
+                var waited = 0.0
+                for at in [0.3, 0.8, 1.5] {
+                    await platform.sleep(at - waited); waited = at
+                    guard let c = await platform.hostedBarCount() else { continue }
+                    if c == info.before {
+                        platform.recordAssumedHidden([AssumedHiddenOwner(pid: info.pid, bundleID: nil, items: max(1, info.items))], hostedAfter: c)
+                        say("re-hide verified by hosted-count drop \(info.items) (-> \(c)); recorded as assumed-hidden")
+                        break
+                    }
+                    say("re-hide: hosted count \(c) at \(Int(at * 1000))ms, expected \(info.before); not recorded")
+                }
+            }
+        }
         catch { note = "\(error)"; say("re-hide failed: \(error); the engine will hide it") }
         await hold.endTransientReveal(unit)
         return note
@@ -442,28 +476,9 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
         }
     }
 
-    public func hostedBarCount() async -> Int? {
-        // Bounded by wall clock: an AX read can stall while the agent is re-registering scenes right after a hide/show.
-        final class Once: @unchecked Sendable {
-            let lock = NSLock(); var done = false
-            func take() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
-        }
-        return await withCheckedContinuation { c in
-            let once = Once()
-            DispatchQueue.global(qos: .userInitiated).async {
-                let src = LiveAccessibilitySource()
-                var out: Int?
-                if let agent = src.runningApps().first(where: { $0.bundleID == menuBarAgentBundleID }) {
-                    let tree = src.agentHostedTree(for: agent, retry: true)
-                    if tree.failedReads == 0, tree.unnamedTimeouts == 0, !tree.elements.isEmpty {
-                        out = tree.elements.filter { !$0.stale && $0.frame.width > 1 && $0.frame.midY < 30 }.count
-                    }
-                }
-                if once.take() { c.resume(returning: out) }
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.6) { if once.take() { c.resume(returning: nil) } }
-        }
-    }
+    public func hostedBarCount() async -> Int? { await platform.hostedBarCount() }
+    public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { platform.recordAssumedHidden(owners, hostedAfter: hostedAfter) }
+    public func clearAssumedHidden(pids: Set<pid_t>) { platform.clearAssumedHidden(pids: pids) }
 
     public func frame(of t: ActivationTarget) -> CGRect? {
         guard let el = t.element else { return nil }

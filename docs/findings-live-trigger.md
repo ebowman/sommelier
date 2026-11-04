@@ -52,6 +52,9 @@ saw it stay false). Parked x in -1..3 only appears after a respawn. Detect a liv
 (`Unregistering scene` / `Registered new scene` for the bundle), (b) MenuBarAgent's hosted AX window children (TESTED in gdu.38: 1.5 s after `ccset ... 0` the agent's hosted tree contains NO Dummy-A/Dummy-B elements at all - not parked, simply absent - while the app's own `AXExtrasMenuBar` still reports both at their on-bar frames (x=784, y=2, 32x24); after `ccset ... 1` both are hosted again within 2 s; this is the signal `MenuBarScanner` uses, see `MenuBarItem.hidden == .notHosted`; it is reported by the first COMPLETE full scan after the write, 1.0-4.1 s measured, and an incomplete first scan still reports on-bar, so poll until a complete read, see docs/testing.md), or (c) a respawn. The earlier "no effect" rows were re-run with the scene log as the oracle
 (`recheck.log`: zero "Unregistering scene" for every trigger except those that killed the agent).
 
+Identifier-less items (Tot, Yoink, Moom) cannot be judged by name; their live hide is detected by write-time hosted-count evidence and the
+`assumedNotHosted` state (of7, docs/architecture.md Hide / show row; live table in docs/testing.md).
+
 ## 5. Caveats / risks
 * The writer must go through cfprefsd under the group domain. On this dev machine an AD-HOC signed binary with `com.apple.security.application-groups =
   group.com.apple.controlcenter` can read and write it (`CFPreferencesSetValue(key, data, "group.com.apple.controlcenter", kCFPreferencesCurrentUser,

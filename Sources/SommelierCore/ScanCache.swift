@@ -7,6 +7,18 @@ struct CachedApp {
     var infos: [AXElementInfo]
 }
 
+/// Write-time evidence that an owner's identifier-less items are live-hidden although their app-side frames still say
+/// "on the bar" (docs/architecture.md, assumed-hidden state). Only our own successful write plus a hosted-count drop sets it.
+struct AssumedHidden: Codable, Equatable {
+    var pid: Int32
+    var bundleID: String?
+    var at: Date
+    /// Complete hosted count right after the hide (nil when unknown).
+    var hostedAfter: Int?
+    /// Number of the owner's items that were on the bar before the hide.
+    var items: Int
+}
+
 /// State kept between scans by one `MenuBarScanner`: per-app extras (for attribution in the fast path and for
 /// budget-miss fallback), the last hosted tree (for stale carry-forward) and the strip frame. Optionally persisted
 /// to disk so a fresh process (e.g. `mbprobe list --fast`) starts warm.
@@ -26,6 +38,9 @@ final class ScanState: @unchecked Sendable {
     /// Cached app items that were positively matched to a hosted element BY NAME (identifier, else description) in some
     /// read. Only these may become `notHosted`; persisted.
     var seenHostedKeys: Set<String> = []
+    /// Owners whose identifier-less items we hid ourselves (live write) and a hosted-count drop confirmed (of7). Keyed by
+    /// pid because the unit is the owner and the items' own keys are frame-based (volatile). Persisted.
+    var assumedHidden: [pid_t: AssumedHidden] = [:]
     private var lastSaved: Data?
     /// Consecutive fast scans each unverified cached item has been shown as stale (in-memory only).
     var unverifiedCount: [String: Int] = [:]
@@ -40,7 +55,7 @@ final class ScanState: @unchecked Sendable {
         init(_ i: AXElementInfo) { title = i.title; axDescription = i.axDescription; identifier = i.identifier; frame = i.frame }
         var info: AXElementInfo { AXElementInfo(title: title, axDescription: axDescription, identifier: identifier, frame: frame) }
     }
-    private struct File: Codable { var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]?; var hiddenKeys: [String]?; var seenHostedKeys: [String]? }
+    private struct File: Codable { var apps: [FileApp]; var hosted: [FileInfo]; var strip: CGRect?; var chronic: [Int32]?; var hostedKeys: [String]?; var hiddenKeys: [String]?; var seenHostedKeys: [String]?; var assumedHidden: [AssumedHidden]? }
 
     func loadIfNeeded() {
         guard !loaded else { return }
@@ -55,6 +70,7 @@ final class ScanState: @unchecked Sendable {
         hostedKeys = Set(f.hostedKeys ?? [])
         hiddenKeys = Set(f.hiddenKeys ?? [])
         seenHostedKeys = Set(f.seenHostedKeys ?? [])
+        assumedHidden = Dictionary((f.assumedHidden ?? []).map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
         hasFullScan = !f.apps.isEmpty
     }
 
@@ -62,7 +78,7 @@ final class ScanState: @unchecked Sendable {
         guard let url else { return }
         let f = File(apps: perApp.values.filter { !$0.infos.isEmpty }.sorted { $0.app.pid < $1.app.pid }.map {
             FileApp(pid: $0.app.pid, bundleID: $0.app.bundleID, name: $0.app.name, infos: $0.infos.map(FileInfo.init))
-        }, hosted: lastHosted.filter { !$0.stale }.map(FileInfo.init), strip: lastStrip, chronic: chronic.sorted(), hostedKeys: hostedKeys.sorted(), hiddenKeys: hiddenKeys.sorted(), seenHostedKeys: seenHostedKeys.sorted())
+        }, hosted: lastHosted.filter { !$0.stale }.map(FileInfo.init), strip: lastStrip, chronic: chronic.sorted(), hostedKeys: hostedKeys.sorted(), hiddenKeys: hiddenKeys.sorted(), seenHostedKeys: seenHostedKeys.sorted(), assumedHidden: assumedHidden.values.sorted { $0.pid < $1.pid })
         // Written only when the content changed since the last write by this process.
         guard let data = try? JSONEncoder().encode(f), data != lastSaved else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

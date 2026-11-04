@@ -417,9 +417,50 @@ public actor LiveActuator: MenuBarActuator {
         if config.liveHideShow {
             if platform.liveHideShowAvailable {
                 let t0 = respawnStart
+                // Write-time evidence for identifier-less items (of7): the scanner cannot see their live hide (their app-side
+                // frame stays on-bar), so the complete hosted count before the write is the baseline for a count drop.
+                var unnamedOwners: [AssumedHiddenOwner] = []
+                var showPIDs = Set<pid_t>()
+                for r in resolved {
+                    guard let t = platform.trackedKey(for: r), let want = wantByApp[t] else { continue }
+                    if !want { showPIDs.insert(r.item.ownerPID); continue }
+                    guard ActuationVerifier.onBar(r), !r.item.stale else { continue }
+                    if let i = unnamedOwners.firstIndex(where: { $0.pid == r.item.ownerPID }) { unnamedOwners[i].items += 1 }
+                    else { unnamedOwners.append(AssumedHiddenOwner(pid: r.item.ownerPID, bundleID: r.item.ownerBundleID, items: 1)) }
+                }
+                // Owners with at least one identifier-less on-bar item; their count (all on-bar items of the owner) is recorded.
+                let unnamedPIDs = Set(resolved.filter { r in
+                    guard let t = platform.trackedKey(for: r), wantByApp[t] == true, ActuationVerifier.onBar(r), !r.item.stale else { return false }
+                    return r.item.axIdentifier.isEmpty && r.item.axDescription.isEmpty
+                }.map(\.item.ownerPID))
+                unnamedOwners = unnamedOwners.filter { unnamedPIDs.contains($0.pid) }
+                var baseline: Int?
+                if !unnamedOwners.isEmpty {
+                    for _ in 0..<2 { baseline = await platform.hostedBarCount(); if baseline != nil { break } }
+                    if baseline == nil { note("live: no complete hosted baseline before the write; no count evidence for identifier-less items") }
+                }
                 var wrote = false
                 do { try platform.setAllowedLive(wantByApp.mapValues { !$0 }); wrote = true }
                 catch { note("live write failed (\(error)); falling back to respawn") }
+                var evidence: String?
+                if wrote {
+                    // A show by us ends any assumed-hidden state of that owner before the verification scans read it.
+                    if !showPIDs.isEmpty { platform.clearAssumedHidden(pids: showPIDs) }
+                    if let baseline, !unnamedOwners.isEmpty, expectedChange < 0 {
+                        var waited = 0.0
+                        for at in [0.3, 0.8, 1.5] {
+                            await platform.sleep(at - waited); waited = at
+                            guard let c = await platform.hostedBarCount() else { continue }
+                            if c == baseline + expectedChange {
+                                evidence = "hosted-count drop \(-expectedChange) (\(baseline) -> \(c))"
+                                platform.recordAssumedHidden(unnamedOwners, hostedAfter: c)
+                                note("live: evidence at \(Int(at * 1000))ms: \(evidence!)")
+                                break
+                            }
+                            note("live: hosted count \(c) at \(Int(at * 1000))ms, expected \(baseline + expectedChange); ambiguous")
+                        }
+                    }
+                }
                 if wrote {
                     var polls = 0
                     var complete = 0
@@ -435,7 +476,8 @@ public actor LiveActuator: MenuBarActuator {
                             let v = verdicts(platform.resolve(s))
                             if v.values.allSatisfy(\.ok) {
                                 let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
-                                note("live: verified by complete read #\(complete) (rule: first/second complete read satisfied); \(polls) scans, \(complete) complete, \(ms)ms, no respawn")
+                                let via = evidence.map { "live: verified by \($0); " } ?? ""
+                                note("\(via)live: verified by complete read #\(complete) (rule: first/second complete read satisfied); \(polls) scans, \(complete) complete, \(ms)ms, no respawn")
                                 var out = finish(expectations, v, s, settled: true, collateral: [])
                                 out.mechanism = .live; out.elapsedMS = ms
                                 return out
@@ -447,6 +489,7 @@ public actor LiveActuator: MenuBarActuator {
                     }
                     let ms = Int(platform.now().timeIntervalSince(t0) * 1000)
                     note("live verify failed after \(ms)ms: \(polls) scans, \(complete) complete, ended by \(ended); falling back to respawn")
+                    if evidence != nil { platform.clearAssumedHidden(pids: Set(unnamedOwners.map(\.pid))) }
                 }
             } else {
                 note("live hide/show unavailable (no app-group entitlement); using respawn")
@@ -454,6 +497,7 @@ public actor LiveActuator: MenuBarActuator {
         }
         // Layout before the restart (docs/findings-restart-collateral.md): MenuBarAgent re-bases the stored positions on
         // every restart, and the re-based values can re-sort items. Remember the store values so the order can be restored.
+        platform.clearAssumedHidden(pids: members)   // the respawn rebuilds the layout; no write-time assumption survives it
         let store0 = (try? platform.readOrderStore()) ?? [:]
         // Participants: every item the agent lays out by store value, on the bar now (stale or not: its store value is still
         // its slot) plus the items about to be shown (their slot is their parked value). Hidden items drop out.

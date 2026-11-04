@@ -227,3 +227,27 @@ menu` failures that were AXPress fallbacks on a stale frame (the hosted fast rea
 retrying tree read. The panel's inline red caption is drawn under the outlined entry (tooltips do not show on a non-activating panel); live check:
 a not-running Tot refreshed the entries (entry gone, log `failed: the app is not running`), so the caption itself was only seen by the reviewer's
 outline run. `mbprobe activate` refuses while a Sommelier process runs (no engine hold) unless `--force`.
+
+
+### Identifier-less live hide: hosted-count evidence (of7)
+Unit tests: `LiveActuatorTests` (count drop -> live verified + assumed recorded; ambiguous count -> nothing recorded, one respawn; show clears),
+`MenuBarScannerFastPathTests` (assumed hidden on full and fast scans, never without evidence, contradiction clears, count-not-back keeps, quit/expiry
+prune, persistence), `ItemActivatorTests` (re-hide records / does not record). `make test` 369 tests.
+
+Live 2026-11-04 (Bartender 7 quit, `mbprobe` ad-hoc signed, Moom + Tot, MenuBarAgent pid 74173 throughout, never restarted):
+
+| op | mechanism | evidence | ms (write->verified) |
+|---|---|---|---|
+| hide Moom | live | hosted-count drop 1 (28 -> 27), probe at 800 ms (300 ms read still 28) | 3372 |
+| show Moom | live | frame rule | 1979 |
+| show Tot | live | frame rule | 6867 |
+| hide Tot | live | hosted-count drop 1 (29 -> 28) at 800 ms | 7650 |
+| Moom cycles 1-3 hide | live x3 | drop 1 at 800/800/1500 ms | 5731 / 3710 / 5624 |
+| Moom cycles 2-3 show (cycle 1 show was a no-op) | live x2 | frame rule | 682 / 1761 |
+| extra show/hide Moom | live x2 | drop 1 | 9945 / 2382 |
+
+After each hide `mbprobe list --json` reports `hidden=assumedNotHosted` (Moom, Tot); 5 consecutive `list --json` scans flag exactly those two (no
+other item hidden except the 28 parked ones), 23 on-bar items. App run (`SOMMELIER_ACTIVATE=<Tot key>`, Escape after ~8 s): `unit hidden again`,
+`re-hide verified by hosted-count drop 1 (-> 28); recorded as assumed-hidden`, then every engine pass `phase=converged actions=0`, no "falling back
+to respawn", pid unchanged. End state: Moom/Tot parked with `isAllowed` blob identical to the backup, third-party on-bar order identical, Bartender
+relaunched.

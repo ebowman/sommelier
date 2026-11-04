@@ -69,12 +69,18 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
     func axPress(_ t: ActivationTarget) -> Int32 { presses += 1; openedAt = clock.now(); return pressResult }
     /// nil = unknown (frame-only landing); `staleFrameNoCount` models a unit live-hidden earlier whose app-side frame is stale.
     var countKnown = true
+    var countAfterHide: Int?
     var staleFrame = false
     func hostedBarCount() async -> Int? {
         guard countKnown else { return nil }
         if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return 11 }
+        if writes.last?.values.contains(false) == true, let c = countAfterHide { return c }
         return 10
     }
+    var recorded: [(owners: [AssumedHiddenOwner], after: Int?)] = []
+    var cleared: [Set<pid_t>] = []
+    func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { recorded.append((owners, hostedAfter)) }
+    func clearAssumedHidden(pids: Set<pid_t>) { cleared.append(pids) }
     func menuBaseline(_ t: ActivationTarget) -> Int { 0 }
     func menuState(_ t: ActivationTarget, baseline: Int) -> ActivationMenuState {
         guard let o = openedAt, let a = menuAfter else { return ActivationMenuState(present: false) }
@@ -117,6 +123,21 @@ private actor FakeHold: TransientRevealing {
         #expect(p.writes == [["com.x.tool": true], ["com.x.tool": false]])
         #expect(await h.begun == [key.hideUnit])
         #expect(await h.ended == [key.hideUnit])
+    }
+
+    @Test func rehideRecordsTheOwnerAsAssumedHiddenWhenTheHostedCountReturns() async {
+        let p = FakeActivation()
+        guard case .opened = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(p.cleared == [[42]])                                   // the show voided any earlier assumption
+        #expect(p.recorded.count == 1)
+        #expect(p.recorded.first?.owners == [AssumedHiddenOwner(pid: 42, bundleID: nil, items: 1)])
+        #expect(p.recorded.first?.after == 10)
+    }
+
+    @Test func rehideDoesNotRecordWhenTheHostedCountDoesNotReturn() async {
+        let p = FakeActivation(); p.countAfterHide = 12
+        guard case .opened = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(p.recorded.isEmpty)
     }
 
     @Test func staleOnBarFrameDoesNotCountAsRevealedUntilTheAgentHostsTheItem() async {
