@@ -123,6 +123,8 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var hostedTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to hosted layouts read after the live write
     var preScansIncomplete = 0               // the first N full scans report an incomplete hosted read
     var probeOnlyTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to raw probes only (poll scans stay right)
+    var allowedLiveValues: [String: Bool]?   // Control Center store readback (nil = unavailable)
+    func readAllowedLive(_ keys: [String]) -> [String: Bool]? { allowedLiveValues.map { $0.filter { keys.contains($0.key) } } }
     var cachedLayout: [HostedEntry]?         // what the scanner cache offers as a recent complete layout
     var hostedReads = 0
     var dropAfterWrite = ""                  // after the live write this item reads as parked app-side (hosted tree unchanged)
@@ -1054,4 +1056,27 @@ private final class FakePrefs: @unchecked Sendable {
     w.liveAvailable = true; w.liveApplyAfterScans = 1
     let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
     #expect(out.mechanism == .live && w.hostedReads == 0 && w.assumedRecords.isEmpty)
+}
+
+@Test func unnamedHideAlreadyHiddenInTheStoreWritesNothing() async {
+    // The store says hidden (isAllowed false) but the app-side frame is stale on-bar: no write, no respawn, a record, .verified.
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.unnamed = ["B"]; w.allowedLiveValues = ["tracked.B": false]
+    let a = liveActuator(w)
+    let out = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && out.mechanism == .alreadyApplied)
+    #expect(w.liveWrites.isEmpty && w.allowedWrites.isEmpty && w.restarts == 0)
+    #expect(w.assumedPIDs == [w.pidOf("B")])
+    #expect(await a.trace.contains { $0.contains("already hidden per Control Center store; recorded assumed-hidden") })
+}
+
+@Test func storeSayingShownOrNamedItemsAreNotShortCircuited() async {
+    let w = World(["A", "B", "C"])
+    w.liveAvailable = true; w.liveInstant = true; w.unnamed = ["B"]; w.allowedLiveValues = ["tracked.B": true]
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.mechanism == .live && w.liveWrites.count == 1)
+    let v = World(["A", "B", "C"])
+    v.liveAvailable = true; v.liveApplyAfterScans = 1; v.allowedLiveValues = ["tracked.B": false]   // B is named
+    let o2 = await liveActuator(v).applyHiddenBatchDetailed([key("B"): true])
+    #expect(o2.mechanism == .live && v.liveWrites.count == 1 && v.assumedRecords.isEmpty)
 }

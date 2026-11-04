@@ -45,10 +45,17 @@ public struct MenuBarScanner {
 
     static let maxConcurrency = 8
 
+    /// Accessibility identifier of Sommelier's own status item button (set by the app). Its hosted element must never be
+    /// attributed to another app's candidate by the frame join (it can sit on a stale frame of the same width).
+    public static let ownStatusItemIdentifier = "ie.boboco.sommelier.statusitem"
+    static func isOwnHostedElement(_ e: AXElementInfo) -> Bool {
+        e.identifier == ownStatusItemIdentifier || (e.identifier.isEmpty && e.axDescription == "Sommelier")
+    }
+
     /// Hard safety expiry of an assumed-hidden record (counted from when we recorded it).
     static let assumedHiddenHardExpiry: TimeInterval = 2 * 3600
     /// Minimum interval between Control Center `isAllowed` readbacks per assumed-hidden owner.
-    static let assumedReadbackInterval: TimeInterval = 60
+    static let assumedReadbackInterval: TimeInterval = 10
 
     /// Records that WE hid `pid`'s identifier-less items with a live write and the hosted tree lost exactly that unit's
     /// elements (`LiveActuator`, `ItemActivator`). Until contradicted (see `assemble`) such an owner's on-bar-framed,
@@ -303,13 +310,14 @@ public struct MenuBarScanner {
         let hostedComplete = agent != nil && !hosted.isEmpty && tree.failedReads == 0 && tree.unnamedTimeouts == 0
 
         // Assumed-hidden state (of7). Identifier-less items (Tot, Yoink, Moom) cannot be judged by name, so after a live
-        // hide their stale on-bar app-side frame looks "on the bar". When WE just hid such an owner with a live write and a
-        // complete hosted-count drop confirmed it (`recordAssumedHidden`), its unnamed on-bar-framed candidates are reported
-        // hidden until: the owner quits, 10 minutes pass, we show it (actuator clears), or a complete read contradicts it
-        // (a hosted element of the same width on the candidate's frame while the hosted count is back to at least
-        // `hostedAfter + items`). The flag is set ONLY by our own successful write plus count evidence, never inferred from
-        // frames, so it cannot produce a false hidden on an untouched bar. A wrongly cleared flag only restores the old
-        // behaviour (reported on-bar, respawn fallback).
+        // hide their stale on-bar app-side frame looks "on the bar". When WE hid such an owner (live write confirmed by
+        // hosted-ELEMENT evidence, or found already hidden in the Control Center store; `recordAssumedHidden`), its unnamed
+        // on-bar-framed candidates are reported hidden for as long as the Control Center store says `isAllowed == false`
+        // (CFPreferences readback, at most every 10 s per owner): that store is what the agent enforces. A record also ends
+        // when the owner quits, its pid now belongs to another bundle, we show the unit (actuator/activator clear it), or
+        // after a 2 h hard safety expiry. There is deliberately NO frame/width/count contradiction rule: a foreign element
+        // (e.g. our own status item) can overlap a stale frame with the same width. The flag is set ONLY by our own write
+        // plus evidence, never inferred from frames, so it cannot produce a false hidden on an untouched bar.
         let nowT = Date()
         for (pid, rec) in state.assumedHidden {
             func drop(_ why: String) { state.assumedHidden[pid] = nil; state.assumedCheckedAt[pid] = nil; log("assumed-hidden: pid \(pid) \(why); dropped") }
@@ -321,7 +329,7 @@ public struct MenuBarScanner {
             if nowT.timeIntervalSince(rec.at) > Self.assumedHiddenHardExpiry {
                 drop("hit the \(Int(Self.assumedHiddenHardExpiry / 3600)) h safety expiry"); continue
             }
-            // Someone else showed it: Control Center says isAllowed (checked at most every 60 s).
+            // Someone else showed it: Control Center says isAllowed (checked at most every 10 s).
             if let tk = rec.trackedKey, nowT.timeIntervalSince(state.assumedCheckedAt[pid] ?? rec.at) >= Self.assumedReadbackInterval {
                 state.assumedCheckedAt[pid] = nowT
                 let r = allowedReadback(tk)
@@ -341,7 +349,7 @@ public struct MenuBarScanner {
         var matchedHosted = Set<Int>()
         var hostedOwner: [Int: pid_t] = [:]
         func pass(_ matches: (AXElementInfo, AXElementInfo) -> Bool) {
-            for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) {
+            for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) {
                 if let ci = candidates.indices.first(where: {
                     matchedCandidates[$0] == nil && !assumedIdx.contains($0) && matches(h, candidates[$0].info)
                 }) {
@@ -357,31 +365,6 @@ public struct MenuBarScanner {
             return !i.isNull && i.width > 0 && i.height > 0
         }
 
-        // Contradiction (a): a complete read whose hosted element on the strip matches an assumed candidate's width and
-        // overlaps its frame, with the hosted count back to (at least) what it was before the hide.
-        if hostedComplete, !assumedIdx.isEmpty {
-            let stripCount = hosted.filter { !$0.stale && $0.frame.width > 1 && onBar($0.frame) }.count
-            var cleared = Set<pid_t>()
-            for pid in Set(assumedIdx.map { candidates[$0].app.pid }) {
-                guard let rec = state.assumedHidden[pid] else { continue }
-                if let after = rec.hostedAfter, stripCount < after + rec.items { continue }
-                for ci in assumedIdx.sorted() where candidates[ci].app.pid == pid && matchedCandidates[ci] == nil {
-                    let cf = candidates[ci].info.frame
-                    if let hi = hosted.indices.first(where: {
-                        let hf = hosted[$0].frame
-                        let i = hf.intersection(cf)
-                        return !matchedHosted.contains($0) && !hosted[$0].stale && onBar(hf) && abs(hf.width - cf.width) <= 1
-                            && !i.isNull && i.width > 0 && i.height > 0
-                    }) {
-                        matchedHosted.insert(hi); matchedCandidates[ci] = hosted[hi]; hostedOwner[hi] = pid; cleared.insert(pid); break
-                    }
-                }
-            }
-            for pid in cleared {
-                state.assumedHidden[pid] = nil
-                log("assumed-hidden: pid \(pid) contradicted by a complete read (hosted element on its frame, \(stripCount) hosted); cleared")
-            }
-        }
         let activeAssumed = assumedIdx.filter { state.assumedHidden[candidates[$0].app.pid] != nil }
 
         // Identifier-prefix attribution: hosted element id "com.bjango.istatmenus.weather" belongs to a

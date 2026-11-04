@@ -22,6 +22,7 @@ final class StatusItemController: NSObject {
         statusItem.autosaveName = "Sommelier"
         super.init()
         if let b = statusItem.button {
+            b.setAccessibilityIdentifier(MenuBarScanner.ownStatusItemIdentifier)
             b.image = NSImage(systemSymbolName: "wineglass", accessibilityDescription: "Sommelier")
             b.target = self
             b.action = #selector(clicked(_:))

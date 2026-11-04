@@ -461,17 +461,33 @@ private func itemB(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ow
     #expect(back?.hiddenReason == .assumedNotHosted)
 }
 
-@Test func contradictingCompleteReadClearsTheAssumption() {
+@Test func aForeignSameWidthElementOnTheStaleFrameDoesNotClearTheAssumption() {
     var scanner = MenuBarScanner(source: world())
     _ = scanner.scan()
     scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", items: 1, hostedAfter: 2)
     scanner.source = world(trees: [hostedWithoutB()])
     #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)
-    // B is hosted again on its frame (same width) and the count is back to 3: shown by someone else.
+    // A foreign element (e.g. another status item) of the same width lands on B's stale frame and the count is back up:
+    // frames prove nothing, the record stands (only the Control Center store, quit, our show or the 2 h cap end it).
     scanner.source = world()
-    let b = itemB(scanner.scan())
-    #expect(b?.isOnMenuBar == true)
-    #expect(scanner.assumedHiddenPIDs.isEmpty)
+    let s = scanner.scan()
+    #expect(itemB(s)?.hiddenReason == .assumedNotHosted)
+    #expect(scanner.assumedHiddenPIDs == [11])
+    #expect(s.hostedLayout?.contains { $0.minX == 200 && $0.ownerPID == nil } == true)   // the foreign element is not attributed to B
+}
+
+@Test func ownStatusItemIsNeverJoinedToAStaleCandidate() {
+    var s = world()
+    s.trees = [tree([AXElementInfo(axDescription: "A one", identifier: "a1", frame: bar(300)),
+                     AXElementInfo(identifier: MenuBarScanner.ownStatusItemIdentifier, frame: bar(200)),
+                     AXElementInfo(axDescription: "Clock", identifier: "clock", frame: bar(900))])]
+    let snap = MenuBarScanner(source: s).scan()
+    #expect(snap.hostedLayout?.first { $0.minX == 200 }?.ownerPID == nil)
+    #expect(snap.items.contains { $0.source == .agentHostedOnly && $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier })
+    // Without the identifier the same frame IS joined (the old behaviour for ordinary items).
+    s.trees = [tree([AXElementInfo(axDescription: "A one", identifier: "a1", frame: bar(300)), AXElementInfo(frame: bar(200)),
+                     AXElementInfo(axDescription: "Clock", identifier: "clock", frame: bar(900))])]
+    #expect(MenuBarScanner(source: s).scan().hostedLayout?.first { $0.minX == 200 }?.ownerPID == 11)
 }
 
 @Test func frameCoincidenceWithoutTheCountBackDoesNotClearTheAssumption() {
@@ -527,13 +543,13 @@ private func itemB(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ow
     let allowed = Locked(false)
     scanner.allowedReadback = { k in k == "c.d" ? allowed.value : nil }
     scanner.source = world(trees: [hostedWithoutB()])
-    // Recorded 61 s ago: the readback is due; isAllowed is still false -> stays hidden.
-    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", trackedKey: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-61))
+    // Recorded 11 s ago: the readback is due; isAllowed is still false -> stays hidden.
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", trackedKey: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-11))
     #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)
-    // Checked just now: not due again within 60 s even if the answer changed.
+    // Checked just now: not due again within 10 s even if the answer changed.
     allowed.value = true
     #expect(itemB(scanner.scan())?.hiddenReason == .assumedNotHosted)
-    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", trackedKey: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-61))
+    scanner.recordAssumedHidden(pid: 11, bundleID: "c.d", trackedKey: "c.d", items: 1, hostedAfter: 2, at: Date().addingTimeInterval(-11))
     #expect(itemB(scanner.scan())?.isOnMenuBar == true)             // someone else showed it
     #expect(scanner.assumedHiddenPIDs.isEmpty)
 }

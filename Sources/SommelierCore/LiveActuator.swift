@@ -7,6 +7,8 @@ public enum ActuationMechanism: String, Sendable {
     case live
     /// File write + `killall MenuBarAgent`.
     case respawn
+    /// Nothing written: the Control Center store already had the wanted value (identifier-less units found already hidden).
+    case alreadyApplied
 }
 
 public struct BatchOutcome: Sendable {
@@ -434,6 +436,24 @@ public actor LiveActuator: MenuBarActuator {
                     return r.item.axIdentifier.isEmpty && r.item.axDescription.isEmpty
                 }.map(\.item.ownerPID))
                 unnamedOwners = unnamedOwners.filter { unnamedPIDs.contains($0.pid) }
+                // Already hidden per the Control Center store (of7): identifier-less units whose `isAllowed` already reads false
+                // are hidden as far as the agent is concerned (it enforces the store) even though their app-side frame says
+                // on-bar. No write, no respawn: record the owners as assumed-hidden so the scanner reflects it.
+                let onBarHideItems = resolved.filter { r in
+                    guard let t = platform.trackedKey(for: r), wantByApp[t] == true else { return false }
+                    return ActuationVerifier.onBar(r) && !r.item.stale
+                }
+                if showPIDs.isEmpty, !unnamedOwners.isEmpty,
+                   onBarHideItems.allSatisfy({ $0.item.axIdentifier.isEmpty && $0.item.axDescription.isEmpty }),
+                   let allowed = platform.readAllowedLive(Array(wantByApp.keys)),
+                   wantByApp.keys.allSatisfy({ allowed[$0] == false }) {
+                    platform.recordAssumedHidden(unnamedOwners, hostedAfter: nil)
+                    note("already hidden per Control Center store; recorded assumed-hidden")
+                    var out = BatchOutcome(perKey: Dictionary(uniqueKeysWithValues: expectations.keys.map { ($0, ActuationResult.verified(snap)) }),
+                                           result: .verified(snap))
+                    out.mechanism = .alreadyApplied; out.elapsedMS = 0
+                    return out
+                }
                 // Evidence = WHICH hosted elements vanished (not how many): the pre-write hosted tree minus exactly the unit's
                 // elements must equal the post-write tree, in order. Only for pure hides; a batch that also shows items cannot
                 // predict the tree, so it keeps the complete-read poll alone.

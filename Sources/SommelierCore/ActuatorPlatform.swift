@@ -37,6 +37,8 @@ public protocol ActuatorPlatform: SnapshotScanning {
     /// ONE atomic write of all `isAllowed` flags (keys are `trackedKey`s).
     func writeAllowed(_ changes: [String: Bool]) throws
     func readAllowed(_ keys: [String]) throws -> [String: Bool]
+    /// `isAllowed` through CFPreferences (the live truth; the plist file lags); nil when unavailable.
+    func readAllowedLive(_ keys: [String]) -> [String: Bool]?
     /// True when the cfprefsd-notified write is usable (this process has the app-group entitlement). Decided BEFORE writing:
     /// an unentitled CFPreferences write silently lands in the wrong file.
     var liveHideShowAvailable: Bool { get }
@@ -71,6 +73,7 @@ public struct AssumedHiddenOwner: Equatable, Sendable {
 }
 
 extension ActuatorPlatform {
+    public func readAllowedLive(_ keys: [String]) -> [String: Bool]? { nil }
     public func hostedBarCount() async -> Int? { nil }
     public func hostedLayout() async -> [HostedEntry]? { nil }
     public func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? { nil }
@@ -192,6 +195,11 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
         guard liveHideShowAvailable else { throw PreferenceWriterError.writeFailed("no app-group entitlement for live writes") }
         var s = ControlCenterTrackedAppsStore()
         try s.setAllowedBatchLive(changes)
+    }
+
+    public func readAllowedLive(_ keys: [String]) -> [String: Bool]? {
+        guard liveHideShowAvailable else { return nil }
+        return try? ControlCenterTrackedAppsStore.allowedLive(keys)
     }
 
     public func readAllowed(_ keys: [String]) throws -> [String: Bool] {
