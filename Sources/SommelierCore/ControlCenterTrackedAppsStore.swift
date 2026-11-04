@@ -93,6 +93,31 @@ public struct ControlCenterTrackedAppsStore {
         catch { throw PreferenceWriterError.writeFailed("serialize: \(error)") }
     }
 
+    /// Sets `isAllowed` for several existing entries in ONE atomic write. All-or-nothing: every key is validated
+    /// (not `module:`/`com.apple.*`, entry exists) before anything is written.
+    public mutating func setAllowedBatch(_ changes: [String: Bool]) throws {
+        guard !changes.isEmpty else { return }
+        for key in changes.keys where key.hasPrefix("module:") || key.hasPrefix("com.apple.") {
+            throw PreferenceWriterError.malformed("refusing to edit Apple/system entry \(key)")
+        }
+        var (root, fmt, list, ifmt, raw) = try load()
+        var remaining = Set(changes.keys)
+        for i in stride(from: 0, to: list.count, by: 2) {
+            guard let k = Self.locationKey(list[i]), let want = changes[k] else { continue }
+            guard var v = list[i + 1] as? [String: Any] else { throw PreferenceWriterError.malformed("entry for \(k) is not a dictionary") }
+            v["isAllowed"] = want
+            list[i + 1] = v
+            remaining.remove(k)
+        }
+        if let missing = remaining.sorted().first { throw PreferenceWriterError.malformed("unknown entry \(missing)") }
+        if backup == nil { backup = raw }
+        do {
+            root[Self.blobKey] = try PropertyListSerialization.data(fromPropertyList: list, format: ifmt, options: 0)
+            try atomicWrite(try PropertyListSerialization.data(fromPropertyList: root, format: fmt, options: 0))
+        } catch let e as PreferenceWriterError { throw e }
+        catch { throw PreferenceWriterError.writeFailed("serialize: \(error)") }
+    }
+
     public func restoreBackup() throws {
         guard let b = backup else { throw PreferenceWriterError.writeFailed("no backup") }
         try atomicWrite(b)

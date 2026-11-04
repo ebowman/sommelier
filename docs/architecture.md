@@ -143,6 +143,7 @@ restore afterwards).
 * **Dev build owner key is its executable name** (not the bundle id) because it runs outside `/Applications`; keys differ between dev and
   installed builds.
 * **User's mouse**: drag needs a quiet mouse; restart-based fallback exists, but gives a flash.
+* **Agent restarts re-base stored positions** (docs/findings-restart-collateral.md): the order store values of ALL owners (modules too) are rewritten when the item set changes, which can re-sort items of other apps (iStat, interleaved with others, ended up left of Wi-Fi). `applyHiddenBatch` snapshots the store before the restart and, if the post-restart relative order of the common items drifted, writes the old values back and restarts once more. Duplicate owner-key forms (iStat bundle vs executable) were tested and are not the cause, so they are not touched.
 * **Do not `killall ControlCenter`** (Elgato Control Center shares the process name); only `MenuBarAgent` is restarted.
 * Spacing (NSStatusItemSpacing/SelectionPadding) is out of scope of this document; it is handled by bead sommelier-gdu.20.
 * The OS-26 behavior is assumed identical; unverified.

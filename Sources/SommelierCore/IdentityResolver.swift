@@ -153,7 +153,7 @@ public struct IdentityResolver: Sendable {
         for (n, o) in options.enumerated() {
             let names = Set(o.1.map(\.name))
             var score = items.filter { names.contains($0.axIdentifier) }.count * 1000
-            let bar = items.filter(isOnBar).sorted { ($0.frame.minX) < ($1.frame.minX) }
+            let bar = items.filter { isOnBar($0) && !$0.stale }.sorted { ($0.frame.minX) < ($1.frame.minX) }
             let vals: [Double?] = bar.map { i in o.1.first { $0.name == i.axIdentifier }.flatMap(value) }
             for a in 0..<vals.count { for b in (a + 1)..<max(a + 1, vals.count) {
                 if let va = vals[a], let vb = vals[b], va > vb { score += 1 }   // left item has the bigger value
@@ -184,7 +184,7 @@ public struct IdentityResolver: Sendable {
             return out
         }
         // 3b. order pairing (on-bar only, distinct values)
-        if rest.count == freeNames.count, rest.allSatisfy({ isOnBar(items[$0]) }) {
+        if rest.count == freeNames.count, rest.allSatisfy({ isOnBar(items[$0]) && !items[$0].stale }) {
             let vals = freeNames.map(value)
             if vals.allSatisfy({ $0 != nil }), Set(vals.map { $0! }).count == vals.count {
                 let names = freeNames.sorted { value($0)! > value($1)! }   // bigger = further left

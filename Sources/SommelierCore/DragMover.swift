@@ -53,6 +53,7 @@ public struct DragMover {
     }
 
     /// Drags the item's center to `targetX` (same y). Returns the time the mouse-up was posted.
+    /// Guarantees that a mouseUp is posted whenever a mouseDown was (even when later event creation fails).
     @discardableResult
     public func move(itemFrame: CGRect, toX targetX: CGFloat) throws -> Date {
         if NSEvent.pressedMouseButtons != 0 { throw DragError.userBusy }
@@ -60,10 +61,8 @@ public struct DragMover {
         let plan = DragPlan.make(from: start, toX: targetX, steps: steps, stepDelay: stepDelay, hold: holdTime)
         let saved = CGEvent(source: nil)?.location ?? .zero
         let src = CGEventSource(stateID: .hidSystemState)
-        var upAt = Date()
         defer { CGWarpMouseCursorPosition(saved) }
-        for s in plan {
-            if s.delayBefore > 0 { Thread.sleep(forTimeInterval: s.delayBefore) }
+        let outcome = Self.execute(plan: plan, sleep: { Thread.sleep(forTimeInterval: $0) }, post: { s in
             let type: CGEventType
             switch s.kind {
             case .move: type = .mouseMoved
@@ -72,15 +71,41 @@ public struct DragMover {
             case .up: type = .leftMouseUp
             }
             if s.kind == .move { CGWarpMouseCursorPosition(s.point) }
-            guard let e = CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: s.point, mouseButton: .left) else {
-                throw DragError.eventCreationFailed
-            }
+            // Event creation with the shared source can fail; a nil-source event is an acceptable last resort for the up.
+            guard let e = CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: s.point, mouseButton: .left)
+                    ?? (s.kind == .up ? CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: s.point, mouseButton: .left) : nil)
+            else { return false }
             e.flags = .maskCommand
             e.post(tap: .cghidEventTap)
-            if s.kind == .up { upAt = Date() }
-        }
+            return true
+        })
+        if let err = outcome.error { throw err }
         Thread.sleep(forTimeInterval: 0.05)
-        return upAt
+        return outcome.upAt
+    }
+
+    /// Runs a plan through `post` (returns false when the event could not be created). If creation fails after a
+    /// mouseDown was posted and before the mouseUp, a mouseUp at the last point is posted before reporting the error,
+    /// so the button is never left pressed. Pure apart from the closures (unit-testable).
+    static func execute(plan: [DragStep], sleep: (TimeInterval) -> Void, post: (DragStep) -> Bool)
+        -> (upAt: Date, error: DragError?)
+    {
+        var upAt = Date()
+        var downPosted = false, upPosted = false
+        var last = plan.first?.point ?? .zero
+        for s in plan {
+            if s.delayBefore > 0 { sleep(s.delayBefore) }
+            guard post(s) else {
+                if downPosted && !upPosted {
+                    _ = post(DragStep(kind: .up, point: last, delayBefore: 0))
+                }
+                return (Date(), .eventCreationFailed)
+            }
+            last = s.point
+            if s.kind == .down { downPosted = true }
+            if s.kind == .up { upPosted = true; upAt = Date() }
+        }
+        return (upAt, nil)
     }
 
     /// Escape key press (to dismiss a menu a failed drag may have opened).
@@ -145,6 +170,8 @@ public enum ItemResolver {
 /// Requested relation after a drag.
 public enum DragRelation: Equatable, Sendable {
     case before(String), after(String), toX(CGFloat)
+    /// First / last movable on-bar slot (the caller passes `order` without system modules for `rightmost`).
+    case leftmost, rightmost
 }
 
 public enum DragTarget {
@@ -161,6 +188,7 @@ public enum DragTarget {
                              bar: [MenuBarItem] = []) -> CGFloat? {
         switch relation {
         case .toX(let x): return x
+        case .leftmost, .rightmost: return nil   // the actuator turns these into before/after of a concrete neighbor
         case .before, .after:
             guard let target else { return nil }
             let isBefore: Bool = { if case .before = relation { return true } else { return false } }()
@@ -187,6 +215,20 @@ public enum DragTarget {
         case .before(let t): return order.firstIndex(of: t) == i + 1
         case .after(let t): return order.firstIndex(of: t) == i - 1
         case .toX(let x): return movedMidX.map { abs($0 - x) <= tolerance } ?? false
+        case .leftmost: return i == 0
+        case .rightmost: return i == order.count - 1
+        }
+    }
+}
+
+public extension DragRelation {
+    /// String-keyed form of an ItemKey relation (keys compared by `ItemKey.description`).
+    init(_ r: Relation) {
+        switch r {
+        case .before(let k): self = .before(k.description)
+        case .after(let k): self = .after(k.description)
+        case .leftmost: self = .leftmost
+        case .rightmost: self = .rightmost
         }
     }
 }

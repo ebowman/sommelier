@@ -83,8 +83,8 @@ public struct MenuBarOrderStore {
 
     /// Sets one or more keys, keeping all others. Refuses `module:` keys. Atomic write preserving permissions;
     /// keeps the original bytes in `backup` (first write only).
-    public mutating func setPositions(_ updates: [String: Double]) throws {
-        if let bad = updates.keys.first(where: { $0.hasPrefix("module:") }) {
+    public mutating func setPositions(_ updates: [String: Double], allowModules: Bool = false) throws {
+        if !allowModules, let bad = updates.keys.first(where: { $0.hasPrefix("module:") }) {
             throw PreferenceWriterError.malformed("refusing to edit \(bad)")
         }
         var (root, fmt, raw) = try loadRoot()
@@ -135,12 +135,15 @@ public enum MenuBarAgentControl {
 
     public struct RestartResult { public var before: Int; public var after: Int; public var elapsedMS: Int; public var recovered: Bool }
 
-    public static func restart(timeout: TimeInterval = 10) -> RestartResult {
+    /// - Parameter expectedChange: how many hosted items are expected to appear (+) or disappear (-) because of the
+    ///   restart itself (a batch that hides 2 on-bar items passes -2), so the recovery threshold is not missed.
+    public static func restart(timeout: TimeInterval = 10, expectedChange: Int = 0) -> RestartResult {
         // One scanner (no cache file) for the whole call: the fast path reads only the agent tree.
         let scanner = MenuBarScanner(source: LiveAccessibilitySource())
         let before = hostedCount(scanner: scanner)
         // The AX hosted count is noisy (+-10%: occasional read timeouts), so accept 90% of the pre-kill count.
-        let threshold = before - before / 10
+        let expected = max(1, before + expectedChange)
+        let threshold = expected - expected / 10
         let start = Date()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")

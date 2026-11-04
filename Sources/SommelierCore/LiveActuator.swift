@@ -1,0 +1,546 @@
+import CoreGraphics
+import Foundation
+
+/// Per-key and aggregate outcome of a hide/show batch.
+public struct BatchOutcome: Sendable {
+    /// One entry per requested key, plus keys of the same app that the app-level `isAllowed` flip necessarily changes.
+    public var perKey: [ItemKey: ActuationResult]
+    /// `.verified` only if every entry verified.
+    public var result: ActuationResult
+}
+
+/// The real `MenuBarActuator`: precheck -> act -> settle -> verify (docs/architecture.md (c)).
+/// An actor, so two actuations never overlap.
+public actor LiveActuator: MenuBarActuator {
+    public struct Config: Sendable {
+        /// Minimum wait after a drag's mouse-up before the first settle poll (AX lags 0.4-2.0 s).
+        public var dragFloor: TimeInterval = 2.0
+        public var settleMaxWait: TimeInterval = 4.0
+        public var stableFor: TimeInterval = 0.15
+        public var userBusyWait: TimeInterval = 2.0
+        public var allowFallback = true
+        /// Skip the drag mechanism and go straight to the fallback (testing).
+        public var forceFallback = false
+        public var restartTimeout: TimeInterval = 15
+        public var dragSteps = 10
+        /// Second drag attempt uses more steps (docs/findings-drag: >=10 always worked, 20 is the next parameter).
+        public var retrySteps = 20
+        /// Owners that re-position their own items on every agent restart: with an unchanged order store, plain
+        /// `agent-restart`s moved iStat's Time item to three different slots (docs/findings-restart-collateral.md). Their
+        /// relative order is not evidence of drift caused by us and cannot be repaired through the store, so the drift
+        /// check ignores them (their on/off-bar state is still covered by the collateral check).
+        public var selfPositioningOwners: Set<String> = ["com.bjango.istatmenus.status", "iStat Menus Menubar"]
+        public init() {}
+    }
+
+    public let platform: any ActuatorPlatform
+    public var config: Config
+    public private(set) var trace: [String] = []
+    private let log: @Sendable (String) -> Void
+
+    public init(platform: any ActuatorPlatform, config: Config = Config(), log: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.platform = platform; self.config = config; self.log = log
+    }
+
+    public func setConfig(_ c: Config) { config = c }
+
+    // Actor methods are re-entrant across `await`, so an explicit FIFO gate keeps whole actuations from interleaving.
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquire() async {
+        if !busy { busy = true; return }
+        await withCheckedContinuation { waiters.append($0) }   // ownership is handed over by `release`
+    }
+
+    private func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
+    }
+
+    private func note(_ s: String) { trace.append(s); log(s) }
+
+    // MARK: - Precheck
+
+    private func globalPrecheck() -> ActuationResult? {
+        guard platform.accessibilityTrusted() else { return .failed(.permissionDenied, nil) }
+        if let who = platform.conflictingManager() { return .failed(.conflictingManager(who), nil) }
+        return nil
+    }
+
+    private func settleDetector(subjectPIDs: Set<pid_t>) -> SettleDetector {
+        let p = platform
+        return SettleDetector(scanner: p, now: { p.now() }, sleep: { await p.sleep($0) },
+                              isSubject: { subjectPIDs.contains($0.ownerPID) })
+    }
+
+    // MARK: - move
+
+    private struct Plan {
+        var snapshot: MenuBarSnapshot
+        var resolved: [ResolvedItem]
+        var subject: ResolvedItem
+        var target: ResolvedItem?
+    }
+
+    /// A full scan that is not empty. A scan with zero on-bar items is a failed read, not a verdict: rescan (bounded).
+    private func scanNonEmpty() async -> MenuBarSnapshot {
+        var snap = await platform.scan()
+        for _ in 0..<3 where snap.onBarLeftToRight.isEmpty { await platform.sleep(0.3); snap = await platform.scan() }
+        return snap
+    }
+
+    private enum Lookup {
+        case ok(Plan)
+        case absent(String)            // subject or target missing / not on the bar
+        case parkedSubject
+    }
+
+    private func lookup(_ key: ItemKey, _ relation: Relation, _ snap: MenuBarSnapshot) -> Lookup {
+        let resolved = platform.resolve(snap)
+        guard !snap.onBarLeftToRight.isEmpty else { return .absent("empty scan") }
+        guard let subject = resolved.first(where: { $0.key == key }) else { return .absent("item absent") }
+        var target: ResolvedItem?
+        switch relation {
+        case .before(let t), .after(let t):
+            guard t != key, let tr = resolved.first(where: { $0.key == t }), ActuationVerifier.onBar(tr) else { return .absent("target absent") }
+            target = tr
+        default: break
+        }
+        guard ActuationVerifier.onBar(subject) else { return .parkedSubject }
+        return .ok(Plan(snapshot: snap, resolved: resolved, subject: subject, target: target))
+    }
+
+    /// Looks up subject/target; a single scan that misses them is never believed: it is confirmed with a fast scan after
+    /// 300 ms and then a full scan before `.notFound` / `.unsupportedItem` is returned. Re-scans (up to 3 times) while
+    /// the frames are stale.
+    private func prepare(_ key: ItemKey, _ relation: Relation, from first: MenuBarSnapshot?) async -> (Plan?, ActuationResult?) {
+        var snap: MenuBarSnapshot
+        if let first { snap = first } else { snap = await scanNonEmpty() }
+        for round in 0...3 {
+            var found = lookup(key, relation, snap)
+            if case .ok = found {} else {
+                let first = snap
+                await platform.sleep(0.3)
+                let fast = await platform.scanVisible()
+                if case .ok = lookup(key, relation, fast) { snap = await scanNonEmpty(); found = lookup(key, relation, snap) }   // fast saw it: trust only a full scan
+                else { snap = await scanNonEmpty(); found = lookup(key, relation, snap) }
+                note("prepare: first scan missed (\(first.onBarLeftToRight.count) on-bar); confirmed with fast+full scan")
+            }
+            switch found {
+            case .absent: return (nil, .failed(.notFound, snap))
+            case .parkedSubject:
+                return (nil, .failed(.unsupportedItem(reason: "The item is hidden (off the bar); show it before moving it."), snap))
+            case .ok(let plan):
+                if !plan.subject.item.stale && !(plan.target?.item.stale ?? false) { return (plan, nil) }
+                if round == 3 { return (nil, .failed(.timeout, snap)) }
+                snap = await scanNonEmpty()
+            }
+        }
+        return (nil, .failed(.timeout, snap))
+    }
+
+    private func waitMouseIdle() async -> Bool {
+        var waited = 0.0
+        while platform.pressedMouseButtons() != 0 {
+            if waited >= config.userBusyWait { return false }
+            await platform.sleep(0.1); waited += 0.1
+        }
+        return true
+    }
+
+    /// x to drop at for the relation, from the plan's frames. nil when no neighbor exists to aim at.
+    private static func dropX(_ relation: Relation, plan: Plan) -> CGFloat? {
+        // Stale items carry cached frames from an earlier layout; they must not pick the hover neighbour or the end slots.
+        let freshBar = ActuationVerifier.barOrder(plan.resolved).filter { !$0.item.stale }
+        let bar = freshBar.map(\.item)
+        let me = plan.subject.item
+        switch relation {
+        case .before, .after:
+            return DragTarget.dropX(for: DragRelation(relation), moved: me, target: plan.target?.item, bar: bar)
+        case .leftmost:
+            guard let first = freshBar.first(where: { !ActuationVerifier.isModule($0) && $0.key != plan.subject.key })
+            else { return nil }
+            return DragTarget.dropX(for: .before("first"), moved: me, target: first.item, bar: bar)
+        case .rightmost:
+            guard let last = freshBar.last(where: { !ActuationVerifier.isModule($0) && $0.key != plan.subject.key })
+            else { return nil }
+            return DragTarget.dropX(for: .after("last"), moved: me, target: last.item, bar: bar)
+        }
+    }
+
+    private struct Observation {
+        var snapshot: MenuBarSnapshot
+        var resolved: [ResolvedItem]
+        var settled: Bool
+        var verdict: ActuationVerifier.Verdict
+        var verified: Bool { settled && verdict.ok }
+    }
+
+    private func observe(_ key: ItemKey, _ relation: Relation, subjectPID: pid_t) async -> Observation {
+        let out = await settleDetector(subjectPIDs: [subjectPID]).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)
+        let resolved = platform.resolve(out.snapshot)
+        let v = ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: resolved)
+        note("observe settled=\(out.settled) polls=\(out.polls) full=\(out.fullScans) \(Int(out.elapsed * 1000))ms ok=\(v.ok)")
+        return Observation(snapshot: out.snapshot, resolved: resolved, settled: out.settled, verdict: v)
+    }
+
+    public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        await acquire(); defer { release() }
+        return await performMove(key, relation: relation)
+    }
+
+    private func performMove(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        trace = []
+        if let f = globalPrecheck() { return f }
+        let (planOpt, early) = await prepare(key, relation, from: nil)
+        if let early { return early }
+        var plan = planOpt!
+        let cap = CapabilityRules(hasTrackedEntry: { _ in true }).capability(for: key)
+        guard cap.canMove else { return .failed(.unsupportedItem(reason: cap.reason ?? "cannot move"), plan.snapshot) }
+        if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
+            note("already satisfied")
+            return .verified(plan.snapshot)
+        }
+        var lastError: ActuationError = .timeout
+        var lastSnapshot = plan.snapshot
+        var menuOpenedLast = false
+
+        if !config.forceFallback {
+            for attempt in 1...2 {
+                guard await waitMouseIdle() else { return .failed(.userBusy, lastSnapshot) }
+                guard let x = Self.dropX(relation, plan: plan) else {
+                    return .failed(.notVerified(expected: "\(key) \(relation)", observed: "no neighbor to aim at"), plan.snapshot)
+                }
+                let steps = attempt == 1 ? config.dragSteps : config.retrySteps
+                let pid = plan.subject.item.ownerPID
+                note("attempt \(attempt): drag subject frame=\(plan.subject.item.frame) fresh=\(!plan.subject.item.stale) toX=\(Int(x)) steps=\(steps) bar=\(ActuationVerifier.barOrder(plan.resolved).map { "\(Int($0.item.frame.minX))" }.joined(separator: ","))")
+                let probeBefore = platform.menuProbe(for: plan.subject.item)
+                let upAt: Date
+                do { upAt = try await platform.drag(itemFrame: plan.subject.item.frame, toX: x, steps: steps) }
+                catch DragError.userBusy { return .failed(.userBusy, lastSnapshot) }
+                catch { return .failed(.mechanismFailed("could not post mouse events: \(error)"), lastSnapshot) }
+                let probeAfter = platform.menuProbe(for: plan.subject.item)
+                let opened = probeAfter.hasMenu || probeAfter.windowCount > probeBefore.windowCount
+                menuOpenedLast = opened
+                if opened {
+                    note("attempt \(attempt): menu opened; Escape")
+                    platform.pressEscape()
+                    await platform.sleep(0.3)
+                }
+                let wait = config.dragFloor - platform.now().timeIntervalSince(upAt)
+                if wait > 0 { await platform.sleep(wait) }
+                var obs = await observe(key, relation, subjectPID: pid)
+                if obs.verdict.ok && !obs.settled {   // right place but not settled/fresh: observe again, do not drag again
+                    obs = await observe(key, relation, subjectPID: pid)
+                }
+                lastSnapshot = obs.snapshot
+                if obs.verified {
+                    note("attempt \(attempt): verified" + (opened ? " (a menu had opened and was dismissed)" : ""))
+                    return .verified(obs.snapshot)
+                }
+                if opened { lastError = .mechanismFailed("menu opened") }
+                else if obs.verdict.ok || !obs.settled { lastError = .timeout }
+                else { lastError = obs.verdict.error! }
+                note("attempt \(attempt): \(lastError)")
+                if attempt == 1 || config.allowFallback {
+                    // Re-plan from the latest scan; the item may have vanished meanwhile.
+                    let (p, e) = await prepare(key, relation, from: obs.snapshot)
+                    if let e { return e }
+                    plan = p!
+                    if attempt == 1, ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok, obs.settled {
+                        return .verified(plan.snapshot)
+                    }
+                }
+            }
+        }
+
+        guard config.allowFallback else { return .failed(lastError, lastSnapshot) }
+        note("fallback: order store + agent restart")
+        return await fallbackMove(key, relation, plan: plan, previous: lastError, menuOpened: menuOpenedLast)
+    }
+
+    /// Order-store edit + one agent restart. Only the values already present in the store are permuted, so unrelated
+    /// positions are untouched.
+    private func fallbackMove(_ key: ItemKey, _ relation: Relation, plan: Plan, previous: ActuationError, menuOpened: Bool) async -> ActuationResult {
+        let store: [String: Double]
+        do { store = try platform.readOrderStore() } catch { return .failed(.mechanismFailed("fallback: cannot read order store: \(error)"), plan.snapshot) }
+        let bar = ActuationVerifier.barOrder(plan.resolved).filter { !ActuationVerifier.isModule($0) }
+        var keys = bar.map(\.key)
+        guard let from = keys.firstIndex(of: key) else { return .failed(.notFound, plan.snapshot) }
+        keys.remove(at: from)
+        switch relation {
+        case .leftmost: keys.insert(key, at: 0)
+        case .rightmost: keys.append(key)
+        case .before(let t), .after(let t):
+            guard let i = keys.firstIndex(of: t) else {
+                return .failed(.mechanismFailed("fallback: relation target \(t) is not a movable item"), plan.snapshot)
+            }
+            if case .before = relation { keys.insert(key, at: i) } else { keys.insert(key, at: i + 1) }
+        }
+        // Only store-backed status keys take part; the subject (and target) must be among them.
+        func inStore(_ k: ItemKey) -> Bool { if case .status = k { return store[k.description] != nil } else { return false } }
+        var required = [key]
+        if case .before(let t) = relation { required.append(t) }
+        if case .after(let t) = relation { required.append(t) }
+        if let bad = required.first(where: { !inStore($0) }) {
+            return .failed(.mechanismFailed("fallback needs an order-store entry for \(bad)"), plan.snapshot)
+        }
+        let participants = keys.filter(inStore)
+        let values = participants.map { store[$0.description]! }.sorted(by: >)   // biggest = leftmost
+        var updates: [String: Double] = [:]
+        for (k, v) in zip(participants, values) where store[k.description] != v { updates[k.description] = v }
+        // The subject's slot must differ from before; equal values would leave the order undetermined.
+        if Set(values).count != values.count {
+            return .failed(.mechanismFailed("fallback: order store has duplicate position values among the items"), plan.snapshot)
+        }
+        await platform.waitForOrderStoreQuiet()
+        if !updates.isEmpty {
+            do { try platform.writeOrderStore(updates, allowModules: false) } catch { return .failed(.mechanismFailed("fallback: order store write failed: \(error)"), plan.snapshot) }
+        }
+        let r = await platform.restartAgent(timeout: config.restartTimeout, expectedChange: 0)
+        note("fallback restart recovered=\(r.recovered) \(r.elapsedMS)ms wrote=\(updates.count)")
+        let obs = await observe(key, relation, subjectPID: plan.subject.item.ownerPID)
+        if obs.verified { return .verified(obs.snapshot) }
+        if !obs.settled { return .failed(menuOpened ? .mechanismFailed("menu opened") : .timeout, obs.snapshot) }
+        return .failed(obs.verdict.error ?? previous, obs.snapshot)
+    }
+
+    // MARK: - hide / show
+
+    public func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult {
+        await applyHiddenBatchDetailed([key: hidden]).result
+    }
+
+    public func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult {
+        await applyHiddenBatchDetailed(changes).result
+    }
+
+    private func uniform(_ keys: some Collection<ItemKey>, _ r: ActuationResult) -> BatchOutcome {
+        BatchOutcome(perKey: Dictionary(uniqueKeysWithValues: keys.map { ($0, r) }), result: r)
+    }
+
+    public func applyHiddenBatchDetailed(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
+        await acquire(); defer { release() }
+        return await performBatch(changes)
+    }
+
+    private func performBatch(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
+        trace = []
+        if let f = globalPrecheck() { return uniform(changes.keys, f) }
+        var snap = await scanNonEmpty()
+        if changes.isEmpty { return BatchOutcome(perKey: [:], result: .verified(snap)) }
+        var resolved = platform.resolve(snap)
+        for _ in 0..<2 where changes.keys.contains(where: { k in !resolved.contains { $0.key == k } }) {
+            // A key missing from one scan is not believed: confirm with another full scan before `.notFound`.
+            await platform.sleep(0.3)
+            snap = await scanNonEmpty()
+            resolved = platform.resolve(snap)
+        }
+
+        // Validate every key before touching anything (all-or-nothing at the write stage).
+        var trackedOf: [ItemKey: String] = [:]
+        var wantByApp: [String: Bool] = [:]   // tracked key -> hidden
+        for (key, hide) in changes.sorted(by: { $0.key.description < $1.key.description }) {
+            guard let r = resolved.first(where: { $0.key == key }) else { return uniform(changes.keys, .failed(.notFound, snap)) }
+            let tracked = platform.trackedKey(for: r)
+            let rules = CapabilityRules(hasTrackedEntry: { _ in tracked != nil })
+            let cap = rules.capability(for: key)
+            guard cap.canHide, let tracked else {
+                return uniform(changes.keys, .failed(.unsupportedItem(reason: cap.reason ?? "cannot hide"), snap))
+            }
+            if let existing = wantByApp[tracked], existing != hide {
+                return uniform(changes.keys, .failed(.mechanismFailed("conflicting requests: items of \(tracked) are hidden or shown together"), snap))
+            }
+            trackedOf[key] = tracked
+            wantByApp[tracked] = hide
+        }
+        // Items of the same app that were not requested change with the app-level flag; they are verified too.
+        var expectations: [ItemKey: Bool] = changes
+        var members = Set<pid_t>()
+        var expectedChange = 0   // hosted items that appear (+) / disappear (-) with the restart
+        for r in resolved {
+            if let t = platform.trackedKey(for: r), let want = wantByApp[t] {
+                members.insert(r.item.ownerPID)
+                if want, ActuationVerifier.onBar(r) { expectedChange -= 1 }
+                if !want, !ActuationVerifier.onBar(r) { expectedChange += 1 }
+                if expectations[r.key] == nil { expectations[r.key] = want }
+            }
+        }
+        let before = Dictionary(resolved.filter { $0.confidence != .heuristic && !$0.item.stale }.map { ($0.key, ActuationVerifier.onBar($0)) },
+                                uniquingKeysWith: { a, _ in a })
+
+        // Already in the requested state? Then there is nothing to do (and no restart flash).
+        func verdicts(_ rs: [ResolvedItem]) -> [ItemKey: ActuationVerifier.Verdict] {
+            Dictionary(uniqueKeysWithValues: expectations.map { ($0.key, ActuationVerifier.visibilityVerdict(key: $0.key, hidden: $0.value, resolved: rs)) })
+        }
+        if verdicts(resolved).values.allSatisfy(\.ok) { note("batch already satisfied"); return finish(expectations, verdicts(resolved), snap, settled: true, collateral: []) }
+
+        // Layout before the restart (docs/findings-restart-collateral.md): MenuBarAgent re-bases the stored positions on
+        // every restart, and the re-based values can re-sort items. Remember the store values so the order can be restored.
+        let store0 = (try? platform.readOrderStore()) ?? [:]
+        // Participants: every item the agent lays out by store value, on the bar now (stale or not: its store value is still
+        // its slot) plus the items about to be shown (their slot is their parked value). Hidden items drop out.
+        let shownKeys = Set(expectations.filter { !$0.value }.map(\.key))
+        let order0 = storeOrder(resolved, store0, extra: shownKeys, excluding: Set(expectations.filter { $0.value }.map(\.key)))
+        let batchKeys = Set(expectations.keys)
+        let frames0 = freshFrameOrder(resolved, excluding: batchKeys)
+        await platform.waitForOrderStoreQuiet()
+        do { try platform.writeAllowed(wantByApp.mapValues { !$0 })  }   // isAllowed == !hidden
+        catch { return uniform(changes.keys, .failed(.mechanismFailed("could not write Control Center preferences: \(error)"), snap)) }
+
+        func collateralChanges(_ rs: [ResolvedItem]) -> Set<String> {
+            var c = Set<String>()
+            // Only "fresh and on the bar before" -> "fresh and off the bar after" is a collateral change. Items that
+            // were off the bar before (or unreadable) and are on it now are re-layout after the restart, not a change.
+            for (k, wasOn) in before where expectations[k] == nil && wasOn {
+                if let now = rs.first(where: { $0.key == k }), !now.item.stale, !ActuationVerifier.onBar(now) {
+                    c.insert("\(k) is now off the bar")
+                }
+            }
+            return c
+        }
+        let memberPIDs = members
+        func confirmedCollateral(_ rs: [ResolvedItem], allOK: Bool) async -> [String] {
+            var found = collateralChanges(rs)
+            if !found.isEmpty && allOK {
+                // Other apps re-lay out their items while the agent comes back; only a change that survives a
+                // second settled observation counts as collateral.
+                await platform.sleep(1.0)
+                let again = await settleDetector(subjectPIDs: memberPIDs).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)
+                found.formIntersection(collateralChanges(platform.resolve(again.snapshot)))
+                note("batch collateral re-check: \(found.count) persist")
+            }
+            return found.sorted()
+        }
+        var last: (settled: Bool, verdicts: [ItemKey: ActuationVerifier.Verdict], collateral: [String]) = (false, [:], [])
+        for round in 1...2 {
+            let r = await platform.restartAgent(timeout: config.restartTimeout, expectedChange: expectedChange)
+            note("batch restart \(round) recovered=\(r.recovered) \(r.elapsedMS)ms")
+            let out = await settleDetector(subjectPIDs: members).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)
+            snap = out.snapshot
+            resolved = platform.resolve(snap)
+            let v = verdicts(resolved)
+            let collateral = await confirmedCollateral(resolved, allOK: v.values.allSatisfy(\.ok))
+            last = (out.settled, v, collateral)
+            note("batch round \(round): settled=\(out.settled) ok=\(v.values.filter(\.ok).count)/\(v.count) collateral=\(collateral.count)")
+            if out.settled && v.values.allSatisfy(\.ok) && collateral.isEmpty { break }
+            // One retry only if the flags landed and nothing visible changed yet.
+            guard round == 1,
+                  let landed = try? platform.readAllowed(Array(wantByApp.keys)), landed == wantByApp.mapValues({ !$0 }),
+                  v.values.allSatisfy({ !$0.ok }) else { break }
+        }
+        var driftFailure: ActuationError?
+        if last.settled, last.verdicts.values.allSatisfy(\.ok), last.collateral.isEmpty {
+            func drift(_ rs: [ResolvedItem]) -> (drifted: Bool, store1: [String: Double], storeWant: [ItemKey]) {
+                let store1 = (try? platform.readOrderStore()) ?? [:]
+                let order1 = storeOrder(rs, store1, extra: [], excluding: [])
+                let storeWant = order0.filter(Set(order1).contains)
+                let storeGot = order1.filter(Set(storeWant).contains)
+                let storeDrift = storeWant.count >= 2 && storeWant != storeGot
+                // Frame check: fresh on-bar keys, minus the keys being hidden/shown, must keep their relative order.
+                let f1 = freshFrameOrder(rs, excluding: batchKeys)
+                let common = Set(frames0).intersection(f1)
+                let frameDrift = frames0.filter(common.contains) != f1.filter(common.contains)
+                return (storeDrift || frameDrift, store1, storeWant)
+            }
+            let d0 = drift(resolved)
+            if d0.drifted {
+                driftRepairs += 1
+                note("batch order drift after restart (store or frames); writing the pre-restart store values back")
+                let expected = frames0.map(\.description).joined(separator: ", ")
+                if let o = await restoreStoreValues(order0, before: store0, now: d0.store1, members: members) {
+                    snap = o.snapshot
+                    resolved = platform.resolve(snap)
+                    let v = verdicts(resolved)
+                    let coll = await confirmedCollateral(resolved, allOK: v.values.allSatisfy(\.ok))
+                    last = (o.settled, v, coll)
+                    let d1 = drift(resolved)
+                    note("batch after order repair: settled=\(o.settled) ok=\(v.values.filter(\.ok).count)/\(v.count) collateral=\(coll.count) drift=\(d1.drifted)")
+                    if d1.drifted {
+                        driftFailure = .notVerified(expected: "relative order kept: \(expected)",
+                                                    observed: "order drifted and the repair did not restore it: " + freshFrameOrder(resolved, excluding: batchKeys).map(\.description).joined(separator: ", "))
+                    }
+                } else {
+                    driftFailure = .notVerified(expected: "relative order kept: \(expected)",
+                                                observed: "order drifted and the repair could not be applied: " + freshFrameOrder(resolved, excluding: batchKeys).map(\.description).joined(separator: ", "))
+                }
+            }
+        }
+        var outcome = finish(expectations, last.verdicts, snap, settled: last.settled, collateral: last.collateral)
+        if let f = driftFailure, outcome.result.isVerified { outcome.result = .failed(f, snap) }
+        return outcome
+    }
+
+    private func selfPositioning(_ k: ItemKey) -> Bool {
+        if case .status(let owner, _) = k { return config.selfPositioningOwners.contains(owner) }
+        return false
+    }
+
+    /// Number of batches whose post-restart drift check triggered a repair (diagnostics for the soak).
+    public private(set) var driftRepairs = 0
+
+    /// Fresh (non-stale), non-heuristic on-bar keys left to right by frame, minus `excluding`.
+    private func freshFrameOrder(_ rs: [ResolvedItem], excluding: Set<ItemKey>) -> [ItemKey] {
+        var seen = Set<ItemKey>()
+        return ActuationVerifier.barOrder(rs).filter { $0.confidence != .heuristic && !$0.item.stale && !excluding.contains($0.key) && !selfPositioning($0.key)
+                // Items without an AX identifier are attributed by frame join, which mislabels neighbours (docs/findings-drag
+                // pitfall 2): signal/GateOpener swapped with an unchanged store. Frame order is only evidence for identified items.
+                && !$0.item.axIdentifier.isEmpty }
+            .map(\.key).filter { seen.insert($0).inserted }
+    }
+
+    /// Items the agent lays out by order-store value (status and module keys with an entry, non-heuristic), sorted by that
+    /// value, biggest = leftmost. Includes stale items (their value is their slot; their frame is not trusted) and `extra`
+    /// keys even when parked; `excluding` drops keys.
+    private func storeOrder(_ rs: [ResolvedItem], _ store: [String: Double], extra: Set<ItemKey>, excluding: Set<ItemKey>) -> [ItemKey] {
+        var seen = Set<ItemKey>()
+        let keys = rs.filter { r in
+            guard r.confidence != .heuristic, !excluding.contains(r.key), !selfPositioning(r.key), store[r.key.description] != nil else { return false }
+            if case .heuristic = r.key { return false }
+            return ActuationVerifier.onBar(r) || extra.contains(r.key)
+        }.map(\.key).filter { seen.insert($0).inserted }
+        return keys.sorted { (store[$0.description]!, $0.description) > (store[$1.description]!, $1.description) }
+    }
+
+    /// Writes the pre-restart store values of `keys` back (status AND module keys: the agent re-bases both), restarts once
+    /// and settles. nil when there is nothing to write.
+    private func restoreStoreValues(_ keys: [ItemKey], before: [String: Double], now: [String: Double], members: Set<pid_t>) async -> SettleOutcome? {
+        var updates: [String: Double] = [:]
+        for k in keys { if let v = before[k.description], now[k.description] != v { updates[k.description] = v } }
+        await platform.waitForOrderStoreQuiet()
+        if !updates.isEmpty {
+            do { try platform.writeOrderStore(updates, allowModules: true) } catch { note("order repair write failed: \(error)"); return nil }
+        }
+        let r = await platform.restartAgent(timeout: config.restartTimeout, expectedChange: 0)
+        note("order repair restart recovered=\(r.recovered) \(r.elapsedMS)ms wrote=\(updates.count)")
+        return await settleDetector(subjectPIDs: members).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)
+    }
+
+    private func finish(_ expectations: [ItemKey: Bool], _ v: [ItemKey: ActuationVerifier.Verdict], _ snap: MenuBarSnapshot,
+                        settled: Bool, collateral: [String]) -> BatchOutcome {
+        var per: [ItemKey: ActuationResult] = [:]
+        for k in expectations.keys {
+            let verdict = v[k]!
+            if verdict.ok && settled { per[k] = .verified(snap) }
+            else if verdict.ok { per[k] = .failed(.timeout, snap) }
+            else { per[k] = .failed(verdict.error!, snap) }
+        }
+        let result: ActuationResult
+        if let bad = per.sorted(by: { $0.key.description < $1.key.description }).first(where: { !$0.value.isVerified }) {
+            if case .failed(let e, _) = bad.value, case .timeout = e { result = .failed(.timeout, snap) }
+            else {
+                let failing = per.filter { !$0.value.isVerified }.keys.map(\.description).sorted()
+                let observed = per.compactMap { (k, r) -> String? in
+                    if case .failed(.notVerified(_, let o), _) = r { return "\(k): \(o)" } else { return nil }
+                }.sorted().joined(separator: "; ")
+                result = .failed(.notVerified(expected: "all of \(expectations.count) items in the requested state",
+                                              observed: "failed: \(failing.joined(separator: ", ")); \(observed)"), snap)
+            }
+        } else if !collateral.isEmpty {
+            result = .failed(.notVerified(expected: "no other item changes", observed: collateral.joined(separator: "; ")), snap)
+        } else {
+            result = .verified(snap)
+        }
+        return BatchOutcome(perKey: per, result: result)
+    }
+}

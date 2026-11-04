@@ -57,3 +57,21 @@ private func evidenceCopy() throws -> (URL, Data, URL) {
     #expect(try store.isAllowed("no.such.app") == false)
     #expect(try store.entries().count == 74)
 }
+
+@Test func trackedAppsBatchIsOneAtomicWrite() throws {
+    let (url, original, dir) = try evidenceCopy()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    var store = ControlCenterTrackedAppsStore(url: url)
+    let before = try store.entries()
+    try store.setAllowedBatch(["info.marcel-dierkes.KeepingYouAwake": false, "at.EternalStorms.Yoink": true])
+    #expect(try store.isAllowed("info.marcel-dierkes.KeepingYouAwake") == false)
+    #expect(try store.isAllowed("at.EternalStorms.Yoink") == true)
+    let changed = zip(before, try store.entries()).filter { $0 != $1 }.count
+    #expect(changed == 2)
+    #expect(store.backup == original)
+    // all-or-nothing: one unknown key rejects the whole batch
+    let snapshot = try Data(contentsOf: url)
+    #expect(throws: PreferenceWriterError.self) { try store.setAllowedBatch(["info.marcel-dierkes.KeepingYouAwake": true, "no.such.app": false]) }
+    #expect(throws: PreferenceWriterError.self) { try store.setAllowedBatch(["com.apple.ScriptMenuApp": false]) }
+    #expect(try Data(contentsOf: url) == snapshot)
+}

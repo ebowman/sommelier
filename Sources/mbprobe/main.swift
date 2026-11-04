@@ -18,6 +18,8 @@ func usage() -> Never {
            mbprobe cc-allowed list
            mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc]
            mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
+           mbprobe move <key> --before <key> | --after <key> | --leftmost | --rightmost [--force-fallback] [--no-fallback]
+           mbprobe hide <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
 
     """.utf8))
@@ -378,7 +380,7 @@ func runDrag(_ a: [String]) {
     let upAt: Date
     do { upAt = try mover.move(itemFrame: moved.frame, toX: dropX) } catch { fail("\(error)") }
 
-    // Poll until two consecutive scans agree (max 3 s).
+    // Poll until two consecutive scans agree (max 4 s).
     var prevSig: [String]? = nil
     var cur = snap
     var firstChangeMS: Int? = nil
@@ -415,7 +417,79 @@ func runDrag(_ a: [String]) {
     if !ok { exit(3) }
 }
 
+// MARK: - closed-loop actuation (LiveActuator)
+
+func parseKey(_ s: String) -> ItemKey {
+    guard let k = ItemKey(storeKey: s) else { fail("not an item key: \(s) (expected status:<owner>::<name> or module:<name>)") }
+    return k
+}
+
+func describe(_ r: ActuationResult) -> String {
+    switch r {
+    case .verified: return "verified"
+    case .failed(let e, _): return "failed(\(e))"
+    }
+}
+
+func printFinalOrder(_ snap: MenuBarSnapshot?) {
+    guard let snap else { print("final order: (no snapshot)"); return }
+    let resolved = IdentityResolver().resolve(snapshot: snap)
+    print("final order (on bar, left to right):")
+    for (n, r) in ActuationVerifier.barOrder(resolved).enumerated() { print("  \(n) \(r.confidence.marker) \(r.key)\(r.item.stale ? " (stale)" : "")") }
+}
+
+func snapshotOf(_ r: ActuationResult) -> MenuBarSnapshot? {
+    switch r { case .verified(let s): return s; case .failed(_, let s): return s }
+}
+
+func runMove(_ a: [String]) async {
+    var pos: [String] = []
+    var relation: Relation?
+    var config = LiveActuator.Config()
+    var i = 0
+    func val() -> String { i += 1; guard i < a.count else { usage() }; return a[i] }
+    while i < a.count {
+        switch a[i] {
+        case "--before": relation = .before(parseKey(val()))
+        case "--after": relation = .after(parseKey(val()))
+        case "--leftmost": relation = .leftmost
+        case "--rightmost": relation = .rightmost
+        case "--force-fallback": config.forceFallback = true
+        case "--no-fallback": config.allowFallback = false
+        default: if a[i].hasPrefix("--") { usage() }; pos.append(a[i])
+        }
+        i += 1
+    }
+    guard pos.count == 1, let relation else { usage() }
+    let key = parseKey(pos[0])
+    let act = LiveActuator(platform: LivePlatform(), config: config,
+                           log: { FileHandle.standardError.write(Data(("actuator: " + $0 + "\n").utf8)) })
+    let t0 = Date()
+    let r = await act.move(key, relation: relation)
+    print("RESULT \(describe(r))")
+    print(String(format: "ELAPSED_MS %.0f", Date().timeIntervalSince(t0) * 1000))
+    printFinalOrder(snapshotOf(r))
+    exit(r.isVerified ? 0 : 1)
+}
+
+func runHideShow(_ a: [String], hide: Bool) async {
+    guard !a.isEmpty, a.allSatisfy({ !$0.hasPrefix("--") }) else { usage() }
+    let keys = a.map(parseKey)
+    let act = LiveActuator(platform: LivePlatform(),
+                           log: { FileHandle.standardError.write(Data(("actuator: " + $0 + "\n").utf8)) })
+    let t0 = Date()
+    let out = await act.applyHiddenBatchDetailed(Dictionary(uniqueKeysWithValues: keys.map { ($0, hide) }))
+    print("RESULT \(describe(out.result))")
+    for (k, r) in out.perKey.sorted(by: { $0.key.description < $1.key.description }) { print("  \(k): \(describe(r))") }
+    print(String(format: "ELAPSED_MS %.0f", Date().timeIntervalSince(t0) * 1000))
+    printFinalOrder(snapshotOf(out.result))
+    exit(out.result.isVerified ? 0 : 1)
+}
+
 switch args.first {
+case "move": await runMove(Array(args.dropFirst()))
+case "hide": await runHideShow(Array(args.dropFirst()), hide: true)
+case "show": await runHideShow(Array(args.dropFirst()), hide: false)
 case "drag": runDrag(Array(args.dropFirst()))
 case "set-visible": runSetVisible(Array(args.dropFirst()))
 case "cc-allowed": runCCAllowed(Array(args.dropFirst()))
