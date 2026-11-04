@@ -102,6 +102,22 @@ otherwise (findings-identity; the dev Sommelier build and MBDummy therefore key 
 So: *Visible* = allowed. *Hidden* and *Always-hidden* both = parked by `isAllowed=0` (one restart batch), differing only in panel
 exposure. An item in the Hidden section that has no tracked entry cannot be parked and is shown disabled (see (e)).
 
+### Layout model
+
+`Layout` (`Sources/SommelierCore/Layout.swift`) is the persisted desired state, free of AX/UI types.
+- File: `~/Library/Application Support/Sommelier/layout.json` (`FileLayoutStore.defaultURL()`); keys are stored as their
+  `ItemKey.description` strings (`status:owner::name`, `module:Name`, `heuristic:...`).
+- Sections: `visible`, `hidden`, `alwaysHidden` (ordered); a key lives in at most one section. Mutators (`move`, `remove`,
+  `append`, `reorder`) enforce this; `validated()` dedups keeping the first occurrence (visible, hidden, alwaysHidden).
+- `newItemPolicy`: `visibleAtEnd` (default) or `hidden`, applied by the planner to keys not yet in the layout.
+- Keys of apps that are not running stay in the file untouched (absent is not unknown).
+- Schema: `schemaVersion` (currently 1). Lenient decode (missing fields default; duplicates dropped with warnings via
+  `Layout.decode`). Lower versions migrate in memory on load (no rewrite); higher throws `unsupportedSchema`.
+- Writes are atomic: temp file `layout.json.tmp-<uuid>` in the same directory, then `rename(2)`.
+- A corrupt file (bad JSON or unparsable key) is copied to `layout.json.bak` and `load()` throws `LayoutError.corrupt`;
+  a missing file loads as `Layout.empty`.
+- Dev tool: `mbprobe layout show|init-from-current|move|remove [--file PATH]`.
+
 ## (e) What cannot be done, and how the UI shows it
 
 | Limit | Evidence | UI |

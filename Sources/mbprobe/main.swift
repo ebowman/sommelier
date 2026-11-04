@@ -20,6 +20,10 @@ func usage() -> Never {
            mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
            mbprobe move <key> --before <key> | --after <key> | --leftmost | --rightmost [--force-fallback] [--no-fallback]
            mbprobe hide <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
+           mbprobe layout show [--json] [--file PATH]
+           mbprobe layout init-from-current [--file PATH] [--force]
+           mbprobe layout move <key> <visible|hidden|always> [index(1-based)] [--file PATH]
+           mbprobe layout remove <key> [--file PATH]
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
 
     """.utf8))
@@ -486,7 +490,120 @@ func runHideShow(_ a: [String], hide: Bool) async {
     exit(out.result.isVerified ? 0 : 1)
 }
 
+func runLayout(_ a: [String]) {
+    var a = a
+    var file: URL = FileLayoutStore.defaultURL()
+    var force = false, json = false
+    var pos: [String] = []
+    var i = 0
+    while i < a.count {
+        switch a[i] {
+        case "--file": i += 1; guard i < a.count else { usage() }; file = URL(fileURLWithPath: a[i])
+        case "--force": force = true
+        case "--json": json = true
+        default: pos.append(a[i])
+        }
+        i += 1
+    }
+    a = pos
+    guard let sub = a.first else { usage() }
+    let store = FileLayoutStore(url: file)
+    func load() -> Layout {
+        do {
+            let (l, w) = try store.loadWithWarnings()
+            for m in w { FileHandle.standardError.write(Data(("warning: " + m + "\n").utf8)) }
+            return l
+        } catch { fail("cannot load \(file.path): \(error)") }
+    }
+    func printLayout(_ l: Layout, only: LayoutSection? = nil) {
+        for s in LayoutSection.allCases where only == nil || only == s {
+            print("\(s.rawValue) (\(l.keys(in: s).count)):")
+            for (n, k) in l.keys(in: s).enumerated() { print("  \(n + 1). \(k)") }
+        }
+        if only == nil { print("newItemPolicy: \(l.newItemPolicy.rawValue)") }
+    }
+    func parseKey(_ s: String) -> ItemKey {
+        guard let k = ItemKey(storeKey: s) else {
+            fail("not a full item key: \(s) (expected status:<owner>::<name>, module:<name> or heuristic:...)")
+        }
+        return k
+    }
+    switch sub {
+    case "show":
+        let l = load()
+        if json {
+            if FileManager.default.fileExists(atPath: file.path), let d = try? Data(contentsOf: file) {
+                print(String(decoding: d, as: UTF8.self))
+            } else {
+                let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                print(String(decoding: try! enc.encode(l), as: UTF8.self))
+            }
+        } else { printLayout(l) }
+    case "init-from-current":
+        if !force, FileManager.default.fileExists(atPath: file.path), !load().allKeys.isEmpty {
+            fail("\(file.path) already has a non-empty layout; use --force to overwrite")
+        }
+        let scanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL)
+        let maxScans = 6
+        let deadline = Date().addingTimeInterval(15)
+        func signature(_ r: [ResolvedItem]) -> String {
+            let on = r.filter { $0.item.isOnMenuBar }.map { $0.key.description }.joined(separator: "\n")
+            let off = r.filter { !$0.item.isOnMenuBar }.map { $0.key.description }.sorted().joined(separator: "\n")
+            return on + "\n--\n" + off
+        }
+        var scans = 0
+        var prevSig: String? = nil
+        var agreed: [ResolvedItem]? = nil
+        while scans < maxScans, Date() < deadline {
+            let snap = scanner.scan()
+            scans += 1
+            let res = IdentityResolver().resolve(snapshot: snap)
+            let stale = res.contains { $0.item.stale }
+            let sig = signature(res)
+            if !stale, !snap.onBarLeftToRight.isEmpty, sig == prevSig { agreed = res; break }
+            prevSig = stale ? nil : sig
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        guard let res = agreed else {
+            fail("scans did not agree after \(scans) attempts; not writing")
+        }
+        let stale = res.filter { $0.item.stale }.map { $0.key.description }
+        if !stale.isEmpty { fail("stale items, not writing: " + stale.joined(separator: ", ")) }
+        let (l, excluded) = LayoutBuilder.build(from: res)
+        guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
+        for e in excluded { FileHandle.standardError.write(Data(("ignored non-item: " + e + "\n").utf8)) }
+        do { try store.save(l) } catch { fail("save failed: \(error)") }
+        printLayout(l)
+        print("wrote \(l.allKeys.count) keys (\(l.visible.count) visible, \(l.hidden.count) hidden, \(l.alwaysHidden.count) always-hidden); excluded \(excluded.count) non-items; scans \(scans)")
+    case "move":
+        guard a.count == 3 || a.count == 4 else { usage() }
+        let key = parseKey(a[1])
+        let section: LayoutSection
+        switch a[2] {
+        case "visible": section = .visible
+        case "hidden": section = .hidden
+        case "always", "alwaysHidden": section = .alwaysHidden
+        default: usage()
+        }
+        var idx: Int? = nil
+        if a.count == 4 { guard let n = Int(a[3]) else { usage() }; idx = n - 1 }
+        var l = load()
+        l.move(key, to: section, index: idx)
+        do { try store.save(l) } catch { fail("save failed: \(error)") }
+        printLayout(l, only: section)
+    case "remove":
+        guard a.count == 2 else { usage() }
+        let key = parseKey(a[1])
+        var l = load()
+        guard let s = l.remove(key) else { fail("\(key) is not in the layout") }
+        do { try store.save(l) } catch { fail("save failed: \(error)") }
+        print("removed \(key) from \(s.rawValue)")
+    default: usage()
+    }
+}
+
 switch args.first {
+case "layout": runLayout(Array(args.dropFirst()))
 case "move": await runMove(Array(args.dropFirst()))
 case "hide": await runHideShow(Array(args.dropFirst()), hide: true)
 case "show": await runHideShow(Array(args.dropFirst()), hide: false)
