@@ -131,7 +131,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(r.state.inFlight == nil)
     }
 
-    @Test func failedItemIsNotRetriedUntilCleared() async {
+    @Test func anAnchoredFailureOnlyCostsOnePass() async {
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
                           failOn: [(1, .mechanismFailed("boom"))])
         let first = await r.engine.reconcileOnce()
@@ -144,9 +144,9 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(r.state.perItem[failedKey] == .failed(.mechanismFailed("boom")))
         #expect(!r.state.isConverged)
         let n = await r.actuator.calls.count
-        _ = await r.engine.reconcileOnce()
-        #expect(await r.actuator.calls.count == n)   // suppressed: no retry in the next pass
-        #expect(r.state.perItem[failedKey] == .failed(.mechanismFailed("boom")))
+        let second = await r.engine.reconcileOnce()   // the failed key is retried (strike 1 < 3), but there is nothing left to do
+        #expect(await r.actuator.calls.count == n)
+        #expect(second.outcome == .converged)
         await r.engine.clearFailures()
         let again = await r.engine.reconcileOnce()
         // The failed key was an anchor while suppressed: the other item was moved around it, so nothing is left to retry.
@@ -399,7 +399,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(rep.outcome == .incomplete)
         #expect(rep.actionCount == 3)
         #expect(await r.actuator.calls.count == 3)
-        #expect(r.state.lastError == .stoppedAfterFailures(3))
+        #expect(r.state.lastError == nil)   // one pass of failures strikes the keys; the engine stops only after 3 such passes
         let failed = r.state.perItem.values.filter { if case .failed = $0 { true } else { false } }.count
         #expect(failed == 3)
         #expect(r.state.perItem.values.contains(.pending))
@@ -435,14 +435,15 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func stoppedAfterFailuresSurvivesObserveAndIsClearedExplicitly() async {
         let names = ["A", "B", "C", "D", "E"]
         let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
-                          failOn: [(1, .mechanismFailed("x")), (2, .mechanismFailed("x")), (3, .mechanismFailed("x"))])
+                          failOn: (1...12).map { ($0, ActuationError.mechanismFailed("x")) })
+        _ = await r.engine.reconcileOnce(); _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastError == nil)
         _ = await r.engine.reconcileOnce()
-        #expect(r.state.lastError == .stoppedAfterFailures(3))
+        #expect(r.state.lastError == .stoppedAfterFailures(3))   // the third pass in a row in which every action failed
         _ = await r.engine.reconcileOnce()   // a successful observe must not clear it
         #expect(r.state.lastError == .stoppedAfterFailures(3))
         await r.engine.clearFailures()
         #expect(r.state.lastError == nil)
-        _ = await r.engine.reconcileOnce()
         await r.engine.setLayout(Layout(visible: names.map(k)))
         #expect(r.state.lastError == nil)
     }
@@ -477,16 +478,47 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.calls.count == 2)
     }
 
-    @Test func failedMembershipIsRetriedOnlyAfterClearFailures() async {
+    @Test func sameKeyFailingThreePassesInARowIsFailedUntilRetry() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .mechanismFailed("restart")), (2, .mechanismFailed("restart")), (3, .mechanismFailed("restart"))])
+        for expected in 1...3 {
+            let rep = await r.engine.reconcileOnce()
+            #expect(rep.outcome == .incomplete)
+            #expect(await r.actuator.calls.count == expected)   // strikes 1 and 2 are retried by the next pass
+            #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
+        }
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 3)           // strike 3: persistently failed, no more retries
+        #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
+        #expect(r.state.lastError == nil)                    // one bad key never stops the engine
+        await r.engine.clearFailures()                       // Retry
+        let rep = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 4)
+        #expect(rep.outcome == .converged)
+    }
+
+    @Test func aKeyThatRecoversBreaksItsStrikeStreak() async {
+        // Fails once, succeeds on the retry; later single failures never accumulate to three.
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .mechanismFailed("restart"))])
         _ = await r.engine.reconcileOnce()
-        _ = await r.engine.reconcileOnce()
-        #expect(await r.actuator.calls.count == 1)
-        await r.engine.clearFailures()
         let rep = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 2)
         #expect(rep.outcome == .converged)
+        #expect(r.state.perItem[k("B")] == .inPlace)
+    }
+
+    @Test func aFailingKeyIsRetriedByChainedPassesAndStopsAtThree() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: (1...9).map { ($0, ActuationError.mechanismFailed("restart")) })
+        await r.engine.requestReconcile()
+        let state = r.state
+        #expect(await waitUntil { await MainActor.run { state.passCount } >= 3 })
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(r.state.passCount == 3)
+        #expect(await r.actuator.calls.count == 3)
+        #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
     }
 }
 

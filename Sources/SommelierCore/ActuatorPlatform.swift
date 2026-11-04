@@ -227,6 +227,11 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
 
     public func clearAssumedHidden(pids: Set<pid_t>) { scanner.clearAssumedHidden(pids: pids) }
 
+    /// MenuBarAgent respawned: drop everything cached from the old agent (see `MenuBarScanner.invalidateAgentState`).
+    public func invalidateAgentState() { scanner.invalidateAgentState() }
+    /// Display configuration changed: recompute the strip on the next scan.
+    public func invalidateStrip() { scanner.invalidateStrip() }
+
     public func recentCompleteHostedLayout(maxAge: TimeInterval) -> [HostedEntry]? { scanner.recentCompleteHostedLayout(maxAge: maxAge) }
 
     /// One bounded (2.5 s wall clock) complete read of the agent's hosted tree: strip elements, nil when incomplete.

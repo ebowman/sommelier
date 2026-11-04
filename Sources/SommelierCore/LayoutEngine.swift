@@ -27,9 +27,11 @@ public struct PassReport: Equatable, Sendable {
 
 /// Closed-loop runtime: observe -> plan -> act -> verify. See docs/architecture.md (LayoutEngine).
 ///
-/// Suppression: a key whose actuation failed is a *suppressed* key. The planner is told it can neither move nor hide
-/// it (it becomes an anchor), and it is not retried until `setLayout`, `clearFailures()`, or the key disappears from
-/// the observed bar (its app quit). This prevents a 10 s poll from re-running a failing agent restart forever.
+/// Suppression (flapping guard, gdu.21): a key whose actuation fails in a pass is an anchor for the rest of that pass
+/// (the planner can neither move nor hide it). It is retried by the next pass, but when the SAME key fails
+/// `Config.maxKeyFailures` (3) passes in a row it is marked `.failed` persistently (logged once) and stays an anchor until
+/// `setLayout`, `clearFailures()` (the Retry button), or the key disappears from the observed bar (its app quit). The whole
+/// engine reports `stoppedAfterFailures` only after `Config.maxAllFailedPasses` consecutive passes in which EVERY action failed.
 public actor LayoutEngine {
     public struct Config: Sendable {
         public var minPassInterval: Duration = .milliseconds(500)
@@ -40,6 +42,10 @@ public actor LayoutEngine {
         public var maxChainedPasses = 2
         /// A pass stops (and does not chain) after this many consecutive failed actuator calls.
         public var maxConsecutiveFailures = 3
+        /// The same key failing this many passes in a row is `.failed` until the layout changes or Retry.
+        public var maxKeyFailures = 3
+        /// Consecutive passes in which every action failed (each ended by `maxConsecutiveFailures`) before the engine reports `stoppedAfterFailures`.
+        public var maxAllFailedPasses = 3
         public init() {}
     }
 
@@ -77,6 +83,17 @@ public actor LayoutEngine {
     /// Hide units temporarily revealed on purpose (overflow-panel click-forwarding, gdu.17): hold token per unit.
     private var transientReveals: [HideUnit: Int] = [:]
     private var nextHoldToken = 0
+    /// Consecutive passes in which the key failed (1...maxKeyFailures); a key at the limit is no longer retried.
+    private var strikes: [ItemKey: Int] = [:]
+    private var failedThisPass: Set<ItemKey> = []
+    private var allFailedStreak = 0
+    private var cutThisPass = false
+    /// While set and in the future, observations are not acted on (MenuBarAgent just respawned; its first scans are incomplete).
+    private var notReadyUntil: ContinuousClock.Instant?
+    /// Between willSleep and didWake: no pass starts, a running pass ends after its current action.
+    private var sleeping = false
+    private var delayed: [String: Task<Void, Never>] = [:]
+    private var noticeSerial = 0
 
     public init(observer: any MenuBarObserver, actuator: any MenuBarActuator, store: any LayoutStore,
                 capabilities: any CapabilityProvider, state: EngineState,
@@ -132,7 +149,7 @@ public actor LayoutEngine {
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
-        failures = [:]
+        failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0
         stopped = !loaded   // a layout that never loaded stays stopped until `start()` succeeds or `setLayout`
         chained = 0
         await publish { s in
@@ -149,7 +166,7 @@ public actor LayoutEngine {
     /// pass for this request starts at once instead of after up to `AgreedScanObserver.deadline` seconds.
     public func requestReconcile(supersede: Bool = false, reason: String = "trigger") {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
-        guard !stopped else { return }
+        guard !stopped, !sleeping else { return }
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
         pending = true
         if supersede, let t = observeTask {
@@ -173,6 +190,60 @@ public actor LayoutEngine {
         return await runPass(scheduled: false)
     }
 
+    // MARK: Robustness events (gdu.21)
+
+    /// Requests a reconcile after `delay`. A later call with the same `reason` replaces the pending one (a burst of display
+    /// notifications or app launches yields ONE pass).
+    public func scheduleReconcile(after delay: Duration, reason: String, supersede: Bool = false) {
+        delayed[reason]?.cancel()
+        delayed[reason] = Task { [weak self] in
+            try? await Task.sleep(for: delay)   // wall clock on purpose (the injected `sleep` paces passes)
+            guard !Task.isCancelled else { return }
+            await self?.fireDelayed(reason, supersede: supersede)
+        }
+    }
+
+    private func fireDelayed(_ reason: String, supersede: Bool) {
+        delayed[reason] = nil
+        requestReconcile(supersede: supersede, reason: reason)
+    }
+
+    /// MenuBarAgent respawned: every AX element is invalid and its first scans are empty or incomplete. Observations are not
+    /// acted on for `settle`, transient reveal holds are dropped (the revealed element is gone), and ONE reconcile follows.
+    public func agentRestarted(settle: Duration = .seconds(2)) async {
+        notReadyUntil = .now + settle
+        let units = Array(transientReveals.keys)
+        transientReveals = [:]
+        if !units.isEmpty {
+            log("agent restarted: dropping \(units.count) transient reveal hold(s)")
+            let keys = itemInfo.keys.filter { units.contains($0.hideUnit) }
+            await publish { s in for k in keys where s.perItem[k] == .pending { s.perItem[k] = .inPlace } }
+        }
+        scheduleReconcile(after: settle, reason: "agent restarted", supersede: true)
+    }
+
+    /// The system is about to sleep: no new pass starts and a running pass ends after the action in flight.
+    public func willSleep() {
+        guard !sleeping else { return }
+        sleeping = true
+        pending = false
+        delayed.values.forEach { $0.cancel() }
+        delayed = [:]
+        log("willSleep: no new passes until wake")
+    }
+
+    /// Wake: reconcile after `settle` (displays and the agent need a moment).
+    public func didWake(settle: Duration = .seconds(3)) {
+        sleeping = false
+        log("didWake: reconcile in \(settle)")
+        scheduleReconcile(after: settle, reason: "wake")
+    }
+
+    /// Clears a sleep flag whose wake notification was missed (the triggers were stopped in between).
+    public func resumeFromSleep() { sleeping = false }
+
+    public var isSleeping: Bool { sleeping }
+
     // MARK: Scheduling
 
     private func kick() {
@@ -182,7 +253,7 @@ public actor LayoutEngine {
     }
 
     private func drain() async {
-        while pending, !stopped {
+        while pending, !stopped, !sleeping {
             if let last = lastStart {
                 let wait = config.minPassInterval - last.duration(to: .now)
                 if wait > .zero { await sleep(wait) }
@@ -275,10 +346,32 @@ public actor LayoutEngine {
         await endTransientReveal(unit)
     }
 
+    /// Start-of-pass bookkeeping: drops state of vanished keys, breaks strike streaks of keys that did not fail in the
+    /// previous pass, and lets keys still below the strike limit be retried (keys at the limit stay suppressed).
     private func pruneFailures(_ obs: ObservedOrder) {
         let present = Set(obs.onBar + obs.parked)
         failures = failures.filter { present.contains($0.key) }
+        strikes = strikes.filter { present.contains($0.key) }
+        let previous = failedThisPass
+        failedThisPass = []
+        cutThisPass = false
+        let limit = config.maxKeyFailures
+        for (k, n) in strikes where n < limit && !previous.contains(k) { strikes[k] = nil }
+        for k in Array(failures.keys) where (strikes[k] ?? 0) < limit { failures[k] = nil }
     }
+
+    /// Records an actuation failure of `key` in this pass (one strike per pass); logs once when the key reaches the limit.
+    private func markFailed(_ key: ItemKey, _ e: ActuationError) {
+        failures[key] = e
+        guard failedThisPass.insert(key).inserted else { return }
+        let n = (strikes[key] ?? 0) + 1
+        strikes[key] = n
+        if n == config.maxKeyFailures {
+            log("\(key) failed \(n) passes in a row (\(e)); marked failed until the layout changes or Retry")
+        }
+    }
+
+    private var hasRetryableFailure: Bool { failures.keys.contains { (strikes[$0] ?? 0) < config.maxKeyFailures } }
 
     private func statuses(_ obs: ObservedOrder, _ plan: Plan) -> [ItemKey: ItemStatus] {
         var out: [ItemKey: ItemStatus] = [:]
@@ -332,6 +425,8 @@ public actor LayoutEngine {
         await publish { s in
             s.inFlight = nil; s.lastPassAt = now; s.passCount += 1; s.passSequence += 1; s.isConverged = converged
         }
+        // A key that failed fewer than `maxKeyFailures` passes in a row is retried by one more pass (bounded by the strikes).
+        if !converged, draining, !stopped, !cutThisPass, hasRetryableFailure { pending = true }
         return report
     }
 
@@ -483,6 +578,24 @@ public actor LayoutEngine {
         }
         busyRetried = false
 
+        // (b2) not ready: asleep, or MenuBarAgent respawned moments ago (its first scans are empty or incomplete, and even an
+        // agreed read can lack items). Nothing is planned or done from such an observation; the delayed reconcile follows.
+        if sleeping {
+            log("system is going to sleep; pass skipped")
+            let r = PassReport(outcome: .incomplete)
+            _ = await finish(r, converged: false)
+            return r
+        }
+        if let until = notReadyUntil {
+            if .now < until {
+                log("agent restarted moments ago; not acting on this observation")
+                let r = PassReport(outcome: .unsettled)
+                _ = await finish(r, converged: false)
+                return r
+            }
+            notReadyUntil = nil
+        }
+
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
         pruneFailures(obs)
 
@@ -492,6 +605,7 @@ public actor LayoutEngine {
         // (d) persist new items, once per pass
         if !plan.newItems.isEmpty {
             for n in plan.newItems { layout.append(n.key, to: n.section) }
+            await noteNewItems(plan.newItems)
             do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
             let l = layout
             await publish { $0.layout = l }
@@ -508,7 +622,7 @@ public actor LayoutEngine {
 
         // (f)
         if plan.phase == .converged {
-            chained = 0
+            chained = 0; allFailedStreak = 0
             let ok = isConverged()
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
@@ -557,8 +671,18 @@ public actor LayoutEngine {
             phaseReached = after.phase
             if after.phase == .membership {
                 let failErr = err ?? .notVerified(expected: "membership change", observed: "unchanged")
-                for a in after.actions where batch[Self.key(of: a)] != nil { failures[Self.key(of: a)] = failErr }
-                consecutiveFailures += 1
+                // A key that still needs the SAME change failed. One that now needs the OPPOSITE change did not fail: its desired
+                // state was changed while the batch ran (a reveal toggled, a layout edit), so the batch did what it was asked.
+                var failedAny = false
+                for a in after.actions {
+                    let k = Self.key(of: a)
+                    guard let wasHide = batch[k] else { continue }
+                    let nowHide: Bool
+                    switch a { case .hide: nowHide = true; case .show: nowHide = false; case .move: continue }
+                    if nowHide == wasHide { markFailed(k, failErr); failedAny = true }
+                    else { log("\(k): desired state changed while the batch ran; not a failure") }
+                }
+                if failedAny { consecutiveFailures += 1 }
             }
             plan = makePlan(obs)
             phaseReached = plan.phase
@@ -587,6 +711,11 @@ public actor LayoutEngine {
                 log("\(requestReason) picked up by the running pass at its next re-plan, \(Self.ms(r.duration(to: .now))) ms after the request")
             }
             if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
+            if sleeping {
+                log("system is going to sleep; pass ends after the action in flight")
+                await publish { $0.inFlight = nil }
+                return await abort(.incomplete)
+            }
             guard actionCount < config.maxActionsPerPass else {
                 log("maxActionsPerPass reached")
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
@@ -595,12 +724,13 @@ public actor LayoutEngine {
             if !effectiveCaps()(key).canMove {
                 log("engine: refusing move of \(key): capability forbids")
                 failures[key] = .unsupportedItem(reason: "capability forbids")
+                failedThisPass.insert(key); strikes[key] = config.maxKeyFailures   // deterministic: no retry
                 plan = makePlan(obs)
                 continue
             }
             if lastAction == action {
                 // Verified last time yet still planned: the actuator's verdict and our observation disagree.
-                failures[key] = .notVerified(expected: "\(rel)", observed: "unchanged")
+                markFailed(key, .notVerified(expected: "\(rel)", observed: "unchanged"))
                 consecutiveFailures += 1
                 await publishObserved(obs, makePlan(obs))
                 plan = makePlan(obs)
@@ -614,7 +744,7 @@ public actor LayoutEngine {
             actionCount += 1
             switch result {
             case .verified(let snap):
-                consecutiveFailures = 0
+                consecutiveFailures = 0; allFailedStreak = 0
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
             case .failed(let e, let snap):
                 consecutiveFailures += 1
@@ -625,7 +755,7 @@ public actor LayoutEngine {
                     if draining { pending = true }
                     return await abort(.incomplete)
                 }
-                failures[key] = e
+                markFailed(key, e)
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
             }
             plan = makePlan(obs)
@@ -635,12 +765,31 @@ public actor LayoutEngine {
         }
         await publish { $0.inFlight = nil }
         if plan.phase == .converged {
-            chained = 0
+            chained = 0; allFailedStreak = 0
             let ok = isConverged()
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
         return await abort(.incomplete)
+    }
+
+    /// Log line and a transient Arrange-window notice for unknown items placed by the new-item policy (no system notification).
+    private func noteNewItems(_ items: [NewItem]) async {
+        let named = items.map { n in (name: itemInfo[n.key].map(OverflowEntries.displayName) ?? n.key.description, section: n.section) }
+        guard let text = NewItemNotice.text(named) else { return }
+        log(text)
+        noticeSerial += 1
+        let serial = noticeSerial
+        await publish { $0.newItemNotice = text }
+        Task { [weak self] in
+            try? await Task.sleep(for: NewItemNotice.lifetime)
+            await self?.clearNotice(serial)
+        }
+    }
+
+    private func clearNotice(_ serial: Int) async {
+        guard serial == noticeSerial else { return }
+        await publish { $0.newItemNotice = nil }
     }
 
     /// Permission and conflicting-manager errors stop the engine. Returns true when the pass must end.
@@ -658,14 +807,21 @@ public actor LayoutEngine {
         }
     }
 
-    /// Ends a pass after too many consecutive failures: reports it, leaves the rest pending, never chains.
+    /// Ends a pass after too many consecutive failed actions: leaves the rest pending, never chains. The failed keys were
+    /// struck individually (`markFailed`); the engine itself reports `stoppedAfterFailures` only after
+    /// `maxAllFailedPasses` such passes in a row (no action succeeded in between).
     private func stopForFailures(_ r: PassReport, obs: ObservedOrder) async -> PassReport {
         let n = config.maxConsecutiveFailures
-        log("stopped after \(n) consecutive failures")
+        allFailedStreak += 1
+        cutThisPass = true
+        log("pass ended after \(n) consecutive failed actions (\(allFailedStreak) such pass(es) in a row)")
         pending = false
         chained = config.maxChainedPasses
         await publishObserved(obs, makePlan(obs))
-        await publish { $0.lastError = .stoppedAfterFailures(n) }
+        if allFailedStreak >= config.maxAllFailedPasses {
+            log("stopped after \(allFailedStreak) passes in which every action failed")
+            await publish { $0.lastError = .stoppedAfterFailures(n) }
+        }
         return await finish(r, converged: false)
     }
 

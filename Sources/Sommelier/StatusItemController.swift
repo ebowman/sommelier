@@ -43,6 +43,16 @@ final class StatusItemController: NSObject {
         }
     }
 
+    /// Display change: an open overflow panel follows the status item to its (possibly new) screen.
+    func displayChanged() {
+        guard panel.isVisible else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))   // the status item's window frame settles after the reconfiguration
+            guard let self, let w = self.statusItem.button?.window, let screen = w.screen ?? NSScreen.main else { return }
+            self.panel.reposition(anchoredTo: w.frame, on: screen)
+        }
+    }
+
     func togglePanel() {
         guard let w = statusItem.button?.window else { return }
         guard let screen = w.screen ?? NSScreen.main else { return }

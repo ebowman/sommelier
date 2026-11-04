@@ -187,15 +187,48 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
 `LayoutEngine` (actor, `LayoutEngine.swift`) runs the observe -> plan -> act -> verify loop; `EngineState` (`@MainActor @Observable`) is the only thing the UI binds to.
 
 - **Pass**: (1) `observeDetailed()` (two agreeing full scans, see "Observer" below; observation moves nothing, so it runs even while the user is busy); (2) if the mouse is down (`busy`), wait up to 3 s polling every 0.1 s, else skip and retry once (after a wait the observation is repeated); (3) plan with failed keys forced to `canMove = canHide = false` (they become anchors); (4) persist `newItems` into the layout (once per pass) per `newItemPolicy`; (5) act; (6) publish.
-- **Two phases**: *membership* is one `applyHiddenBatch` (one agent restart, never called with an empty batch), then re-observe and re-plan; *order* is one `move` at a time, re-planning from the verified snapshot after each. Both continue in the same pass when the post-membership plan is `.order`. At most `maxActionsPerPass` (50) actuator calls per pass; 3 consecutive failures stop the pass (`lastError`, no chaining); a membership batch that reports failure/drift ends the pass with `lastError = .batchDrift` (cleared only by `clearFailures`/`setLayout`) and never chains into drags; at most 2 chained passes. `mbprobe apply` runs the actuator drag-only unless `--allow-fallback`.
+- **Two phases**: *membership* is one `applyHiddenBatch` (one agent restart, never called with an empty batch), then re-observe and re-plan; *order* is one `move` at a time, re-planning from the verified snapshot after each. Both continue in the same pass when the post-membership plan is `.order`. At most `maxActionsPerPass` (50) actuator calls per pass; 3 consecutive failed actions end the pass (no chaining; `lastError = .stoppedAfterFailures` only after 3 such passes in a row, see "Robustness"); a membership batch that reports failure/drift ends the pass with `lastError = .batchDrift` (cleared only by `clearFailures`/`setLayout`) and never chains into drags; at most 2 chained passes. `mbprobe apply` runs the actuator drag-only unless `--allow-fallback`.
 - **Observed truth only**: `EngineState.observed` is set solely from an actuator-returned snapshot or a fresh observe, never from the plan. `perItem` is `.inPlace/.pending/.moving/.failed/.unsupported`; `unsupported` (capability skips) does not block `isConverged`, `failed` does.
-- **Suppression**: a key whose actuation failed stays suppressed until `setLayout`, `clearFailures()`, or its app disappears from the bar. This stops the 10 s poll from re-running a failing agent restart forever. `userBusy` is not a failure and is not suppressed.
+- **Suppression (flapping guard, gdu.21)**: see "Robustness" below. A key that fails is an anchor for the rest of that pass; the same key failing 3 passes in a row stays `.failed` until `setLayout`, `clearFailures()` (Retry) or its app disappears from the bar. `userBusy` is not a failure and is not suppressed.
 - **Fatal errors**: no Accessibility permission or a competing manager (Bartender) sets `lastError`, makes no actuator call and stops the engine until `clearFailures()`.
 - **Unsettled observations (gdu.46)**: when the scans never agree but a complete read exists, the pass publishes it (`EngineState.observed`, `observationSettled = false`, `lastError` cleared only when it was an observe error (permission errors still surface); status line "Observing (unsettled)"), logs `observation unsettled; not actuating`, plans nothing, finishes with `PassReport.Outcome.unsettled` and schedules the next pass (`minPassInterval`). Only a settled observation is ever planned on or acted on. The unsettled pass still increments `passSequence` (it must stay aligned with `passesStarted`), so `ArrangeTracker` ignores unsettled states: it suppresses every tracked key's engine status (capsules stay at the pending spinner), judges nothing and pauses its 90 s clock; judging resumes at the next settled state with `passSequence > dropSequence`. The first non-empty scan of a pass is also published at once as a provisional observation when nothing has been observed yet (log `first observation published (provisional, unsettled)`), so the Arrange window has a bar within a scan or two instead of after agreement.
 - **Pass latency (gdu.46)**: `setLayout`/`setShowHiddenSection` call `requestReconcile(supersede: true)`: an observation in progress is cancelled between scans (`ObserveError.superseded`, outcome `.superseded`, the pass ends and the next starts at once; a plain trigger/poll never cancels it, or a slow observation would starve forever). A pass that is already actuating cannot be cancelled mid-drag, but it re-plans from the CURRENT layout after every action, so the new layout is acted on at the next re-plan (log `picked up by the running pass at its next re-plan, N ms`). Logs: `pass started N ms after <reason>` for every request, `pass delayed: <reason> N ms` for any wait over 2 s (previous pass running, user busy). Measured: idle 0 ms; superseding an observation ~0.5 s; during a drag 1.4-5 s (the rest of that drag).
 - **Scheduling**: `requestReconcile()` sets a pending flag; concurrent triggers coalesce into one follow-up pass; pass starts are at least 0.5 s apart. `reconcileOnce()` runs exactly one pass (`mbprobe apply`, tests).
-- **Triggers** (`EngineTriggers`, AppKit): app launch/terminate (debounced 1 s) and a 10 s poll that fires only when a fast scan differs from `state.observed`. The live `busy` closure is `NSEvent.pressedMouseButtons != 0`.
+- **Triggers** (`EngineTriggers`, AppKit): app launch/terminate (a burst within 1 s is ONE pass), sleep/wake, and a 10 s poll that fires only when a fast scan differs from `state.observed`; `MenuBarAgentWatcher` (agent respawn) and the app's display-change observer feed the same `scheduleReconcile`. The live `busy` closure is `NSEvent.pressedMouseButtons != 0`. Details: "Robustness".
 - **UI binds to**: `observed`, `layout`, `perItem`, `inFlight`, `lastError`, `isConverged`, `lastPassAt`, `passCount`; it changes the bar only via `setLayout` / `setShowHiddenSection`.
+
+### Robustness: launches, respawns, display changes, sleep (gdu.21)
+Every event becomes a (delayed) `LayoutEngine.requestReconcile`; none of them acts on a read that is not trustworthy.
+
+- **Coalescing**: `scheduleReconcile(after:reason:)` keeps ONE pending request per reason; a new call with the same reason replaces it. App launch/quit
+  uses reason `app launch/quit` with a 1 s trailing window (a burst of launches/quits is one pass; a returning app's items go back to their slot by the
+  normal order planning and keep their hidden state, which lives in the Control Center store per app). Display changes use `display change` (1 s), wake
+  `wake` (3 s), agent respawn `agent restarted` (2 s, supersedes an observation in progress).
+- **`MenuBarAgentWatcher`** (`SommelierCore`, main actor): compares the pid of `com.apple.MenuBarAgent` with the last known one on NSWorkspace
+  launch/terminate notifications for that bundle id and on a 2 s poll (live, the notification does not arrive for the agent, so the poll is the
+  detector; absence between terminate and launch is not a change). On a change it logs `agent restarted: pid A -> B` and the app runs
+  `LivePlatform.invalidateAgentState()` (scanner: last hosted tree, stale carry-over, last complete layout, strip, unverified counters; kept: the
+  assumed-hidden records, because the store still says hidden, per-app caches and seen-hosted names; the AX element cache already drops the old agent's
+  elements on a pid change) and `LayoutEngine.agentRestarted()`.
+- **Not-ready guard**: `agentRestarted` sets `notReadyUntil = now + 2 s` and drops transient reveal holds. A pass whose settled observation is
+  obtained inside that window logs `agent restarted moments ago; not acting on this observation` and ends as `.unsettled` (nothing published,
+  planned or done); the delayed reconcile follows. Independent of the watcher: an EMPTY on-bar list is `ObserveError.empty` (never "everything is
+  hidden"), an incomplete hosted read can never be an observation (`hostedReadComplete == false` is not returned as a read), and an unsettled read
+  is published but never planned on; tests: `EngineRobustnessTests`. Live, a pass that spanned a respawn saw `hostedComplete=false`, two complete
+  reads with 4 stale on-bar items, and acted only after two complete agreeing reads, with no action.
+- **Sleep/wake**: `EngineTriggers` calls `willSleep()` (no new pass starts, pending requests and delayed reconciles are dropped; a running pass ends
+  after the action in flight, re-checked before every move) and `didWake()` (reconcile 3 s later). `triggers.start()` clears a sleep flag left by a
+  missed wake.
+- **Display changes** (`AppModel`, `NSApplication.didChangeScreenParametersNotification`): `platform.invalidateStrip()` (the strip is recomputed from
+  the next agent read), the open overflow panel is re-anchored to the status item's screen after 0.4 s (`OverflowPanelController.reposition`; its
+  frame comes from `OverflowPlacement.panelFrame` on the screen under the item), and ONE reconcile after 1 s (bursts of notifications collapse).
+- **New-item notice**: unknown items placed by `newItemPolicy` log `New item: X placed in Visible|Hidden` and set `EngineState.newItemNotice`
+  for 10 s; the Arrange window prefixes its status line with it. No system notification.
+- **Flapping guard**: `strikes[key]` counts passes in a row in which the key failed (one strike per pass; a pass in which it did not fail breaks the
+  streak). Below 3 the key is retried by the next pass (a failing pass schedules one follow-up, bounded by the strikes); at 3 it is logged once
+  (`<key> failed 3 passes in a row ...; marked failed until the layout changes or Retry`), stays `.failed` and an anchor. A deterministic refusal
+  (capability forbids) goes straight to the limit. The whole engine is NOT stopped by one bad key: a pass ends after 3 consecutive failed actions,
+  and only 3 such passes in a row (no action succeeded in between) set `lastError = .stoppedAfterFailures(3)`, cleared by `clearFailures`/`setLayout`.
 
 ## (e) What cannot be done, and how the UI shows it
 

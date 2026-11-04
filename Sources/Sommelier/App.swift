@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                       onArrange: { [weak self] in self?.arrange.show() },
                                       onPermissions: { [weak self] in self?.onboarding.show() })
         statusController = sc
+        model.onDisplayChange = { [weak sc] in sc?.displayChanged() }
         if env["SOMMELIER_SHOW_ONBOARDING"] == "1" { onboarding.show() }
         if env["SOMMELIER_DEBUG_MENU"] == "1" {
             NSLog("[Sommelier] menu titles: %@", sc.buildMenu().items.map { $0.isSeparatorItem ? "---" : "\($0.title)[\($0.state == .on ? "x" : " ")]" }.joined(separator: " | "))
@@ -40,6 +41,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let t0 = Date()
                 let r = await model.activate(key, button: right ? .right : .left)
                 NSLog("[Sommelier] activate result for %@: %@ (total %d ms)", keyText, "\(r)", Int(Date().timeIntervalSince(t0) * 1000))
+            }
+        }
+        // Headless reveal toggle for scripts/soak-events.sh (the status item can sit in Apple's overflow, where it cannot be
+        // clicked): the file's content "show"/"hide" sets the hidden section's reveal state. Off unless the variable is set.
+        if let path = env["SOMMELIER_DEBUG_REVEAL_FILE"], !path.isEmpty {
+            Task { @MainActor [model] in
+                var last = ""
+                while true {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard let text = (try? String(contentsOfFile: path, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          text != last, text == "show" || text == "hide" else { continue }
+                    last = text
+                    NSLog("[Sommelier] debug reveal file: %@", text)
+                    model.setShowHidden(text == "show")
+                }
             }
         }
         if env["SOMMELIER_OPEN_ARRANGE"] == "1" { arrange.show() }

@@ -85,6 +85,24 @@ public struct MenuBarScanner {
         state.save()
     }
 
+    /// MenuBarAgent respawned (gdu.21): forgets what was read from the old agent (last hosted tree, carried-forward stale
+    /// items, the last complete layout, the strip frame, unverified counters) so nothing stale is reported as live.
+    /// Keeps `assumedHidden` (the Control Center store still says hidden), the per-app caches and the seen-hosted names.
+    public func invalidateAgentState() {
+        state.loadIfNeeded()
+        state.lastHosted = []
+        state.lastCompleteLayout = nil
+        state.lastStrip = nil
+        state.unverifiedCount = [:]
+        log("scanner: agent state invalidated")
+    }
+
+    /// The display configuration changed (gdu.21): the menu bar strip frame is recomputed from the next agent read.
+    public func invalidateStrip() {
+        state.loadIfNeeded()
+        state.lastStrip = nil
+    }
+
     /// Owners currently assumed live-hidden (diagnostics, tests).
     public var assumedHiddenPIDs: Set<pid_t> { state.loadIfNeeded(); return Set(state.assumedHidden.keys) }
 

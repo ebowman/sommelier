@@ -1,7 +1,8 @@
 import AppKit
 import Foundation
 
-/// Wires external events to `LayoutEngine.requestReconcile()`: app launch/quit (debounced 1 s) and a 10 s poll that
+/// Wires external events to `LayoutEngine.requestReconcile()`: app launch/quit (coalesced: a burst within 1 s is one pass),
+/// sleep/wake (no pass across sleep; reconcile 3 s after wake) and a 10 s poll that
 /// only triggers when a fast scan shows a different on-bar order or parked set than `EngineState.observed`.
 /// No logic here beyond wiring; the engine coalesces triggers.
 @MainActor
@@ -13,7 +14,6 @@ public final class EngineTriggers {
     private let pollInterval: TimeInterval
     private var tokens: [any NSObjectProtocol] = []
     private var timer: Timer?
-    private var debounce: Task<Void, Never>?
 
     public init(engine: LayoutEngine, state: EngineState, scanner: any SnapshotScanning,
                 resolve: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem], pollInterval: TimeInterval = 10) {
@@ -23,12 +23,22 @@ public final class EngineTriggers {
 
     public func start() {
         guard tokens.isEmpty else { return }
+        let engine = engine
+        Task { await engine.resumeFromSleep() }   // a wake missed while stopped must not leave the engine asleep
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.scheduleDebounced() }
             })
         }
+        tokens.append(nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let engine = self?.engine else { return }
+            Task { await engine.willSleep() }
+        })
+        tokens.append(nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let engine = self?.engine else { return }
+            Task { await engine.didWake() }
+        })
         timer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.poll() }
         }
@@ -39,17 +49,12 @@ public final class EngineTriggers {
         for t in tokens { nc.removeObserver(t) }
         tokens = []
         timer?.invalidate(); timer = nil
-        debounce?.cancel(); debounce = nil
     }
 
+    /// Trailing 1 s window per burst: the engine replaces a pending request with the same reason.
     private func scheduleDebounced() {
-        debounce?.cancel()
         let engine = engine
-        debounce = Task {
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { return }
-            await engine.requestReconcile()
-        }
+        Task { await engine.scheduleReconcile(after: .seconds(1), reason: "app launch/quit") }
     }
 
     private func poll() async {

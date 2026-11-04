@@ -90,6 +90,15 @@ final class OverflowPanelController {
         installMonitors()
     }
 
+    /// Display configuration changed: re-anchor an open panel to the status item's current frame and screen.
+    func reposition(anchoredTo itemFrame: CGRect, on screen: NSScreen) {
+        guard isVisible else { return }
+        anchor = itemFrame
+        self.screen = screen
+        place()
+        NSLog("[Sommelier] overflow panel repositioned after display change: %@", NSStringFromRect(panel?.frame ?? .zero))
+    }
+
     func hide(_ reason: String = "requested") {
         if isVisible { NSLog("[Sommelier] overflow hide: %@", reason) }
         if let m = globalMonitor { NSEvent.removeMonitor(m) }

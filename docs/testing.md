@@ -235,3 +235,57 @@ Unit tests: `LiveActuatorTests` (exact elements vanished -> live + assumed recor
 Live 2026-11-04 (Bartender 7 quit, `mbprobe` ad-hoc signed, Moom + Yoink, MenuBarAgent never restarted by us; `/private/tmp/.../scratchpad/of7/live3.txt`): show+hide x5 each = 20/20 ops live (hide trace `baseline = pre-write full scan|retried full scan`, then `exactly the unit's 1 element(s) vanished (23 -> 22)` at 800-2500 ms or from a poll scan), pid constant (58992), 0 "no baseline". Write to verified: Moom hides 5729/4274/5655/3360/1830 ms, shows 731/3258/5539/2972/3007 ms; Yoink hides 3785/4987/5437/5154/4608 ms, shows 933/3511/4902/3271/910 ms. `list --json` after every hide: `assumedNotHosted`. 5 consecutive scans flag only Moom and Yoink (23 on-bar items). App run (`SOMMELIER_ACTIVATE=<Yoink key>`, Escape ~6.5 s after launch): engine plans `converged actions=0` during the hold and after, `re-hide verified by hosted-element evidence (tree restored, 23 elements); recorded as assumed-hidden`, pid unchanged, no move/drag/hide planned. An earlier pass of the same loop (count-based width rule, jittering iStat widths) respawned 5 of 20 times; that is why named widths are not compared. End state: Moom/Yoink/Tot parked, `isAllowed` blob equal to the backup, third-party order identical, Bartender relaunched.
 
 Corrective pass 2 (of7): contradiction rule (a) removed (our own status item sat on Tot's stale frame, same width, and cleared the record, then the engine planned a hide that changed nothing and respawned); the record now follows the Control Center `isAllowed` readback (10 s rate limit), plus an `alreadyApplied` actuator short-circuit and an AX identifier on our own status item that excludes it from frame joins. Live 2026-11-04 (Bartender quit, MenuBarAgent pid 73223 constant): app start with Tot live-hidden and listed hidden: 90 s, 0 respawns, every plan `converged actions=0`; 3 more starts x 35 s: 0 respawns, 0 actions; Tot show live 1473 ms, hide live 9193 ms (element evidence), 5 scans flag only Tot; with the record deleted from the cache and the store saying hidden, `mbprobe hide` -> `MECHANISM alreadyApplied`, no write, record restored. `make test` 380.
+
+
+## Robustness (gdu.21)
+Unit tests: `RobustnessTests` (agent watcher: pid change reported once, absence is not a change; empty / unsettled observation never acts; no action
+inside the post-respawn window and ONE delayed reconcile afterwards; transient holds dropped on respawn; nothing runs while asleep and wake reconciles;
+bursts with one reason are one pass; new-item notice wording; scanner `invalidateAgentState` keeps assumed-hidden), `LayoutEngineTests` (a key failing 3
+passes in a row is `.failed` until Retry and never stops the engine; a recovering key breaks the streak; 3 passes of all-failed actions stop the engine).
+`make test`: 396 tests.
+
+### Soak: `scripts/soak-events.sh [--relaunches N] [--toggles M] [--allow-respawn]`
+Bartender quit (relaunched at exit if it was running), MBDummy with an ALLOWED Control Center entry (`mbprobe cc-allowed list`; the script never respawns
+the agent to create it). Runs the APP's engine on a scratch layout (`SOMMELIER_LAYOUT_FILE`; the real `layout.json` is never touched; the user's real
+hidden items are put in "always hidden" so a reveal only ever shows the dummies). Phase V: dummies visible, N/2 quit/relaunch cycles, converged = the
+on-bar order equals the baseline (dummies included). Phase H: app restarted with the dummies hidden, N/2 cycles, converged = no dummy on the bar and the
+others in baseline order. Phase R: M reveal toggles through `SOMMELIER_DEBUG_REVEAL_FILE` (the file's content `show`/`hide` calls the same
+`setShowHiddenSection` as a left click in inline mode; Sommelier's own item can sit in Apple's overflow where it cannot be clicked, so the click is
+replaced). Final: non-dummy order equals the baseline, dummies hidden as in the layout, MenuBarAgent pid unchanged (fails otherwise unless
+`--allow-respawn`). One layout limitation: both dummies are one hide unit (one app), so "Dummy-A visible, Dummy-B hidden" cannot exist; the phases cover
+visible and hidden for the unit instead.
+
+Results (2026-11-04, Bartender quit, MenuBarAgent pid 73223, ~6 min):
+| phase | attempts | ok | fail | max s to converge |
+|---|---|---|---|---|
+| V (dummies visible, relaunch) | 5 | 5 | 0 | 3 |
+| H (dummies hidden, relaunch; incl. the first hide) | 6 | 6 | 0 | 6 |
+| R (10 x show, 10 x hide again) | 20 | 20 | 0 | 23 |
+| final order check | 1 | 1 | 0 | 1 |
+
+MenuBarAgent pid 34707 before and after (no respawn), 0 engine failures logged, `SOAK PASS (0 failures)`, 5 min 21 s. A first full run FAILED in phase R
+(hide 6-10): toggling faster than a 5-7 s live batch changed the desired state while a hide batch was in flight, and the post-batch re-plan ("show")
+was misread as "the hide did not take", so both dummies were struck three passes in a row and stuck on the bar. Fixed in `LayoutEngine`: a key whose
+re-plan wants the OPPOSITE change is not a failure (`DesireChangeDuringBatchTests`); the flapping guard itself worked as designed (logged once).
+
+### Forced MenuBarAgent restart (test only; run ONCE)
+With the app on a scratch layout and converged (`SOMMELIER_LAYOUT_FILE=<scratch> build/Sommelier.app/Contents/MacOS/Sommelier`), `killall MenuBarAgent`
+once; never during a drag (killing the app mid-drag leaves the mouse button down; `cliclick du:x,y` releases it). Measured 2026-11-04 17:23 (watcher poll 5 s
+at that time): kill 17:23:04.14, launchd respawn 04.23 (pid 73223 -> 34707); a pass in flight across the respawn read `hostedComplete=false`, then two
+complete reads with 4 stale on-bar items (no agreement), then agreement at 07.43 with `plan: converged actions=0` (no hide/move was planned from the
+incomplete scans); watcher `agent restarted: pid 73223 -> 34707` at 07.91 (the next poll; the NSWorkspace notification never arrives for the agent);
+`pass started 0 ms after agent restarted` at 10.01 (2 s settle), observations 11.60 (incomplete), 12.50, 12.97 (agree), `plan: converged` at 12.97 =
+**8.7 s after the agent was back**, layout intact: the 15 compared on-bar items identical to before (iStat and heuristic items exempt), the 28 real
+hidden items still not on the bar. Because detection was poll-bound, the default poll was then lowered to 2 s (not re-measured: the restart is run once).
+
+### Display change and sleep/wake (human-assisted; NOT run by an agent)
+Display change: with the app running on the real layout and converged, open the overflow panel (left click the Sommelier item), then unplug an external
+display (or change the resolution in System Settings > Displays). Expect in `build/sommelier.log` (run via `make app-run`):
+`display configuration changed (N screen(s)); reconcile in 1 s`, `overflow panel repositioned after display change: {{x, y}, {w, h}}` (the panel follows
+the item to its screen and stays inside that screen's visible frame), then ONE `pass started ... after display change`, and `plan: phase=converged` (or only
+moves that restore the layout) within ~5 s; the Arrange window shows Converged. Replug: the same lines. Several notifications in a burst must produce one pass.
+Sleep/wake: put the machine to sleep with Apple menu > Sleep (NOT `pmset sleepnow` from an agent), wake after ~1 min. Expect `willSleep: no new passes until
+wake` before sleep, `didWake: reconcile in 3 seconds`, then `pass started ... after wake` ~3 s after wake, converged with the layout intact (an agent respawn
+on wake additionally logs `agent restarted: pid A -> B`; the pass waits out its 2 s settle).
+Also check by hand: launch a new third-party menu bar app that is not in the layout: Arrange status line shows `New item: <name> placed in Visible` (or Hidden per
+the policy) for ~10 s and the log has the same text.

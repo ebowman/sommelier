@@ -45,6 +45,8 @@ public final class EngineState {
     public var passSequence: Int = 0
     /// False while `observed` is the latest complete read that two scans did not agree on (gdu.46): shown, never acted on.
     public var observationSettled: Bool = true
+    /// Transient "New item: X placed in Visible" text for the Arrange window status line (cleared by the engine after a few seconds).
+    public var newItemNotice: String?
 
     public init(observed: ObservedOrder = ObservedOrder(onBar: [], parked: []), layout: Layout = .empty,
                 showHiddenSection: Bool = false) {
@@ -57,5 +59,22 @@ public final class EngineState {
         self.isConverged = false
         self.lastPassAt = nil
         self.passCount = 0
+    }
+}
+
+/// Wording of the transient new-item notice.
+public enum NewItemNotice {
+    public static let lifetime: Duration = .seconds(10)
+
+    /// "New item: A placed in Visible" / "New items: A, B placed in Visible; C placed in Hidden"; nil when empty.
+    public static func text(_ items: [(name: String, section: LayoutSection)]) -> String? {
+        guard !items.isEmpty else { return nil }
+        func label(_ s: LayoutSection) -> String {
+            switch s { case .visible: return "Visible"; case .hidden: return "Hidden"; case .alwaysHidden: return "Always hidden" }
+        }
+        var order: [LayoutSection] = []
+        for i in items where !order.contains(i.section) { order.append(i.section) }
+        let parts = order.map { sec in "\(items.filter { $0.section == sec }.map(\.name).joined(separator: ", ")) placed in \(label(sec))" }
+        return (items.count == 1 ? "New item: " : "New items: ") + parts.joined(separator: "; ")
     }
 }

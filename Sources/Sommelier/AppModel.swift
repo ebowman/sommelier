@@ -8,6 +8,9 @@ final class AppModel {
     let state: EngineState
     @ObservationIgnored private(set) var engine: LayoutEngine?
     @ObservationIgnored private(set) var triggers: EngineTriggers?
+    @ObservationIgnored private(set) var agentWatcher: MenuBarAgentWatcher?
+    /// Called on every display configuration change (the status item controller repositions an open overflow panel).
+    @ObservationIgnored var onDisplayChange: () -> Void = {}
     var conflictingManager: String?
     @ObservationIgnored var showOnboarding: () -> Void = {}
     @ObservationIgnored private var starting = false
@@ -35,6 +38,11 @@ final class AppModel {
                 await self.startIfReady()
             }
         }
+        // Display changes (unplug/replug, resolution, notch screen): a burst of notifications becomes ONE reconcile after 1 s
+        // (the engine replaces a pending request with the same reason); the strip is recomputed from the next agent read.
+        tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.displayChanged() }
+        })
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
@@ -109,6 +117,10 @@ final class AppModel {
             engine = e
             triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
             watchErrors()
+            agentWatcher = MenuBarAgentWatcher(log: { NSLog("[Sommelier] %@", $0) }, onChange: { [platform, weak self] _, _ in
+                platform.invalidateAgentState()
+                await self?.engine?.agentRestarted()
+            })
         }
         guard let engine, let triggers else { return }
         await engine.start()
@@ -137,6 +149,15 @@ final class AppModel {
         }
         await engine.requestReconcile()
         triggers.start()
+        agentWatcher?.start()
+    }
+
+    private func displayChanged() {
+        NSLog("[Sommelier] display configuration changed (%d screen(s)); reconcile in 1 s", NSScreen.screens.count)
+        platform.invalidateStrip()
+        onDisplayChange()
+        guard let engine else { return }
+        Task { await engine.scheduleReconcile(after: .seconds(1), reason: "display change") }
     }
 
     private func pollConflict() {
@@ -159,6 +180,7 @@ final class AppModel {
             NSLog("[Sommelier] \(m); pausing")
             conflictingManager = m
             triggers?.stop()
+            agentWatcher?.stop()
             pollConflict()
         } else if conflictingManager != nil {
             NSLog("[Sommelier] Bartender gone; resuming")
@@ -176,6 +198,7 @@ final class AppModel {
                 if self.state.lastError == .permissionDenied, self.triggers != nil {
                     NSLog("[Sommelier] permissionDenied; stopping triggers")
                     self.triggers?.stop()
+                    self.agentWatcher?.stop()
                     self.showOnboarding()
                     while self.state.lastError == .permissionDenied, !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(2))
