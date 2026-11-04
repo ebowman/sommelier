@@ -67,6 +67,9 @@ public struct AgentHostedTree: Sendable {
     /// Part of `failedReads` that is NOT a per-item group (the window or the top level could not be read). Such a failure
     /// can never be attributed to an item's owner (gdu.51).
     public var topFailures: Int
+    /// Set by the scanner (never by a source): every failed/timed-out group is attributable BY IDENTITY to a self-positioning
+    /// owner (gdu.51), so the read is complete for everyone else.
+    public var failuresAreSelfPositioning = false
     public init(stripFrame: CGRect?, elements: [AXElementInfo], failedReads: Int = 0, timedOut: [AXElementInfo] = [],
                 unnamedTimeouts: Int = 0, topFailures: Int = 0) {
         self.stripFrame = stripFrame; self.elements = elements; self.failedReads = failedReads; self.timedOut = timedOut
@@ -86,6 +89,7 @@ public enum ExtrasRead: @unchecked Sendable {
 public extension AccessibilitySource {
     func readExtras(for app: RunningAppInfo, timeout: Float?) -> ExtrasRead { .items(extrasItems(for: app)) }
     func agentHostedTree(for agent: RunningAppInfo, retry: Bool) -> AgentHostedTree { agentHostedTree(for: agent) }
+    func noteUnresolvedGroups(selfPositioning: Bool) {}
 }
 
 /// Implementations must be safe to call concurrently from multiple threads (the scanner queries apps in parallel).
@@ -103,6 +107,9 @@ public protocol AccessibilitySource: Sendable {
     /// `retry: false` is the latency-bound variant used by the fast path: one short pass, no retry round; nodes that
     /// time out are reported in `failedReads` and the scanner carries them forward from the previous scan.
     func agentHostedTree(for agent: RunningAppInfo, retry: Bool) -> AgentHostedTree
+    /// Scanner feedback after a retrying read (gdu.51): the groups that did not finish were all attributed, by identity, to
+    /// self-positioning owners (true) or not (false). Only attributed groups may be read with a short capped timeout.
+    func noteUnresolvedGroups(selfPositioning: Bool)
 }
 
 /// Thread-safe cache of per-pid AX elements (application element and its AXExtrasMenuBar element).
@@ -134,13 +141,23 @@ final class AXElementCache: @unchecked Sendable {
     /// round (gdu.51), so one slow owner (iStat) does not cost every scan the whole retry budget.
     private var slow: Set<ElementKey> = []
     private var slowReads = 0
-    func isSlow(_ e: AXUIElement) -> Bool { lock.lock(); defer { lock.unlock() }; return slow.contains(ElementKey(e: e)) }
+    /// The subset of `slow` the scanner attributed, by identity, to self-positioning owners. ONLY these get the short cap;
+    /// every other group keeps the normal retry round (a healthy slow group must be able to finish).
+    private var spSlow: Set<ElementKey> = []
+    func isCapped(_ e: AXUIElement) -> Bool { lock.lock(); defer { lock.unlock() }; return spSlow.contains(ElementKey(e: e)) }
+    /// The scanner's verdict on the groups that did not finish in the last read: all attributed to self-positioning owners
+    /// (they become capped) or not (nobody is capped).
+    func noteUnresolvedAttribution(selfPositioning: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        spSlow = selfPositioning ? slow : []
+    }
     /// Every 5th full read gives slow groups one attempt with the normal first-pass timeout (still no retry round), so a group
     /// that merely needs a bit more than the cap is refreshed regularly at a bounded cost.
     var slowRefreshRead: Bool { lock.lock(); defer { lock.unlock() }; return slowReads % 5 == 4 }
     func setSlow(_ groups: [AXUIElement]) {
         lock.lock(); defer { lock.unlock() }
         slow = Set(groups.map { ElementKey(e: $0) })
+        spSlow.formIntersection(slow)
         slowReads += 1
     }
 
@@ -207,6 +224,8 @@ public struct LiveAccessibilitySource: AccessibilitySource {
     public var agentSlowGroupTimeout: Float = 0.3
     private let cache = AXElementCache()
     public init() {}
+
+    public func noteUnresolvedGroups(selfPositioning: Bool) { cache.noteUnresolvedAttribution(selfPositioning: selfPositioning) }
 
     public var currentPID: pid_t { ProcessInfo.processInfo.processIdentifier }
 
@@ -407,7 +426,7 @@ public struct LiveAccessibilitySource: AccessibilitySource {
             let refresh = cache.slowRefreshRead
             let parts = boundedParallelMap(work, workers: workers, deadline: within.map { Date().addingTimeInterval($0) }) { w -> Collected in
                 var c = Collected()
-                let isSlow = capped && self.cache.isSlow(w.value)
+                let isSlow = capped && self.cache.isCapped(w.value)
                 self.collect(w.value, depth: 1, timeout: isSlow && !refresh ? min(timeout, self.agentSlowGroupTimeout) : timeout,
                              attempts: isSlow ? 1 : attempts, into: &c)
                 return c
@@ -425,8 +444,8 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         trace("pass 1 done, \(unresolved.count) unfinished")
         if retry, !unresolved.isEmpty {
             // Groups that were already slow last time had their short pass; only the others get the long retry round.
-            let fresh = unresolved.filter { !cache.isSlow($0.value) || agentSlowGroupTimeout <= 0 }
-            let stillSlow = unresolved.filter { cache.isSlow($0.value) && agentSlowGroupTimeout > 0 }
+            let fresh = unresolved.filter { !cache.isCapped($0.value) || agentSlowGroupTimeout <= 0 }
+            let stillSlow = unresolved.filter { cache.isCapped($0.value) && agentSlowGroupTimeout > 0 }
             unresolved = stillSlow + (fresh.isEmpty ? [] : run(fresh, timeout: agentRetryTimeout, attempts: 2, within: agentRetryWindow))
         }
         if retry { cache.setSlow(unresolved.map(\.value)) }

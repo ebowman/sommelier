@@ -163,7 +163,7 @@ public struct MenuBarScanner {
             let firstOnly = tree.elements.filter { !have.contains($0.identityKey) }
             tree = AgentHostedTree(stripFrame: again.stripFrame ?? tree.stripFrame, elements: again.elements + firstOnly,
                                    failedReads: again.failedReads, timedOut: again.timedOut + tree.timedOut,
-                                   unnamedTimeouts: again.unnamedTimeouts)
+                                   unnamedTimeouts: again.unnamedTimeouts, topFailures: again.topFailures + tree.topFailures)
             lap("agent tree confirm read")
         }
 
@@ -175,20 +175,22 @@ public struct MenuBarScanner {
         // Groups that timed out without the source knowing their contents: carry what was visible before and is
         // missing now (still bounded by the stale-scan cap and the owner check below).
         var candidatesToCarry = tree.timedOut
-        if tree.unnamedTimeouts > 0 {
-            // When the failed groups are provably the self-positioning owner's (every named timeout is theirs, no top-level
-            // failure, and their known items cover every failed read), the other absent items are simply gone: carry only
-            // the self-positioning ones (gdu.51), so a hide of an unrelated unit is not masked as a stale carry.
-            let miss = missing(tree)
-            let owners = selfPositioningOwners
-            let spMiss = miss.filter { SelfPositioning.matches(identifier: $0.identifier, owners: owners) }
-            let spNamed = tree.timedOut.filter { SelfPositioning.matches(identifier: $0.identifier, owners: owners) }.count
-            let spCached = state.perApp.values.filter { SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: owners) }
-                .reduce(0) { $0 + $1.infos.count }
-            let accounted = max(spNamed + spMiss.count, spCached)
-            if tree.topFailures == 0, spNamed == tree.timedOut.count, accounted >= tree.failedReads { candidatesToCarry += spMiss }
-            else { candidatesToCarry += miss }
+        // Attribution by IDENTITY (gdu.51): every failed group is a self-positioning owner's when there is no top-level
+        // failure, every named timeout carries a self-positioning element, and the unnamed timeouts are covered by
+        // self-positioning elements that were hosted in the previous tree and are missing now, with NO other previously
+        // hosted element missing and uncarried. Counts of the owner's cached items prove nothing.
+        let owners = selfPositioningOwners
+        func isSP(_ e: AXElementInfo) -> Bool { SelfPositioning.matches(identifier: e.identifier, owners: owners) }
+        let miss = missing(tree)
+        let spMiss = miss.filter(isSP)
+        var attributable = false
+        if tree.failedReads > 0, tree.topFailures == 0, tree.timedOut.allSatisfy(isSP),
+           tree.unnamedTimeouts > 0 || !tree.timedOut.isEmpty {
+            attributable = tree.unnamedTimeouts == 0 || (spMiss.count >= tree.unnamedTimeouts && spMiss.count == miss.count)
         }
+        tree.failuresAreSelfPositioning = attributable
+        if retry { source.noteUnresolvedGroups(selfPositioning: attributable) }
+        if tree.unnamedTimeouts > 0 { candidatesToCarry += attributable ? spMiss : miss }
         for t in candidatesToCarry where !freshKeys.contains(t.identityKey) && seen.insert(t.identityKey).inserted {
             let prior = state.lastHosted.first { $0.identityKey == t.identityKey }
             let count = (prior?.staleCount ?? 0) + 1
@@ -352,13 +354,13 @@ public struct MenuBarScanner {
         // every failed read. `hostedReadComplete` itself stays strict (== hostedComplete).
         let spOwners = selfPositioningOwners
         var spOnly = false
-        if !verifiedOnly, !hostedComplete, agent != nil, tree.topFailures == 0, tree.failedReads > 0, hosted.contains(where: { !$0.stale }) {
+        if !verifiedOnly, !hostedComplete, agent != nil, tree.topFailures == 0, tree.failedReads > 0, tree.failuresAreSelfPositioning,
+           hosted.contains(where: { !$0.stale }) {
             let staleHosted = hosted.filter(\.stale)
             let staleCands = candidates.filter(\.stale)
             spOnly = (!staleHosted.isEmpty || !staleCands.isEmpty)
                 && staleHosted.allSatisfy { SelfPositioning.matches(identifier: $0.identifier, owners: spOwners) }
                 && staleCands.allSatisfy { SelfPositioning.matches(bundleID: $0.app.bundleID, name: $0.app.name, owners: spOwners) }
-                && max(staleHosted.count, staleCands.count) >= tree.failedReads
         }
 
         // Assumed-hidden state (of7). Identifier-less items (Tot, Yoink, Moom) cannot be judged by name, so after a live

@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import Testing
@@ -72,7 +73,7 @@ private let full = tree([dummyEl, otherEl, cpu, mem])
 
 @Test func selfPositioningPlusThirdPartyFailuresIsIncomplete() {
     // 3 failed groups, but only the 2 iStat items are known: one failure is unexplained.
-    let s = source([full, tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)])])
+    let s = source([full, tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], unnamed: 1)])
     let scanner = MenuBarScanner(source: s)
     _ = scanner.scan()
     #expect(scanner.scan().completeness == .incomplete)
@@ -119,4 +120,47 @@ private let full = tree([dummyEl, otherEl, cpu, mem])
     _ = scanner.scan()
     let r = scanner.scan()
     #expect(r.items.filter { $0.ownerBundleID == istatApp.bundleID }.allSatisfy { !$0.notHostedByAgent })
+}
+
+// MARK: - gdu.51 corrective: attribution by identity
+
+@Test func unnamedTimeoutOfANonSelfPositioningGroupIsNotCoveredByIStatItems() {
+    // scan 2: one named iStat timeout (cpu) plus one UNNAMED timeout; the only missing previously-hosted item is Other's.
+    let s = source([full, tree([dummyEl, mem], failed: 2, timedOut: [stale(cpu)], unnamed: 1)], failing: [20])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    let o = r.items.first { $0.axIdentifier == "other-1" }
+    #expect(o?.notHostedByAgent != true)
+    #expect(o?.isOnMenuBar == true)
+}
+
+@Test func unnamedTimeoutsCoveredByMissingIStatElementsStayTheMiddleLevel() {
+    let s = source([full, tree([dummyEl, otherEl], failed: 2, unnamed: 2)])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+}
+
+@Test func topLevelFailureInTheConfirmReReadIsKept() {
+    // Read 1 lacks Dummy-A without an error (triggers the confirm re-read); the re-read has a top-level failure and timed-out iStat groups.
+    let s = source([full, tree([otherEl, cpu, mem]), tree([otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], top: 1)])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+}
+
+@Test func onlyAttributedGroupsAreCapped() {
+    let cache = AXElementCache()
+    let iStatGroup = AXUIElementCreateApplication(1), slowOther = AXUIElementCreateApplication(2)
+    cache.setSlow([iStatGroup, slowOther])
+    #expect(!cache.isCapped(iStatGroup) && !cache.isCapped(slowOther))   // not attributed: both keep the full retry round
+    cache.noteUnresolvedAttribution(selfPositioning: true)
+    #expect(cache.isCapped(iStatGroup))
+    cache.setSlow([slowOther])                                           // iStat's group resolved
+    #expect(!cache.isCapped(iStatGroup))
+    cache.noteUnresolvedAttribution(selfPositioning: false)
+    #expect(!cache.isCapped(slowOther))
 }
