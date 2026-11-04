@@ -11,7 +11,17 @@ public enum LayoutBuilder {
     /// `Layout.append`: that applies the "insert before the trailing system block" default for user-facing shows and
     /// would reverse the trailing modules and drag every module-then-app sequence to the end (sommelier-gdu.43).
     /// Items in Apple's overflow area share stacked frames; for those the scanner's discovery order stands.
+    ///
+    /// The result is hide-unit normalized (gdu.44): an app with one item on the bar and a sibling parked would otherwise be a
+    /// split unit that can never converge. `build(from:)` normalizes silently; use `buildReportingNormalization` to learn
+    /// which parked keys were moved to `visible`.
     public static func build(from resolved: [ResolvedItem]) -> (layout: Layout, excluded: [String]) {
+        let r = buildReportingNormalization(from: resolved)
+        return (r.layout, r.excluded)
+    }
+
+    /// Like `build(from:)`, also returning the keys normalization moved from `hidden` to `visible` (empty when none).
+    public static func buildReportingNormalization(from resolved: [ResolvedItem]) -> (layout: Layout, excluded: [String], normalized: [ItemKey]) {
         var layout = Layout()
         var excluded: [String] = []
         var seen = Set<ItemKey>()
@@ -24,6 +34,7 @@ public enum LayoutBuilder {
             if !seen.insert(r.key).inserted { continue }
             if r.item.isOnMenuBar { layout.visible.append(r.key) } else { layout.hidden.append(r.key) }
         }
-        return (layout, excluded)
+        let n = layout.normalizedHideUnits()
+        return (n.layout, excluded, n.moved)
     }
 }

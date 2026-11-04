@@ -559,7 +559,11 @@ func runPlan(_ a: [String]) async {
         exit(1)
     }
     let layout: Layout
-    do { layout = try FileLayoutStore(url: file).load() } catch { fail("cannot load \(file.path): \(error)") }
+    do {
+        let (l, warnings) = try FileLayoutStore(url: file).loadWithWarnings()
+        layout = l
+        for m in warnings { FileHandle.standardError.write(Data(("warning: " + m + "\n").utf8)) }
+    } catch { fail("cannot load \(file.path): \(error)") }
     let res: [ResolvedItem]
     do { res = try await makeObserver().observe() } catch {
         if case ObserveError.permissionDenied = error { fail("\(error)") }
@@ -745,8 +749,12 @@ func runLayout(_ a: [String]) async {
         } catch { fail("\(error); not writing") }
         let stale = res.filter { $0.item.stale }.map { $0.key.description }
         if !stale.isEmpty { fail("stale items, not writing: " + stale.joined(separator: ", ")) }
-        let (l, excluded) = LayoutBuilder.build(from: res)
+        let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res)
         guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
+        if !normalized.isEmpty {
+            FileHandle.standardError.write(Data(("warning: all items of an app hide or show at once; moved to visible: "
+                + normalized.map(\.description).joined(separator: ", ") + "\n").utf8))
+        }
         for e in excluded { FileHandle.standardError.write(Data(("ignored non-item: " + e + "\n").utf8)) }
         do { try store.save(l) } catch { fail("save failed: \(error)") }
         printLayout(l)

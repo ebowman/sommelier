@@ -151,7 +151,9 @@ struct ReconcilerTests {
 private func unitWantSet(layout: Layout, bar: [ItemKey], parked: [ItemKey], showHidden: Bool) -> Set<ItemKey> {
     var out = Set<ItemKey>()
     for (_, ks) in hideUnits(bar + parked) {
-        let secs = ks.compactMap { layout.section(of: $0) }
+        var secs = ks.compactMap { layout.section(of: $0) }
+        // gdu.44: a unit with no observed listed key is decided by its layout-listed (absent) siblings.
+        if secs.isEmpty { secs = layout.allKeys.filter { $0.hideUnit == ks[0].hideUnit }.compactMap { layout.section(of: $0) } }
         let wants: Bool
         if secs.isEmpty { wants = layout.newItemPolicy == .visibleAtEnd && ks.contains { bar.contains($0) } }
         else { wants = secs.contains(.visible) || (showHidden && secs.contains(.hidden) && !secs.contains(.alwaysHidden)) }
@@ -229,11 +231,13 @@ struct ReconcilerRandomTests {
 
             var converged = false
             var plans = 0
+            var orderStart: [ItemKey]?   // the bar when the first ORDER plan ran: unknown keys keep this relative order
             for _ in 0..<3 {
                 let p = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
                 plans += 1
                 if p.phase == .converged { converged = true; break }
                 if p.phase == .order {
+                    if orderStart == nil { orderStart = o.onBar }
                     // Anchors for the bound: immovable, or unhideable-but-should-be-hidden (unknown under .hidden policy too).
                     var a2 = Set(o.onBar.filter { anchorSet.contains($0) })
                     let blocked = Set(o.onBar.filter { noHide.contains($0) && !want0.contains($0) }.map(\.hideUnit))
@@ -291,6 +295,13 @@ struct ReconcilerRandomTests {
                 if reachable {
                     // Everything the layout places (anchors included) is in layout order; unplaced anchors sit in between.
                     #expect(o.onBar.filter { Set(want).contains($0) } == want, fail("final order differs from layout"))
+                }
+                // Unknown wanted movable keys keep their observed relative order (bar left to right, then parked), appended per policy.
+                // Shown items land at arbitrary slots in the membership pass, so the reference is the bar the order pass started from.
+                let unknownOrder = (orderStart ?? o.onBar).filter { unknownWanted.contains($0) && !anchorSet.contains($0) }
+                if reachable {
+                    #expect(o.onBar.filter { unknownWanted.contains($0) && !anchorSet.contains($0) } == unknownOrder,
+                        fail("unknown wanted keys lost their observed relative order"))
                 }
                 #expect(last.desiredOnBar == o.onBar, fail("final order differs from the planner's target"))
             }

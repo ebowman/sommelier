@@ -131,6 +131,19 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
 @MainActor
 @Suite struct LayoutEngineTests {
+    @Test func setLayoutNormalizesASplitUnitAndReportsIt() async {
+        let a1 = ItemKey.status(ownerKey: "com.app.a", autosaveName: "1"), a2 = ItemKey.status(ownerKey: "com.app.a", autosaveName: "2")
+        let r = await rig(order: [a1, a2, k("B")], layout: Layout(visible: [a1, a2, k("B")]))
+        let split = Layout(visible: [a1, k("B")], hidden: [a2])
+        await r.engine.setLayout(split)
+        let want = Layout(visible: [a1, k("B"), a2])
+        #expect(r.state.layout == want)
+        #expect(r.state.lastNormalization == [a2])
+        #expect((try? r.store.load()) == want)
+        await r.engine.setLayout(want)
+        #expect(r.state.lastNormalization.isEmpty)
+    }
+
     @Test func orderInvolvingSelfPositioningOwnerWaitsForACompleteRead() async {
         let order = [istat, k("A"), k("B")]
         let layout = Layout(visible: [k("B"), k("A"), istat])
