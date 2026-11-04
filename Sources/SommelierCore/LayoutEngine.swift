@@ -137,9 +137,11 @@ public actor LayoutEngine {
     /// Loads the layout (missing file -> empty; corrupt -> `lastError` and the engine stays stopped) and publishes it.
     /// Does not start a pass; call `requestReconcile()`.
     public func start() async {
+        var movedAtLoad: [ItemKey] = []
         do {
             let (l0, moved) = try store.load().validatedReportingNormalization()
             layout = l0
+            movedAtLoad = moved
             if !moved.isEmpty {
                 NSLog("[Sommelier] layout: all items of an app hide or show at once; moved to visible: %@",
                       moved.map(\.description).joined(separator: ", "))
@@ -152,19 +154,24 @@ public actor LayoutEngine {
             await publish { $0.lastError = .observe("cannot load layout: \(error)") }
             return
         }
-        let l = layout, sh = showHidden
-        await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
+        let l = layout, sh = showHidden, mv = movedAtLoad
+        await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.lastNormalization = mv; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
     }
 
     /// Adopts `new`, publishes it with a new revision stamp (`layoutRevision`, `passesStartedAtRevision`) and returns that stamp:
     /// the caller judges its change only by passes started after it.
     @discardableResult
-    public func setLayout(_ new: Layout) async -> LayoutRevision {
+    public func setLayout(_ requested: Layout) async -> LayoutRevision {
+        // Hide units are all-or-nothing: a split unit can never converge, so it is normalized (and reported) here too (gdu.44).
+        let (new, moved) = requested.normalizedHideUnits()
+        if !moved.isEmpty {
+            log("layout: all items of an app hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
+        }
         layout = new
         loaded = true
         noteSupersede("setLayout")
         do { try store.save(new) } catch { log("cannot save layout: \(error)") }
-        let stamp = await publishLayout(new)
+        let stamp = await publishLayout(new, normalized: moved)
         await clearFailures()
         if config.layoutCoalesce > .zero {
             // The pass for this layout starts after the window; a further setLayout inside it replaces this one (same reason
@@ -196,10 +203,11 @@ public actor LayoutEngine {
 
     /// Publishes `l` as the next layout revision, stamped with the passes started so far (one main-actor hop, so the stamp is exact).
     @discardableResult
-    private func publishLayout(_ l: Layout) async -> LayoutRevision {
+    private func publishLayout(_ l: Layout, normalized: [ItemKey]? = nil) async -> LayoutRevision {
         let s = state
         return await MainActor.run {
             s.layout = l
+            if let normalized { s.lastNormalization = normalized }
             s.layoutRevision += 1
             s.passesStartedAtRevision = s.passesStarted
             return LayoutRevision(revision: s.layoutRevision, passesStarted: s.passesStarted)

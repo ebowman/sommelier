@@ -137,8 +137,11 @@ public struct Layout: Codable, Equatable, Sendable {
         set(ks, in: section)
     }
 
-    /// Places exactly `key`, leaving its hide-unit siblings where they are. For builders that construct a layout
-    /// (`LayoutBuilder`) and for in-section reordering; use `move` for user-facing hide/show changes.
+    /// Places exactly `key` (removed from any section first), leaving its hide-unit siblings where they are. `.hidden` and
+    /// `.alwaysHidden` append; `.visible` inserts immediately BEFORE the trailing run of `.module` keys (see
+    /// `trailingSystemBlock`), or appends when there is none, so it is not a literal append for `.visible`. The engine uses it
+    /// to record new items; `LayoutBuilder` does NOT (it fills sections verbatim). Use `move` for user-facing hide/show
+    /// changes (it carries the whole unit) and `reorder` for an explicit index.
     public mutating func append(_ key: ItemKey, to section: LayoutSection) {
         remove(key)
         insert([key], into: section, at: nil)

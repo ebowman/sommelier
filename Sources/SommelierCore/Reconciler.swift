@@ -100,8 +100,17 @@ public struct Reconciler: Sendable {
         // new-item policy, and only when one of its items is on the bar (a parked unknown app is never shown).
         var skipped: [SkippedAction] = []
         var unitWantsBar: [HideUnit: Bool] = [:]
+        // Section an unknown key of a unit gets when the unit is known only through layout-listed siblings that are
+        // ABSENT from this observation (gdu.44): it joins its unit's section instead of following `newItemPolicy`.
+        var unitJoinSection: [HideUnit: LayoutSection] = [:]
+        var listedByUnit: [HideUnit: [LayoutSection]] = [:]
+        for s in LayoutSection.allCases { for k in layout.keys(in: s) { listedByUnit[k.hideUnit, default: []].append(s) } }
         for (unit, ks) in hideUnits(onBar + parked) {
-            let secs = ks.compactMap { layout.section(of: $0) }
+            var secs = ks.compactMap { layout.section(of: $0) }
+            if secs.isEmpty, let listed = listedByUnit[unit] {
+                secs = listed
+                unitJoinSection[unit] = listed.contains(.alwaysHidden) ? .alwaysHidden : (listed.allSatisfy { $0 != .visible } ? .hidden : .visible)
+            }
             if secs.isEmpty {
                 unitWantsBar[unit] = layout.newItemPolicy == .visibleAtEnd && ks.contains { onBarSet.contains($0) }
                 continue
@@ -138,7 +147,7 @@ public struct Reconciler: Sendable {
             if wants { wantOnBar.insert(k) }
             if layout.section(of: k) == nil {
                 if wants { unknownVisible.append(k) }
-                newItems.append(NewItem(k, wants ? .visible : .hidden))
+                newItems.append(NewItem(k, unitJoinSection[k.hideUnit] ?? (wants ? .visible : .hidden)))
             }
         }
         let absent = layout.allKeys.filter { !observedAll.contains($0) }
@@ -182,7 +191,8 @@ public struct Reconciler: Sendable {
         // no drawn key is anchored or reported because of them, whatever the layout lists (unknown, pulled-in, normalized,
         // churned). Membership (hiding an overflowed key) was decided above and is unchanged.
         desired = desired.filter { !ovf.contains($0) && $0 != chevron }
-        let base = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron } + shows
+        let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
+        let base = kept + shows
         let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
         var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
         // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
@@ -190,10 +200,16 @@ public struct Reconciler: Sendable {
         let anchorsInBase = base.filter { anchors.contains($0) }
         let tIdx = Dictionary(uniqueKeysWithValues: target.enumerated().map { ($1, $0) })
         let seq = anchorsInBase.map { tIdx[$0]! }
+        var anchorsOutOfOrder = false
         if zip(seq, seq.dropFirst()).contains(where: { $0 >= $1 }) {
+            anchorsOutOfOrder = true
             let keep = Set(Self.lis(seq))
-            for k in anchorsInBase where !keep.contains(tIdx[k]!) {
-                skipped.append(SkippedAction(k, "immovable item is out of layout order"))
+            // Not reported in a membership phase (gdu.44): the bar is about to change, a transient or churned bar can show
+            // anchors out of order that the next (order) pass finds fine. The order pass re-evaluates and reports them.
+            if shows.isEmpty && hides.isEmpty {
+                for k in anchorsInBase where !keep.contains(tIdx[k]!) {
+                    skipped.append(SkippedAction(k, "immovable item is out of layout order"))
+                }
             }
             var fill = desired.filter { !anchors.contains($0) }.makeIterator()
             target = base.map { anchors.contains($0) ? $0 : (fill.next() ?? $0) }
@@ -202,17 +218,28 @@ public struct Reconciler: Sendable {
         // Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock).
         // Nothing movable can be placed right of its first item, so such targets are reported and relocated to the last
         // slot before the block (relative order kept); no drag ever targets the block.
-        let blockStart = Self.trailingBlockStart(base: base, anchors: anchors)
-        if blockStart < base.count {
-            let blockSet = Set(base[blockStart...])
+        // The block is taken from the observed bar BEFORE shown items are appended (`kept`): in a membership pass the shows
+        // would otherwise hide it, and `skipped`/`desiredOnBar` would put a key right of the clock until the order pass (gdu.44).
+        let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors)
+        if blockStart < kept.count {
+            let blockSet = Set(kept[blockStart...])
+            let systemBlock = blockSet.contains { if case .module = $0 { true } else { false } }
+            if anchorsOutOfOrder, systemBlock, let first = desired.firstIndex(where: { blockSet.contains($0) }) {
+                // Out-of-order anchors keep their slots, so the movable keys the layout puts right of the block land left of
+                // it without being "beyond" in `target`: they still get their own skip entry (gdu.44). Only for a block that
+                // really holds system items (modules); a trailing run of merely immovable/failed third-party items is not one.
+                for k in desired[(first + 1)...] where !anchors.contains(k) && !blockSet.contains(k) {
+                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(kept[blockStart]))"))
+                }
+            }
             let firstBlockInTarget = target.firstIndex { blockSet.contains($0) } ?? target.count
             let limit = min(blockStart, firstBlockInTarget)
             let beyond = target.enumerated().filter { $0.offset >= limit && !anchors.contains($0.element) }.map(\.element)
             if !beyond.isEmpty {
-                for k in beyond {
-                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(base[blockStart]))"))
+                for k in beyond where !skipped.contains(where: { $0.key == k && $0.reason.hasPrefix("cannot be placed right of the system items") }) {
+                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(kept[blockStart]))"))
                 }
-                target = target.filter { !blockSet.contains($0) } + base[blockStart...]
+                target = target.filter { !blockSet.contains($0) } + kept[blockStart...]
             }
         }
 
