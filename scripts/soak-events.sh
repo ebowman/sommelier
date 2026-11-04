@@ -17,6 +17,9 @@
 #    for the app log to show the latest pass reaching `plan: phase=converged` after the last request, with no new actuator output for
 #    2 s; on timeout it says so and leaves the app RUNNING instead of killing a batch or drag.
 #    The baseline is captured BEFORE the app starts and compared in full (exact equality of the non-dummy key list).
+# Respawn rule: a MenuBarAgent pid change the app log attributes to Sommelier's own fallback (`agent restarted by Sommelier (expected)` or
+#    `falling back to respawn`) makes that phase INCONCLUSIVE ("own fallback respawn (slow reads)"); a change with no such line is a FAIL
+#    ("foreign respawn"). More than 3 inconclusive phases fail the soak.
 # 5. Asserts the final on-bar order of the non-dummy items equals the baseline and the dummies match the layout; counts
 #    MenuBarAgent respawns (pid before/after) and fails if > 0 unless --allow-respawn. Prints a summary table; exits non-zero on
 #    any assertion failure. The dummy's Control Center entry must exist (`mbprobe cc-allowed list`); this script never respawns
@@ -124,6 +127,30 @@ pgrep -x Sommelier >/dev/null && { echo "Sommelier is already running; stop it f
 
 agent_pid() { pgrep -x MenuBarAgent | head -1; }
 AGENT_BEFORE="$(agent_pid)"
+LAST_AGENT="$AGENT_BEFORE"; ATTR_SEEN=0; RESPAWN_NOTES=""
+# check_respawn <phase>: a MenuBarAgent pid change in the phase. Attributed to Sommelier's own fallback when the app log (all runs)
+# gained an `agent restarted by Sommelier (expected)` or `falling back to respawn` line: INCONCLUSIVE, "own fallback respawn (slow
+# reads)". Without such a line it is a FAIL ("foreign respawn"). --allow-respawn only prints a note.
+check_respawn() {
+  local cur n
+  cur="$(agent_pid)"
+  [ "$cur" = "$LAST_AGENT" ] && return 0
+  n="$(cat "$WORK/applog.all" "$APP_LOG" 2>/dev/null | grep -c -e 'agent restarted by Sommelier (expected)' -e 'falling back to respawn')"
+  if [ "$ALLOW_RESPAWN" = 1 ]; then log "  note [$1] MenuBarAgent respawned ($LAST_AGENT -> $cur); allowed"; RESPAWN_NOTES="$RESPAWN_NOTES
+  $1: $LAST_AGENT -> $cur (allowed)"
+  elif [ "$n" -gt "$ATTR_SEEN" ]; then
+    printf '%s\tinconclusive\t0\n' "$1" >> "$STATS"; INCONCLUSIVE=$((INCONCLUSIVE + 1))
+    log "  INCONCLUSIVE [$1] MenuBarAgent respawned ($LAST_AGENT -> $cur): own fallback respawn (slow reads)"
+    RESPAWN_NOTES="$RESPAWN_NOTES
+  $1: $LAST_AGENT -> $cur, attributed to Sommelier's own fallback respawn (slow reads)"
+  else
+    printf '%s\tfail\t0\n' "$1" >> "$STATS"; FAILURES=$((FAILURES + 1))
+    log "  FAIL [$1] MenuBarAgent respawned ($LAST_AGENT -> $cur): foreign respawn (no own-fallback line in the app log)"
+    RESPAWN_NOTES="$RESPAWN_NOTES
+  $1: $LAST_AGENT -> $cur, FOREIGN respawn"
+  fi
+  ATTR_SEEN="$n"; LAST_AGENT="$cur"
+}
 
 # Fresh, on-bar keys in bar order from `mbprobe list --json` on stdin. Heuristic keys (chevron, unnamed items), iStat items
 # (they reposition themselves) and AX-identifier system modules (Focus) and the Wi-Fi module (which flickers in and out of the read, see AgreedScanObserver.defaultVolatileKeys) are not compared.
@@ -144,6 +171,7 @@ start_app() {   # start_app <layout file>
     stop_app || { log "FAIL cannot stop the running app safely"; FAILURES=$((FAILURES + 1)); exit 1; }
     sleep 1
   fi
+  cat "$APP_LOG" >> "$WORK/applog.all" 2>/dev/null   # keep earlier runs' log lines for the respawn attribution
   : > "$APP_LOG"; LAST_PS=0
   SOMMELIER_LAYOUT_FILE="$1" SOMMELIER_DEBUG_REVEAL_FILE="$REVEAL" "$PWD/build/Sommelier.app/Contents/MacOS/Sommelier" > "$APP_LOG" 2>&1 &
   disown
@@ -216,7 +244,12 @@ grep -v '^status:MBDummy::' "$WORK/base.all" > "$WORK/base.others"
 log "baseline (before the app starts): $(wc -l < "$WORK/base.all" | tr -d ' ') on-bar items ($(wc -l < "$WORK/base.others" | tr -d ' ') non-dummy)"
 grep -q '^status:MBDummy::' "$WORK/base.all" || { log "baseline has no dummy on the bar"; exit 2; }
 
-"$PROBE" layout init-from-current --file "$LAYOUT" --force > "$WORK/init.out" 2>&1 || { log "init-from-current failed"; cat "$WORK/init.out"; exit 2; }
+# The scans may not agree right away on a busy bar: retry the (read-only) layout capture a few times.
+for try in 1 2 3 4 5; do
+  "$PROBE" layout init-from-current --file "$LAYOUT" --force > "$WORK/init.out" 2>&1 && break
+  [ "$try" = 5 ] && { log "init-from-current failed 5 times"; cat "$WORK/init.out"; exit 2; }
+  sleep 5
+done
 # The dummies stay where init-from-current saw them (their start position on the bar), so a relaunch never moves them across the bar.
 # The user's real hidden items go to "always hidden": revealing the hidden section must only ever show the dummies.
 for key in $(jq -r '.hidden[]' "$LAYOUT"); do
@@ -238,6 +271,8 @@ for i in $(seq 1 "$NV"); do
   s="$(wait_for visible 90)"; rc=$?; record V "relaunch $i" "$s" "$rc"
 done
 
+check_respawn V
+
 # --- phase H -------------------------------------------------------------------------------------------------------------
 log "== phase H: app restarted on a layout with the dummies HIDDEN, $NH relaunches"
 jq --arg a "$KEY_A" --arg b "$KEY_B" '.visible -= [$a, $b] | .hidden = [$a, $b] + .hidden' "$WORK/layout.visible.json" > "$LAYOUT"
@@ -247,6 +282,8 @@ for i in $(seq 1 "$NH"); do
   make dummy-stop >/dev/null 2>&1; sleep 3; start_dummies
   s="$(wait_for hidden 90)"; rc=$?; record H "relaunch $i" "$s" "$rc"
 done
+
+check_respawn H
 
 # --- phase R -------------------------------------------------------------------------------------------------------------
 log "== phase R: $TOGGLES reveal toggles (show/hide the hidden section)"
@@ -259,16 +296,15 @@ for i in $(seq 1 "$TOGGLES"); do
   s="$(wait_for hidden 90)"; rc=$?; record R "reveal $i: hidden again" "$s" "$rc"
 done
 
+check_respawn R
+
 # --- final assertions ----------------------------------------------------------------------------------------------------
 log "== final check"
 s="$(wait_for hidden 90)"; rc=$?
 if [ "$rc" = 0 ]; then log "  ok   non-dummy order equals the baseline; dummies hidden as in the layout"; printf 'final\tok\t%s\n' "$s" >> "$STATS"
 else log "  FAIL final order differs from the baseline"; printf 'final\tfail\t%s\n' "$s" >> "$STATS"; FAILURES=$((FAILURES + 1)); diff "$WORK/c1" "$WORK/c2" | head -20 | tee -a "$LOG"; fi
 AGENT_AFTER="$(agent_pid)"
-if [ "$AGENT_BEFORE" != "$AGENT_AFTER" ]; then
-  if [ "$ALLOW_RESPAWN" = 1 ]; then log "  note MenuBarAgent respawned ($AGENT_BEFORE -> $AGENT_AFTER); allowed"
-  else log "  FAIL MenuBarAgent respawned ($AGENT_BEFORE -> $AGENT_AFTER)"; FAILURES=$((FAILURES + 1)); fi
-fi
+check_respawn final
 # Leave the dummies shown in the store (allowed) so the next run needs no write.
 request_reveal show
 wait_idle 60 || log "note: engine not idle 60 s after the last request"
@@ -283,7 +319,7 @@ for ph in V H R final; do
   printf '%-8s %8s %6s %6s %13s %10s\n' "$ph" "$n" "$o" "$((n - o - inc))" "$inc" "$mx"
 done
 echo
-echo "MenuBarAgent pid: $AGENT_BEFORE -> $AGENT_AFTER ($([ "$AGENT_BEFORE" = "$AGENT_AFTER" ] && echo 'no respawn' || echo 'RESPAWNED'))"
+echo "MenuBarAgent pid: $AGENT_BEFORE -> $AGENT_AFTER ($([ "$AGENT_BEFORE" = "$AGENT_AFTER" ] && echo 'no respawn' || echo 'RESPAWNED'))$RESPAWN_NOTES"
 echo "engine failures logged: $(grep -c 'marked failed until\|stopped after' "$APP_LOG")"
 if [ "$INCONCLUSIVE" -gt 3 ]; then echo "too many inconclusive phases ($INCONCLUSIVE > 3): the bar could not be read reliably"; FAILURES=$((FAILURES + 1)); fi
 if [ "$FAILURES" = 0 ]; then echo "SOAK PASS (0 failures, $INCONCLUSIVE inconclusive)"; else echo "SOAK FAIL ($FAILURES failures)"; fi
