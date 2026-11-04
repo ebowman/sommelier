@@ -172,7 +172,7 @@ without a layout file (first-launch layout creation path).
 | 9 | 0.9 | 1.3 | no |
 | 10 | 2.6 | 7.1 | no |
 
-All 10 publish within 10 s (worst 2.6 s) and all 10 settle within 10 s (worst 7.1 s). Before the change (same machine, same day, first 10-launch run of the pre-fix
+An observation is published within ~3 s in every launch (worst 2.6 s); settling usually completes within 10 s (worst 7.1 s here) but can exceed it under iStat AX timeouts: the reviewer's separate 5 launches settled in 1.4-10.6 s (one at 10.55 s after three incomplete iStat scans). Before the change (same machine, same day, first 10-launch run of the pre-fix
 provisional rule): launches 3 and 4 published nothing for 15+ s (first pass: 5-6 consecutive incomplete scans), and a first-launch (no layout file) start published
 only after 12.5 s because the strict layout-creation read blocked the engine. setLayout -> pass start: 0 ms idle (4 of 4 idle samples), 464-499 ms when it
 abandoned an observation, 1.4 s until the running pass re-planned during a drag (the drag in flight finishes first).

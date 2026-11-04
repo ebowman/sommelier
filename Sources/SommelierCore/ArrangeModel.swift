@@ -464,14 +464,18 @@ public struct ArrangeTracker: Equatable, Sendable {
     public struct Entry: Equatable, Sendable { public var dropSequence: Int; public var since: Date }
     public private(set) var entries: [ItemKey: Entry] = [:]
     public private(set) var timedOut: Set<ItemKey> = []
+    private var lastUpdate: Date?
     public init() {}
 
     public var awaiting: Set<ItemKey> { Set(entries.keys) }
     public var isEmpty: Bool { entries.isEmpty }
 
     /// Keys whose current engine status predates their judging pass.
-    public func suppressed(passSequence: Int) -> Set<ItemKey> {
-        Set(entries.filter { passSequence <= $0.value.dropSequence }.keys)
+    /// While the observation is unsettled (gdu.46) no engine status can be trusted (an unsettled pass refreshes none), so every
+    /// tracked key is suppressed.
+    public func suppressed(passSequence: Int, observationSettled: Bool = true) -> Set<ItemKey> {
+        if !observationSettled { return Set(entries.keys) }
+        return Set(entries.filter { passSequence <= $0.value.dropSequence }.keys)
     }
 
     /// Records a submitted move (unit siblings together). Re-recording a key restarts its wait.
@@ -494,7 +498,15 @@ public struct ArrangeTracker: Equatable, Sendable {
     /// Advances the machine; returns log lines for resolved entries.
     @discardableResult
     public mutating func update(observed: ObservedOrder, layout: Layout, perItem: [ItemKey: ItemStatus], passSequence: Int,
-                                showHiddenSection: Bool, now: Date) -> [String] {
+                                showHiddenSection: Bool, now: Date, observationSettled: Bool = true) -> [String] {
+        defer { lastUpdate = now }
+        // An unsettled observation judges nothing (no check mark, no failure) and does not run the timeout clock: the wait
+        // is extended by the time spent unsettled. `passSequence` still advances (every started pass finishes), so judging
+        // resumes at the next settled state with `passSequence > dropSequence`.
+        guard observationSettled else {
+            if let last = lastUpdate { let dt = now.timeIntervalSince(last); for k in entries.keys { entries[k]?.since += dt } }
+            return []
+        }
         var log: [String] = []
         for (k, e) in entries {
             guard layout.section(of: k) != nil else { entries[k] = nil; timedOut.remove(k); continue }

@@ -69,7 +69,7 @@ final class ArrangeViewModel {
         ArrangeSections.make(observed: state.observed, layout: layout, items: state.items, perItem: state.perItem,
                              capabilities: cap, showHiddenSection: state.showHiddenSection,
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
-                             suppressedStatus: tracker.suppressed(passSequence: state.passSequence),
+                             suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
                              observationProblem: observationProblem, filter: filter)
     }
 
@@ -124,7 +124,8 @@ final class ArrangeViewModel {
         }
         guard pendingLayout == nil else { if windowVisible { logRowsIfChanged() }; return }
         for line in tracker.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
-                                   showHiddenSection: state.showHiddenSection, now: t) {
+                                   showHiddenSection: state.showHiddenSection, now: t,
+                                   observationSettled: state.observationSettled) {
             NSLog("[Sommelier] arrange: %@", line)
         }
         if windowVisible { logRowsIfChanged() }

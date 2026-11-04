@@ -473,3 +473,19 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     t.update(observed: wrong, layout: layout, perItem: [a1: .failed(.timeout), a2: .inPlace], passSequence: 1, showHiddenSection: false, now: t0 + 1)
     #expect(t.awaiting == [a2])      // a1's failure resolved, a2 still waits for its placement
 }
+
+@Test func unsettledStateNeverJudgesAndPausesTheClock() {
+    let (layout, _, right) = trackerFixture()
+    var t = ArrangeTracker()
+    t.record([k("b")], passesStarted: 5, now: t0)
+    // (a) an unsettled pass after the drop, pre-drop .inPlace and a matching placement: still pending, spinner kept
+    #expect(t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 6, showHiddenSection: false, now: t0 + 1, observationSettled: false).isEmpty)
+    #expect(t.awaiting == [k("b")] && t.suppressed(passSequence: 6, observationSettled: false) == [k("b")])
+    // (c) a failure from before the drop is never shown, and nothing resolves, however long the unsettled state lasts
+    #expect(t.update(observed: right, layout: layout, perItem: [k("b"): .failed(.timeout)], passSequence: 7, showHiddenSection: false, now: t0 + 200, observationSettled: false).isEmpty)
+    #expect(t.awaiting == [k("b")] && t.timedOut.isEmpty)
+    #expect(t.suppressed(passSequence: 7, observationSettled: false) == [k("b")])
+    // (b) settled again with a pass after the drop and a match: resolved; the 200 s unsettled did not run the 90 s clock
+    let log = t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 7, showHiddenSection: false, now: t0 + 201)
+    #expect(log.count == 1 && t.isEmpty)
+}
