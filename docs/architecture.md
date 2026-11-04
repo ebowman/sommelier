@@ -63,7 +63,7 @@ steps); second failure -> fallback (order store + restart, if allowed by the cal
 `.permissionDenied`, `.unsupportedItem`, `.notFound`. Restart-based actions: one retry of the restart if the verifying scan still shows the
 old state AND the plist write is confirmed to have landed; second failure -> `.failed`.
 
-**Live hide/show path found (gdu.36, `docs/findings-live-trigger.md`):** writing `trackedApplications` through cfprefsd under `group.com.apple.controlcenter` (needs the app-group entitlement) hides/shows with no MenuBarAgent respawn; respawn stays the fallback. Whether a Developer ID-signed build may claim that app group is unverified.
+**Live hide/show path found (gdu.36, `docs/findings-live-trigger.md`):** writing `trackedApplications` through cfprefsd under `group.com.apple.controlcenter` (needs the app-group entitlement) hides/shows with no MenuBarAgent respawn; respawn stays the fallback. Verified in gdu.40 (`docs/findings-live-trigger.md` section 8): a Developer ID + hardened runtime + notarized binary with that entitlement gets the live path on the dev machine (macOS 27.0.1); not proven for an app bundle on a fresh Mac or macOS 26, so the respawn fallback stays.
 
 **Batching.** All hide/show changes in a plan are collected into ONE `isAllowed` write + one restart (`applyHiddenBatch`); fallback reorders
 join the same restart. Drags are never batched with each other (sequential, each verified) and run **before** any restart in the same plan
