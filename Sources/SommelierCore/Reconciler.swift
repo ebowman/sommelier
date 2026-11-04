@@ -183,17 +183,25 @@ public struct Reconciler: Sendable {
         var held = Set<ItemKey>()
         if let chevron { desired = desired.filter { $0 != chevron } }
         if !ovf.isEmpty {
-            // The overflow run comes from the OBSERVED order (every on-bar key left of the chevron). A change is requested
-            // only when the layout puts an overflowed key right of a drawn on-bar key, or a drawn key left of an overflowed
-            // one (inside the run). Wanted-but-parked keys are not drawn and decide nothing. Order among overflowed items
-            // is ignored (stacked frames carry none). Such a drawn key is reported and left where it is.
+            // Overflowed keys never influence where drawn keys may go: the drawn plan is computed as if they were absent from
+            // `desired` (filtered below, after the membership decisions). A skip is emitted only for what the layout EXPLICITLY
+            // lists in its visible section (unknown new items and keys pulled on-bar by their app's unit are not requests):
+            //  (a) an overflowed key placed right of a drawn key (the layout asks to move it out of the overflow);
+            //  (b) the first drawn key, when it is placed left of a listed overflowed key (inside the leading overflow run);
+            //      it is reported and left where it is.
+            // The run itself is the OBSERVED set; the order among overflowed keys is ignored (stacked frames carry none).
             let drawn = Set(onBar.filter { !ovf.contains($0) && $0 != chevron && wantOnBar.contains($0) && !hideSet.contains($0) })
-            for (i, k) in desired.enumerated() {
+            let listed = layout.visible.filter { wantOnBar.contains($0) && $0 != chevron }
+            var seenDrawn = false
+            for (i, k) in listed.enumerated() {
                 if ovf.contains(k) {
-                    if desired[..<i].contains(where: drawn.contains) { skipped.append(SkippedAction(k, Self.notFittingReason)) }
-                } else if drawn.contains(k), desired[(i + 1)...].contains(where: ovf.contains) {
-                    skipped.append(SkippedAction(k, Self.notFittingReason))
-                    held.insert(k)
+                    if seenDrawn { skipped.append(SkippedAction(k, Self.notFittingReason)) }
+                } else if drawn.contains(k) {
+                    if !seenDrawn, listed[(i + 1)...].contains(where: ovf.contains) {
+                        skipped.append(SkippedAction(k, Self.notFittingReason))
+                        held.insert(k)
+                    }
+                    seenDrawn = true
                 }
             }
             desired = desired.filter { !ovf.contains($0) && !held.contains($0) }

@@ -95,14 +95,13 @@ Before the fix the same bar produced `... 19 airmail2hookmark, module:Clock, mod
 module:com.apple.menuextra.focusmode, module:WiFi` (all modules appended, in reverse). `plan` on the fresh file: converged, 0 actions, 0 skipped.
 
 ## System overflow
-Read-only, 2026-11-04. Normal bar (no chevron): 5 x `mbprobe list --json` -> 0 `"systemOverflow" : true`.
-Full bar (MBDummy `--count 31`): 14 items flagged `overflow`, all left of the `chevron` row; none right of it.
-NOTE the bar churns with dummies: between scans a dummy can flip parked/on-bar, so `newItems` or a `show` action can appear
-and `scans did not agree` can occur; plans were retried until the scans agreed. One converged run:
+Read-only, 2026-11-04. Normal bar (no chevron): 3 x `mbprobe list --json` -> 0 `"systemOverflow" : true`.
+Full bar (MBDummy `--count 31`): 14 items flagged `overflow`, all left of the chevron. The bar churns with dummies: a dummy can
+flip parked/on-bar between scans, so a `show` action, `newItems` or `scans did not agree` can appear (and one run had no
+chevron at all, planning with no overflow); plans were retried until the scans agreed. Unedited `init-from-current`, then `plan`:
 ```
-$ mbprobe layout init-from-current --file gdu45/layout.json; mbprobe plan --file gdu45/layout.json
-phase: converged  (observed 53 on bar, 28 parked; showHidden=false)  systemOverflow=14 / actions (0) / skipped (0)
+phase: converged  (observed 53 on bar, 28 parked; showHidden=false)  systemOverflow=14
+actions (0):
+skipped (0):
 ```
-TimeMachine moved to visible index 1 (inside the overflow run): converged, 0 actions, skipped (15) "does not fit: macOS moved it into
-its own overflow". ControlCenter moved to index 16: `phase: order`, 1 action `move ... ControlCenter before ...Dummy-O`
-(first drawn item); no action names the chevron. `list --json` carries `systemOverflow`. No `apply`; real layout.json untouched.
+`apply` was not run and the real layout.json was not touched.

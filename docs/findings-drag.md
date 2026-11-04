@@ -178,7 +178,8 @@ Dumped with a scratch AX script while MBDummy (31-60 items) filled the bar. The 
 Locale-independent signal chosen (`AXElementInfo.isOverflowChevron`): AXButton + direct window child + empty identifier + empty title.
 The English description is only a fallback. The chevron key stays `module:Show Hidden Menu Bar Items` under every locale (set by
 `IdentityResolver` from the structural match, not from the description). The chevron can be missing from a single scan (partial
-read); the stacked-frame rules (identical x/width, overlap > 2 pt, leftmost-prefix closure) then still flag the overflow.
+read); the scanner then flags nothing on that scan (conservative). Stacked or identical frames never flag in the
+scanner; they are only the actuator's pair-local pre-drag guard (see the incident below).
 
 #### False-positive incident and what was removed (gdu.45 review)
 First version also flagged without a chevron: (2) identical x/width or > 2 pt overlap between fresh items, (3) closure of everything

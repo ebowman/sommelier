@@ -202,3 +202,40 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     #expect(l.visible == [k("a"), k("b")] && l.hidden == [k("h"), k("o1"), k("o2")])
     #expect(l.hideNotFitting([]).isEmpty)
 }
+
+// MARK: overflowed keys never influence drawn keys (third corrective pass)
+
+@Test func anUnknownNewItemInTheOverflowCausesNoSkipsAndNoActions() {
+    // u is new (not in the layout) and sits in the overflow; the policy appends it to the wanted order after a, b, c.
+    let o = obs(["u", "ch", "a", "b", "c"], ovf: ["u"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "b", "c"]), capabilities: anchorCh)
+    #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
+}
+
+@Test func aHiddenListedSiblingPulledIntoTheOverflowAnchorsNoDrawnKey() {
+    func kk(_ n: String) -> ItemKey { .status(ownerKey: "com.x.app", autosaveName: n) }
+    let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), k("z"), kk("b")], parked: [], systemOverflow: [kk("o")], overflowChevron: k("ch"))
+    let l = Layout(visible: [kk("a"), k("z"), kk("b")], hidden: [kk("o")], alwaysHidden: [])
+    let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
+    #expect(p.skipped.filter { $0.reason == Reconciler.notFittingReason }.isEmpty)
+    #expect(p.actions.isEmpty)
+}
+
+@Test func aRealBarShapedFixtureWithTheLayoutEqualToTheObservedOrderIsConverged() {
+    let ovf = (1...14).map { "o\($0)" }, drawn = (1...30).map { "d\($0)" }
+    let o = obs(ovf + ["ch"] + drawn, ovf: ovf)
+    let p = Reconciler().plan(observed: o, layout: lay(v: ovf + ["ch"] + drawn), capabilities: anchorCh)
+    #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
+}
+
+@Test func swappingTwoDrawnKeysWithTheOverflowPresentIsExactlyOneDrawnMove() {
+    let ovf = ["o1", "o2", "o3"], drawn = ["a", "b", "c", "d"]
+    let o = obs(ovf + ["ch"] + drawn, ovf: ovf)
+    let p = Reconciler().plan(observed: o, layout: lay(v: ovf + ["ch", "a", "c", "b", "d"]), capabilities: anchorCh)
+    #expect(p.skipped.isEmpty)
+    #expect(p.actions.count == 1)
+    if case .move(let s, let rel)? = p.actions.first {
+        #expect([k("b"), k("c")].contains(s))
+        switch rel { case .before(let t), .after(let t): #expect(drawn.map(k).contains(t)); default: Issue.record("unexpected \(rel)") }
+    } else { Issue.record("expected a move") }
+}
