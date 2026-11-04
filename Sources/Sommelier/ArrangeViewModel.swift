@@ -22,8 +22,9 @@ struct ArrangePayload: Transferable, Equatable {
 @MainActor @Observable
 final class ArrangeViewModel {
     enum Confirm: Identifiable {
-        case adopt(ArrangeLayout)
-        case hideNotFitting(ArrangeLayout, titles: [String], blocked: [String])
+        /// `base`: the engine layout revision the dialog's layout was composed on (when it opened), passed as `setLayout(basedOn:)`.
+        case adopt(ArrangeLayout, base: Int)
+        case hideNotFitting(ArrangeLayout, titles: [String], blocked: [String], base: Int)
         var id: String {
             switch self {
             case .adopt: return "adopt"
@@ -231,18 +232,19 @@ final class ArrangeViewModel {
                 track.append(k)
             }
             NSLog("[Sommelier] arrange: submit layout; moved=%@", moved.map { "\($0)" }.joined(separator: ", "))
-            apply(l, tracking: track)
+            apply(l, tracking: track, basedOn: state.layoutRevision)
             return true
         }
     }
 
     /// Submits `l`. `tracking`: keys the window now waits for; they are judged only by passes started after the revision the
     /// engine stamps on `l` (the stamp arrives with `setLayout`'s return).
-    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = []) {
+    /// `basedOn`: the layout revision `l` was composed on (gdu.52); the engine re-adds items it appended after it. A drop composes
+    /// and submits in the same main-actor turn, so it passes the current revision; a confirm dialog passes the revision from when it opened.
+    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int) {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
         let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true)
         pending.submit(l)
-        let base = state.layoutRevision   // `l` was composed over effective(state.layout): it contains every engine addition up to here (gdu.52)
         ensureTimer()
         Task { [weak self] in   // never block the main actor on the engine
             let stamp = await engine.setLayout(l, basedOn: base)
@@ -270,26 +272,26 @@ final class ArrangeViewModel {
         Task { await engine.clearFailures(); await engine.requestReconcile() }
     }
 
-    func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout)) }
+    func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout), base: state.layoutRevision) }
 
     func askHideNotFitting() {
         let r = ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap)
         let c = content
         func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
-        confirm = .hideNotFitting(r.layout, titles: r.moved.map(t), blocked: r.blocked.map(t))
+        confirm = .hideNotFitting(r.layout, titles: r.moved.map(t), blocked: r.blocked.map(t), base: state.layoutRevision)
     }
 
     func confirmed(_ c: Confirm) {
         confirm = nil
         switch c {
-        case .adopt(let l):
+        case .adopt(let l, let base):
             NSLog("[Sommelier] arrange: adopt current order")
             tracker.removeAll()
-            apply(l)
-        case .hideNotFitting(let l, let titles, _):
+            apply(l, basedOn: base)
+        case .hideNotFitting(let l, let titles, _, let base):
             NSLog("[Sommelier] arrange: hide what does not fit: %@", titles.joined(separator: ", "))
             let old = layout
-            apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible })
+            apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible }, basedOn: base)
         }
     }
 

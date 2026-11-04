@@ -100,7 +100,7 @@ struct ArrangeView: View {
         switch c {
         case .adopt:
             return "Visible becomes exactly the bar as drawn now and Hidden the items currently off the bar (Always hidden is kept). Your current order is replaced."
-        case .hideNotFitting(_, let titles, let blocked):
+        case .hideNotFitting(_, let titles, let blocked, _):
             var t = titles.isEmpty ? "Nothing can be hidden." : "These will move to Hidden (an app's items hide together): " + titles.joined(separator: ", ") + "."
             if !blocked.isEmpty { t += " Cannot be hidden and stay: " + blocked.joined(separator: ", ") + "." }
             return t

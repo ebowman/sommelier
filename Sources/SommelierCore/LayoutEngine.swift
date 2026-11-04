@@ -193,12 +193,12 @@ public actor LayoutEngine {
         return n
     }
 
-    /// Adopts `new`, publishes it with a new revision stamp (`layoutRevision`, `passesStartedAtRevision`) and returns that stamp:
-    /// the caller judges its change only by passes started after it.
+    /// Adopts the requested layout, publishes it with a new revision stamp (`layoutRevision`, `passesStartedAtRevision`) and returns
+    /// that stamp: the caller judges its change only by passes started after it. `revision`: the layout revision the caller composed
+    /// `requested` on. When given, keys the engine appended since then that `requested` lacks are re-added at their engine positions
+    /// (log `setLayout merged ...`); a key `requested` already places keeps the user's placement. `nil` (mbprobe, `apply`):
+    /// `requested` replaces the layout wholesale.
     @discardableResult
-    /// `revision`: the layout revision the caller composed `requested` on. When given, keys the engine appended since then
-    /// that `requested` lacks are re-added at their engine positions (log `setLayout merged ...`); a key `requested` already
-    /// places keeps the user's placement. `nil` (mbprobe, `apply`): `requested` replaces the layout wholesale.
     public func setLayout(_ requested: Layout, basedOn revision: Int? = nil) async -> LayoutRevision {
         noteUserAction()
         var requested = requested

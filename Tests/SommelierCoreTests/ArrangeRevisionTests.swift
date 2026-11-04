@@ -262,17 +262,48 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         #expect(!logs.all.contains { $0.contains("setLayout merged") })
     }
 
-    @Test func aFailureRecordedInThisPassIsKeptAndUnsupportedIsNotTouchedByClearing() async {
-        let order = [k("A"), k("B"), ItemKey.module(name: "clock")]
-        let r = await rig(order: order, layout: Layout(visible: [k("B"), k("A"), .module(name: "clock")]),
-                          failOn: (1...9).map { ($0, ActuationError.mechanismFailed("boom")) })
-        _ = await r.engine.reconcileOnce()
-        let failed = r.state.perItem.filter { if case .failed = $0.value { return true }; return false }.keys
-        #expect(!failed.isEmpty)                                 // recorded in the pass that just ran: still failed after it
-        let r2 = await rig(order: [.module(name: "clock"), k("A")], layout: Layout(visible: [k("A")], hidden: [.module(name: "clock")]))
-        _ = await r2.engine.reconcileOnce()
-        _ = await r2.engine.reconcileOnce()
-        let unsupported = r2.state.perItem.values.filter { if case .unsupported = $0 { return true }; return false }
-        #expect(!unsupported.isEmpty)                            // a capability skip stays .unsupported across passes
+    @Test func aConfirmDialogsComposeRevisionSurvivesAnAppendWhileItIsOpen() async {
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let composedAt = r.state.layoutRevision                  // dialog opens: layout composed here
+        let composed = Layout(visible: ["B", "A"].map(k))
+        _ = await r.engine.reconcileOnce()                       // N appended while the dialog is open
+        #expect(r.state.layoutRevision == composedAt + 1)
+        _ = await r.engine.setLayout(composed, basedOn: composedAt)   // confirm passes the revision from when it opened
+        #expect(r.state.layout.visible == ["B", "A", "N"].map(k))
     }
+
+    @Test func anUnsupportedStatusIsNotTouchedByFailureClearing() async {
+        let r = await rig(order: [.module(name: "clock"), k("A")], layout: Layout(visible: [k("A")], hidden: [.module(name: "clock")]))
+        for _ in 0..<2 { _ = await r.engine.reconcileOnce() }
+        #expect(r.state.perItem[.module(name: "clock")] != nil)
+        if case .unsupported? = r.state.perItem[.module(name: "clock")] {} else { Issue.record("expected .unsupported") }
+    }
+
+    @Test func aFailureRecordedInThisPassStaysEvenWhenThePassObservationMatchesUntilALaterPass() async {
+        let logs = Logs()
+        let act = FakeActuator(order: ["A", "B"].map(k), hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let liar = LyingMover(inner: act)                        // performs the move but reports failure
+        let store = InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k)))
+        let state = EngineState()
+        let engine = LayoutEngine(observer: ActuatorObserver(actuator: act), actuator: liar, store: store, capabilities: Caps(), state: state,
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+        await engine.start()
+        _ = await engine.reconcileOnce()
+        #expect(await act.order == ["B", "A"].map(k))            // the bar now matches the layout ...
+        let failedNow = state.perItem.values.contains { if case .failed = $0 { return true }; return false }
+        #expect(failedNow)                                       // still .failed after the pass that recorded it
+        _ = await engine.reconcileOnce()                         // a LATER settled pass finds it realized
+        #expect(state.perItem.values.allSatisfy { $0 == .inPlace })
+    }
+}
+
+private struct LyingMover: MenuBarActuator {
+    let inner: FakeActuator
+    func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        let r = await inner.move(key, relation: relation)
+        if case .verified(let s) = r { return .failed(.mechanismFailed("reported failure"), s) }
+        return r
+    }
+    func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult { await inner.setHidden(key, hidden) }
+    func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult { await inner.applyHiddenBatch(changes) }
 }
