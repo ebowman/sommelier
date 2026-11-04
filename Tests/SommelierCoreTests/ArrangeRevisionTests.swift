@@ -218,4 +218,92 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         let blind = ArrangeCapabilities.rules(items: [:], tracked: ["ie.boboco.mbdummy"])
         #expect(!blind.capability(for: dummy).canHide)
     }
+
+    // MARK: 5. engine-side merge of engine additions (gdu.52)
+
+    @Test func anItemTheEngineAppendedAfterComposeSurvivesTheSubmittedDrop() async {
+        let logs = Logs()
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)), logs: logs)
+        let base = r.state.layoutRevision                      // the drop is composed here
+        let drop = Layout(visible: ["B", "A"].map(k))
+        _ = await r.engine.reconcileOnce()                     // the engine appends N (new revision) before the drop arrives
+        #expect(r.state.layoutRevision == base + 1)
+        _ = await r.engine.setLayout(drop, basedOn: base)
+        #expect(r.state.layout.visible == ["B", "A", "N"].map(k))
+        #expect(logs.all.filter { $0.contains("setLayout merged 1 engine-added key(s) composed on revision \(base)") }.count == 1)
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.reconcileOnce()
+        #expect(logs.all.filter { $0.hasPrefix("New item") || $0.contains("New item:") }.count == 1)   // no second notice
+        #expect(r.state.layout.allKeys.filter { $0 == k("N") }.count == 1)
+        #expect(((try? r.store.load()) ?? .empty).allKeys.contains(k("N")))
+    }
+
+    @Test func aKeyTheUserPlacedExplicitlyKeepsTheUsersPosition() async {
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let base = r.state.layoutRevision
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.setLayout(Layout(visible: ["A"].map(k), hidden: ["N", "B"].map(k)), basedOn: base)
+        #expect(r.state.layout.hidden == ["N", "B"].map(k) && r.state.layout.visible == [k("A")])
+    }
+
+    @Test func withoutABaseRevisionTheLayoutIsReplacedWholesale() async {
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))
+        #expect(r.state.layout.visible == ["B", "A"].map(k))
+    }
+
+    @Test func aDropComposedOnTheCurrentRevisionAddsNothing() async {
+        let logs = Logs()
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)), logs: logs)
+        _ = await r.engine.reconcileOnce()
+        let base = r.state.layoutRevision
+        _ = await r.engine.setLayout(Layout(visible: ["B", "A", "N"].map(k)), basedOn: base)
+        #expect(!logs.all.contains { $0.contains("setLayout merged") })
+    }
+
+    @Test func aConfirmDialogsComposeRevisionSurvivesAnAppendWhileItIsOpen() async {
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let composedAt = r.state.layoutRevision                  // dialog opens: layout composed here
+        let composed = Layout(visible: ["B", "A"].map(k))
+        _ = await r.engine.reconcileOnce()                       // N appended while the dialog is open
+        #expect(r.state.layoutRevision == composedAt + 1)
+        _ = await r.engine.setLayout(composed, basedOn: composedAt)   // confirm passes the revision from when it opened
+        #expect(r.state.layout.visible == ["B", "A", "N"].map(k))
+    }
+
+    @Test func anUnsupportedStatusIsNotTouchedByFailureClearing() async {
+        let r = await rig(order: [.module(name: "clock"), k("A")], layout: Layout(visible: [k("A")], hidden: [.module(name: "clock")]))
+        for _ in 0..<2 { _ = await r.engine.reconcileOnce() }
+        #expect(r.state.perItem[.module(name: "clock")] != nil)
+        if case .unsupported? = r.state.perItem[.module(name: "clock")] {} else { Issue.record("expected .unsupported") }
+    }
+
+    @Test func aFailureRecordedInThisPassStaysEvenWhenThePassObservationMatchesUntilALaterPass() async {
+        let logs = Logs()
+        let act = FakeActuator(order: ["A", "B"].map(k), hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let liar = LyingMover(inner: act)                        // performs the move but reports failure
+        let store = InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k)))
+        let state = EngineState()
+        let engine = LayoutEngine(observer: ActuatorObserver(actuator: act), actuator: liar, store: store, capabilities: Caps(), state: state,
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+        await engine.start()
+        _ = await engine.reconcileOnce()
+        #expect(await act.order == ["B", "A"].map(k))            // the bar now matches the layout ...
+        let failedNow = state.perItem.values.contains { if case .failed = $0 { return true }; return false }
+        #expect(failedNow)                                       // still .failed after the pass that recorded it
+        _ = await engine.reconcileOnce()                         // a LATER settled pass finds it realized
+        #expect(state.perItem.values.allSatisfy { $0 == .inPlace })
+    }
+}
+
+private struct LyingMover: MenuBarActuator {
+    let inner: FakeActuator
+    func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        let r = await inner.move(key, relation: relation)
+        if case .verified(let s) = r { return .failed(.mechanismFailed("reported failure"), s) }
+        return r
+    }
+    func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult { await inner.setHidden(key, hidden) }
+    func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult { await inner.applyHiddenBatch(changes) }
 }
