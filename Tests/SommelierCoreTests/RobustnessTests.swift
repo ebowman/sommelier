@@ -230,6 +230,118 @@ private final class Counter: @unchecked Sendable {
     }
 }
 
+// MARK: - Respawn strike-out, foreign vs own respawns inside a pass
+
+private struct RespawningBatch: MenuBarActuator {
+    let inner: FakeActuator
+    var onBatch: @Sendable () -> Void = {}
+    func move(_ key: ItemKey, relation: Relation) async -> ActuationResult { await inner.move(key, relation: relation) }
+    func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult { await inner.setHidden(key, hidden) }
+    func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult { onBatch(); return await inner.applyHiddenBatch(changes) }
+    var lastBatchRespawned: Bool { get async { true } }
+}
+
+/// Changes the agent pid while an observation is in progress (a respawn the watcher has not reported yet).
+private struct PidChangingObserver: MenuBarObserver {
+    let inner: any MenuBarObserver
+    let pid: PIDBox
+    let newPID: pid_t
+    func observe() async throws -> [ResolvedItem] { pid.value = newPID; return try await inner.observe() }
+}
+
+@MainActor
+@Suite struct RespawnAccountingTests {
+    @Test func aBatchThatEndedInARespawnStrikesItsKeysOutAtOnce() async {
+        let inner = FakeActuator(order: ["A", "B"].map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        await inner.failOnCall(1, .mechanismFailed("restart"))
+        let logs = Logs()
+        let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: RespawningBatch(inner: inner),
+                                  store: InMemoryLayoutStore(Layout(visible: [k("A")], hidden: [k("B")])), capabilities: Caps(),
+                                  state: EngineState(), resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+        await engine.start()
+        _ = await engine.reconcileOnce()
+        _ = await engine.reconcileOnce()
+        _ = await engine.reconcileOnce()
+        #expect(await inner.calls.count == 1)        // ONE respawn for the key, not three
+        #expect(logs.all.contains { $0.contains("after an agent respawn") })
+        await engine.clearFailures()                  // Retry
+        _ = await engine.reconcileOnce()
+        #expect(await inner.calls.count == 2)
+    }
+
+    @Test func aForeignRespawnDuringTheObservationDiscardsItAndActuatesNothing() async {
+        let inner = FakeActuator(order: ["A", "B"].map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let pid = PIDBox(100)
+        let state = EngineState()
+        let engine = LayoutEngine(observer: PidChangingObserver(inner: ActuatorObserver(actuator: inner), pid: pid, newPID: 200), actuator: inner,
+                                  store: InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k))), capabilities: Caps(), state: state,
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
+                                  agentPID: { pid.value }, isOwnAgentPID: { _ in false })
+        await engine.start()
+        let rep = await engine.reconcileOnce()
+        #expect(rep.outcome == .agentRestarted)
+        #expect(await inner.calls.isEmpty)
+        #expect(state.observed.onBar.isEmpty)         // the new agent's read was not published either
+        #expect(await engine.reconcileOnce().outcome == .unsettled)   // inside the not-ready window
+        #expect(await inner.calls.isEmpty)
+    }
+
+    @Test func ourOwnRespawnDoesNotDiscardTheObservation() async {
+        let inner = FakeActuator(order: ["A", "B"].map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let pid = PIDBox(100)
+        let engine = LayoutEngine(observer: PidChangingObserver(inner: ActuatorObserver(actuator: inner), pid: pid, newPID: 200), actuator: inner,
+                                  store: InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k))), capabilities: Caps(), state: EngineState(),
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
+                                  agentPID: { pid.value }, isOwnAgentPID: { $0 == 200 })
+        await engine.start()
+        #expect(await engine.reconcileOnce().outcome == .converged)
+        #expect(await inner.order == ["B", "A"].map(k))
+    }
+
+    @Test func aRespawnDuringAnActionEndsThePassWithoutFurtherActuation() async {
+        let names = ["A", "B", "C", "D"]
+        let inner = FakeActuator(order: names.map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let pid = PIDBox(100)
+        let act = RespawningBatchlessMove(inner: inner, pid: pid)
+        let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: act,
+                                  store: InMemoryLayoutStore(Layout(visible: names.reversed().map(k))), capabilities: Caps(), state: EngineState(),
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
+                                  agentPID: { pid.value }, isOwnAgentPID: { _ in false })
+        await engine.start()
+        let rep = await engine.reconcileOnce()
+        #expect(rep.outcome == .agentRestarted)
+        #expect(await inner.calls.count == 1)         // the first move ran; the snapshot after it came from a new agent
+    }
+
+    @Test func theWatcherAbsorbsOurOwnRespawnAndKeepsItsPidAcrossAPause() async {
+        let pid = PIDBox(100)
+        let own = PIDBox(nil)
+        let busy = PIDBox(nil)
+        var changes = 0
+        let w = MenuBarAgentWatcher(currentPID: { pid.value }, busy: { busy.value != nil }, isExpected: { own.value == $0 }, onChange: { _, _ in changes += 1 })
+        w.start()
+        busy.value = 1; pid.value = 150                // our restart is running: nothing reported, nothing remembered
+        #expect(await w.check() == false)
+        busy.value = nil; own.value = 150              // finished: the new pid is ours
+        #expect(await w.check() == false)
+        #expect(changes == 0 && w.knownPID == 150)
+        w.stop()                                       // pause (Bartender, permission loss)
+        pid.value = 300                                // a foreign respawn meanwhile
+        w.start()                                      // resume compares with the last KNOWN pid
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(changes == 1 && w.knownPID == 300)
+        w.stop()
+    }
+}
+
+private struct RespawningBatchlessMove: MenuBarActuator {
+    let inner: FakeActuator
+    let pid: PIDBox
+    func move(_ key: ItemKey, relation: Relation) async -> ActuationResult { let r = await inner.move(key, relation: relation); pid.value = 999; return r }
+    func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult { await inner.setHidden(key, hidden) }
+    func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult { await inner.applyHiddenBatch(changes) }
+}
+
 // MARK: - Scanner invalidation on an agent respawn
 
 private struct OneItemSource: AccessibilitySource {

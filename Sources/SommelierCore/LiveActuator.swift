@@ -359,9 +359,16 @@ public actor LiveActuator: MenuBarActuator {
         BatchOutcome(perKey: Dictionary(uniqueKeysWithValues: keys.map { ($0, r) }), result: r)
     }
 
+    /// True when the last batch restarted MenuBarAgent (fallback path). The engine strikes such keys out at once.
+    public private(set) var lastBatchRespawned = false
+    private var batchRespawned = false
+
     public func applyHiddenBatchDetailed(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
         await acquire(); defer { release() }
-        return await performBatch(changes)
+        batchRespawned = false
+        let out = await performBatch(changes)
+        lastBatchRespawned = batchRespawned || out.mechanism == .respawn
+        return out
     }
 
     private func performBatch(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
@@ -590,6 +597,7 @@ public actor LiveActuator: MenuBarActuator {
         }
         var last: (settled: Bool, verdicts: [ItemKey: ActuationVerifier.Verdict], collateral: [String]) = (false, [:], [])
         for round in 1...2 {
+            batchRespawned = true
             let r = await platform.restartAgent(timeout: config.restartTimeout, expectedChange: expectedChange)
             note("batch restart \(round) recovered=\(r.recovered) \(r.elapsedMS)ms")
             let out = await settleDetector(subjectPIDs: members).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)
@@ -689,6 +697,7 @@ public actor LiveActuator: MenuBarActuator {
         if !updates.isEmpty {
             do { try platform.writeOrderStore(updates, allowModules: true) } catch { note("order repair write failed: \(error)"); return nil }
         }
+        batchRespawned = true
         let r = await platform.restartAgent(timeout: config.restartTimeout, expectedChange: 0)
         note("order repair restart recovered=\(r.recovered) \(r.elapsedMS)ms wrote=\(updates.count)")
         return await settleDetector(subjectPIDs: members).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)

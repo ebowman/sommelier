@@ -242,7 +242,7 @@ Unit tests: `RobustnessTests` (agent watcher: pid change reported once, absence 
 inside the post-respawn window and ONE delayed reconcile afterwards; transient holds dropped on respawn; nothing runs while asleep and wake reconciles;
 bursts with one reason are one pass; new-item notice wording; scanner `invalidateAgentState` keeps assumed-hidden), `LayoutEngineTests` (a key failing 3
 passes in a row is `.failed` until Retry and never stops the engine; a recovering key breaks the streak; 3 passes of all-failed actions stop the engine).
-`make test`: 396 tests.
+`make test`: 401 tests (adds `RespawnAccountingTests`: respawn batch strikes out at once, foreign respawn mid-pass discards the observation, own respawn re-bases, watcher absorbs own respawns and keeps its pid across a pause).
 
 ### Soak: `scripts/soak-events.sh [--relaunches N] [--toggles M] [--allow-respawn]`
 Bartender quit (relaunched at exit if it was running), MBDummy with an ALLOWED Control Center entry (`mbprobe cc-allowed list`; the script never respawns
@@ -279,6 +279,7 @@ incomplete scans); watcher `agent restarted: pid 73223 -> 34707` at 07.91 (the n
 hidden items still not on the bar. Because detection was poll-bound, the default poll was then lowered to 2 s (not re-measured: the restart is run once).
 
 ### Display change and sleep/wake (human-assisted; NOT run by an agent)
+**Status: display unplug/replug and sleep/wake remain human-assisted and UNTESTED by the loop; the bead's done criterion for the display change is only partially met until a human runs the steps below.**
 Display change: with the app running on the real layout and converged, open the overflow panel (left click the Sommelier item), then unplug an external
 display (or change the resolution in System Settings > Displays). Expect in `build/sommelier.log` (run via `make app-run`):
 `display configuration changed (N screen(s)); reconcile in 1 s`, `overflow panel repositioned after display change: {{x, y}, {w, h}}` (the panel follows
@@ -289,3 +290,5 @@ wake` before sleep, `didWake: reconcile in 3 seconds`, then `pass started ... af
 on wake additionally logs `agent restarted: pid A -> B`; the pass waits out its 2 s settle).
 Also check by hand: launch a new third-party menu bar app that is not in the layout: Arrange status line shows `New item: <name> placed in Visible` (or Hidden per
 the policy) for ~10 s and the log has the same text.
+
+Corrective soak run (2026-11-04 18:1x, baseline captured before the app starts and compared in full, every stop waits for an idle engine): V 5/5, H 6/6, R 20/20, final 1/1, no respawn, `SOAK PASS`. The app log of that run ends with `plan: phase=converged` before the stop (the last line is an observation-only poll pass); no kill happened inside a batch or drag. A first corrective run failed 3 times only because `module:WiFi` flickers out of the read; it is now excluded from the comparison like the other volatile modules.

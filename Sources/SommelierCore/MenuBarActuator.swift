@@ -40,6 +40,13 @@ public protocol MenuBarActuator: Sendable {
     /// All changes applied with ONE agent restart. Verification is per key; the result is `.verified` only if every key
     /// verifies, otherwise `.failed(.notVerified(...))` carrying the full snapshot.
     func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult
+    /// True when the last batch went through an agent respawn (see the extension default).
+    var lastBatchRespawned: Bool { get async }
+}
+
+public extension MenuBarActuator {
+    /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.
+    var lastBatchRespawned: Bool { get async { false } }
 }
 
 /// What may be done to one item on this OS; the UI greys out controls and shows `reason`.

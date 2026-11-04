@@ -216,6 +216,20 @@ Every event becomes a (delayed) `LayoutEngine.requestReconcile`; none of them ac
   hidden"), an incomplete hosted read can never be an observation (`hostedReadComplete == false` is not returned as a read), and an unsettled read
   is published but never planned on; tests: `EngineRobustnessTests`. Live, a pass that spanned a respawn saw `hostedComplete=false`, two complete
   reads with 4 stale on-bar items, and acted only after two complete agreeing reads, with no action.
+- **Respawn accounting and ownership (corrective pass)**:
+  - A hide/show batch that went through an agent respawn (`MenuBarActuator.lastBatchRespawned`; the hide fallback ignores `allowFallback`) strikes its
+    FAILED keys out at once (`fullStrike`): at most ONE respawn per key per layout change; suppressed until `setLayout`/Retry, logged once. Drags
+    keep the 3-strike rule (bounded, no fallback). The follow-up pass scheduled in `finish()` counts against `maxChainedPasses` (2); a membership
+    batch that reports failure never chains anyway (`endAfterBatchDrift`).
+  - Our own respawns: `LivePlatform.restartAgent` marks itself in progress and remembers the resulting pid (`isOwnAgentPID`). The watcher
+    (`busy:` / `isExpected:`) reports nothing while it runs and absorbs the new pid afterwards (`agent restarted by Sommelier (expected)`): no state
+    invalidation mid-action, no extra reconcile.
+  - Passes spanning a foreign respawn: the engine records the agent pid at pass start (`agentPID`) and checks it after the observation and in
+    `adopt()`. A different, non-own pid discards the observation (nothing published, planned or actuated), logs `agent restarted during the pass`,
+    opens the not-ready window and schedules the reconcile; the pass ends as `PassReport.Outcome.agentRestarted`. After our own respawn the pass
+    re-bases on the new pid and continues.
+  - `MenuBarAgentWatcher.start()` keeps the last KNOWN pid across `stop()` (Bartender pause, permission loss) and compares at once, so a respawn
+    during the pause is reported on resume.
 - **Sleep/wake**: `EngineTriggers` calls `willSleep()` (no new pass starts, pending requests and delayed reconciles are dropped; a running pass ends
   after the action in flight, re-checked before every move) and `didWake()` (reconcile 3 s later). `triggers.start()` clears a sleep flag left by a
   missed wake.

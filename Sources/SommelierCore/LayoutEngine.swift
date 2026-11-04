@@ -14,6 +14,8 @@ public struct PassReport: Equatable, Sendable {
         case permissionDenied
         /// Stopped (permission denied earlier, corrupt layout) and not resumed by `clearFailures()`.
         case stopped
+        /// MenuBarAgent was respawned (by someone else) during the pass: nothing was actuated from observations of the new agent.
+        case agentRestarted
     }
     public var outcome: Outcome
     /// Phase of the last plan computed in the pass.
@@ -94,6 +96,11 @@ public actor LayoutEngine {
     private var sleeping = false
     private var delayed: [String: Task<Void, Never>] = [:]
     private var noticeSerial = 0
+    private let agentPID: @Sendable () -> pid_t?
+    private let isOwnAgentPID: @Sendable (pid_t) -> Bool
+    /// The agent pid the running pass started with (re-based after our own respawn).
+    private var passAgent: pid_t?
+    private var foreignRestartInPass = false
 
     public init(observer: any MenuBarObserver, actuator: any MenuBarActuator, store: any LayoutStore,
                 capabilities: any CapabilityProvider, state: EngineState,
@@ -101,7 +108,10 @@ public actor LayoutEngine {
                 resolveSnapshot: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
                 log: @escaping @Sendable (String) -> Void = { _ in },
-                showHiddenSection: Bool = false, config: Config = Config()) {
+                showHiddenSection: Bool = false, config: Config = Config(),
+                agentPID: @escaping @Sendable () -> pid_t? = { nil },
+                isOwnAgentPID: @escaping @Sendable (pid_t) -> Bool = { _ in false }) {
+        self.agentPID = agentPID; self.isOwnAgentPID = isOwnAgentPID
         self.showHidden = showHiddenSection
         self.observer = observer; self.actuator = actuator; self.store = store; self.capabilities = capabilities
         self.state = state; self.busy = busy; self.resolveSnapshot = resolveSnapshot; self.sleep = sleep
@@ -361,13 +371,15 @@ public actor LayoutEngine {
     }
 
     /// Records an actuation failure of `key` in this pass (one strike per pass); logs once when the key reaches the limit.
-    private func markFailed(_ key: ItemKey, _ e: ActuationError) {
+    private func markFailed(_ key: ItemKey, _ e: ActuationError, fullStrike: Bool = false) {
         failures[key] = e
         guard failedThisPass.insert(key).inserted else { return }
-        let n = (strikes[key] ?? 0) + 1
+        // A hide/show that ended in an agent respawn costs ONE respawn per key per layout change: strike out at once.
+        let n = fullStrike ? config.maxKeyFailures : (strikes[key] ?? 0) + 1
         strikes[key] = n
         if n == config.maxKeyFailures {
-            log("\(key) failed \(n) passes in a row (\(e)); marked failed until the layout changes or Retry")
+            log(fullStrike ? "\(key) failed after an agent respawn (\(e)); marked failed until the layout changes or Retry"
+                           : "\(key) failed \(n) passes in a row (\(e)); marked failed until the layout changes or Retry")
         }
     }
 
@@ -426,7 +438,7 @@ public actor LayoutEngine {
             s.inFlight = nil; s.lastPassAt = now; s.passCount += 1; s.passSequence += 1; s.isConverged = converged
         }
         // A key that failed fewer than `maxKeyFailures` passes in a row is retried by one more pass (bounded by the strikes).
-        if !converged, draining, !stopped, !cutThisPass, hasRetryableFailure { pending = true }
+        if !converged, draining, !pending, !stopped, !cutThisPass, chained < config.maxChainedPasses, hasRetryableFailure { chained += 1; pending = true }
         return report
     }
 
@@ -469,6 +481,7 @@ public actor LayoutEngine {
 
     /// Updates `obs` from an actuation result; false when no trustworthy observation could be obtained.
     private func adopt(_ snap: MenuBarSnapshot?, into obs: inout ObservedOrder) async -> Bool {
+        if await foreignAgentChange() { return false }
         if let snap {
             let resolved = resolveSnapshot(snap)
             let o = ObservedOrder(resolved: resolved)
@@ -534,6 +547,29 @@ public actor LayoutEngine {
     }
 
     private func runPass(scheduled: Bool) async -> PassReport {
+        passAgent = agentPID()
+        foreignRestartInPass = false
+        let r = await runPassBody(scheduled: scheduled)
+        if foreignRestartInPass {
+            foreignRestartInPass = false
+            return PassReport(outcome: .agentRestarted, phase: r.phase, actionCount: r.actionCount)
+        }
+        return r
+    }
+
+    /// True (once per pass) when MenuBarAgent was respawned by someone else since the pass started: observations of the new
+    /// agent are discarded, nothing more is actuated, and a reconcile follows the not-ready window. Our own respawn re-bases.
+    private func foreignAgentChange() async -> Bool {
+        if foreignRestartInPass { return true }
+        guard let start = passAgent, let cur = agentPID(), cur != start else { return false }
+        if isOwnAgentPID(cur) { passAgent = cur; return false }
+        log("agent restarted during the pass: pid \(start) -> \(cur); discarding its observations")
+        foreignRestartInPass = true
+        await agentRestarted()
+        return true
+    }
+
+    private func runPassBody(scheduled: Bool) async -> PassReport {
         inPass = true
         defer { inPass = false }
         lastStart = .now
@@ -577,6 +613,12 @@ public actor LayoutEngine {
             }
         }
         busyRetried = false
+
+        if await foreignAgentChange() {
+            let r = PassReport(outcome: .agentRestarted)
+            _ = await finish(r, converged: false)
+            return r
+        }
 
         // (b2) not ready: asleep, or MenuBarAgent respawned moments ago (its first scans are empty or incomplete, and even an
         // agreed read can lack items). Nothing is planned or done from such an observation; the delayed reconcile follows.
@@ -658,6 +700,8 @@ public actor LayoutEngine {
             case .verified(let s): snap = s
             case .failed(let e, let s): err = e; snap = s
             }
+            let respawned = await actuator.lastBatchRespawned
+            if respawned { passAgent = agentPID() }   // our own fallback respawn: the pass continues with the new agent
             if let e = err, await handleFatal(e) { return await abort(.stopped) }
             // A batch that reported anything other than success (userBusy and fatal errors aside) ends the pass.
             var driftErr: ActuationError?
@@ -679,7 +723,7 @@ public actor LayoutEngine {
                     guard let wasHide = batch[k] else { continue }
                     let nowHide: Bool
                     switch a { case .hide: nowHide = true; case .show: nowHide = false; case .move: continue }
-                    if nowHide == wasHide { markFailed(k, failErr); failedAny = true }
+                    if nowHide == wasHide { markFailed(k, failErr, fullStrike: respawned); failedAny = true }
                     else { log("\(k): desired state changed while the batch ran; not a failure") }
                 }
                 if failedAny { consecutiveFailures += 1 }

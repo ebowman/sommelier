@@ -84,6 +84,17 @@ extension ActuatorPlatform {
 private final class ScannerBox: @unchecked Sendable { let v: MenuBarScanner; init(_ v: MenuBarScanner) { self.v = v } }
 
 /// Real machine: AX scanner, CGEvent drags, plist stores, `killall MenuBarAgent`.
+/// Pids of MenuBarAgent produced by our own restarts, and whether one is running.
+final class OwnRestarts: @unchecked Sendable {
+    private let lock = NSLock()
+    private var running = false
+    private var pids: Set<pid_t> = []
+    var inProgress: Bool { lock.lock(); defer { lock.unlock() }; return running }
+    func begin() { lock.lock(); running = true; lock.unlock() }
+    func end(pid: pid_t?) { lock.lock(); running = false; if let pid { pids.insert(pid) }; lock.unlock() }
+    func contains(_ pid: pid_t) -> Bool { lock.lock(); defer { lock.unlock() }; return pids.contains(pid) }
+}
+
 public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public static let bartenderBundleID = "com.surteesstudios.Bartender"
     private let scanner: MenuBarScanner
@@ -210,11 +221,21 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     }
 
     public func restartAgent(timeout: TimeInterval, expectedChange: Int) async -> AgentRestartOutcome {
-        await onWork {
+        own.begin()
+        let out = await onWork {
             let r = MenuBarAgentControl.restart(timeout: timeout, expectedChange: expectedChange)
             return AgentRestartOutcome(recovered: r.recovered, elapsedMS: r.elapsedMS)
         }
+        own.end(pid: currentMenuBarAgentPID())
+        return out
     }
+
+    // MARK: Own respawns (the agent watcher and the engine must not treat our own fallback restart as a foreign one)
+    private let own = OwnRestarts()
+    /// True while `restartAgent` runs.
+    public var agentRestartInProgress: Bool { own.inProgress }
+    /// True when `pid` is the agent pid that one of OUR restarts produced.
+    public func isOwnAgentPID(_ pid: pid_t) -> Bool { own.contains(pid) }
 
     public func sleep(_ seconds: TimeInterval) async { try? await Task.sleep(for: .seconds(seconds)) }
     public func now() -> Date { Date() }

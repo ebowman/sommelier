@@ -117,7 +117,9 @@ final class AppModel {
             engine = e
             triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
             watchErrors()
-            agentWatcher = MenuBarAgentWatcher(log: { NSLog("[Sommelier] %@", $0) }, onChange: { [platform, weak self] _, _ in
+            agentWatcher = MenuBarAgentWatcher(log: { NSLog("[Sommelier] %@", $0) },
+                                                busy: { [platform] in platform.agentRestartInProgress },
+                                                isExpected: { [platform] in platform.isOwnAgentPID($0) }, onChange: { [platform, weak self] _, _ in
                 platform.invalidateAgentState()
                 await self?.engine?.agentRestarted()
             })

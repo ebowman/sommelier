@@ -80,6 +80,7 @@ public enum EngineFactory {
         return LayoutEngine(observer: RecordingObserver(inner: makeObserver(platform: platform, log: { log("observer: " + $0) }), ids: ids, transform: filter), actuator: actuator,
                             store: store, capabilities: rules, state: state,
                             busy: { platform.pressedMouseButtons() != 0 },
-                            resolveSnapshot: { filter(platform.resolve($0)) }, log: log, config: config)
+                            resolveSnapshot: { filter(platform.resolve($0)) }, log: log, config: config,
+                            agentPID: currentMenuBarAgentPID, isOwnAgentPID: { platform.isOwnAgentPID($0) })
     }
 }
