@@ -137,6 +137,9 @@ public final class EngineTriggers {
         let g = await gate()
         if let why = skipReason(g) { log("poll skipped: \(why)"); return }
         guard let sig = await scanSignature() else { return }
+        // The guard holds only while the bar keeps reading as the signature that last triggered a pass: any other reading (e.g. the
+        // bar fixed by that pass) clears it, so a later recurrence of the same change triggers again.
+        if sig != lastTriggered { lastTriggered = nil }
         guard let base = reference(g) else { baseline = sig; baselineSerial = g.engineSignatureSerial; return }
         if sig == base { baseline = sig; baselineSerial = g.engineSignatureSerial; return }
         // Changed: confirm with a second scan before acting (a one-scan flicker never triggers).

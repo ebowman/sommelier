@@ -212,12 +212,56 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         #expect(r.fired.count == 1)
     }
 
-    @Test func aSamePassCannotRetriggerForTheSameBar() async {
+    /// Drives the "pass ran" step: the engine publishes `items` as its observation under a new serial.
+    private func passPublishes(_ r: Rig, _ items: [MenuBarItem], serial: Int) {
+        r.gate.value = PollGate(passesStarted: serial, engineSignature: engineSig(items), engineSignatureSerial: serial)
+    }
+
+    @Test func steadyDisagreementTriggersOnePassNotACadence() async {
+        // The fast scan always reads F (extra parked-looking item C); the engine's full observation always reads E (no C).
         let r = await rig()
-        r.scans.set([base + [it("C", x: 300)]])
+        let f = base + [it("C", x: 300)]
+        r.scans.set([f])
+        passPublishes(r, base, serial: 1)
         await r.triggers.poll()
-        await r.triggers.poll()   // the bar is unchanged since the trigger and the engine published nothing new
         #expect(r.fired.count == 1)
+        for n in 2...6 {   // each pass publishes E again under a NEW serial: the guard line is reached every time
+            passPublishes(r, base, serial: n)
+            await r.triggers.poll()
+        }
+        #expect(r.fired.count == 1)
+        #expect(r.fired.logs.contains { $0.contains("not repeating") })
+    }
+
+    @Test func aRepeatedIdenticalChangeTriggersAgainAfterThePassFixedIt() async {
+        let r = await rig()
+        let x = [it("B", x: 100), it("A", x: 140), it("S1", x: 180), it("S2", x: 220), it("WiFi", x: 260)]
+        r.scans.set([x]); passPublishes(r, base, serial: 1)
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
+        r.scans.set([base]); passPublishes(r, base, serial: 2)   // the pass fixed the bar
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)
+        r.scans.set([x])                                           // the user repeats the same drag
+        await r.triggers.poll()
+        #expect(r.fired.count == 2)
+    }
+
+    @Test func steadyDisagreementWithOneRealChangeCostsExactlyOneExtraPass() async {
+        let r = await rig()
+        let f = base + [it("C", x: 300)]
+        let x = f + [it("D", x: 340)]
+        r.scans.set([f]); passPublishes(r, base, serial: 1)
+        await r.triggers.poll()
+        #expect(r.fired.count == 1)                       // F vs E
+        r.scans.set([x]); passPublishes(r, base, serial: 2)
+        await r.triggers.poll()
+        #expect(r.fired.count == 2)                       // the real change D
+        r.scans.set([f]); passPublishes(r, base, serial: 3)   // the pass leaves F vs E again
+        await r.triggers.poll()
+        #expect(r.fired.count == 3)                       // the single extra pass
+        for n in 4...8 { passPublishes(r, base, serial: n); await r.triggers.poll() }
+        #expect(r.fired.count == 3)                       // then steady, no cadence
     }
 
     @Test func aPassStartingDuringTheConfirmationCancelsIt() async {

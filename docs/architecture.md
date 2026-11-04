@@ -234,7 +234,7 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
     (the engine's observation omits stale items, so `EngineState.observed` itself cannot be compared): a change after a pass's last observation (an app's item appearing
     after the launch pass observed) is caught by the next poll, and skips never drop it. A difference is CONFIRMED by a second fast scan `confirmDelay` (1 s) later; only
     a second scan with the same new signature requests a pass (`requestReconcile(reason: "poll")`, logged `poll: poll change confirmed ...: <diff>`); a one-scan flicker is
-    logged "not confirmed". A signature that already triggered once is not re-triggered until the engine publishes a newer one. Fixed 10 s period, no back-off (worst-case
+    logged "not confirmed". A signature that already triggered a pass is not re-triggered while the bar keeps reading exactly that signature (loop protection when a pass cannot change what the fast scan sees); any other reading, or a different signature starting a pass, clears the guard, so a recurrence of the same change after the bar was fixed triggers again (steady disagreement costs one extra pass per real change). Fixed 10 s period, no back-off (worst-case
     detection 11 s; the noise fix alone gave 0 passes). Skipped entirely (no scan) while a pass is running/requested/scheduled, the engine sleeps, a transient reveal hold
     is active, `observationSettled == false`, or within 5 s of a user-initiated request (`LayoutEngine.pollGate()`).
 - **UI binds to**: `observed`, `layout`, `perItem`, `inFlight`, `lastError`, `isConverged`, `lastPassAt`, `passCount`; it changes the bar only via `setLayout` / `setShowHiddenSection`.
