@@ -346,7 +346,10 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   after the drop AND `placementMatches` (the observed drawn order equals the layout order, or the item is off the bar for the
   hidden sections) AND the engine status is in place; only then does it show "✓". The view model remembers the moved keys
   (`ArrangeTracker`, pure, in `ArrangeModel.swift`; siblings of the hide unit included). A drop is judged only by a pass that STARTED
-  after it (`EngineState.passesStarted` at drop time vs `passSequence`, re-stamped when the engine publishes the new layout); older
+  after it (`passSequence > passesStartedAtRevision`, where the ENGINE stamps every layout it publishes, gdu.48: `EngineState.layoutRevision`
+  increments on `start`, `setLayout` and when a pass appends new items, and `passesStartedAtRevision` is `passesStarted` at that moment;
+  `setLayout` returns the stamp as `LayoutRevision`, the tracker entry waits un-judged (`awaitingStamp`) until it arrives, so a pass that
+  starts right after publication but before any UI tick counts, and one already running at publication never does); older
   statuses are suppressed and shown as "⟳", so an old failure never appears on a new drop. After 90 s without a match the capsule shows
   the timeout "⚠", cleared by a later match. Without a trustworthy observation (none yet, or `lastError` is an observe failure) the
   Visible strip shows "No observation yet - ..." and no capsules, and drops that touch Visible are refused. Capabilities come only from
@@ -356,7 +359,15 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   group. Before the first observation rows make no claims. (3) Hidden and Always hidden follow the LAYOUT order and reorder
   optimistically, because their order is our own data (there is no observation to wait for; only the membership change itself is
   verified, shown as a ghost in the destination strip and "⟳" on the capsule still on the bar). (4) The layout the window submits
-  is shown at once (`pendingLayout`) so consecutive drops build on each other; everything else is the engine's state.
+  is shown at once (`PendingLayout`) so consecutive drops build on each other; everything else is the engine's state. The pending
+  copy is compared by REVISION, never by equality: it is dropped once every submission has returned its revision and
+  `state.layoutRevision >=` the latest. Rebase rule: while pending, `PendingLayout.effective(over: state.layout)` is the base of every
+  further drop and appends any key the engine added that the pending copy lacks, so a stale pending copy is never resubmitted over the
+  engine's additions (no stuck "⟳", no overwrite). (5) Failure clearing: when a settled observation finds a `.failed` key's placement
+  realized and the plan does not touch it, the engine clears the failure (log `cleared failure for X: now in place`; a failure recorded
+  in the same pass stays until a later pass), so its badge and the "N failed" status line clear and the tracker's timeout "⚠" resolves;
+  `.unsupported` is derived afresh every pass. (6) Capabilities are computed on demand from `state.items` (not only while the window
+  is open), so the `SOMMELIER_ARRANGE_MOVE` hook resolves them exactly like a UI drop.
 - Units: capsules of one hide unit get a link marker and an outline; the tooltip says "Hides together with ...". A move
   (`Layout.move`) takes the whole unit, and every key it returns shows "⟳" too. Dropping beside a sibling is a no-op.
 - Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange line; items left of it are outlined

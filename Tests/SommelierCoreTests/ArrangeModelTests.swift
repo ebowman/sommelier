@@ -448,7 +448,7 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     #expect(t.isEmpty && t.timedOut.isEmpty)
 }
 
-@Test func retryResetsTheSequenceAndTheClockAndRestampOnlyMovesTheSequence() {
+@Test func retryResetsTheSequenceAndTheClock() {
     let (layout, wrong, _) = trackerFixture()
     var t = ArrangeTracker()
     t.record([k("b")], passesStarted: 1, now: t0)
@@ -459,8 +459,7 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     // a pre-retry failure does not end the retried wait
     t.update(observed: wrong, layout: layout, perItem: [k("b"): .failed(.timeout)], passSequence: 7, showHiddenSection: false, now: t0 + 97)
     #expect(t.awaiting == [k("b")])
-    t.restamp(passesStarted: 9)
-    #expect(t.entries[k("b")]?.dropSequence == 9 && t.entries[k("b")]?.since == t0 + 96)
+    #expect(t.entries[k("b")]?.dropSequence == 7 && t.entries[k("b")]?.since == t0 + 96)
 }
 
 @Test func unitSiblingsAreTrackedTogether() {

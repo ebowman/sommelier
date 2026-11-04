@@ -41,9 +41,10 @@ final class ArrangeViewModel {
     var hoverSlot: (section: LayoutSection, slot: Int)?
     /// The waiting state machine (pure, in SommelierCore); this class only feeds it.
     private(set) var tracker = ArrangeTracker()
-    /// The layout we submitted until the engine has published it (so rapid consecutive drops build on each other).
-    private(set) var pendingLayout: ArrangeLayout?
-    private(set) var capabilities: CapabilityRules
+    /// The layout we submitted until the engine has published it (by revision, gdu.48); rapid consecutive drops build on it.
+    private(set) var pending = PendingLayout()
+    /// Capability rules derived from `state.items`; refreshed on demand (see `cap`), never only while the window is open.
+    @ObservationIgnored private var capabilities: CapabilityRules
     @ObservationIgnored private var capPass = -1
     @ObservationIgnored private var capItems = -1
     @ObservationIgnored private var timer: Timer?
@@ -59,7 +60,8 @@ final class ArrangeViewModel {
         capabilities = EngineFactory.makeCapabilityRules(bundleID: { _ in nil })
     }
 
-    var layout: ArrangeLayout { pendingLayout ?? state.layout }
+    /// The layout further drops build on: the engine's, or the pending copy rebased onto it (the engine's additions survive).
+    var layout: ArrangeLayout { pending.effective(over: state.layout) }
 
     var observationProblem: String? { ArrangeSections.observationProblem(lastError: state.lastError) }
     /// False while the bar has no trustworthy observation (none yet, or the last one failed/disagreed).
@@ -83,7 +85,8 @@ final class ArrangeViewModel {
     var isPaused: Bool { model.isPaused }
     /// Capability only from the engine's own data; a key without `ItemInfo` is unknown, hence allowed (engine decides).
     private var cap: (ItemKey) -> Capability {
-        { [capabilities, items = state.items] in ArrangeCapabilities.resolve($0, items: items, rules: capabilities) }
+        refreshCapabilities()
+        return { [capabilities, items = state.items] in ArrangeCapabilities.resolve($0, items: items, rules: capabilities) }
     }
 
     // MARK: lifecycle
@@ -106,8 +109,7 @@ final class ArrangeViewModel {
     private func refreshCapabilities(force: Bool = false) {
         guard force || state.passCount != capPass || state.items.count != capItems else { return }
         capPass = state.passCount; capItems = state.items.count
-        let ids = state.items.compactMapValues(\.ownerBundleID)
-        capabilities = EngineFactory.makeCapabilityRules(bundleID: { ids[$0] })
+        capabilities = ArrangeCapabilities.rules(items: state.items, tracked: EngineFactory.currentTrackedSet())
     }
 
     private func tick() {
@@ -116,13 +118,10 @@ final class ArrangeViewModel {
             NSLog("[Sommelier] arrange: MAIN ACTOR STALL: timer %.0f ms late", (t.timeIntervalSince(last) - 0.25) * 1000)
         }
         lastTick = t
-        guard windowVisible || !tracker.isEmpty || pendingLayout != nil else { return }
+        guard windowVisible || !tracker.isEmpty || pending.isActive else { return }
         refreshCapabilities()
-        if let p = pendingLayout, state.layout == p {
-            pendingLayout = nil
-            tracker.restamp(passesStarted: state.passesStarted)   // only passes that start with the new layout judge the drops
-        }
-        guard pendingLayout == nil else { if windowVisible { logRowsIfChanged() }; return }
+        pending.resolve(stateRevision: state.layoutRevision)
+        guard !pending.isActive else { if windowVisible { logRowsIfChanged() }; return }
         for line in tracker.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
                                    showHiddenSection: state.showHiddenSection, now: t,
                                    observationSettled: state.observationSettled) {
@@ -230,18 +229,29 @@ final class ArrangeViewModel {
                 if was == now, now != .visible { continue }   // pure reorder inside a hidden strip: our data, nothing to verify
                 track.append(k)
             }
-            tracker.record(track, passesStarted: state.passesStarted, now: Date())
             NSLog("[Sommelier] arrange: submit layout; moved=%@", moved.map { "\($0)" }.joined(separator: ", "))
-            apply(l)
+            apply(l, tracking: track)
             return true
         }
     }
 
-    private func apply(_ l: ArrangeLayout) {
+    /// Submits `l`. `tracking`: keys the window now waits for; they are judged only by passes started after the revision the
+    /// engine stamps on `l` (the stamp arrives with `setLayout`'s return).
+    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = []) {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
-        pendingLayout = l
+        let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true)
+        pending.submit(l)
         ensureTimer()
-        Task { await engine.setLayout(l) }   // never block the main actor on the engine
+        Task { [weak self] in   // never block the main actor on the engine
+            let stamp = await engine.setLayout(l)
+            self?.published(stamp, ticket: ticket)
+        }
+    }
+
+    private func published(_ stamp: LayoutRevision, ticket: Int) {
+        tracker.stamp(ticket: ticket, passesStartedAtRevision: stamp.passesStarted)
+        pending.submitted(revision: stamp.revision)
+        pending.resolve(stateRevision: state.layoutRevision)
     }
 
     // MARK: toolbar and menu actions
@@ -277,8 +287,7 @@ final class ArrangeViewModel {
         case .hideNotFitting(let l, let titles, _):
             NSLog("[Sommelier] arrange: hide what does not fit: %@", titles.joined(separator: ", "))
             let old = layout
-            tracker.record(l.hidden.filter { old.section(of: $0) == .visible }, passesStarted: state.passesStarted, now: Date())
-            apply(l)
+            apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible })
         }
     }
 
