@@ -5,6 +5,8 @@ import Foundation
 /// running disappears from the hidden items), so the caption stays readable for the whole interval.
 public struct OverflowFeedbackModel: Sendable {
     public private(set) var errors: [ItemKey: String] = [:]
+    /// Neutral captions for a successful activation that carried a note (no outline).
+    public private(set) var notes: [ItemKey: String] = [:]
     private var retained: [ItemKey: (entry: OverflowEntry, index: Int)] = [:]
 
     public init() {}
@@ -15,9 +17,12 @@ public struct OverflowFeedbackModel: Sendable {
         retained[entry.key] = (entry, current.firstIndex { $0.key == entry.key } ?? current.count)
     }
 
+    public mutating func note(_ key: ItemKey, message: String) { notes[key] = message }
+
     /// Clears one key only; other keys' errors and retained entries are untouched.
     public mutating func clear(_ key: ItemKey) {
         errors[key] = nil
+        notes[key] = nil
         retained[key] = nil
     }
 
@@ -29,5 +34,26 @@ public struct OverflowFeedbackModel: Sendable {
             out.insert(r.entry, at: min(r.index, out.count))
         }
         return out
+    }
+}
+
+/// Caption for a finished activation (pure). Failures are errors; a successful activation with a note gets a neutral caption.
+public enum ActivationCaption {
+    public enum Severity: Equatable, Sendable { case error, neutral }
+    public static func make(_ r: ActivationResult) -> (text: String, severity: Severity)? {
+        switch r {
+        case .failed(let e): return (e.description, .error)
+        case .opened(let o):
+            guard let n = o.note else { return nil }
+            let clauses = n.split(separator: ",").compactMap { p -> String? in
+                switch p {
+                case "overflowStripStillExpanded": return "overflow strip left expanded"
+                case "menuStillOpenAtCap": return "still open"
+                case "overflowStripStateUnknown": return "overflow strip state unknown"
+                default: return nil
+                }
+            }
+            return clauses.isEmpty ? nil : (("menu opened; " + clauses.joined(separator: "; ")), .neutral)
+        }
     }
 }

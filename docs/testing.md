@@ -518,3 +518,5 @@ Corrective live re-check 2026-11-05 (untracked key; Bartender quit; scratch layo
 with "cannot be shown: not tracked by Control Center" and 13 shows for the tracked ones) in `hidden`, every other real hidden item in `alwaysHidden`): 3 clicks -> plan `membership actions=2 skipped=1` (the dummies shown, Little Snitch skipped), converged after
 3514 / 3199 / 1324 ms, icon `wineglass.fill` at `observed=true`, Dummy-A/B on the bar (32 on bar, 20 parked), Little Snitch still parked, idle re-hide 5 s later back to 30 / 22 with the drawn non-dummy order hash unchanged. Plist
 comparison: `com.apple.controlcenter.plist` byte-equal, `trackedApplications` equal after restoring MBDummy `isAllowed`, `com.apple.MenuBarAgent.plist` unchanged, real layout.json/slot-hints.json sha unchanged. `make test`: 640 tests.
+
+Activation captions (gdu.70): a successful overflow activation with a note (`overflowStripStillExpanded`, `menuStillOpenAtCap`, `overflowStripStateUnknown`) shows a short neutral grey caption under the entry for 4 s; unit-tested via `ActivationCaption.make`; the panel rendering itself is not live-verified.
