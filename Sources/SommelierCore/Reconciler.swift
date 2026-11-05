@@ -140,9 +140,8 @@ public struct Reconciler: Sendable {
             // is not skipped here (existing retry/strike handling).
             if wants, allHidden, revealed,
                let bad = ks.first(where: { parkedSet.contains($0) && !capabilities($0).canHide && capabilities($0).reason != "failed earlier" }) {
-                let apple: Bool = { if case .status(let o, _) = bad { return o.hasPrefix("com.apple.") } else { return false } }()
-                let why = apple ? "cannot be shown: Apple apps are managed only in System Settings > Menu Bar"
-                                : "cannot be shown: not tracked by Control Center"
+                // gdu.73: the reason comes from the capability itself (Apple app vs not tracked vs a refusal's own reason).
+                let why = "cannot be shown: " + (capabilities(bad).reason ?? "not tracked by Control Center")
                 for k in ks where parkedSet.contains(k) { skipped.append(SkippedAction(k, k == bad ? why : "\(why) (\(bad) in the same app)")) }
                 wants = false
             }

@@ -28,6 +28,10 @@ public actor FakeActuator: MenuBarActuator {
         self.makeSnapshot = makeSnapshot
     }
 
+    /// An app quits / launches (test support): the key leaves or rejoins the bar (gdu.74).
+    public func removeItem(_ key: ItemKey) { order.removeAll { $0 == key }; hidden.remove(key) }
+    public func addItem(_ key: ItemKey) { if !order.contains(key) { order.append(key) } }
+
     /// Makes the Nth call apply its changes normally but report `.failed(.notVerified(expected:observed:), snapshot)`.
     public func scriptDrift(onCall n: Int, expected: String, observed: String) { drift[n] = (expected, observed) }
     /// Moves `key` to `index` in the order without recording a call (simulates an item shifted by the agent restart).

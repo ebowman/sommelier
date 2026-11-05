@@ -61,6 +61,9 @@ public actor LayoutEngine {
         /// The Control Center tracked entries as stored now (nil = unreadable or not wired: owner-key hide units). Read at the start of
         /// every pass and when a layout is adopted; it decides the hide units (`HideUnitRule`, gdu.75), the same lookup the actuator uses.
         public var trackedResolver: @Sendable () -> TrackedEntryResolver? = { nil }
+        /// Builds the planner's capability rules from the SAME per-pass tracked-entry snapshot as the hide units (gdu.74), so an
+        /// entry appearing or disappearing after launch is seen by planner and actuator alike. nil = the fixed provider given to `init`.
+        public var capabilitiesFor: (@Sendable (TrackedEntryResolver?) -> any CapabilityProvider)?
         public init() {}
     }
 
@@ -75,8 +78,15 @@ public actor LayoutEngine {
     private var resolverSnapshot: TrackedEntryResolver?
     /// THE hide-unit rule of this engine (gdu.75): published in `EngineState.hideUnits` so Arrange and the panel group like the planner.
     private var rule = HideUnitRule.ownerKeys
+    /// The capability rules of the current pass (derived from `resolverSnapshot` when `Config.capabilitiesFor` is set; gdu.74).
+    private var activeCapabilities: (any CapabilityProvider)?
+    /// Bumped whenever the tracked-entry snapshot content changes; `actuatorRefused` entries remember the epoch they were refused in.
+    private var snapshotEpoch = 0
     private func refreshHideUnits() {
-        resolverSnapshot = config.trackedResolver()
+        let fresh = config.trackedResolver()
+        if fresh?.entries != resolverSnapshot?.entries || (fresh == nil) != (resolverSnapshot == nil) { snapshotEpoch += 1 }
+        resolverSnapshot = fresh
+        activeCapabilities = config.capabilitiesFor?(fresh)
         rule = HideUnitRule(resolver: resolverSnapshot, items: itemInfo)
     }
     /// Read level of the latest observation (gdu.51).
@@ -139,6 +149,8 @@ public actor LayoutEngine {
     /// gdu.72: units the actuator refused to write (key -> reason; not tracked, Apple app...). Kept across passes so they are not
     /// retried every pass, never struck, shown `.unsupported`; cleared by `clearFailures` (layout change, Retry).
     private var actuatorRefused: [ItemKey: String] = [:]
+    /// The `snapshotEpoch` each `actuatorRefused` key was refused in (gdu.74): re-evaluated when the snapshot has changed since.
+    private var refusedEpoch: [ItemKey: Int] = [:]
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -303,7 +315,7 @@ public actor LayoutEngine {
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
-        failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]
+        failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         unconfirmed = [:]
         stopped = !loaded   // a layout that never loaded stays stopped until `start()` succeeds or `setLayout`
         chained = 0
@@ -449,18 +461,33 @@ public actor LayoutEngine {
     }
 
     private func effectiveCaps() -> @Sendable (ItemKey) -> Capability {
-        let bad = Set(failures.keys), caps = capabilities, refused = actuatorRefused
+        let bad = Set(failures.keys), caps = activeCapabilities ?? capabilities, refused = actuatorRefused
         return { k in
             if let why = refused[k] { return Capability(canMove: caps.capability(for: k).canMove, canHide: false, reason: why) }
             return bad.contains(k) ? Capability(canMove: false, canHide: false, reason: "failed earlier") : caps.capability(for: k)
         }
     }
 
+    /// gdu.74, start of each pass (after the snapshot refresh): a refused unit whose key vanished is dropped; one refused under an
+    /// older tracked-entry snapshot is dropped when the rules now allow it (it is tried again, no Retry needed). Units the rules
+    /// still refuse, or refused under the current snapshot, stay `.unsupported` (no strike).
+    private func reevaluateRefused(_ obs: ObservedOrder) {
+        guard !actuatorRefused.isEmpty else { return }
+        let present = Set(obs.onBar + obs.parked)
+        let caps = activeCapabilities ?? capabilities
+        for k in Array(actuatorRefused.keys) {
+            if !present.contains(k) || (refusedEpoch[k] != snapshotEpoch && caps.capability(for: k).canHide) {
+                actuatorRefused[k] = nil; refusedEpoch[k] = nil
+            }
+        }
+    }
+
     private func makePlan(_ obs: ObservedOrder) -> Plan {
         refreshHideUnits()
+        reevaluateRefused(obs)
         var planObs = withoutTransient(obs)
-        // gdu.72: parked units the actuator refused to show are invisible to the planner (it cannot show them); they stay
-        // skipped with the actuator's reason. On-bar ones are handled by `effectiveCaps` (cannot hide -> skipped).
+        // gdu.72: parked units the actuator still refuses (after `reevaluateRefused`) are withheld from the Reconciler so it does not
+        // plan an endless show; they come back as explicit skips with the refusal reason. On-bar ones: `effectiveCaps` (cannot hide).
         let refusedParked = planObs.parked.filter { actuatorRefused[$0] != nil }
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
@@ -469,7 +496,10 @@ public actor LayoutEngine {
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
         if !transientReveals.isEmpty { p.actions = []; p.newItems = []; p.phase = .converged }
-        for k in refusedParked where !p.skipped.contains(where: { $0.key == k }) { p.skipped.append(SkippedAction(k, actuatorRefused[k] ?? "cannot be shown")) }
+        for k in refusedParked {
+            p.skipped.removeAll { $0.key == k }
+            p.skipped.append(SkippedAction(k, actuatorRefused[k] ?? "cannot be shown"))
+        }
         if !overflowRefused.isEmpty {
             func refused(_ a: PlannedAction) -> ItemKey? {
                 guard case .move(let k, let rel) = a else { return nil }
@@ -996,7 +1026,7 @@ public actor LayoutEngine {
             // batchFailed, not retried. When every unit was refused the batch result is only that refusal and is dropped.
             let refusedNow = (await actuator.lastBatchRefused).filter { batch[$0.key] != nil }
             if !refusedNow.isEmpty {
-                for (k, why) in refusedNow { actuatorRefused[k] = why }
+                for (k, why) in refusedNow { actuatorRefused[k] = why; refusedEpoch[k] = snapshotEpoch }
                 log("engine: actuator refused \(refusedNow.count) unit(s) (skipped, not failures): " + refusedNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
                 if refusedNow.count == batch.count { err = nil }
             }

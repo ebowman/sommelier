@@ -524,6 +524,90 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.calls.count == 1)
     }
 
+    // MARK: gdu.74 - per-pass capability snapshot, refused-unit re-evaluation
+
+    private final class TrackedBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var keys: Set<String>
+        init(_ k: Set<String>) { keys = k }
+        func set(_ k: Set<String>) { lock.lock(); keys = k; lock.unlock() }
+        func resolver() -> TrackedEntryResolver { lock.lock(); defer { lock.unlock() }; return TrackedEntryResolver(keys: keys) }
+    }
+
+    private func snapshotConfig(_ box: TrackedBox) -> LayoutEngine.Config {
+        var c = LayoutEngine.Config()
+        c.trackedResolver = { box.resolver() }
+        c.capabilitiesFor = { EngineFactory.makeCapabilityRules(resolver: $0, bundleID: { _ in nil }) }
+        return c
+    }
+
+    private func hideBatches(_ r: Rig) async -> Int {
+        await r.actuator.calls.filter { if case .applyHiddenBatch = $0 { true } else { false } }.count
+    }
+
+    @Test func planningFollowsATrackedEntryThatAppearsAfterLaunchWithoutRetry() async {
+        let box = TrackedBox(["com.x.A"])
+        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]), config: snapshotConfig(box))
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden.isEmpty)   // B untracked: planner skips it, nothing written
+        if case .unsupported? = r.state.perItem[k("B")] {} else { Issue.record("B should be unsupported, got \(String(describing: r.state.perItem[k("B")]))") }
+        box.set(["com.x.A", "com.x.B"])
+        let rep = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden == [k("B")])
+        #expect(rep.outcome == .converged && r.state.perItem[k("B")] == .inPlace)
+    }
+
+    @Test func aRefusedKeyIsRetriedWhenTheEntryReappearsAndNeedsNoRetryButton() async {
+        let box = TrackedBox(["com.x.A", "com.x.B", "com.x.C"])
+        let r = await rig(order: [k("A"), k("B"), k("C")], layout: Layout(visible: [k("C")], hidden: [k("A"), k("B")]), config: snapshotConfig(box))
+        await r.actuator.setRefusals([k("B"): "cannot hide: not tracked by Control Center"])
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden == [k("A")])
+        // (c) the snapshot did not change: still refused, no new write, no strike
+        let before = await hideBatches(r)
+        _ = await r.engine.reconcileOnce()
+        #expect(await hideBatches(r) == before)
+        if case .unsupported? = r.state.perItem[k("B")] {} else { Issue.record("B should stay unsupported") }
+        #expect(r.state.lastError == nil)
+        // entry disappears: the rules refuse it now, it stays unsupported (still no write)
+        box.set(["com.x.A", "com.x.C"])
+        _ = await r.engine.reconcileOnce()
+        #expect(await hideBatches(r) == before)
+        if case .unsupported? = r.state.perItem[k("B")] {} else { Issue.record("B should stay unsupported while untracked") }
+        // entry appears again and the actuator accepts: planned and applied in the next pass
+        await r.actuator.setRefusals([:])
+        box.set(["com.x.A", "com.x.B", "com.x.C"])
+        let rep = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden == Set([k("A"), k("B")]))
+        #expect(rep.outcome == .converged && r.state.perItem[k("B")] == .inPlace)
+    }
+
+    @Test func aRefusedKeyThatVanishesIsPrunedWithNoStaleStatus() async {
+        let box = TrackedBox(["com.x.A", "com.x.B", "com.x.C"])
+        let r = await rig(order: [k("A"), k("B"), k("C")], layout: Layout(visible: [k("C")], hidden: [k("A"), k("B")]), config: snapshotConfig(box))
+        await r.actuator.setRefusals([k("B"): "cannot hide: not tracked by Control Center"])
+        _ = await r.engine.reconcileOnce()
+        if case .unsupported? = r.state.perItem[k("B")] {} else { Issue.record("B should be unsupported") }
+        await r.actuator.setRefusals([:])
+        await r.actuator.removeItem(k("B"))
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.perItem[k("B")] == nil)
+        await r.actuator.addItem(k("B"))   // it comes back: not pinned by the old refusal
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden.contains(k("B")))
+    }
+
+    @Test func revealSkipReasonFollowsTheCapabilityReason() {
+        let apple = ItemKey.status(ownerKey: "com.apple.foo", autosaveName: "a"), untracked = k("U"), v = k("V")
+        let rules = EngineFactory.makeCapabilityRules(tracked: ["com.x.V"], bundleID: { _ in nil })
+        let l = Layout(visible: [v], hidden: [apple, untracked])
+        let p = Reconciler().plan(observed: ObservedOrder(onBar: [v], parked: [apple, untracked]), layout: l,
+                                  capabilities: { rules.capability(for: $0) }, showHiddenSection: true)
+        let why = Dictionary(uniqueKeysWithValues: p.skipped.map { ($0.key, $0.reason) })
+        #expect(why[apple]?.contains("Apple apps") == true)
+        #expect(why[untracked]?.contains("no Control Center entry") == true)
+    }
+
     @Test func userBusyBatchIsNotAFailureAndReschedulesThePass() async {
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .userBusy)])

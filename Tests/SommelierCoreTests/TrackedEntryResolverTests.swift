@@ -80,5 +80,5 @@ private func st(_ o: String) -> ItemKey { .status(ownerKey: o, autosaveName: "It
     let caps: (ItemKey) -> Capability = { $0 == apple ? Capability(canMove: true, canHide: false, reason: "Apple apps are hidden only in System Settings > Menu Bar.") : Capability(canMove: true, canHide: true) }
     let l = Layout(visible: [v], hidden: [apple])
     let p = Reconciler().plan(observed: ObservedOrder(onBar: [v], parked: [apple]), layout: l, capabilities: caps, showHiddenSection: true)
-    #expect(p.skipped.first?.reason.contains("Apple apps are managed only in System Settings") == true)
+    #expect(p.skipped.first?.reason.contains("Apple apps are hidden only in System Settings") == true)
 }
