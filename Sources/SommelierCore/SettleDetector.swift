@@ -38,7 +38,7 @@ public struct SettleDetector: Sendable {
     public var sleep: @Sendable (TimeInterval) async -> Void
     /// Items the action is about; if one of them is stale in an observation, that observation cannot settle.
     public var isSubject: @Sendable (MenuBarItem) -> Bool
-    /// Bounds the total number of full scans (verdicts and fallback re-reads; the up-to-2 retries of an empty scan are not counted), so a persistently disagreeing source cannot loop.
+    /// Bounds the total number of full scans (verdicts and fallback re-reads; the up-to-2 retries of an empty scan count but are not limited, so the total can exceed this by 2), so a persistently disagreeing source cannot loop.
     public var maxFullScans: Int
     public static let frameTolerance: CGFloat = 1
 
