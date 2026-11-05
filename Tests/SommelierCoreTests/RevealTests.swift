@@ -61,7 +61,7 @@ struct RevealUntrackedTests {
         let p = Reconciler().plan(observed: obs(on: [v], parked: [h1, h2]), layout: l, capabilities: caps, showHiddenSection: true)
         #expect(p.actions.compactMap { if case .show(let x) = $0 { x } else { nil } } == [h1])
         #expect(p.skipped.map(\.key) == [h2])
-        #expect(p.skipped.first?.reason == "cannot be shown: not tracked by Control Center")
+        #expect(p.skipped.first?.reason == "cannot be shown: no Control Center entry")
         #expect(p.desiredOnBar == [v, h1])
         // After the show the plan is converged; the skip does not keep the reveal pending.
         let done = Reconciler().plan(observed: obs(on: [v, h1], parked: [h2]), layout: l, capabilities: caps, showHiddenSection: true)
@@ -197,7 +197,7 @@ private struct RevealCaps: CapabilityProvider {
         #expect(r.outcome == .converged)
         #expect(await inner.hidden == [k("C")])                   // B shown, the untracked C stays parked
         #expect(st.revealedObserved)                              // partial = shown
-        if case .unsupported(let why)? = st.perItem[k("C")] { #expect(why.contains("not tracked")) } else { Issue.record("C should be .unsupported") }
+        if case .unsupported(let why)? = st.perItem[k("C")] { #expect(why.contains("Control Center entry")) } else { Issue.record("C should be .unsupported") }
         #expect(st.lastError == nil)
     }
 }
