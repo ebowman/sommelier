@@ -81,8 +81,11 @@ old state AND the plist write is confirmed to have landed; second failure -> `.f
 
 **Batching.** All hide/show changes in a plan are collected into ONE `isAllowed` write + one restart (`applyHiddenBatch`); fallback reorders
 join the same restart. Drags are never batched with each other (sequential, each verified) and run **before** any restart in the same plan
-(a restart blanks the bar for 1-2 s). Restart happens after the agent-store file is quiet. A batch is all-or-nothing at the write
-stage (validate every key first, back up the plist in memory), verification is per-key.
+(a restart blanks the bar for 1-2 s). Restart happens after the agent-store file is quiet. Validation happens before the write (back up the plist in memory); a missing key or conflicting
+requests still fail the whole batch, but units the capability rules refuse (no tracked entry, Apple app, no owner; gdu.72) are split off with their own
+reason (`BatchOutcome.perKey` `.failed(.unsupportedItem)`, `MenuBarActuator.lastBatchRefused`) and the applicable units go out in ONE write; the aggregate
+`result` covers only the applied units (all refused: no write, uniform `.failed(.unsupportedItem)`). The engine records refused units as skips (`.unsupported(reason)`,
+no strike, no `batchFailed`, not retried until `clearFailures`/layout change); a genuine write failure still raises `batchFailed`. Verification is per-key.
 
 ## (d) Identity model and the three sections
 

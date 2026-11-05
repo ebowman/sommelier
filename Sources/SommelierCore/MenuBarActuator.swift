@@ -59,12 +59,17 @@ public protocol MenuBarActuator: Sendable {
     /// Keys of the last batch that were APPLIED per the Control Center store but whose result no complete read has confirmed
     /// yet (`ActuationMechanism.liveUnverified`, gdu.55). The engine shows them in place with a pending-confirmation marker.
     var lastBatchUnconfirmed: Set<ItemKey> { get async }
+    /// Units of the last batch refused BEFORE the write because they cannot be hidden/shown (not tracked, Apple app...), with
+    /// the capability's reason (gdu.72). The rest of the batch was applied; the aggregate result covers only the applied units
+    /// (all refused: `.failed(.unsupportedItem)`). The engine treats these as skips, never strikes.
+    var lastBatchRefused: [ItemKey: String] { get async }
 }
 
 public extension MenuBarActuator {
     /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.
     var lastBatchRespawned: Bool { get async { false } }
     var lastBatchUnconfirmed: Set<ItemKey> { get async { [] } }
+    var lastBatchRefused: [ItemKey: String] { get async { [:] } }
 }
 
 /// What may be done to one item on this OS; the UI greys out controls and shows `reason`.

@@ -125,6 +125,9 @@ public actor LayoutEngine {
     /// gdu.69: keys whose move the actuator refused in THIS pass because the subject or anchor is in macOS's overflow area
     /// (belt and braces: the planner already skips flagged items). Never struck; their moves are dropped from the plan.
     private var overflowRefused: [ItemKey: String] = [:]
+    /// gdu.72: units the actuator refused to write (key -> reason; not tracked, Apple app...). Kept across passes so they are not
+    /// retried every pass, never struck, shown `.unsupported`; cleared by `clearFailures` (layout change, Retry).
+    private var actuatorRefused: [ItemKey: String] = [:]
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -287,7 +290,7 @@ public actor LayoutEngine {
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
-        failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0
+        failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]
         unconfirmed = [:]
         stopped = !loaded   // a layout that never loaded stays stopped until `start()` succeeds or `setLayout`
         chained = 0
@@ -433,19 +436,26 @@ public actor LayoutEngine {
     }
 
     private func effectiveCaps() -> @Sendable (ItemKey) -> Capability {
-        let bad = Set(failures.keys), caps = capabilities
+        let bad = Set(failures.keys), caps = capabilities, refused = actuatorRefused
         return { k in
-            bad.contains(k) ? Capability(canMove: false, canHide: false, reason: "failed earlier") : caps.capability(for: k)
+            if let why = refused[k] { return Capability(canMove: caps.capability(for: k).canMove, canHide: false, reason: why) }
+            return bad.contains(k) ? Capability(canMove: false, canHide: false, reason: "failed earlier") : caps.capability(for: k)
         }
     }
 
     private func makePlan(_ obs: ObservedOrder) -> Plan {
-        var p = Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
+        var planObs = withoutTransient(obs)
+        // gdu.72: parked units the actuator refused to show are invisible to the planner (it cannot show them); they stay
+        // skipped with the actuator's reason. On-bar ones are handled by `effectiveCaps` (cannot hide -> skipped).
+        let refusedParked = planObs.parked.filter { actuatorRefused[$0] != nil }
+        if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
+        var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          selfPositioningOwners: config.selfPositioningOwners)
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
         if !transientReveals.isEmpty { p.actions = []; p.newItems = []; p.phase = .converged }
+        for k in refusedParked where !p.skipped.contains(where: { $0.key == k }) { p.skipped.append(SkippedAction(k, actuatorRefused[k] ?? "cannot be shown")) }
         if !overflowRefused.isEmpty {
             func refused(_ a: PlannedAction) -> ItemKey? {
                 guard case .move(let k, let rel) = a else { return nil }
@@ -965,6 +975,14 @@ public actor LayoutEngine {
             case .failed(let e, let s): err = e; snap = s
             }
             let respawned = await actuator.lastBatchRespawned
+            // gdu.72: units the actuator refused before the write are skips (neutral `.unsupported`), not failures: no strike, no
+            // batchFailed, not retried. When every unit was refused the batch result is only that refusal and is dropped.
+            let refusedNow = (await actuator.lastBatchRefused).filter { batch[$0.key] != nil }
+            if !refusedNow.isEmpty {
+                for (k, why) in refusedNow { actuatorRefused[k] = why }
+                log("engine: actuator refused \(refusedNow.count) unit(s) (skipped, not failures): " + refusedNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
+                if refusedNow.count == batch.count { err = nil }
+            }
             for k in batch.keys { unconfirmed[k] = nil }
             if err == nil {
                 for k in await actuator.lastBatchUnconfirmed { if let hide = batch[k] { unconfirmed[k] = hide } }

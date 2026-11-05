@@ -403,6 +403,10 @@ public actor LiveActuator: MenuBarActuator {
     /// True when the last batch restarted MenuBarAgent (fallback path). The engine strikes such keys out at once.
     public private(set) var lastBatchRespawned = false
     private var batchRespawned = false
+    /// Units of the last batch the capability rules refused (key -> reason). They were not written and are NOT in a mixed
+    /// batch's `result`; `BatchOutcome.perKey` carries their `.failed(.unsupportedItem)`. The engine records them as skips.
+    public private(set) var lastBatchRefused: [ItemKey: String] = [:]
+    private var batchRefused: [ItemKey: String] = [:]
     /// Keys of the last batch applied per the Control Center store but not yet confirmed by a usable read (`.liveUnverified`).
     public private(set) var lastBatchUnconfirmed: Set<ItemKey> = []
     /// The keys and directions of the last batch that wrote, and when it finished (see `Config.recentWriteSettle`).
@@ -411,7 +415,10 @@ public actor LiveActuator: MenuBarActuator {
     public func applyHiddenBatchDetailed(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
         await acquire(); defer { release() }
         batchRespawned = false
-        let out = await performBatch(changes)
+        batchRefused = [:]
+        var out = await performBatch(changes)
+        lastBatchRefused = batchRefused
+        for (k, why) in batchRefused { out.perKey[k] = .failed(.unsupportedItem(reason: why), nil) }
         lastBatchRespawned = batchRespawned || out.mechanism == .respawn
         lastBatchUnconfirmed = out.mechanism == .liveUnverified ? Set(out.perKey.keys) : []
         if out.mechanism == .live || out.mechanism == .respawn || out.mechanism == .liveUnverified { lastWrite = (changes, platform.now()) }
@@ -439,7 +446,10 @@ public actor LiveActuator: MenuBarActuator {
             resolved = platform.resolve(snap)
         }
 
-        // Validate every key before touching anything (all-or-nothing at the write stage).
+        // Validate every key before touching anything. A unit the capability rules refuse (not tracked, Apple app, no owner) is
+        // split off with its own reason (gdu.72); the applicable units still go out in ONE write. Missing keys and conflicting
+        // requests stay whole-batch failures.
+        var refused: [ItemKey: String] = [:]
         var trackedOf: [ItemKey: String] = [:]
         var wantByApp: [String: Bool] = [:]   // tracked key -> hidden
         for (key, hide) in changes.sorted(by: { $0.key.description < $1.key.description }) {
@@ -448,7 +458,8 @@ public actor LiveActuator: MenuBarActuator {
             let rules = CapabilityRules(hasTrackedEntry: { _ in tracked != nil })
             let cap = rules.capability(for: key)
             guard cap.canHide, let tracked else {
-                return uniform(changes.keys, .failed(.unsupportedItem(reason: cap.reason ?? "cannot hide"), snap))
+                refused[key] = cap.reason ?? "cannot hide"
+                continue
             }
             if let existing = wantByApp[tracked], existing != hide {
                 return uniform(changes.keys, .failed(.mechanismFailed("conflicting requests: items of \(tracked) are hidden or shown together"), snap))
@@ -456,6 +467,16 @@ public actor LiveActuator: MenuBarActuator {
             trackedOf[key] = tracked
             wantByApp[tracked] = hide
         }
+        batchRefused = refused
+        if !refused.isEmpty {
+            note("refused \(refused.count) unit(s) before the write: " + refused.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
+        }
+        if refused.count == changes.count {
+            // Nothing applicable: no scan-dependent work, no write.
+            let first = refused.sorted { $0.key.description < $1.key.description }[0].value
+            return uniform(changes.keys, .failed(.unsupportedItem(reason: first), snap))
+        }
+        let changes = changes.filter { refused[$0.key] == nil }
         // Items of the same app that were not requested change with the app-level flag; they are verified too.
         var expectations: [ItemKey: Bool] = changes
         var members = Set<pid_t>()

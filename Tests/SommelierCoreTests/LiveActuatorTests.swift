@@ -586,16 +586,23 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     #expect(w.allowedWrites.isEmpty && w.restarts == 0)
 }
 
-@Test func batchIsAllOrNothingAtTheWriteStage() async {
+@Test func batchSplitsRefusedUnitsAndWritesTheRestOnce() async {
     let w = World(["A", "B", "C"])
     w.untracked = ["C"]
     let out = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("C"): true])
-    if case .failed(.unsupportedItem, _) = out.result {} else { Issue.record("got \(out.result)") }
-    #expect(out.perKey.count == 2 && out.perKey.values.allSatisfy { !$0.isVerified })   // A is refused too
-    #expect(w.allowedWrites.isEmpty && w.restarts == 0)
+    // C is refused with its own reason; A is applied in the single write and verified.
+    if case .failed(.unsupportedItem, _)? = out.perKey[key("C")] {} else { Issue.record("C: \(String(describing: out.perKey[key("C")]))") }
+    #expect(out.perKey[key("A")]?.isVerified == true)
+    #expect(out.result.isVerified)
+    #expect(w.allowedWrites.count == 1)
+    // All refused: no write, uniform refusal.
+    let before = w.allowedWrites.count
+    let all = await actuator(w).applyHiddenBatchDetailed([key("C"): true])
+    if case .failed(.unsupportedItem, _) = all.result {} else { Issue.record("got \(all.result)") }
+    #expect(w.allowedWrites.count == before)
     let missing = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("Z"): true])
     #expect(missing.result.error == .notFound)
-    #expect(w.allowedWrites.isEmpty)
+    #expect(w.allowedWrites.count == before)   // a missing key still fails the whole batch before any write
     let sys = await actuator(w).applyHiddenBatchDetailed([.module(name: "Clock"): true])
     #expect(sys.result.error == .notFound)
 }

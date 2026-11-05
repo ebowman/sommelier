@@ -54,6 +54,11 @@ public actor FakeActuator: MenuBarActuator {
     private var unconfirmedBatches = 0, unconfirmedApplies = true
     public private(set) var lastBatchUnconfirmed: Set<ItemKey> = []
 
+    /// Units this fake refuses in a batch (key -> reason), on top of its capabilities (gdu.72). They are split off; the rest is applied.
+    public func setRefusals(_ r: [ItemKey: String]) { refusals = r }
+    private var refusals: [ItemKey: String] = [:]
+    public private(set) var lastBatchRefused: [ItemKey: String] = [:]
+
     private func snapshot() -> MenuBarSnapshot { makeSnapshot(order, hidden) }
 
     /// Records the call; returns a scripted failure if one is due.
@@ -95,6 +100,16 @@ public actor FakeActuator: MenuBarActuator {
         batchStarts += 1
         if batchDelay > .zero { try? await Task.sleep(for: batchDelay) }
         lastBatchUnconfirmed = []
+        var changes = changes
+        lastBatchRefused = [:]
+        for key in changes.keys where order.contains(key) || hidden.contains(key) {
+            let cap = capabilities.capability(for: key)
+            if let why = refusals[key] ?? (cap.canHide ? nil : (cap.reason ?? "cannot hide")) { lastBatchRefused[key] = why }
+        }
+        for k in lastBatchRefused.keys { changes[k] = nil }
+        if changes.isEmpty, let why = lastBatchRefused.values.sorted().first {
+            return .failed(.unsupportedItem(reason: why), snapshot())
+        }
         if unconfirmedBatches > 0 {
             unconfirmedBatches -= 1
             let snap = snapshot()

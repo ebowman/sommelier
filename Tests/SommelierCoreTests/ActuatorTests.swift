@@ -51,12 +51,15 @@ private func fake(_ rules: CapabilityRules = CapabilityRules(hasTrackedEntry: { 
     #expect(await f.calls.count == 2)
 }
 
-@Test func fakeBatchIsAllOrNothing() async {
+@Test func fakeBatchSplitsRefusedUnits() async {
     let rules = CapabilityRules(hasTrackedEntry: { $0 != C })
     let f = fake(rules)
     let r = await f.applyHiddenBatch([A: true, C: true])
-    if case .failed(.unsupportedItem, _) = r {} else { Issue.record("expected unsupportedItem, got \(r)") }
-    #expect(await f.hidden.isEmpty)
+    #expect(r.isVerified)
+    #expect(await f.hidden == [A])
+    #expect(await f.lastBatchRefused.keys.contains(C))
+    let all = await f.applyHiddenBatch([C: true])
+    if case .failed(.unsupportedItem, _) = all {} else { Issue.record("expected unsupportedItem, got \(all)") }
 }
 
 @Test func capabilityModuleCannotMoveOrHide() {

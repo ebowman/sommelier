@@ -520,3 +520,5 @@ with "cannot be shown: not tracked by Control Center" and 13 shows for the track
 comparison: `com.apple.controlcenter.plist` byte-equal, `trackedApplications` equal after restoring MBDummy `isAllowed`, `com.apple.MenuBarAgent.plist` unchanged, real layout.json/slot-hints.json sha unchanged. `make test`: 640 tests.
 
 Activation captions (gdu.70): a successful overflow activation with a note (`overflowStripStillExpanded`, `menuStillOpenAtCap`, `overflowStripStateUnknown`) shows a short neutral grey caption under the entry for 4 s; unit-tested via `ActivationCaption.make`; the panel rendering itself is not live-verified.
+
+Partial batches (gdu.72): a batch with a unit the capability rules refuse writes the applicable units once and reports the refused unit per item (`LiveActuatorTests.batchSplitsRefusedUnitsAndWritesTheRestOnce`, `LayoutEngineTests.partiallyRefusedBatch...` / `allRefusedBatch...`; no live check, code-only). `make test`: 652 tests.
