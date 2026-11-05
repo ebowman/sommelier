@@ -85,7 +85,7 @@ join the same restart. Drags are never batched with each other (sequential, each
 requests still fail the whole batch, but units the capability rules refuse (no tracked entry, Apple app, no owner; gdu.72) are split off with their own
 reason (`BatchOutcome.perKey` `.failed(.unsupportedItem)`, `MenuBarActuator.lastBatchRefused`) and the applicable units go out in ONE write; the aggregate
 `result` covers only the applied units (all refused: no write, uniform `.failed(.unsupportedItem)`). The engine records refused units as skips (`.unsupported(reason)`,
-no strike, no `batchFailed`, not retried until `clearFailures`/layout change); a genuine write failure still raises `batchFailed`. Verification is per-key.
+no strike, no `batchFailed`, not retried until `clearFailures`/layout change); a genuine write failure still raises `batchFailed`. Known limitation: `actuatorRefused` is cleared only by Retry/`setLayout` (`clearFailures`), not by a runtime capability change. Verification is per-key.
 
 ## (d) Identity model and the three sections
 

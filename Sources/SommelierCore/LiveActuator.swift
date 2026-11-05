@@ -420,8 +420,9 @@ public actor LiveActuator: MenuBarActuator {
         lastBatchRefused = batchRefused
         for (k, why) in batchRefused { out.perKey[k] = .failed(.unsupportedItem(reason: why), nil) }
         lastBatchRespawned = batchRespawned || out.mechanism == .respawn
-        lastBatchUnconfirmed = out.mechanism == .liveUnverified ? Set(out.perKey.keys) : []
-        if out.mechanism == .live || out.mechanism == .respawn || out.mechanism == .liveUnverified { lastWrite = (changes, platform.now()) }
+        let applied = changes.filter { batchRefused[$0.key] == nil }
+        lastBatchUnconfirmed = out.mechanism == .liveUnverified ? Set(out.perKey.keys.filter { batchRefused[$0] == nil }) : []
+        if out.mechanism == .live || out.mechanism == .respawn || out.mechanism == .liveUnverified { lastWrite = (applied, platform.now()) }
         return out
     }
 
@@ -467,7 +468,7 @@ public actor LiveActuator: MenuBarActuator {
             trackedOf[key] = tracked
             wantByApp[tracked] = hide
         }
-        batchRefused = refused
+        batchRefused.merge(refused) { a, _ in a }   // merge: the gdu.26 recheck recurses with the filtered batch and must not wipe earlier refusals
         if !refused.isEmpty {
             note("refused \(refused.count) unit(s) before the write: " + refused.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
         }
