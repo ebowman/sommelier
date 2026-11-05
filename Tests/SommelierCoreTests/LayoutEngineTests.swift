@@ -398,13 +398,43 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(r.state.observed.onBar == ["B", "A", "C"].map(k))
     }
 
-    @Test func failedMembershipBatchMarksKeyFailedAndContinues() async {
+    @Test func mechanismFailedBatchEndsPassWithStickyBatchFailed() async {
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .mechanismFailed("restart"))])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
         #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
         #expect(await r.actuator.calls.count == 1)
+        let sticky = r.state.lastError
+        guard case .batchFailed? = sticky else { Issue.record("expected batchFailed, got \(String(describing: sticky))"); return }
+        // A later successful observe does not clear it; clearFailures does.
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastError == sticky)
+        await r.engine.clearFailures()
+        #expect(r.state.lastError == nil)
+    }
+
+    @Test func userBusyBatchIsNotAFailureAndReschedulesThePass() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .userBusy)])
+        await r.engine.requestReconcile()
+        // The rescheduled (second) pass is observable as a second actuator call, which then converges.
+        #expect(await waitUntil { await r.actuator.calls.count == 2 })
+        #expect(await waitUntil { await MainActor.run { r.state.isConverged } })
+        #expect(r.state.lastError == nil)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else { true } })
+        #expect(await r.actuator.hidden == [k("B")])
+    }
+
+    @Test func userBusyBatchWithoutDrainDoesNotSuppress() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+                          failOn: [(1, .userBusy)])
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .incomplete)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else { true } })
+        #expect(r.state.perItem[k("B")] == .pending)
+        let again = await r.engine.reconcileOnce()
+        #expect(again.outcome == .converged)
     }
 
     @Test func driftedBatchSetsBatchDriftAndNeverDrags() async {
@@ -578,8 +608,9 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 3)           // strike 3: persistently failed, no more retries
         #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
-        #expect(r.state.lastError == nil)                    // one bad key never stops the engine
+        #expect(r.state.lastError == .batchFailed("restart"))   // sticky batch error shown, but one bad key never stops the engine
         await r.engine.clearFailures()                       // Retry
+        #expect(r.state.lastError == nil)
         let rep = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 4)
         #expect(rep.outcome == .converged)

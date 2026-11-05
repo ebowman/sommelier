@@ -28,6 +28,9 @@ public enum EngineError: Equatable, Sendable {
     /// A membership batch reported it could not verify the result (e.g. a non-batch item moved across the agent
     /// restart). Not cleared by observing; cleared only by `clearFailures`/`setLayout`.
     case batchDrift(expected: String, observed: String)
+    /// A membership batch failed for a reason other than drift (e.g. `.mechanismFailed`). Sticky like `batchDrift`:
+    /// observing does not clear it; only `clearFailures`/`setLayout` do.
+    case batchFailed(String)
 }
 
 /// What the UI binds to. `observed` only ever holds observed truth (a verified actuator snapshot or a fresh observe),

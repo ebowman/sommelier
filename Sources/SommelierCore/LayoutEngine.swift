@@ -274,7 +274,7 @@ public actor LayoutEngine {
         await publish { s in
             s.perItem = s.perItem.filter { if case .failed = $0.value { return false } else { return true } }
             switch s.lastError {
-            case .permissionDenied?, .stoppedAfterFailures?, .batchDrift?: s.lastError = nil
+            case .permissionDenied?, .stoppedAfterFailures?, .batchDrift?, .batchFailed?: s.lastError = nil
             default: break
             }
         }
@@ -913,6 +913,16 @@ public actor LayoutEngine {
                 if let e = driftErr { return await endAfterBatchDrift(e, obs: obs, report: report(.incomplete)) }
                 return await abort(.observeFailed)
             }
+            if err == .userBusy {
+                // Same as a userBusy single action: not a failure, nothing struck or suppressed. Keys the batch verified keep
+                // their status (they re-plan as in place); the remainder stays pending and the pass is rescheduled.
+                log("membership batch refused: user is busy; pass rescheduled")
+                consecutiveFailures += 1
+                await publishObserved(obs, makePlan(obs))
+                await publish { $0.inFlight = nil }
+                if draining { pending = true }
+                return await abort(.incomplete)
+            }
             let after = makePlan(obs)
             log("re-plan after batch: " + Self.describe(after))
             phaseReached = after.phase
@@ -1090,7 +1100,7 @@ public actor LayoutEngine {
         await publishObserved(obs, makePlan(obs))
         let err: EngineError
         if case .notVerified(let exp, let got) = e { err = .batchDrift(expected: exp, observed: got) }
-        else { err = .observe(ArrangeSections.describe(e)) }
+        else { err = .batchFailed(ArrangeSections.describe(e)) }
         await publish { $0.lastError = err; $0.inFlight = nil }
         return await finish(report, converged: false)
     }
