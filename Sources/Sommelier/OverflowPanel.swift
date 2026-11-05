@@ -62,25 +62,23 @@ final class OverflowPanelController {
             guard let caption = ActivationCaption.make(r) else { return }
             if caption.severity == .neutral {
                 self.feedback.model.note(key, message: caption.text)
-                self.clearTasks[key]?.cancel()
-                self.clearTasks[key] = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(4))
-                    guard !Task.isCancelled, let self else { return }
-                    self.feedback.model.clear(key)
-                    self.clearTasks[key] = nil
-                }
+                self.scheduleClear(key)
                 return
             }
             NSLog("[Sommelier] overflow activation of %@ failed: %@", "\(key)", caption.text)
             self.feedback.model.fail(entry, message: caption.text, in: listAtClick)
             if let screen { self.show(anchoredTo: anchor, on: screen) }
-            self.clearTasks[key]?.cancel()
-            self.clearTasks[key] = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(4))
-                guard !Task.isCancelled, let self else { return }
-                self.feedback.model.clear(key)
-                self.clearTasks[key] = nil
-            }
+            self.scheduleClear(key)
+        }
+    }
+
+    private func scheduleClear(_ key: ItemKey) {
+        clearTasks[key]?.cancel()
+        clearTasks[key] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled, let self else { return }
+            self.feedback.model.clear(key)
+            self.clearTasks[key] = nil
         }
     }
 
@@ -146,6 +144,7 @@ final class OverflowPanelController {
     private struct PlaceInput: Equatable {
         var entries: [OverflowEntry]
         var errors: [ItemKey: String]
+        var notes: [ItemKey: String]
         var showNames: Bool
         var anchor: CGRect
         var screenFrame: CGRect
@@ -155,7 +154,7 @@ final class OverflowPanelController {
     private var placeCount = 0
 
     private func placeInput(_ screen: NSScreen) -> PlaceInput {
-        PlaceInput(entries: entries, errors: feedback.errors,
+        PlaceInput(entries: entries, errors: feedback.errors, notes: feedback.model.notes,
                    showNames: UserDefaults.standard.object(forKey: "overflowShowNames") as? Bool ?? true,
                    anchor: anchor, screenFrame: screen.frame, screenVisible: screen.visibleFrame)
     }

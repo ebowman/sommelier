@@ -748,8 +748,8 @@ extension FakeHold { fileprivate func setRefuse() { refuse = true } }
         func opened(_ n: String?) -> ActivationResult { .opened(ActivationOpened(mechanism: .revealClick, latencyMS: 1, note: n)) }
         #expect(ActivationCaption.make(opened(nil)) == nil)
         #expect(ActivationCaption.make(opened("overflowStripStillExpanded"))?.text == "menu opened; overflow strip left expanded")
-        #expect(ActivationCaption.make(opened("menuStillOpenAtCap"))?.severity == .neutral)
-        #expect(ActivationCaption.make(opened("menuStillOpenAtCap,overflowStripStillExpanded"))?.text == "menu still open; menu opened; overflow strip left expanded")
+        #expect(ActivationCaption.make(opened("menuStillOpenAtCap"))?.text == "menu opened; still open")
+        #expect(ActivationCaption.make(opened("menuStillOpenAtCap,overflowStripStillExpanded"))?.text == "menu opened; still open; overflow strip left expanded")
         #expect(ActivationCaption.make(opened("some failure text")) == nil)
         #expect(ActivationCaption.make(.failed(.noMenu))?.severity == .error)
     }

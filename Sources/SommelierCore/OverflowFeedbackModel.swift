@@ -45,16 +45,15 @@ public enum ActivationCaption {
         case .failed(let e): return (e.description, .error)
         case .opened(let o):
             guard let n = o.note else { return nil }
-            let parts = n.split(separator: ",").map(String.init)
-            let texts = parts.compactMap { p -> String? in
+            let clauses = n.split(separator: ",").compactMap { p -> String? in
                 switch p {
-                case "overflowStripStillExpanded": return "menu opened; overflow strip left expanded"
-                case "menuStillOpenAtCap": return "menu still open"
-                case "overflowStripStateUnknown": return "menu opened; overflow strip state unknown"
+                case "overflowStripStillExpanded": return "overflow strip left expanded"
+                case "menuStillOpenAtCap": return "still open"
+                case "overflowStripStateUnknown": return "overflow strip state unknown"
                 default: return nil
                 }
             }
-            return texts.isEmpty ? nil : (texts.joined(separator: "; "), .neutral)
+            return clauses.isEmpty ? nil : (("menu opened; " + clauses.joined(separator: "; ")), .neutral)
         }
     }
 }
