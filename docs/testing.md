@@ -383,7 +383,7 @@ Final passing live run (2026-11-04 20:16-20:23, load 45-112, Bartender quit): `S
 ## Release smoke (reviewer/human)
 Status: **RUN 2026-11-04 (reviewer, partly headless); human steps below still needed.**
 Observed:
-- DMG: `spctl -t open` accepted (Notarized Developer ID), `stapler validate` OK. Only the DMG carries a stapled ticket; the `.app` has none of its own. Fine online; an offline first launch is untested (follow-up bead exists).
+- DMG: `spctl -t open` accepted (Notarized Developer ID), `stapler validate` OK. That run predates gdu.50: only the DMG carried a ticket. `make notarize` now also staples the `.app` itself (two submissions), so an offline first launch of a copied app has its ticket; the offline launch itself is still untested.
 - Locally built artefacts carry no quarantine flag, so `com.apple.quarantine` was added to a scratch copy to mimic a download. `open` then showed the Gatekeeper dialog
   "'Sommelier' is an app created by the app Safari. ... Apple checked it for malicious software and none was found" (Cancel/Open). macOS ran it from an App Translocation path.
 - The status item appeared and the onboarding window showed Accessibility "Not granted".
@@ -392,8 +392,10 @@ Observed:
 - QA steps 1-3 ran headlessly.
 Still to do by a human: grant Accessibility to the Finder-launched app and confirm it starts working without relaunch; panel and Arrange clicks; display change and sleep/wake.
 Quit Bartender first; relaunch it afterwards.
-1. `make release VERSION=0.1.0 && make notarize` (or use an existing `dist/Sommelier-0.1.0.dmg`). Check
+0. Commit first: CFBundleVersion is the commit count, and `scripts/publish-release.sh --dry-run` must pass (clean tracked tree, DMG built from HEAD, embedded version == VERSION).
+1. `make release VERSION=0.1.0 && make notarize` (or use an existing `dist/Sommelier-0.1.0.dmg`). Check `xcrun stapler validate dist/Sommelier.app` and `... dist/Sommelier-0.1.0.dmg` both pass, and
    `spctl -a -vv -t install dist/Sommelier-0.1.0.dmg` and `spctl -a -vv -t exec dist/Sommelier.app` say "accepted, source=Notarized Developer ID".
+   Then `make check-scripts` (publish checks) and `scripts/publish-release.sh --dry-run`.
 2. Mount the DMG (`open dist/Sommelier-0.1.0.dmg`), drag Sommelier to /Applications (or run it from `dist/`).
    Use `SOMMELIER_LAYOUT_FILE` only for the terminal-started variant; a Finder launch uses the real layout, so back it up first.
 3. Launch from Finder (double-click). Expected Gatekeeper dialog: "Apple checked it for malicious software and none was found" with an Open button. Click Open.
