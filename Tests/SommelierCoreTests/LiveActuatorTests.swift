@@ -586,16 +586,23 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     #expect(w.allowedWrites.isEmpty && w.restarts == 0)
 }
 
-@Test func batchIsAllOrNothingAtTheWriteStage() async {
+@Test func batchSplitsRefusedUnitsAndWritesTheRestOnce() async {
     let w = World(["A", "B", "C"])
     w.untracked = ["C"]
     let out = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("C"): true])
-    if case .failed(.unsupportedItem, _) = out.result {} else { Issue.record("got \(out.result)") }
-    #expect(out.perKey.count == 2 && out.perKey.values.allSatisfy { !$0.isVerified })   // A is refused too
-    #expect(w.allowedWrites.isEmpty && w.restarts == 0)
+    // C is refused with its own reason; A is applied in the single write and verified.
+    if case .failed(.unsupportedItem, _)? = out.perKey[key("C")] {} else { Issue.record("C: \(String(describing: out.perKey[key("C")]))") }
+    #expect(out.perKey[key("A")]?.isVerified == true)
+    #expect(out.result.isVerified)
+    #expect(w.allowedWrites.count == 1)
+    // All refused: no write, uniform refusal.
+    let before = w.allowedWrites.count
+    let all = await actuator(w).applyHiddenBatchDetailed([key("C"): true])
+    if case .failed(.unsupportedItem, _) = all.result {} else { Issue.record("got \(all.result)") }
+    #expect(w.allowedWrites.count == before)
     let missing = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("Z"): true])
     #expect(missing.result.error == .notFound)
-    #expect(w.allowedWrites.isEmpty)
+    #expect(w.allowedWrites.count == before)   // a missing key still fails the whole batch before any write
     let sys = await actuator(w).applyHiddenBatchDetailed([.module(name: "Clock"): true])
     #expect(sys.result.error == .notFound)
 }
@@ -1403,4 +1410,35 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
     w.liveAvailable = true; w.liveApplyAfterScans = 1; w.fastAppliesLive = true
     let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
     #expect(out.mechanism == .live && w.fastScans == 0)
+}
+
+// gdu.72 corrective: refusals survive the gdu.26 recheck recursion.
+@Test func refusalSurvivesTheConfirmingScanRecheck() async {
+    let w = World(["A", "B", "C", "D"]); w.liveAvailable = true; w.untracked = ["D"]
+    var c = LiveActuator.Config(); c.recentWriteSettle = 0
+    let a = LiveActuator(platform: w, config: c)
+    let hide = await a.applyHiddenBatchDetailed([key("B"): true])
+    #expect(hide.result.isVerified && hide.mechanism == .live)
+    w.order = ["A", "B", "C", "D"]; w.hidden = []
+    w.livePending = ["tracked.B": false]; w.liveScanCount = 0; w.liveApplyAfterScans = 2   // stale first scan looks satisfied
+    let out = await a.applyHiddenBatchDetailed([key("B"): false, key("D"): true])
+    #expect(w.liveWrites.count == 2 && w.liveWrites[0] == ["tracked.B": false])   // the recheck path ran and wrote the show (newest first)
+    #expect(out.result.isVerified && out.perKey[key("B")]?.isVerified == true)
+    if case .failed(.unsupportedItem, _)? = out.perKey[key("D")] {} else { Issue.record("D: \(String(describing: out.perKey[key("D")]))") }
+    #expect(await a.lastBatchRefused.keys.contains(key("D")))
+    #expect(w.restarts == 0)
+}
+
+@Test func unconfirmedAndLastWriteCoverAppliedKeysOnly() async {
+    let w = World(["A", "B", "C"])
+    w.untracked = ["C"]
+    w.liveAvailable = true; w.liveIncompleteScans = 100; w.liveApplyAfterScans = 1; w.allowedLiveValues = ["tracked.B": true]
+    let a = LiveActuator(platform: w, config: LiveActuator.Config())
+    let out = await a.applyHiddenBatchDetailed([key("B"): true, key("C"): true])
+    #expect(out.mechanism == .liveUnverified && out.result.isVerified && w.restarts == 0)
+    #expect(await a.lastBatchUnconfirmed == [key("B")])
+    #expect(await a.lastBatchRefused.keys.contains(key("C")))
+    // The refused C was never written, so an opposite request for it does not wait on the previous write.
+    _ = await a.applyHiddenBatchDetailed([key("C"): false])
+    #expect(await !a.trace.contains { $0.contains("opposite of a write made") })
 }

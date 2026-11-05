@@ -495,6 +495,35 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(r.state.lastError == nil)
     }
 
+    @Test func partiallyRefusedBatchConvergesAppliedUnitsAndSkipsTheRefusedOne() async {
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(hidden: ["A", "B", "C"].map(k)))
+        await r.actuator.setRefusals([k("C"): "cannot hide: not tracked by Control Center"])
+        let rep = await r.engine.reconcileOnce()
+        let calls = await r.actuator.calls
+        #expect(calls.filter { if case .applyHiddenBatch = $0 { true } else { false } }.count == 1)
+        #expect(await r.actuator.hidden == Set(["A", "B"].map(k)))   // one write, the two applicable units
+        #expect(rep.outcome == .converged)
+        #expect(r.state.perItem[k("A")] == .inPlace && r.state.perItem[k("B")] == .inPlace)
+        if case .unsupported(let why)? = r.state.perItem[k("C")] { #expect(why.contains("not tracked")) } else { Issue.record("C should be unsupported, got \(String(describing: r.state.perItem[k("C")]))") }
+        #expect(r.state.lastError == nil)
+        // Not retried every pass.
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == calls.count)
+        #expect(r.state.lastError == nil)
+    }
+
+    @Test func allRefusedBatchWritesNothingAndConvergesWithSkips() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(hidden: ["A", "B"].map(k)))
+        await r.actuator.setRefusals([k("A"): "cannot hide: not tracked by Control Center", k("B"): "cannot hide: Apple app"])
+        let rep = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden.isEmpty)
+        #expect(rep.outcome == .converged)
+        #expect(r.state.lastError == nil)
+        if case .unsupported(let why)? = r.state.perItem[k("B")] { #expect(why.contains("Apple app")) } else { Issue.record("B should be unsupported") }
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 1)
+    }
+
     @Test func userBusyBatchIsNotAFailureAndReschedulesThePass() async {
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .userBusy)])
