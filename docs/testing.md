@@ -584,7 +584,7 @@ Measured with read-only `mbprobe list --timing --debug --repeat 3`, 6 runs ~10 s
 | 5 | 2804 | 40 | 49 | 8 failed reads, read 1 |
 | 6 | 2852 | 2736 | 1574 | 9 failed reads, reads 1-2 |
 
-Consistent with gdu.77 (answered 0.43-0.95 s, stale ~2.5-2.8 s). The probe cannot show the cap: it is a one-shot process with no persisted self-positioning record, and the stale reads had 9 unnamed failed reads for 8 iStat groups (one non-iStat, e.g. Universal Control/DEVONthink Helper), so the scanner reported `incomplete: 9 unnamed timeouts ...`, attributed nobody, and (correctly, by the gdu.51 rule) capped nobody; read 2 of runs 4/6 still paid ~2.7 s. The hysteresis therefore applies only where attribution holds (the app with its persisted record, 8 failures all iStat); that needs the deferred live check.
+Consistent with gdu.77 (answered 0.43-0.95 s, stale ~2.5-2.8 s). CORRECTION (gdu.83): the probe DOES load the persisted record (`incomplete: ... persisted self-positioning groups absent: 8`); the 9th failed group is NOT Universal Control or DEVONthink Helper but iStat's own application group (see below), which the record did not cover, so attribution failed on every stalled read of a cold process and nobody was capped.
 
 Live (human/reviewer, deferred): with the app running and an alternating iStat, 3 reveal cycles with the dummies (plists backed up), record observe/verify ms; a stale full scan after a resolving read within 60 s should take ~0.7-0.9 s instead of ~2.5 s (log: the agent tree read time), and completeness stays `completeExceptSelfPositioning`.
 
@@ -595,3 +595,28 @@ Unit: `ExactFrameTieBreakTests` (rv82 numbers: KeepingYouAwake 795/w30 allowed +
 gdu.85: `ExactFrameTieBreakScopeTests` (1 pt coincidence outside the pile is not `frameUnique`; the KYA shape still joins in the pile), `incompleteReasonsDifferingOnlyInNumbersMergeKeepingTheHighest`. `make test`: 770.
 
 Live (read-only, real bar): `mbprobe list --json` twice: KeepingYouAwake `isOnMenuBar` true, `systemOverflow` true, `joinEvidence` frameUnique, ccAllowed true; `layout init-from-current --file <scratch>` exit 0 (54 keys, 23 visible), no `cc-allowed list` isAllowed=0 owner among visible.
+
+### Owner application group as the 9th stalled group (gdu.83)
+
+Evidence (read-only `mbprobe list --timing --debug --repeat 3` with `SOMMELIER_AX_TRACE=1`, which now lists every unresolved group with frame/children/cached count, plus an AX dump of MenuBarAgent; mbprobe was pointed at a COPY of the scan cache through `SOMMELIER_PROBE_CACHE`). Stalled reads left 9 groups unresolved: 8 per-item groups whose first child carries `com.bjango.istatmenus.{network,weather,time,disks,battery,cpu,memory,sensors}` (frames x 763-1209, 29 pt high) and a 9th, second-window group (frame 975,0 37x29, one child) whose child is `AXApplication title='iStat Menus Menubar'` holding iStat's mirrored main menu (8 `AXMenuBarItem` entries "Apple", "iStat Menus Menubar", "File", ... at 0x0, ids `_NS:430..`, plus a 2nd AXMenuBar). Its entries are `isMainMenuEntry`, removed from every read, so a complete read recorded only 8 groups. Warm (subtree cached) stalls hid the problem (the 16 cached entries are dropped and the group counts as noise); a cold stall (fresh process, or first stall after a group never completed) counted 9 unnamed timeouts against 8 recorded groups. Details: docs/findings-attribution.md.
+
+Fix: a complete read records an `appgroup:<owner name>` marker (`SPGroup(appGroupOf:)`) when a fresh main-menu entry titled with a running self-positioning owner's name was read; the marker counts as an absent group of that owner unless its entry was read in the stalled read; extras pruning keeps it. Capped groups also get workers of their own (`run`), so 9 stalled groups on 8 workers no longer cost three 0.3 s waves.
+
+Unit tests (`SelfPositioningCompletenessTests`, gdu.83 section): 3 unnamed (cpu, mem, app group) after a complete read with the entry are `.completeExceptSelfPositioning`, attributed (capped), no `incomplete:` log; a 4th unnamed group stays `.incomplete` (reason `4 unnamed ..., absent: 3`) and nobody is capped; no marker without the entry; another app's main-menu entry records none; the marker survives an 8-scan streak; an answered app group is not absent. Suite 761 tests (755 + 6) pass.
+
+Live (read-only, 5 stalled runs of 10; hosted agent-tree read after the first stalled read of a streak; the first stalled read still pays once, 2.73-2.85 s):
+
+| run | read 1 (ms) | read 2 | read 3 | classification |
+|---|---|---|---|---|
+| 1 | 2818 | 621 | 829 | attributed (no `incomplete:` line) |
+| 5 | 2788 | 629 | 624 | attributed |
+| 6 | 2831 | 624 | 624 | attributed |
+| 8 | 2854 | 621 | 463 | attributed |
+| 10 | 2728 (16 stale) | 626 | - | attributed |
+
+Before (same machine, gdu.81 build): 923-985 ms capped reads (three waves) and every cold stall `incomplete`. Other stalled reads seen were unrelated and correctly `incomplete`: a previously hosted non-iStat item missing (KeepingYouAwake `frame:783,3,30` flapping), and a degraded read where the app group answered (`previous-tree absent: 14`). Scan totals (hosted read + app pass) for the capped reads were 0.50-0.87 s.
+
+Limitation (honest): not every stalled read is attributed. Flapping non-iStat items (Wi-Fi, Focus, KeepingYouAwake frames) make some stalled reads `.incomplete` ("non-self-positioning element missing"), which also clears the gdu.81 caps; 3-of-3 attributed stalled reads could not be obtained on this machine for that reason. Not fixed here (follow-up bead). `mbprobe` honours `SOMMELIER_PROBE_CACHE` for `list` only; the actuating subcommands still use the real cache by design.
+
+Corrective (gdu.83 review): the marker is subtracted from the absent count not only when the app group's entry was read but also when it TIMED OUT as a named entry (warm app: contents cached, `droppingMainMenu` removes them, so no unnamed timeout), and the titles of both reads (confirm re-read) are unioned. Test: warm app, iStat's 8 groups plus the app group timing out as named entries plus one unknown new group is `.incomplete` and uncapped.
+

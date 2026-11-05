@@ -530,3 +530,85 @@ private func sourceWithDisk(_ trees: [AgentHostedTree], istatExtras: [AXElementI
     #expect(scanner.scan().completeness != .incomplete)                          // iStat answered
     #expect(scanner.scan().completeness == .completeExceptSelfPositioning)       // capped timeout: never .incomplete
 }
+
+// MARK: - gdu.83: the owner's application group (its mirrored main menu) stalls with the per-item groups
+
+/// MenuBarAgent hosts iStat's AXApplication (its main menu, dropped from every read) as a 9th group that stalls with the 8 items.
+private let istatMenuEntry = AXElementInfo(title: "iStat Menus Menubar", identifier: "_NS:433", frame: .zero, isMainMenuEntry: true)
+private let fileMenuEntry = AXElementInfo(title: "File", identifier: "_NS:450", frame: .zero, isMainMenuEntry: true)
+private let fullWithAppGroup = tree([dummyEl, otherEl, cpu, mem, fileMenuEntry, istatMenuEntry])
+
+@Test func appGroupUnnamedTimeoutIsCoveredByTheRecordedMarker() {
+    let lines = Lines()
+    // cpu, mem and the application group all time out unnamed (cold process: nothing cached for them).
+    let s = source([fullWithAppGroup, tree([dummyEl, otherEl], failed: 3, unnamed: 3)])
+    let scanner = MenuBarScanner(source: s, log: { lines.add($0) })
+    #expect(scanner.scan().completeness == .complete)
+    let r = scanner.scan()
+    #expect(r.completeness == .completeExceptSelfPositioning, "\(r.completenessReason ?? "")")
+    #expect(s.notes.v.last == true)                                  // attributed: the groups get capped
+    #expect(!lines.v.contains { $0.hasPrefix("incomplete: ") })
+}
+
+@Test func extraUnknownUnnamedGroupBesideTheAppGroupStaysIncomplete() {
+    let s = source([fullWithAppGroup, tree([dummyEl, otherEl], failed: 4, unnamed: 4)])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    #expect(r.completenessReason == "4 unnamed timeouts, persisted self-positioning groups absent: 3, previous-tree absent: 2")
+    #expect(s.notes.v.last == false)                                  // unattributed: nobody is capped
+}
+
+@Test func withoutARecordedAppGroupTheNinthUnnamedTimeoutIsNotCovered() {
+    // The complete read never showed an entry titled with the owner's name: no marker, so 3 unnamed > 2 recorded groups.
+    let s = source([full, tree([dummyEl, otherEl], failed: 3, unnamed: 3)])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .incomplete)
+}
+
+@Test func anotherAppsMainMenuEntryDoesNotRecordAnAppGroup() {
+    let other = AXElementInfo(title: "Dummy", identifier: "_NS:1", frame: .zero, isMainMenuEntry: true)   // not iStat's name
+    let s = source([tree([dummyEl, otherEl, cpu, mem, other]), tree([dummyEl, otherEl], failed: 3, unnamed: 3)])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .incomplete)
+}
+
+@Test func appGroupSurvivesExtrasPruningAndALongStreak() {
+    let streak = tree([dummyEl, otherEl], failed: 3, unnamed: 3)
+    let s = source([fullWithAppGroup] + Array(repeating: streak, count: 8))
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    for i in 1...8 { #expect(scanner.scan().completeness == .completeExceptSelfPositioning, "scan \(i)") }
+}
+
+@Test func appGroupAnsweringInAnUnrelatedStalledReadIsNotAbsent() {
+    // The application group answered this time (its entry is read), so only cpu/mem are absent; a third unnamed timeout is foreign.
+    let t = tree([dummyEl, otherEl, istatMenuEntry], failed: 3, unnamed: 3)
+    let s = source([fullWithAppGroup, t])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .incomplete)
+}
+
+@Test func warmAppGroupTimingOutNamedDoesNotCoverANewUnknownGroup() {
+    // Warm app: cpu, mem and the app group's entries time out NAMED; one never-seen group times out unnamed.
+    let t = tree([dummyEl, otherEl], failed: 4, timedOut: [stale(cpu), stale(mem), istatMenuEntry, fileMenuEntry], unnamed: 1)
+    let s = source([fullWithAppGroup, t])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    #expect(s.notes.v.last == false)
+}
+
+@Test func warmAppGroupTimingOutNamedAloneStaysAttributed() {
+    let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem), istatMenuEntry, fileMenuEntry])
+    let s = source([fullWithAppGroup, t])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    #expect(s.notes.v.last == true)
+}
