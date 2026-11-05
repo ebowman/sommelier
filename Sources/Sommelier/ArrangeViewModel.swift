@@ -50,6 +50,9 @@ final class ArrangeViewModel {
     @ObservationIgnored private var capItems = -1
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored var windowVisible = false
+    /// Floats the Arrange window while the engine drags and takes activation back afterwards (gdu.100).
+    @ObservationIgnored private var windowGuard = ArrangeWindowGuard()
+    @ObservationIgnored var onWindowCommand: ((ArrangeWindowGuard.Command) -> Void)?
     @ObservationIgnored private var lastSignature = ""
     @ObservationIgnored private var lastTick: Date?
     @ObservationIgnored private var revealTask: Task<Void, Never>?
@@ -127,7 +130,16 @@ final class ArrangeViewModel {
         ensureTimer()
     }
 
-    func stop() { windowVisible = false }
+    func stop() {
+        windowVisible = false
+        driveWindowGuard()
+    }
+
+    private func driveWindowGuard() {
+        if let cmd = windowGuard.update(inFlight: state.inFlight != nil, windowVisible: windowVisible, appActive: NSApp.isActive) {
+            onWindowCommand?(cmd)
+        }
+    }
 
     private func ensureTimer() {
         guard timer == nil else { return }
@@ -153,6 +165,7 @@ final class ArrangeViewModel {
         lastTick = t
         // The pause text hides itself when its window ends (gdu.60): `statusText` re-reads the clock, this makes the view re-render.
         if let until = state.pollSuppression?.until, until <= t, windowVisible { state.pollSuppression = nil }
+        driveWindowGuard()
         guard windowVisible || !tracker.isEmpty || pending.isActive else { return }
         refreshCapabilities()
         pending.resolve(stateRevision: state.layoutRevision)

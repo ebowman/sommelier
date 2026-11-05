@@ -26,10 +26,28 @@ final class ArrangeWindowController: NSObject, NSWindowDelegate {
             if !w.setFrameUsingName("Arrange") { w.center() }
             w.setFrameAutosaveName("Arrange")
             window = w
+            viewModel.onWindowCommand = { [weak self] cmd in self?.apply(cmd) }
         }
         viewModel.start()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// gdu.100: float during an engine action so the activated menu-bar app cannot cover the window; take activation back after.
+    private func apply(_ cmd: ArrangeWindowGuard.Command) {
+        guard let w = window else { return }
+        switch cmd {
+        case .float:
+            AppLog.log(.arrange, "arrange window: float")
+            w.level = .floating
+        case .restore(let reactivate):
+            AppLog.log(.arrange, "arrange window: restore(reactivate: \(reactivate))")
+            w.level = .normal
+            if reactivate {
+                w.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
     }
 
     func windowWillClose(_ notification: Notification) { viewModel.stop() }

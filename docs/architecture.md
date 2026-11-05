@@ -514,6 +514,7 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
 `ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`
 (`@MainActor @Observable`), which feeds the pure `ArrangeModel.swift` in SommelierCore (`ArrangeSections.make`, `.badge`,
 `.placementMatches`, `ArrangeDrop.drop/step/hideNotFitting/adopt`; unit-tested without AppKit).
+- Window level during actions (gdu.100). Sommelier is an accessory app, so the engine's Command-drag activates the last regular app (the owner of the displayed menu bar) and its windows would cover Arrange; while `EngineState.inFlight` is set the window floats (`.floating`) and afterwards returns to `.normal`. If Sommelier was active when the action began it re-activates and re-keys Arrange; the decision is the pure `ArrangeWindowGuard`, driven by the 250 ms tick (so the float can lag the action start by up to 250 ms) and by `stop()`.
 - Render cost (gdu.93). The view builds `ArrangeContent` once per render and once per 250 ms tick; the per-row step menu items judge on the rows already built. App display names for hide-unit notes come from a per-pass memo (`AppNameCache`), because a LaunchServices lookup per row per render stalled the main thread.
 - Truthfulness rules. (1) The Visible strip is the OBSERVED bar (`EngineState.observed.onBar`, system modules as greyed,
   non-draggable anchors) and is never reordered optimistically. A requested move shows a dashed ghost "⟳" at the target slot
