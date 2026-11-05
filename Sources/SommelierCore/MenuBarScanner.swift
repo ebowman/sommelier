@@ -18,7 +18,7 @@ public struct MenuBarScanner {
     public var fastDeadline: TimeInterval = 0.3
     /// Owners that re-position their own items and whose AX answers are slow (iStat); their stale items do not make a read
     /// "incomplete" for membership evidence (`ReadCompleteness`, gdu.51).
-    public var selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners
+    public var selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners
     /// Longest a persisted self-positioning record may go without a complete read refreshing it before it stops attributing
     /// unnamed timeouts (gdu.54).
     public var selfPositioningRecordMaxAge: TimeInterval = 600

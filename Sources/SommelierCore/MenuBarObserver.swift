@@ -83,7 +83,7 @@ public struct AgreedScanObserver: MenuBarObserver {
     public init(scanner: any SnapshotScanning,
                 resolve: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],
                 maxScans: Int = 6, deadline: TimeInterval = 15,
-                selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners,
+                selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners,
                 volatileKeys: Set<ItemKey> = AgreedScanObserver.defaultVolatileKeys,
                 accessibilityTrusted: @escaping @Sendable () -> Bool,
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
@@ -193,7 +193,7 @@ public struct AgreedScanObserver: MenuBarObserver {
 public struct BarSignature: Sendable {
     public var selfPositioningOwners: Set<String>
     public var volatileKeys: Set<ItemKey>
-    public init(selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners,
+    public init(selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners,
                 volatileKeys: Set<ItemKey> = AgreedScanObserver.defaultVolatileKeys) {
         self.selfPositioningOwners = selfPositioningOwners; self.volatileKeys = volatileKeys
     }

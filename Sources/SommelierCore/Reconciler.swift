@@ -84,8 +84,18 @@ public struct Plan: Equatable, Sendable {
 public struct Reconciler: Sendable {
     public init() {}
 
-    public func plan(observed: ObservedOrder, layout: Layout, capabilities: (ItemKey) -> Capability,
-                     showHiddenSection: Bool = false) -> Plan {
+    public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
+                     showHiddenSection: Bool = false,
+                     selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners) -> Plan {
+        // Self-positioning owners (iStat Menus) move between slots on their own, so they are ANCHORS: never dragged,
+        // never targeted by a relation that needs them to move, and their slot is authoritative (gdu.33). Hide/show
+        // capability is untouched. The actuator's drift exemption uses the same set (`SelfPositioning.defaultOwners`).
+        let isSP: (ItemKey) -> Bool = { SelfPositioning.isSelfPositioning($0, owners: selfPositioningOwners) }
+        func capabilities(_ k: ItemKey) -> Capability {
+            var c = rawCapabilities(k)
+            if isSP(k) { c.canMove = false }
+            return c
+        }
         // Defensive dedup: first occurrence wins; a key on the bar is never also parked.
         var seen = Set<ItemKey>()
         let onBar = observed.onBar.filter { seen.insert($0).inserted }
@@ -190,7 +200,9 @@ public struct Reconciler: Sendable {
         // act on. Overflowed keys and the chevron are therefore dropped from `desired` and `base` before the ORDER planning:
         // no drawn key is anchored or reported because of them, whatever the layout lists (unknown, pulled-in, normalized,
         // churned). Membership (hiding an overflowed key) was decided above and is unchanged.
-        desired = desired.filter { !ovf.contains($0) && $0 != chevron }
+        // Self-positioning keys are not placed by the layout either: they keep their observed slot (like any unplaced anchor),
+        // so their order never yields a move or an "out of order" finding.
+        desired = desired.filter { !ovf.contains($0) && $0 != chevron && !isSP($0) }
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
         let base = kept + shows
         let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })

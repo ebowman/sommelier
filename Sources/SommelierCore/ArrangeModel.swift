@@ -99,6 +99,8 @@ public struct ArrangeContent: Equatable, Sendable {
 }
 
 public enum ArrangeSections {
+    /// Shown for self-positioning items (iStat Menus): Sommelier never drags them and does not manage their order.
+    public static let positionsItselfNote = "Positions itself: Sommelier does not manage this item's order."
     /// Text for a failed/unsupported engine error.
     public static func describe(_ e: ActuationError) -> String {
         switch e {
@@ -211,7 +213,7 @@ public enum ArrangeSections {
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,
                               isGhost: ghost, isBoundary: observed.overflowChevron == k,
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: k.hideUnit,
-                              unitMates: mates(k), capabilityNote: (cap.canMove && cap.canHide) ? nil : cap.reason)
+                              unitMates: mates(k), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
         }
 
         // MARK: Visible = the observed bar + ghosts at layout slots + not-running group

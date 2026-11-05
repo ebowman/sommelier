@@ -161,6 +161,10 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   every anchor in its observed slot. In a membership phase (hides/shows pending) these anchor skips are NOT reported (gdu.44): the bar
   is about to change and a transient or churned read (e.g. no chevron in that scan) can show anchors out of order that the order pass
   finds fine, so the order pass decides. Unsettled observations are never planned on by the engine, so no extra suppression is needed.
+- Self-positioning owners are anchors (gdu.33): items of iStat Menus (`SelfPositioning.defaultOwners`, ONE definition in `ReadCompleteness.swift`) move between slots on
+  their own across agent restarts, so the planner treats them as `canMove == false` and does not place them from the layout at all (they keep their observed slot, like
+  any unplaced anchor): never dragged, no "out of order" skip and no convergence dependency on their slot. Hide/show is unchanged. The actuator's drift exemption
+  (`LiveActuator.Config.selfPositioningOwners`), `LayoutEngine.Config`, `MenuBarScanner` and `BarSignature` default to the same set. The Arrange row shows "Positions itself".
 - Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock) is unreachable for third-party
   items on macOS 26+. A movable key the layout places right of its first item goes into `skipped` ("cannot be placed right of the system
   items (<anchor>)") and is relocated in the target to the last slot before the block (relative order kept), so no drag ever has an anchor

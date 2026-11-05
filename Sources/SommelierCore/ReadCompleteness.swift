@@ -20,6 +20,16 @@ public enum ReadCompleteness: String, Codable, Sendable {
 /// Identifies self-positioning owners (`LiveActuator.Config.selfPositioningOwners`: bundle ids or process names) among
 /// scanner items, hosted identifiers and keys.
 public enum SelfPositioning {
+    /// The ONE definition of the owners whose items move between slots on their own (iStat Menus, across agent restarts).
+    /// The actuator's drift check, the observer's signature and the Reconciler's anchoring all use this set (gdu.33).
+    public static let defaultOwners: Set<String> = ["com.bjango.istatmenus.status", "iStat Menus Menubar"]
+
+    /// True for a `.status` key whose owner is in `owners`.
+    public static func isSelfPositioning(_ key: ItemKey, owners: Set<String> = defaultOwners) -> Bool {
+        if case .status(let owner, _) = key { return owners.contains(owner) }
+        return false
+    }
+
     /// Reverse-DNS prefixes under which an owner's hosted elements are identified ("com.bjango.istatmenus.status" owns
     /// "com.bjango.istatmenus.cpu"): the bundle id itself and its parent.
     static func prefixes(_ bundle: String) -> [String] {
