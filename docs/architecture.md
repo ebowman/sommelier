@@ -513,6 +513,7 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
 `ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`
 (`@MainActor @Observable`), which feeds the pure `ArrangeModel.swift` in SommelierCore (`ArrangeSections.make`, `.badge`,
 `.placementMatches`, `ArrangeDrop.drop/step/hideNotFitting/adopt`; unit-tested without AppKit).
+- Render cost (gdu.93). The view builds `ArrangeContent` once per render and once per 250 ms tick; the per-row step menu items judge on the rows already built. App display names for hide-unit notes come from a per-pass memo (`AppNameCache`), because a LaunchServices lookup per row per render stalled the main thread.
 - Truthfulness rules. (1) The Visible strip is the OBSERVED bar (`EngineState.observed.onBar`, system modules as greyed,
   non-draggable anchors) and is never reordered optimistically. A requested move shows a dashed ghost "⟳" at the target slot
   (the layout neighbours decide the slot), and the real capsule keeps its observed place with "⟳" until BOTH a pass has finished

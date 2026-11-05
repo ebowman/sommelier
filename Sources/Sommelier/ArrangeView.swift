@@ -141,7 +141,7 @@ struct StripView: View {
                 }
                 ForEach(Array((placeholder == nil ? strip.rows : []).enumerated()), id: \.element.id) { i, r in
                     DropGap(vm: vm, section: strip.section, slot: i)
-                    if r.isBoundary { BoundaryLine() } else { CapsuleSlot(vm: vm, row: r, section: strip.section, slot: i) }
+                    if r.isBoundary { BoundaryLine() } else { CapsuleSlot(vm: vm, row: r, rows: strip.rows, section: strip.section, slot: i) }
                 }
                 if placeholder == nil { DropGap(vm: vm, section: strip.section, slot: strip.rows.count) }
                 if strip.rows.isEmpty, placeholder == nil {
@@ -157,7 +157,7 @@ struct StripView: View {
             if !strip.notRunning.isEmpty {
                 DisclosureGroup("Not running (\(strip.notRunning.count))", isExpanded: $showNotRunning) {
                     FlowLayout(lineSpacing: 4) {
-                        ForEach(strip.notRunning, id: \.id) { CapsuleSlot(vm: vm, row: $0, section: strip.section, slot: nil) }
+                        ForEach(strip.notRunning, id: \.id) { CapsuleSlot(vm: vm, row: $0, rows: strip.rows, section: strip.section, slot: nil) }
                     }
                     .padding(.vertical, 4)
                 }
@@ -200,6 +200,8 @@ struct BoundaryLine: View {
 struct CapsuleSlot: View {
     @Bindable var vm: ArrangeViewModel
     let row: ArrangeRow
+    /// The strip's rows, already built for this render: the step menu items judge on these instead of rebuilding `content` (gdu.93).
+    let rows: [ArrangeRow]
     let section: LayoutSection
     /// Position in the strip's row list; nil for the not-running group (no drop target).
     let slot: Int?
@@ -229,8 +231,8 @@ struct CapsuleSlot: View {
         Button("Move to Always hidden") { vm.move(row.key, to: .alwaysHidden) }.disabled(!vm.canMove(row.key, to: .alwaysHidden))
         if section == .visible {
             Divider()
-            Button("Move left") { vm.step(row.key, .left) }.disabled(!vm.canStep(row.key, .left))
-            Button("Move right") { vm.step(row.key, .right) }.disabled(!vm.canStep(row.key, .right))
+            Button("Move left") { vm.step(row.key, .left) }.disabled(!vm.canStep(row.key, .left, rows: rows))
+            Button("Move right") { vm.step(row.key, .right) }.disabled(!vm.canStep(row.key, .right, rows: rows))
         }
         if case .failed = row.badge {
             Divider()

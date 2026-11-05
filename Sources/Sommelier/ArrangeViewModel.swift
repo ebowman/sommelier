@@ -74,6 +74,14 @@ final class ArrangeViewModel {
     func showPermissions() { model.showOnboarding() }
     var observationAvailable: Bool { !state.observed.onBar.isEmpty && observationProblem == nil }
 
+    @ObservationIgnored private var appNames = AppNameCache(lookup: HideUnitNames.runningAppName)
+    @ObservationIgnored private var appNamesPass = -1
+    /// Per-pass memo of running-app names: the LaunchServices lookup is an XPC round trip (gdu.93).
+    private func unitAppName(_ bundleID: String) -> String? {
+        if state.passCount != appNamesPass { appNames.invalidate(); appNamesPass = state.passCount }
+        return appNames.name(for: bundleID)
+    }
+
     var content: ArrangeContent {
         ArrangeSections.make(observed: state.observed, layout: layout, items: state.items, perItem: state.perItem,
                              capabilities: cap, showHiddenSection: state.showHiddenSection,
@@ -81,7 +89,7 @@ final class ArrangeViewModel {
                              suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
                              pendingConfirmation: state.pendingConfirmation,
                              observationProblem: observationProblem, filter: filter, units: units,
-                             unitAppName: HideUnitNames.runningAppName, moveReasons: state.inFlight != nil ? state.orderMoveReasons : [:])
+                             unitAppName: { [self] in self.unitAppName($0) }, moveReasons: state.inFlight != nil ? state.orderMoveReasons : [:])
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -123,9 +131,12 @@ final class ArrangeViewModel {
 
     private func ensureTimer() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        // Common run loop modes: the tick (rows log, pause expiry, stall detector) keeps running during drag tracking (gdu.93).
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     private func refreshCapabilities(force: Bool = false) {
@@ -201,8 +212,8 @@ final class ArrangeViewModel {
                                     observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units), key: key)
     }
 
-    func canStep(_ key: ItemKey, _ dir: ArrangeDrop.Direction) -> Bool {
-        if case .move = ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
+    func canStep(_ key: ItemKey, _ dir: ArrangeDrop.Direction, rows: [ArrangeRow]) -> Bool {
+        if case .move = ArrangeDrop.step(layout: layout, rows: rows, key: key, dir, capabilities: cap,
                                          observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units) { return true }
         return false
     }
