@@ -69,7 +69,7 @@ func runList(_ rawFlags: [String]) {
         if debug { FileHandle.standardError.write(Data(("debug: " + msg + "\n").utf8)) }
     }
     let scanner = MenuBarScanner(includeSelf: flags.contains("--include-self"),
-                                 cacheURL: MenuBarScanner.defaultCacheURL, log: logger)
+                                 cacheURL: ProcessInfo.processInfo.environment["SOMMELIER_PROBE_CACHE"].map { URL(fileURLWithPath: $0) } ?? MenuBarScanner.defaultCacheURL, log: logger)
     var fast = flags.contains("--fast")
     if fast && !scanner.isWarm {
         FileHandle.standardError.write(Data("mbprobe: no scan cache yet; doing one full scan to populate it\n".utf8))

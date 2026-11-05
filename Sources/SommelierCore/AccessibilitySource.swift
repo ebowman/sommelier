@@ -511,6 +511,9 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         func run(_ work: [Unchecked<AXUIElement>], timeout: Float, attempts: Int, within: TimeInterval?, slowCap: Bool = false) -> [Unchecked<AXUIElement>] {
             let capped = slowCap && agentSlowGroupTimeout > 0
             let refresh = cache.slowRefreshRead
+            // gdu.83: capped (known-slow) groups each wait out their short timeout; give them workers of their own so they do
+            // not queue the healthy groups behind them in extra 0.3 s waves (9 stalled groups on 8 workers cost three waves).
+            let workers = capped ? workers + work.filter { self.cache.isCapped($0.value) }.count : workers
             let parts = boundedParallelMap(work, workers: workers, deadline: within.map { Date().addingTimeInterval($0) }) { w -> Collected in
                 var c = Collected()
                 let isSlow = capped && self.cache.isCapped(w.value)
@@ -539,6 +542,14 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         // Name what is still missing from the source's memory of those groups (never guessed from elsewhere).
         let unnamed = unresolved.filter { cache.subtree($0.value).isEmpty }.count
         let timedOut = unresolved.flatMap { cache.subtree($0.value) }.map { i -> AXElementInfo in var c = i; c.stale = true; return c }
+        if ProcessInfo.processInfo.environment["SOMMELIER_AX_TRACE"] != nil {
+            for (i, w) in tasks.enumerated() where unresolved.contains(where: { $0.value == w.value }) {
+                AXUIElementSetMessagingTimeout(w.value, 0.2)
+                let r = readRetrying(w.value, timeout: 0.2, attempts: 1)
+                let kids = children(w.value, attempts: 1)
+                trace("UNRESOLVED group #\(i) role=\(r.role) frame=\(r.info.frame) id='\(r.info.identifier)' desc='\(r.info.axDescription)' title='\(r.info.title)' err=\(r.err) kids=\(kids.map { String($0.count) } ?? "nil") cached=\(cache.subtree(w.value).count)")
+            }
+        }
         if ProcessInfo.processInfo.environment["SOMMELIER_AX_TRACE"] != nil { trace("done: \(found.count) found, \(unresolved.count) groups timed out") }
         return AgentHostedTree(stripFrame: strip, elements: found, failedReads: unresolved.count + topFailed, timedOut: timedOut,
                                unnamedTimeouts: unnamed, topFailures: topFailed)

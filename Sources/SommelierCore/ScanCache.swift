@@ -28,6 +28,15 @@ struct SPGroup: Codable, Equatable {
     var identifier: String
     var frame: CGRect
     init(_ e: AXElementInfo) { key = e.identityKey; identifier = e.identifier; frame = e.frame }
+
+    /// gdu.83: an owner's own application group. MenuBarAgent hosts, next to the owner's per-item groups, one group holding the
+    /// owner's AXApplication (its mirrored main menu, whose entries `droppingMainMenu` removes from every read), and it stalls
+    /// together with them. It has no hosted identity of its own, so a complete read records it as a marker keyed by the owner's
+    /// app name, proven by a fresh main-menu entry titled with that name. The marker is not an extras item.
+    static let appGroupPrefix = "appgroup:"
+    static func appGroupKey(_ ownerName: String) -> String { appGroupPrefix + ownerName }
+    var isAppGroup: Bool { key.hasPrefix(Self.appGroupPrefix) }
+    init(appGroupOf ownerName: String) { key = Self.appGroupKey(ownerName); identifier = ""; frame = .zero }
 }
 
 /// State kept between scans by one `MenuBarScanner`: per-app extras (for attribution in the fast path and for
