@@ -161,6 +161,30 @@ extension MenuBarItem: Codable {
     }
 }
 
+/// What the agent's top level shows about its overflow chevron (gdu.65).
+public struct OverflowProbe: Equatable, Sendable {
+    /// The chevron's frame; nil when the bar has none (nothing is in the system overflow then).
+    public var chevron: CGRect?
+    /// The chevron is open: the overflowed items are drawn in the widened strip (frames are real again).
+    public var expanded: Bool
+    /// Frames of the other hosted groups, whatever their state (stacked frames included).
+    public var hosted: [CGRect]
+    public init(chevron: CGRect?, expanded: Bool = false, hosted: [CGRect] = []) {
+        self.chevron = chevron; self.expanded = expanded; self.hosted = hosted
+    }
+
+    /// Is `frame` (a revealed item's settled frame) a system-overflow frame? The scanner's rule (SystemOverflow: left of the
+    /// chevron) plus the two ways the click goes wrong: the click point lies on the chevron, or another hosted group sits on
+    /// the same x (centres within 2 pt: items stacked on one another). Never true when the bar has no chevron or it is expanded.
+    public func isStacked(_ frame: CGRect) -> Bool {
+        guard let c = chevron, !expanded else { return false }
+        if frame.minX < c.minX - 2 { return true }
+        if c.insetBy(dx: -2, dy: -2).contains(CGPoint(x: frame.midX, y: frame.midY)) { return true }
+        // The target's own group is in `hosted` too: a second one on this x means it is stacked.
+        return hosted.filter { abs($0.midX - frame.midX) <= 2 }.count >= 2
+    }
+}
+
 /// One element of MenuBarAgent's hosted tree on the strip (non-stale, width > 1), as read by one scan (of7).
 public struct HostedEntry: Equatable, Sendable {
     /// Identifier, else description, else "" (identifier-less items).

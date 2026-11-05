@@ -293,6 +293,43 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         return n
     }
 
+    /// The agent's overflow chevron and the stacked/hosted frames, from TOP-LEVEL reads only (milliseconds, no descent into the
+    /// owners): the chevron is the agent window's direct AXButton child without identifier or title (the English description is
+    /// the fallback, as in `AXElementInfo.isOverflowChevron`); every other direct window child is one hosted group. `expanded`:
+    /// the chevron is open ("Hide Menu Bar Items"), which shows as the menu-extras strip (the agent's AXMenuBar) starting LEFT
+    /// of the chevron instead of right behind it (gdu.65). nil when any level could not be read in `timeout`.
+    public func overflowProbe(agentPID: pid_t, timeout: Float = 0.3) -> OverflowProbe? {
+        let ax = cache.app(agentPID)
+        AXUIElementSetMessagingTimeout(ax, timeout)
+        guard let tops = children(ax, attempts: 1) else { return nil }
+        func rect(_ e: AXUIElement) -> CGRect? {
+            AXUIElementSetMessagingTimeout(e, timeout)
+            let (p, _) = copy(e, kAXPositionAttribute), (s, _) = copy(e, kAXSizeAttribute)
+            guard let pv = axValue(from: p), let sv = axValue(from: s) else { return nil }
+            var pt = CGPoint.zero, sz = CGSize.zero
+            guard AXValueGetValue(pv, .cgPoint, &pt), AXValueGetValue(sv, .cgSize, &sz) else { return nil }
+            return CGRect(origin: pt, size: sz)
+        }
+        func str(_ e: AXUIElement, _ a: String) -> String { (copy(e, a).0 as? String) ?? "" }
+        var chevron: CGRect?
+        var hosted: [CGRect] = []
+        var stripMinX: CGFloat?
+        for t in tops {
+            AXUIElementSetMessagingTimeout(t, timeout)
+            if str(t, kAXRoleAttribute) == "AXMenuBar" { stripMinX = rect(t)?.minX; continue }
+            guard let kids = children(t, attempts: 1) else { return nil }
+            for k in kids {
+                guard let f = rect(k) else { return nil }
+                let isChevron = str(k, kAXRoleAttribute) == "AXButton"
+                    && ((str(k, kAXIdentifierAttribute).isEmpty && str(k, kAXTitleAttribute).isEmpty)
+                        || str(k, kAXDescriptionAttribute) == MenuBarItem.overflowChevronName)
+                if isChevron { chevron = f } else if f.width > 1 { hosted.append(f) }
+            }
+        }
+        let expanded = chevron.map { c in stripMinX.map { $0 < c.minX - 2 } ?? false } ?? false
+        return OverflowProbe(chevron: chevron, expanded: expanded, hosted: hosted)
+    }
+
     private struct ReadResult { var info: AXElementInfo; var role: String; var subrole: String; var ok: Bool; var err: Int32 = 0
         /// Worth retrying: a timeout. Other errors (e.g. apiDisabled -25211) are permanent for that element.
         var transient: Bool { !ok && err == AXError.cannotComplete.rawValue }

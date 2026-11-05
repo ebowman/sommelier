@@ -318,6 +318,13 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
         return live.hostedGroupCount(agentPID: agent.processIdentifier)
     }
 
+    /// Chevron + hosted frames from top-level agent reads (gdu.65); nil when unreadable.
+    public func overflowProbe() -> OverflowProbe? {
+        guard let live = scanner.source as? LiveAccessibilitySource,
+              let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first else { return nil }
+        return live.overflowProbe(agentPID: agent.processIdentifier)
+    }
+
     public func hostedLayout() async -> [HostedEntry]? {
         await hostedTreeRead()?.map { HostedEntry(sig: $0.identifier.isEmpty ? $0.axDescription : $0.identifier, minX: $0.frame.minX, width: $0.frame.width) }
     }

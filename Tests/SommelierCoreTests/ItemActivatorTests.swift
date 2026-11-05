@@ -76,6 +76,24 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
         guard !groupCounts.isEmpty else { return nil }
         return groupCounts[min(groupCalls - 1, groupCounts.count - 1)]
     }
+    // gdu.65: system overflow. `probeOn` = the platform supports the probe; `chevron` nil = a bar without one.
+    var probeOn = false
+    var chevron: CGRect?
+    var otherGroups: [CGRect] = []
+    /// Where the reveal lands the item (nil: `barFrame`); a stacked frame models the item behind the chevron.
+    var landing: CGRect?
+    /// The item's frame once the strip is expanded; `stripOpens == false`: the chevron click changes nothing (unreadable strip).
+    var expandedFrame = CGRect(x: 307, y: 3, width: 32, height: 24)
+    var stripOpens = true
+    /// The closing click does not close the strip.
+    var stripStuck = false
+    var expanded = false
+    var chevronClicks = 0
+    private var landedFrame: CGRect { expanded ? expandedFrame : (landing ?? barFrame) }
+    func overflowProbe() async -> OverflowProbe? {
+        guard probeOn else { return nil }
+        return OverflowProbe(chevron: chevron, expanded: expanded, hosted: otherGroups + (landing.map { [$0] } ?? []))
+    }
     func frame(of t: ActivationTarget) -> CGRect? {
         if staleFrame, !staleFrames.isEmpty { defer { staleIndex += 1 }; return staleFrames[min(staleIndex, staleFrames.count - 1)] }
         if staleFrame { return barFrame }
@@ -83,10 +101,18 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
             defer { slideIndex += 1 }
             return slide[min(slideIndex, slide.count - 1)]
         }
-        if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return barFrame }
+        if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return landedFrame }
         return parkedFrame
     }
-    func click(at p: CGPoint, button: ClickButton) -> Bool { clicks.append((p, button)); openedAt = clock.now(); return true }
+    func click(at p: CGPoint, button: ClickButton) -> Bool {
+        clicks.append((p, button))
+        if let c = chevron, probeOn, c.insetBy(dx: -2, dy: -2).contains(p) {   // the chevron toggles the strip; it opens no menu
+            chevronClicks += 1
+            if stripOpens, !(expanded && stripStuck) { expanded.toggle() }
+            return true
+        }
+        openedAt = clock.now(); return true
+    }
     func axPress(_ t: ActivationTarget) -> Int32 { presses += 1; openedAt = clock.now(); return pressResult }
     /// nil = unknown (frame-only landing); `staleFrameNoCount` models a unit live-hidden earlier whose app-side frame is stale.
     var countKnown = true
@@ -625,4 +651,107 @@ extension FakeHold { fileprivate func setRefuse() { refuse = true } }
         guard case .opened(let o2) = await ItemActivator(platform: q, hold: FakeHold()).activate(key: key, button: .left) else { Issue.record("no2"); return }
         #expect(o2.mechanism == .revealClick)
     }
+}
+
+@Suite struct ItemActivatorSystemOverflowTests {
+    private let chevronFrame = CGRect(x: 807, y: 1, width: 18, height: 26)
+    private let stackedFrame = CGRect(x: 793, y: 3, width: 32, height: 24)   // behind the chevron: its centre (809) is on it
+    private func mid(_ r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.midY) }
+    private func make(_ p: FakeActivation, _ h: FakeHold = FakeHold()) -> ItemActivator {
+        var c = ItemActivator.Config(); c.baselineBudget = 0
+        return ItemActivator(platform: p, hold: h, config: c)
+    }
+    private func fullBar() -> FakeActivation {
+        let p = FakeActivation()
+        p.probeOn = true; p.chevron = chevronFrame; p.landing = stackedFrame
+        return p
+    }
+
+    @Test func detectionTrueAndFalseCases() {
+        let c = chevronFrame
+        // No chevron: nothing is in the system overflow, whatever the frames.
+        #expect(!OverflowProbe(chevron: nil, hosted: [stackedFrame, stackedFrame]).isStacked(stackedFrame))
+        // Left of the chevron (the scanner's rule) and click point on the chevron.
+        #expect(OverflowProbe(chevron: c).isStacked(CGRect(x: 700, y: 3, width: 24, height: 24)))
+        #expect(OverflowProbe(chevron: c).isStacked(stackedFrame))
+        // Coincides with another hosted group (centres within 2 pt) even right of the chevron's click zone.
+        let drawn = CGRect(x: 900, y: 3, width: 24, height: 24)
+        #expect(OverflowProbe(chevron: c, hosted: [drawn, CGRect(x: 899, y: 0, width: 26, height: 29)]).isStacked(drawn))
+        // A normal drawn item right of the chevron, alone on its x: not stacked.
+        #expect(!OverflowProbe(chevron: c, hosted: [drawn]).isStacked(drawn))
+        #expect(!OverflowProbe(chevron: c, hosted: [drawn, CGRect(x: 950, y: 0, width: 26, height: 29)]).isStacked(drawn))
+        // An expanded strip has real frames.
+        #expect(!OverflowProbe(chevron: c, expanded: true).isStacked(stackedFrame))
+    }
+
+    @Test func stackedLandingOpensThroughTheExpandedStripAndCollapsesAfterwards() async {
+        let p = fullBar(), h = FakeHold()
+        let lines = LineBox()
+        let r = await make(p, h).activate(key: key, button: .left, progress: { lines.add($0) })
+        guard case .opened(let o) = r else { Issue.record("\(r)"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(o.note == nil)
+        // chevron to expand, the item in the strip (never the stacked frame), the chevron again to collapse.
+        #expect(p.clicks.map(\.0) == [mid(chevronFrame), mid(p.expandedFrame), mid(chevronFrame)])
+        #expect(!p.clicks.contains { $0.0 == mid(stackedFrame) })
+        #expect(!p.expanded)
+        #expect(p.writes == [["com.x.tool": true], ["com.x.tool": false]])
+        #expect(await h.ended == [key.hideUnit])
+        let log = lines.all
+        #expect(log.contains { $0.contains("phase overflow: landed frame") })
+        #expect(log.contains { $0.contains("phase overflow: expanded strip shows the item") })
+        #expect(log.contains { $0.contains("phase overflow: strip collapsed") })
+        #expect(log.allSatisfy { $0.hasPrefix("t=") })
+    }
+
+    @Test func unreadableStripFailsTruthfullyAndReHides() async {
+        let p = fullBar(); p.stripOpens = false
+        let h = FakeHold()
+        let r = await make(p, h).activate(key: key, button: .left)
+        #expect(r == .failed(.behindOverflowChevron))
+        if case .failed(let e) = r { #expect(e.description.contains("behind the system overflow chevron; make room in the bar")) }
+        #expect(p.clicks.map(\.0) == [mid(chevronFrame)])          // one chevron click; the stacked frame is never clicked
+        #expect(p.writes == [["com.x.tool": true], ["com.x.tool": false]])
+        #expect(await h.begun == [key.hideUnit])
+        #expect(await h.ended == [key.hideUnit])
+    }
+
+    @Test func aStripThatCannotBeClosedIsReportedAsANote() async {
+        let p = fullBar(); p.stripStuck = true
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.note == "overflowStripStillExpanded")
+        #expect(p.chevronClicks == 3)      // expand + two closing attempts
+    }
+
+    @Test func menuNeverOpeningStillCollapsesTheStripBeforeTheReHide() async {
+        let p = fullBar(); p.menuAfter = nil
+        let r = await make(p).activate(key: key, button: .left)
+        #expect(r == .failed(.noMenu))
+        #expect(!p.expanded)
+        #expect(p.writes.last == ["com.x.tool": false])
+    }
+
+    @Test func normalRevealIsUnchangedWithoutAChevronOrWithTheItemDrawnRightOfIt() async {
+        // Baseline: the probe unsupported (nil), exactly the pre-gdu.65 sequence.
+        let base = FakeActivation()
+        guard case .opened = await make(base).activate(key: key, button: .left) else { Issue.record("base"); return }
+        // Probe supported, bar without a chevron.
+        let a = FakeActivation(); a.probeOn = true
+        guard case .opened = await make(a).activate(key: key, button: .left) else { Issue.record("a"); return }
+        // Chevron present but the item is drawn to its right and alone on its x.
+        let b = FakeActivation(); b.probeOn = true; b.chevron = CGRect(x: 760, y: 1, width: 18, height: 26); b.otherGroups = [CGRect(x: 1000, y: 0, width: 26, height: 29)]
+        guard case .opened = await make(b).activate(key: key, button: .left) else { Issue.record("b"); return }
+        for q in [a, b] {
+            #expect(q.clicks.map(\.0) == base.clicks.map(\.0))
+            #expect(q.clicks.map(\.0) == [mid(barFrame)])
+            #expect(q.chevronClicks == 0)
+            #expect(q.writes == base.writes)
+        }
+    }
+}
+
+private final class LineBox: @unchecked Sendable {
+    private let lock = NSLock(); private var lines: [String] = []
+    func add(_ s: String) { lock.lock(); lines.append(s); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return lines }
 }

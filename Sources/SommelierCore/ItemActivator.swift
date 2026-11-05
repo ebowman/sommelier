@@ -26,6 +26,8 @@ public enum ActivationError: Error, Equatable, Sendable, CustomStringConvertible
     /// The click or press was delivered but no menu/popover appeared within the timeout.
     case noMenu
     case cancelled
+    /// Why a revealed item cannot be opened: macOS drew it behind its own overflow chevron and the expanded strip was not readable.
+    public static let behindOverflowChevron = ActivationError.unavailable("behind the system overflow chevron; make room in the bar")
     public var description: String {
         switch self {
         case .notFound: return "item not found on the menu bar"
@@ -161,6 +163,9 @@ public protocol ActivationPlatform: Sendable {
     func hostedGroupCount() -> Int?
     /// The hosted tree right now (complete read only), left to right; nil when incomplete or unsupported (of7).
     func hostedLayout() async -> [HostedEntry]?
+    /// The agent's overflow chevron and hosted frames (top-level read, milliseconds); nil when unsupported or unreadable (the
+    /// activator then behaves as it did before gdu.65: a settled frame is clicked).
+    func overflowProbe() async -> OverflowProbe?
     /// Of7: records the owner as assumed live-hidden (our own re-hide write, confirmed by a hosted-count drop) / forgets it.
     func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?)
     func clearAssumedHidden(pids: Set<pid_t>)
@@ -178,6 +183,7 @@ extension ActivationPlatform {
     public func locateByOwner(_ key: ItemKey) async -> ActivationTarget? { nil }
     public func hostedLayout() async -> [HostedEntry]? { nil }
     public func hostedGroupCount() -> Int? { nil }
+    public func overflowProbe() async -> OverflowProbe? { nil }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
     public func clearAssumedHidden(pids: Set<pid_t>) {}
     public func postEscape() {}
@@ -209,6 +215,10 @@ public actor ItemActivator {
         /// takes 0.5-7 s: wait at most this long (seconds) for it, then reveal without it (the engine hides the unit on its next
         /// pass as usual). 0 = always wait for it (the original behaviour).
         public var baselineBudget: TimeInterval = 0.3
+        /// gdu.65: after the chevron click, how long to wait for the target to show a real (unstacked, settled) frame in the
+        /// expanded strip; and how long to wait for the strip to close again after the closing click.
+        public var overflowExpandTimeout: TimeInterval = 1.0
+        public var overflowCollapseTimeout: TimeInterval = 1.0
         public init() {}
     }
 
@@ -369,7 +379,74 @@ public actor ItemActivator {
         say("phase drawn: item on the bar at \(landedFrame), \(Int(platform.now().timeIntervalSince(shownAt) * 1000)) ms after the show write")
         var moved = target
         moved.frame = landedFrame
+        // gdu.65: on a full bar the item can land in macOS's own overflow, behind the chevron: reported on the bar, settled,
+        // counted by the agent, but not drawn, and a click on its stacked frame hits the chevron. Never click such a frame.
+        if let probe = await platform.overflowProbe(), probe.isStacked(landedFrame), let chevron = probe.chevron {
+            say("phase overflow: landed frame \(landedFrame) is stacked behind the system overflow chevron at \(chevron)")
+            return await openThroughSystemOverflow(moved, stacked: landedFrame, chevron: chevron, button: button, t0: t0, revealMS: revealMS,
+                                                   say: say, tracked: tracked)
+        }
         return await clickAndWait(moved, button: button, mechanism: .revealClick, t0: t0, revealMS: revealMS, revealed: true, say: say, tracked: tracked)
+    }
+
+    // MARK: system overflow (gdu.65)
+
+    /// (a) Click the chevron, wait for the target's own frame to become real in the expanded strip, click it there, and close
+    /// the strip after the menu closed. (b) If the strip never shows the item: collapse again and fail with the cause.
+    private func openThroughSystemOverflow(_ t: ActivationTarget, stacked: CGRect, chevron: CGRect, button: ClickButton, t0: Date,
+                                           revealMS: Int, say: (String) -> Void, tracked: String) async -> ActivationResult {
+        let unit = t.key.hideUnit
+        func fail(_ e: ActivationError) async -> ActivationResult {
+            _ = await rehide(tracked: tracked, unit: unit, say: say)
+            return .failed(e)
+        }
+        if platform.pressedMouseButtons() != 0 { return await fail(.unavailable("a mouse button is pressed; click refused")) }
+        let chevronPoint = CGPoint(x: chevron.midX, y: chevron.midY)
+        guard platform.click(at: chevronPoint, button: .left) else { return await fail(.unavailable("could not post the click event")) }
+        let clickedAt = platform.now()
+        say("phase overflow: chevron clicked at \(Int(chevronPoint.x)),\(Int(chevronPoint.y)); waiting for the expanded strip")
+        var real: CGRect?
+        var previous: CGRect?
+        while true {
+            if Task.isCancelled { break }
+            if let f = platform.frame(of: t), Self.isSettledOnBar(f), abs(f.minX - stacked.minX) > 2,
+               !chevron.insetBy(dx: -2, dy: -2).contains(CGPoint(x: f.midX, y: f.midY)) {
+                if let p = previous, Self.sameFrame(p, f) { real = f; break }
+                previous = f
+            } else { previous = nil }
+            if platform.now().timeIntervalSince(clickedAt) > config.overflowExpandTimeout { break }
+            await platform.sleep(config.revealPoll)
+        }
+        guard let real else {
+            say("phase overflow: the expanded strip did not show the item within \(Int(config.overflowExpandTimeout * 1000)) ms")
+            _ = await collapseOverflow(chevronAt: chevronPoint, say: say)
+            return await fail(Task.isCancelled ? .cancelled : .behindOverflowChevron)
+        }
+        say("phase overflow: expanded strip shows the item at \(real), \(Int(platform.now().timeIntervalSince(clickedAt) * 1000)) ms after the chevron click")
+        var moved = t
+        moved.frame = real
+        return await clickAndWait(moved, button: button, mechanism: .revealClick, t0: t0, revealMS: revealMS, revealed: true, say: say, tracked: tracked,
+                                  afterClose: { [self] in await collapseOverflow(chevronAt: chevronPoint, say: say) })
+    }
+
+    /// Closes the expanded strip with a click on the chevron (Escape does not close it, seen live). Returns a note when it is still
+    /// open afterwards; nil when it is closed or was not open.
+    private func collapseOverflow(chevronAt point: CGPoint, say: (String) -> Void) async -> String? {
+        guard let probe = await platform.overflowProbe(), probe.expanded else { return nil }
+        let at = probe.chevron.map { CGPoint(x: $0.midX, y: $0.midY) } ?? point
+        for attempt in 1...2 {
+            guard platform.click(at: at, button: .left) else { break }
+            let start = platform.now()
+            while platform.now().timeIntervalSince(start) < config.overflowCollapseTimeout {
+                await platform.sleep(config.revealPoll)
+                if let p = await platform.overflowProbe(), !p.expanded {
+                    say("phase overflow: strip collapsed (\(attempt) click\(attempt == 1 ? "" : "s"))")
+                    return nil
+                }
+            }
+        }
+        say("phase overflow: strip still expanded after the closing clicks")
+        return "overflowStripStillExpanded"
     }
 
     static func isOnBarStrip(_ f: CGRect) -> Bool { f.width > 1 && f.minY < 30 && f.minX > 10 }
@@ -382,9 +459,11 @@ public actor ItemActivator {
     // MARK: click / press
 
     private func clickAndWait(_ t: ActivationTarget, button: ClickButton, mechanism: ActivationMechanism, t0: Date, revealMS: Int?,
-                              revealed: Bool, say: (String) -> Void, tracked: String? = nil) async -> ActivationResult {
+                              revealed: Bool, say: (String) -> Void, tracked: String? = nil,
+                              afterClose: () async -> String? = { nil }) async -> ActivationResult {
         let unit = t.key.hideUnit
         if platform.pressedMouseButtons() != 0 {
+            _ = await afterClose()
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             return .failed(.unavailable("a mouse button is pressed; click refused"))
         }
@@ -395,12 +474,13 @@ public actor ItemActivator {
         let clickMS = Int(platform.now().timeIntervalSince(t0) * 1000)
         guard posted else {
             platform.closeMonitor?.stop()
+            _ = await afterClose()
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             return .failed(.unavailable("could not post the click event"))
         }
         say("phase click: posted at \(Int(centre.x)),\(Int(centre.y)) (\(button))")
         return await finish(t, mechanism: mechanism, clickMS: clickMS, revealMS: revealMS, baseline: baseline, revealed: revealed,
-                            tracked: tracked, say: say, pressError: 0, requireMenu: false)
+                            tracked: tracked, say: say, pressError: 0, requireMenu: false, afterClose: afterClose)
     }
 
     private func pressAndWait(_ t: ActivationTarget, mechanism: ActivationMechanism, t0: Date, revealMS: Int?, revealed: Bool,
@@ -419,7 +499,8 @@ public actor ItemActivator {
     // MARK: menu lifetime
 
     private func finish(_ t: ActivationTarget, mechanism: ActivationMechanism, clickMS: Int, revealMS: Int?, baseline: Int, revealed: Bool,
-                        tracked: String?, say: (String) -> Void, pressError: Int32, requireMenu: Bool) async -> ActivationResult {
+                        tracked: String?, say: (String) -> Void, pressError: Int32, requireMenu: Bool,
+                        afterClose: () async -> String? = { nil }) async -> ActivationResult {
         let unit = t.key.hideUnit
         let postedAt = platform.now()
         func since(_ d: Date) -> TimeInterval { platform.now().timeIntervalSince(d) }
@@ -437,6 +518,7 @@ public actor ItemActivator {
 
         if menuAppear == nil {
             platform.closeMonitor?.stop()
+            _ = await afterClose()
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             if Task.isCancelled { return .failed(.cancelled) }
             return .failed(requireMenu && pressError != 0 ? .pressFailed(pressError) : .noMenu)
@@ -487,6 +569,7 @@ public actor ItemActivator {
             if !gone { note = "menuStillOpenAtCap"; say("menu still open after Escape; re-hiding anyway") }
         }
         say("menu closed (\(closedBy))")
+        if let n = await afterClose() { note = [note, n].compactMap { $0 }.joined(separator: ",") }
 
         // 3. Hide again; never retry here.
         var rehideNote: String?
@@ -653,6 +736,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     public func hostedBarCount() async -> Int? { await platform.hostedBarCount() }
     public func hostedGroupCount() -> Int? { platform.hostedGroupCount() }
     public func hostedLayout() async -> [HostedEntry]? { await platform.hostedLayout() }
+    public func overflowProbe() async -> OverflowProbe? { platform.overflowProbe() }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { platform.recordAssumedHidden(owners, hostedAfter: hostedAfter) }
     public func clearAssumedHidden(pids: Set<pid_t>) { platform.clearAssumedHidden(pids: pids) }
 
@@ -679,7 +763,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
         move.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.03)
         d.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.03)
+        Thread.sleep(forTimeInterval: 0.07)   // hosted status items drop clicks held under ~40 ms (docs/testing.md, gdu.62)
         u.post(tap: .cghidEventTap)
         return true
     }
