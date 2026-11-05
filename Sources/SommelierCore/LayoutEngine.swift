@@ -433,6 +433,9 @@ public actor LayoutEngine {
         requestReconcile(supersede: true, reason: "transient reveal ended")
     }
 
+    /// Publishes (or clears) the poll's suppression notice for the Arrange status line (gdu.58).
+    public func setPollSuppression(_ s: PollSuppression?) async { await publish { $0.pollSuppression = s } }
+
     /// What the poll (`EngineTriggers`) needs to decide whether it may run now (e7t).
     public func pollGate() -> PollGate {
         PollGate(busy: inPass || pending || requestedAt != nil || !delayed.isEmpty || sleeping || !loaded,
@@ -1090,4 +1093,11 @@ public struct PollGate: Sendable, Equatable {
         self.observationSettled = observationSettled; self.userActions = userActions
         self.secondsSinceUserAction = secondsSinceUserAction
     }
+}
+
+/// The poll hit `PollConfig.maxPollPassesPerMinute` and triggers nothing until `until` (gdu.58). Not an error.
+public struct PollSuppression: Sendable, Equatable {
+    public var until: Date
+    public var keys: [ItemKey]
+    public init(until: Date, keys: [ItemKey]) { self.until = until; self.keys = keys }
 }

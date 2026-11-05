@@ -50,6 +50,18 @@ private let resolver: @Sendable (MenuBarSnapshot) -> [ResolvedItem] = { s in
 
 private let base = [it("A", x: 100), it("B", x: 140), it("S1", x: 180), it("S2", x: 220), it("WiFi", x: 260)]
 
+private final class ClockBox: @unchecked Sendable {
+    private let lock = NSLock(); private var d = Date(timeIntervalSince1970: 1_000_000)
+    var now: Date { lock.lock(); defer { lock.unlock() }; return d }
+    func advance(_ s: TimeInterval) { lock.lock(); d = d.addingTimeInterval(s); lock.unlock() }
+}
+
+private final class ReportBox: @unchecked Sendable {
+    private let lock = NSLock(); private var l: [PollSuppression?] = []
+    func add(_ s: PollSuppression?) { lock.lock(); l.append(s); lock.unlock() }
+    var all: [PollSuppression?] { lock.lock(); defer { lock.unlock() }; return l }
+}
+
 @MainActor
 private struct Rig {
     let triggers: EngineTriggers
@@ -57,10 +69,13 @@ private struct Rig {
     let gate: GateBox
     let fired: Counter
     let sleeps: Counter
+    var clock = ClockBox()
+    var reports = ReportBox()
 }
 
 @MainActor
 private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfig()) async -> Rig {
+    let clock = ClockBox(), reports = ReportBox()
     let act = FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let state = EngineState()
     let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: InMemoryLayoutStore(.empty), capabilities: Caps(),
@@ -69,9 +84,10 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
     let gate = GateBox(), fired = Counter(), sleeps = Counter()
     let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver, config: config,
                            signature: BarSignature(selfPositioningOwners: ["S1", "S2"]),
-                           log: { fired.add($0) }, gate: { gate.value }, trigger: { fired.hit() }, sleep: { _ in sleeps.hit() })
+                           log: { fired.add($0) }, gate: { gate.value }, trigger: { fired.hit() }, sleep: { _ in sleeps.hit() },
+                           now: { clock.now }, reportSuppression: { reports.add($0) })
     await t.poll()   // establishes the baseline
-    return Rig(triggers: t, scans: scans, gate: gate, fired: fired, sleeps: sleeps)
+    return Rig(triggers: t, scans: scans, gate: gate, fired: fired, sleeps: sleeps, clock: clock, reports: reports)
 }
 
 @MainActor
@@ -248,7 +264,8 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
     }
 
     @Test func steadyDisagreementWithOneRealChangeCostsExactlyOneExtraPass() async {
-        let r = await rig()
+        var cfg = PollConfig(); cfg.maxPollPassesPerMinute = 100   // the fake clock does not advance: this test is about the guard, not the cap
+        let r = await rig(config: cfg)
         let f = base + [it("C", x: 300)]
         let x = f + [it("D", x: 340)]
         r.scans.set([f]); passPublishes(r, base, serial: 1)
@@ -276,5 +293,80 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         scans.set([base]); await t.poll()   // baseline
         scans.set([base + [it("C", x: 300)]]); await t.poll()
         #expect(fired.count == 0)
+    }
+
+    // gdu.58: cap on poll-triggered passes.
+    private func flap(_ r: Rig, polls n: Int, every: TimeInterval = 10) async {
+        let f1 = base + [it("C", x: 300)], f2 = base + [it("D", x: 300)]
+        for i in 0..<n {
+            let f = i % 2 == 0 ? f1 : f2
+            r.scans.set([f, f])   // detecting scan and confirming scan
+            await r.triggers.poll()
+            r.clock.advance(every)
+        }
+    }
+
+    @Test func twoStateFlapperIsCappedSuppressedAndResumes() async {
+        let r = await rig()
+        await flap(r, polls: 6)   // 60 s of alternation
+        #expect(r.fired.count == 2)   // never more than 2 passes in the first minute
+        let sup = r.fired.logs.filter { $0.hasPrefix("poll: suppressed for 5 min — flapping keys:") }
+        #expect(sup.count == 1)
+        #expect(sup[0].contains("status:C::C") && sup[0].contains("status:D::D"))
+        #expect(r.reports.all.count == 1 && r.reports.all[0]?.keys.count == 2)
+        // Rest of the 5 min window: still scanning, no passes, no repeated log.
+        await flap(r, polls: 20)
+        #expect(r.fired.count == 2)
+        #expect(r.fired.logs.filter { $0.hasPrefix("poll: suppressed") }.count == 1)
+        // Past the window: resumes, the first change triggers as usual.
+        await flap(r, polls: 12)
+        #expect(r.fired.logs.contains("poll: suppression ended, resuming"))
+        #expect(r.reports.all.contains { $0 == nil })
+        #expect(r.fired.count >= 3)
+    }
+
+    @Test func genuineChangeDuringSuppressionIsNotTriggeredByThePoll() async {
+        let r = await rig()
+        await flap(r, polls: 4)
+        #expect(r.fired.count == 2)
+        let before = r.fired.count
+        r.scans.set([base + [it("Z", x: 300)]])
+        await r.triggers.poll()   // documented: the poll triggers nothing while suppressed
+        #expect(r.fired.count == before)
+    }
+
+    @Test func steadyBarIsNotAffectedByTheCap() async {
+        let r = await rig()
+        for _ in 0..<40 { r.scans.set([base]); await r.triggers.poll(); r.clock.advance(10) }
+        #expect(r.fired.count == 0)
+        #expect(r.reports.all.isEmpty)
+        #expect(!r.fired.logs.contains { $0.contains("suppressed") })
+    }
+
+    @Test func capCountsOnlyPollTriggeredPasses() async {
+        // Triggers from other reasons never reach the poll's counter: with one real change per minute the poll is never capped.
+        let r = await rig()
+        var items = base
+        for n in 0..<4 {
+            items = base + [it("N\(n)", x: 300)]
+            r.scans.set([items, items]); await r.triggers.poll()
+            r.clock.advance(70)
+        }
+        #expect(r.fired.count == 4)
+        #expect(!r.fired.logs.contains { $0.contains("suppressed") })
+    }
+
+    @Test func suppressionStatusLineIsNotAnErrorAndNamesTheItems() {
+        let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, pollPausedNames: ["Foo", "Bar"])
+        #expect(line == "Converged · Poll paused 5 min: Foo, Bar flapping")
+        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == "Converged")
+    }
+
+    @Test func flappingKeysAreTheSymmetricDifference() {
+        let s = BarSignature(selfPositioningOwners: [])
+        let a = s.value([ResolvedItem(item: it("A", x: 1), key: .status(ownerKey: "A", autosaveName: "A"), confidence: .inferred),
+                         ResolvedItem(item: it("C", x: 2), key: .status(ownerKey: "C", autosaveName: "C"), confidence: .inferred)])!
+        let b = s.value([ResolvedItem(item: it("A", x: 1), key: .status(ownerKey: "A", autosaveName: "A"), confidence: .inferred)])!
+        #expect(EngineTriggers.flappingKeys(a, b) == ["status:C::C"])
     }
 }
