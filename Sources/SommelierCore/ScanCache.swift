@@ -97,7 +97,9 @@ final class ScanState: @unchecked Sendable {
         for a in f.apps {
             perApp[a.pid] = CachedApp(app: RunningAppInfo(pid: a.pid, bundleID: a.bundleID, name: a.name), infos: a.infos.map(\.info))
         }
-        lastHosted = f.hosted.map(\.info)
+        // gdu.29: files written before main-menu entries were dropped may hold them; ignore those records so the fix is
+        // effective at once. (Per-app extras never contain them; they come from the agent tree only.)
+        lastHosted = f.hosted.map(\.info).filter { !$0.looksLikeMainMenuRecord }
         lastStrip = f.strip
         chronic = Set(f.chronic ?? [])
         hostedKeys = Set(f.hostedKeys ?? [])

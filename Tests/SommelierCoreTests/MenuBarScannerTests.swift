@@ -147,3 +147,62 @@ private func istatTree() -> AgentHostedTree {
     #expect(snap.items.first { $0.axDescription == "iStat Weather" }?.ownerBundleID == "com.bjango.istatmenus.status")
     #expect(snap.items.first { $0.axDescription == "iStat CPU" }?.source == .agentHostedOnly)
 }
+
+// gdu.29: the frontmost app's main menu (AXMenuBarItem without AXMenuExtra, 0x0) is mirrored into the agent tree.
+private func mainMenu() -> [AXElementInfo] {
+    let z = CGRect(x: 0, y: 30, width: 0, height: 0)
+    return [AXElementInfo(title: "Apple", frame: z, isMainMenuEntry: true),
+            AXElementInfo(title: "iStat Menus Menubar", identifier: "_NS:433", frame: z, isMainMenuEntry: true),
+            AXElementInfo(title: "File", identifier: "_NS:450", frame: z, isMainMenuEntry: true),
+            AXElementInfo(title: "Help", identifier: "_NS:541", frame: z, isMainMenuEntry: true)]
+}
+
+private func mainMenuFixture(withMenu: Bool, timedOutMenu: Bool = false) -> FixtureSource {
+    let a = RunningAppInfo(pid: 10, bundleID: "a.b", name: "A")
+    var s = FixtureSource(apps: [agent, a])
+    s.extras[10] = [AXElementInfo(axDescription: "off", frame: parkedFrame()),
+                    AXElementInfo(axDescription: "zero", frame: CGRect(x: 50, y: 3, width: 0, height: 0)),
+                    AXElementInfo(axDescription: "on", identifier: "on.id", frame: bar(60))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+        AXElementInfo(axDescription: "on", identifier: "on.id", frame: bar(60)),
+        AXElementInfo(axDescription: "Clock", frame: bar(900)),
+        // A genuine hosted item that is momentarily 0 wide but is NOT a main-menu entry: unchanged by the filter.
+        AXElementInfo(axDescription: "Drawing", frame: CGRect(x: 700, y: 3, width: 0, height: 24)),
+    ] + (withMenu ? mainMenu() : []),
+        failedReads: timedOutMenu ? 1 : 0, timedOut: timedOutMenu ? mainMenu().map { var m = $0; m.stale = true; return m } : [])
+    return s
+}
+
+@Test func mainMenuEntriesAreDroppedGenuineItemsKept() {
+    let without = MenuBarScanner(source: mainMenuFixture(withMenu: false)).scan()
+    let with = MenuBarScanner(source: mainMenuFixture(withMenu: true)).scan()
+    #expect(with.items.map(\.axDescription) == without.items.map(\.axDescription))
+    #expect(with.items.map(\.title).allSatisfy { !["Apple", "File", "Help", "iStat Menus Menubar"].contains($0) })
+    #expect(with.items.filter { $0.ownerBundleID == menuBarAgentBundleID && $0.axIdentifier.hasPrefix("_NS:") }.isEmpty)
+    #expect(with.parked.map(\.axDescription) == without.parked.map(\.axDescription))
+    // genuine parked (nonzero width, x 0..3, y ~1204) and the zero-width genuine items are exactly as before
+    #expect(with.parked.map(\.axDescription).contains("off"))
+    #expect(with.items.map(\.axDescription).contains("Drawing"))
+}
+
+@Test func timedOutMainMenuGroupIsNotAFailure() {
+    let t = MenuBarScanner.droppingMainMenu(mainMenuFixture(withMenu: true, timedOutMenu: true).tree)
+    #expect(t.timedOut.isEmpty && t.failedReads == 0)
+    #expect(t.elements.count == 3)
+    let snap = MenuBarScanner(source: mainMenuFixture(withMenu: false, timedOutMenu: true)).scan()
+    #expect(snap.items.allSatisfy { $0.axIdentifier != "_NS:450" })
+}
+
+@Test func oldScanCacheMainMenuRecordsAreIgnoredOnLoad() {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("gdu29-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    let z = CGRect(x: 0, y: 30, width: 0, height: 0)
+    let writer = ScanState(url: url)
+    writer.lastHosted = [AXElementInfo(title: "File", identifier: "_NS:450", frame: z),
+                         AXElementInfo(title: "Apple", frame: z),
+                         AXElementInfo(axDescription: "Clock", identifier: "com.apple.menuextra.clock", frame: bar(900))]
+    writer.save()
+    let reader = ScanState(url: url)
+    reader.loadIfNeeded()
+    #expect(reader.lastHosted.map(\.axDescription) == ["Clock"])
+}

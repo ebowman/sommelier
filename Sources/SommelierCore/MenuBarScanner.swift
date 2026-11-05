@@ -135,6 +135,18 @@ public struct MenuBarScanner {
 
     // MARK: - Agent tree
 
+    /// Removes the frontmost app's main-menu entries (`isMainMenuEntry`, gdu.29) from a hosted read: they are not status
+    /// items. Nothing else is touched. If every timed-out element was such an entry (and nothing else failed), the failure
+    /// was a main-menu group and is not counted.
+    static func droppingMainMenu(_ t: AgentHostedTree) -> AgentHostedTree {
+        guard t.elements.contains(where: \.isMainMenuEntry) || t.timedOut.contains(where: \.isMainMenuEntry) else { return t }
+        var r = t
+        r.elements = t.elements.filter { !$0.isMainMenuEntry }
+        r.timedOut = t.timedOut.filter { !$0.isMainMenuEntry }
+        if r.timedOut.isEmpty, !t.timedOut.isEmpty, t.unnamedTimeouts == 0, t.topFailures == 0 { r.failedReads = 0 }
+        return r
+    }
+
     /// Longest an item may be carried forward as stale before it is believed gone.
     static let maxStaleScans = 3
 
@@ -160,7 +172,7 @@ public struct MenuBarScanner {
         }
         var tree = AgentHostedTree(stripFrame: nil, elements: [])
         for attempt in 1...(retry ? 3 : 1) {
-            tree = readOnce()
+            tree = Self.droppingMainMenu(readOnce())
             if !tree.elements.isEmpty || !tree.timedOut.isEmpty { break }
             log("MenuBarAgent hosted tree empty (attempt \(attempt))")
         }
@@ -175,7 +187,7 @@ public struct MenuBarScanner {
         // Absent without any read error: either gone or a transient gap (agent mid-relayout). Look once more.
         if !previous.isEmpty, tree.unnamedTimeouts == 0, !missing(tree).isEmpty, !tree.elements.isEmpty || retry {
             log("\(missing(tree).count) previously visible item(s) absent; re-reading to confirm")
-            let again = readOnce()
+            let again = Self.droppingMainMenu(readOnce())
             let have = Set(again.elements.map(\.identityKey))
             let firstOnly = tree.elements.filter { !have.contains($0.identityKey) }
             tree = AgentHostedTree(stripFrame: again.stripFrame ?? tree.stripFrame, elements: again.elements + firstOnly,

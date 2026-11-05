@@ -118,3 +118,26 @@ resolves to `status:com.bjango.istatmenus.status::com.bjango.istatmenus.<module>
 
 * `mbprobe list` shows a key column and marker (`=` exact, `~` inferred, `?` heuristic); `--json` adds parallel `keys` and `keyConfidence` arrays.
 * `mbprobe keys <ownerKey|bundleID>` prints, per matching owner key, the autosave names with store and legacy values.
+
+## Main-menu entries in the agent tree (gdu.29)
+
+MenuBarAgent can mirror the frontmost app's MAIN menu into its AX tree (Apple, the app-name menu, File, Edit, Format, View, Window, Help). They
+reach the scanner as agent-hosted elements owned by `com.apple.MenuBarAgent` and, before gdu.29, became `heuristic:com.apple.MenuBarAgent::_NS:<n>`
+parked entries (w=0, x=0) that change with the front app.
+
+Evidence (`docs/evidence/ax-b-drag-unrelated.txt` and siblings, 190 such lines, always the same shape):
+`AXMenuBarItem sub= title='File' desc='' id='_NS:450'` at x=0 y=30 w=0 h=0. The iStat entry is `title='iStat Menus Menubar' id='_NS:433'` in the
+same shape: it is iStat's app-name menu (iStat was frontmost then), not a status item, so the same rule covers it; no title special case.
+All 266 hosted `AXMenuBarItem`s in the evidence set that are status items carry subrole `AXMenuExtra`; the only ones without it are these
+main-menu entries. Hosted status items in the live tree today are `AXMenuBarItem/AXMenuExtra` (Control Center modules) or `AXButton`.
+
+Discriminator (structural, not frame based): role `AXMenuBarItem` AND subrole != `AXMenuExtra`. `LiveAccessibilitySource.collect` sets
+`AXElementInfo.isMainMenuEntry`; `MenuBarScanner.droppingMainMenu` removes such elements (and timed-out copies of them) from every hosted read
+before anything else (carry-forward, noise, completeness, `lastHosted`). A timed-out group made only of such entries is not counted as a failed read.
+The width <= 1 noise rule (gdu.51/54) is unchanged and still applies to everything else (a genuine item that is briefly 0 wide is kept as before).
+
+Persisted cache: `ScanCache` stores no role, so on load `lastHosted` records with an empty 0x0 frame, a title and no description are discarded
+(`AXElementInfo.looksLikeMainMenuRecord`). Per-app extras and the key sets never contained these elements.
+
+Limitation: the live agent did not mirror the main menu during the gdu.29 session (12 dumps, Finder/Terminal/TextEdit/Safari/Mail, 0 occurrences),
+so the live "before" could not be reproduced; the rule rests on the recorded evidence plus the unit tests.
