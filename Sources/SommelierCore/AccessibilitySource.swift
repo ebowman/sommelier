@@ -381,8 +381,8 @@ public struct LiveAccessibilitySource: AccessibilitySource {
             var info = r.info
             info.directWindowChild = depth == 1 && r.role == "AXButton"
             // The frontmost app's main menu is mirrored here as AXMenuBarItem with NO AXMenuExtra subrole (gdu.29); every
-            // hosted status item is either an AXMenuExtra or an AXButton.
-            info.isMainMenuEntry = r.role == "AXMenuBarItem" && r.subrole != "AXMenuExtra"
+            // hosted status item is either an AXMenuExtra or an AXButton. The 0x0 check guards against a subrole read that failed alone.
+            info.isMainMenuEntry = r.role == "AXMenuBarItem" && r.subrole != "AXMenuExtra" && info.frame.size == .zero
             c.found.append(info)
         }
         guard depth < 4 else { return }
