@@ -93,6 +93,17 @@ private struct LevelObserver: MenuBarObserver {
     }
 }
 
+/// Like `LevelObserver` but the read level can change between passes.
+private final class MutableLevelObserver: MenuBarObserver, @unchecked Sendable {
+    let box: ActuatorBox
+    var level: ReadCompleteness
+    init(box: ActuatorBox, level: ReadCompleteness) { self.box = box; self.level = level }
+    func observe() async throws -> [ResolvedItem] { try await ActuatorObserver(actuator: box.actuator!).observe() }
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        BarObservation(items: try await observe(), settled: true, scans: 2, completeness: level)
+    }
+}
+
 private let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
 
 private struct Rig {
@@ -192,6 +203,28 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let final = await r.actuator.order
         #expect(final.first == istat)
         #expect(final == [istat, k("B"), k("A")])
+    }
+
+    // gdu.61: the gdu.51 gate. A move of an ordinary item whose relation target is a self-positioning item waits for a
+    // COMPLETE read (the target's frame is not trusted while its items are stale); it is not a failure and proceeds later.
+    @Test func moveNextToSelfPositioningItemWaitsForACompleteRead() async {
+        let order = [k("A"), istat, k("B")]
+        let layout = Layout(visible: [k("B"), istat, k("A")])   // B is placed before iStat (never dragged); the bar ends [B, A, istat] since anchor slots are kept per pass, not across passes
+        let box = ActuatorBox()
+        let obs = MutableLevelObserver(box: box, level: .completeExceptSelfPositioning)
+        let r = await rig(order: order, layout: layout, observer: obs)
+        box.actuator = r.actuator
+        let first = await r.engine.reconcileOnce()
+        #expect(first.outcome == .unsettled)
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(await r.actuator.order == order)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else { true } })
+        obs.level = .complete
+        let second = await r.engine.reconcileOnce()
+        #expect(second.outcome != .unsettled)
+        let calls = await r.actuator.calls
+        #expect(calls.contains { if case .move(_, .before(let t)) = $0 { t == istat } else if case .move(_, .after(let t)) = $0 { t == istat } else { false } })
+        #expect(await r.actuator.order != order)
     }
 
     @Test func orderAmongOthersProceedsOnAnExceptSelfPositioningRead() async {

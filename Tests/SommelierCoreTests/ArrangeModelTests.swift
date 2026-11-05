@@ -488,3 +488,27 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     let log = t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 7, showHiddenSection: false, now: t0 + 201)
     #expect(log.count == 1 && t.isEmpty)
 }
+
+// MARK: self-positioning rows (gdu.61)
+
+@Test func orderOnlyDropOfASelfPositioningRowIsRefusedButHideShowIsAccepted() {
+    let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
+    let layout = Layout(visible: [k("a"), istat, k("b")], hidden: [k("h")])
+    let free: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
+    // order-only inside Visible: refused with the truthful reason, layout untouched
+    #expect(ArrangeDrop.outcome(layout: layout, key: istat, to: .visible, index: 0, capabilities: free) == .rejected(ArrangeDrop.positionsItself))
+    #expect(ArrangeDrop.positionsItself.contains("positions itself"))
+    // hide (section change) is accepted
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: istat, to: .hidden, index: nil, capabilities: free) {
+        #expect(l.hidden.contains(istat) && !l.visible.contains(istat))
+    } else { Issue.record("hiding a self-positioning row must be accepted") }
+    // show (hidden -> visible) is accepted
+    let parked = Layout(visible: [k("a")], hidden: [istat])
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: parked, key: istat, to: .visible, index: 0, capabilities: free) {
+        #expect(l.visible.contains(istat))
+    } else { Issue.record("showing a self-positioning row must be accepted") }
+    // a normal row's order drop is accepted
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 0, capabilities: free) {
+        #expect(l.visible.first == k("b"))
+    } else { Issue.record("an ordinary row can be reordered") }
+}

@@ -168,7 +168,8 @@ Manual checklist (every step: the capsule shows "⟳" until `mbprobe list` agree
 6. Toolbar: "Hide what does not fit" is disabled unless macOS has an overflow chevron on the bar (`mbprobe list` shows "overflow");
    with a full bar (`make dummy ARGS="--count 31"`) it is enabled and its sheet lists the units that will hide. "Adopt current order"
    shows its confirmation. The Bartender banner appears while Bartender runs (the app is paused).
-- iStat items never dragged (mbprobe list order of iStat unchanged by a reorder pass); hiding them still works; their Arrange row says "Positions itself" (gdu.33).
+7. iStat items are never dragged (mbprobe list order of iStat unchanged by a reorder pass); hiding them still works; their Arrange row says
+   "Positions itself" (gdu.33); an order-only drop of an iStat row inside Visible is refused with that reason, hide/show is accepted (gdu.61).
 
 Headless drop pipeline (no mouse): `SOMMELIER_ARRANGE_MOVE="status:MBDummy::Dummy-A|hidden|-"` (key as printed by `mbprobe list`; the
 index is 0-based among MOVABLE items of the target section (modules do not count; `mbprobe layout move` is 1-based), passes through

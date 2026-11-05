@@ -372,6 +372,8 @@ public enum ArrangeCapabilities {
 }
 
 public enum ArrangeDrop {
+    /// Refusal for an order-only drop of a self-positioning row (gdu.61): the planner treats it as an anchor and would ignore the order.
+    public static let positionsItself = "This item positions itself: Sommelier does not manage its order. You can still hide or show it."
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
 
     public enum Direction: Sendable { case left, right }
@@ -396,6 +398,11 @@ public enum ArrangeDrop {
         let cap = capabilities(key)
         guard cap.canMove else { return .rejected(cap.reason ?? "This item cannot be moved.") }
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
+        // Reordering within Visible is ignored by the planner for a self-positioning item (an anchor, gdu.33): refuse it
+        // instead of saving a layout that would never be applied. Changing section (hide/show) stays accepted.
+        if section == .visible, layout.section(of: key) == .visible, SelfPositioning.isSelfPositioning(key) {
+            return .rejected(positionsItself)
+        }
         var l = layout
         let moved = l.move(key, to: section, index: index)
         if l == layout { return .noop }

@@ -48,7 +48,9 @@ public actor LayoutEngine {
         public var maxKeyFailures = 3
         /// Consecutive passes in which every action failed (each ended by `maxConsecutiveFailures`) before the engine reports `stoppedAfterFailures`.
         public var maxAllFailedPasses = 3
-        /// Owners whose stale items do not block a pass but whose ORDER is only actuated on a COMPLETE read (gdu.51).
+        /// Owners (iStat Menus) whose stale items do not block a pass (gdu.51: a move that drops next to one is only actuated on a
+        /// COMPLETE read) and which the planner treats as ANCHORS: never moved, never planned by the layout, their observed slot is
+        /// authoritative (gdu.33). Hiding and showing them is unaffected.
         public var selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners
         /// `setLayout` calls closer together than this are one request: only the last layout is planned (gdu.47). Zero = no window.
         public var layoutCoalesce: Duration = .milliseconds(300)
@@ -824,15 +826,17 @@ public actor LayoutEngine {
 
         func isConverged() -> Bool { failures.isEmpty }
 
-        // (e2) ORDER actuation that involves a self-positioning owner (a moved item or its target) waits for a COMPLETE
+        // (e2) ORDER actuation that involves a self-positioning owner (a move's relation target) waits for a COMPLETE
         // read: with their items stale, their frames and slots are not trusted (gdu.51). Membership is not affected.
         if plan.phase == .order, observedCompleteness != .complete {
             let owners = config.selfPositioningOwners
-            func sp(_ k: ItemKey) -> Bool { if case .status(let o, _) = k { return owners.contains(o) }; return false }
+            // Only the relation TARGET can be a self-positioning item: the planner never moves one (they are anchors, gdu.33).
             let involved = plan.actions.contains { a in
-                guard case .move(let k, let rel) = a else { return false }
-                if sp(k) { return true }
-                switch rel { case .before(let t), .after(let t): return sp(t); case .leftmost, .rightmost: return false }
+                guard case .move(_, let rel) = a else { return false }
+                switch rel {
+                case .before(let t), .after(let t): return SelfPositioning.isSelfPositioning(t, owners: owners)
+                case .leftmost, .rightmost: return false
+                }
             }
             if involved {
                 log("engine: order actuation involves a self-positioning owner and the read is \(observedCompleteness.rawValue); waiting for a complete read")

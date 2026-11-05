@@ -181,9 +181,12 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   their own across agent restarts, so the planner treats them as `canMove == false` and does not place them from the layout at all (they keep their observed slot, like
   any unplaced anchor): never dragged, no "out of order" skip and no convergence dependency on their slot. Hide/show is unchanged. The actuator's drift exemption
   (`LiveActuator.Config.selfPositioningOwners`), `LayoutEngine.Config`, `MenuBarScanner` and `BarSignature` default to the same set. The Arrange row shows "Positions itself".
+  Arrange refuses an ORDER-ONLY drop of such a row inside Visible (`ArrangeDrop.outcome` -> `ArrangeDrop.positionsItself`; the planner would ignore the order, so
+  it is not saved); a drop that changes section (hide/show) is accepted. `CapabilityRules` is unchanged (`canMove == false` there blocked drag-to-hide, gdu.33).
+  The engine's gdu.51 gate only checks the relation TARGET (`SelfPositioning.isSelfPositioning`): a move next to an iStat item waits for a `.complete` read; the subject is never one.
 - Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock) is unreachable for third-party
   items on macOS 26+. A movable key the layout places right of its first item goes into `skipped` ("cannot be placed right of the system
-  items (<anchor>)") and is relocated in the target to the last slot before the block (relative order kept), so no drag ever has an anchor
+  items (<anchor>)"; the name is the block's first MODULE, since a self-positioning item can sit at its start, gdu.61) and is relocated in the target to the last slot before the block (relative order kept), so no drag ever has an anchor
   as subject or a destination in the block (asserted after `moves`). The block is taken from the observed bar BEFORE shown items are
   appended, so in a membership pass a key the layout puts right of the clock is already skipped and relocated before it in
   `desiredOnBar` (shows no longer appear right of the clock until the order pass). When anchors are out of layout order, movable keys
