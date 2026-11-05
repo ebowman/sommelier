@@ -185,8 +185,8 @@ description unique among ALL owner items and among hosted elements, so two owner
 | `com.apple.systemuiserver::#0` | 3/3 | none 9 (no hosted counterpart; stays unchecked) |
 | `com.stairways.keyboardmaestro.engine::#0` (5 dumps) | 0 transitions with both sides present | none 4, frameAmbiguous 1 |
 
-Corroborated (identifier/description/frameUnique): 6 of 8 on-bar, hosted-paired items in every dump with one FlöTile instance; with
-two instances FlöTile drops out and the item stays uncorroborated (correct: the two instances cannot be told apart by description).
+Corroborated (identifier/description/frameUnique): 7 of 7 on-bar, hosted-paired items in the dumps with one FlöTile instance
+(SystemUIServer has no hosted counterpart); 6 of 8 with two instances, where FlöTile drops out and stays uncorroborated (correct: the two instances cannot be told apart by description).
 Key stability: 26 item-transitions over the 3 restarts (9 + 9 + 8 items present on both sides), 26 identical keys, 0
 disagreements. (An earlier draft of this section said 28 and listed FlöTile, GateOpener and the Emoji item as frameUnique; both were wrong.)
 With an overlap-any frame rule KeepingYouAwake and the Emoji item would have been ambiguous in the 84383 session (a 2 px overlap
