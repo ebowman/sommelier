@@ -31,9 +31,11 @@ findings-visibility B1-B5).
   integers, equal neighbour values, inverted values) the smallest contiguous run around the slot is re-based between two untouched anchors
   (spacing >= 2, order kept, never a key outside the run, never `module:`). One write, one respawn, full-scan verification. Refused
   when the engine config has `allowFallback == false`.
-* **Hide with no tracked entry:** no mechanism exists. `Capability.canHide == false` with a reason; the UI greys the control and
-  offers "Open System Settings > Menu Bar". Not silently dropped: follow-up bead **sommelier-gdu.24** investigates whether the system
-  creates an entry on first launch / after an agent restart and whether we can then hide the item.
+* **Hide with no tracked entry:** the system creates the entry itself ~0.2-0.3 s after a status-item app launches (gdu.24, findings-untracked-hide.md),
+  so "untracked" is normally transient: re-read `trackedApplications` for >= 1 s before declaring it. If still absent, `Capability.canHide == false` with the reason
+  "cannot be hidden: not tracked by Control Center" and the UI offers "Open System Settings > Menu Bar". Creating the entry ourselves works (entitled cfprefsd write, `isAllowed=false`, honoured and kept)
+  ONLY with the exact system shape including `menuItemLocations` matching the launching executable (wrong shape is overwritten to `isAllowed=true` within ~0.25 s; a shape without `menuItemLocations` makes the system discard the whole blob). Proven for ad-hoc apps only; follow-up
+  (not yet filed): implement the recipe in findings-untracked-hide.md after proving the signed-app `menuItemLocations` form.
 * **Hide for Apple apps / modules:** only through System Settings (store refuses `com.apple.*` and `module:`).
 * **Show-in-place without restart:** none. AXPress on a parked item opens its UI (see (d)) but does not un-hide it.
 
@@ -317,7 +319,7 @@ Every event becomes a (delayed) `LayoutEngine.requestReconcile`; none of them ac
 |---|---|---|
 | Module items (Wi-Fi, Battery, clock, Control Center, Siri): cannot be dragged, cannot be placed right of Control Center/clock; hidden only in System Settings > Menu Bar | findings-positioning C3 (placement limit, measured); no-drag is a self-imposed rule (`ItemResolver.protected`, mbprobe refuses), untested by design since we never drag Control Center/clock; store refuses `module:` (self-imposed guard) | lock icon; `Capability.canMove=false, canHide=false`, reason tooltip, "Open Settings" link |
 | Third-party item cannot go right of Control Center | positioning C3 | drop target clamps; `.rightmost` means just left of Control Center |
-| App without a Control Center tracked entry cannot be hidden | visibility A7/A8 | `canHide=false` + reason; bead gdu.24 |
+| App without a Control Center tracked entry cannot be hidden | visibility A7/A8 | `canHide=false` + reason "not tracked by Control Center"; entry is auto-created ~0.2-0.3 s after launch, hand-created entries only with the exact system shape (gdu.24, findings-untracked-hide.md) |
 | Apple (`com.apple.*`) apps cannot be hidden by us | store guard | same |
 | Parked item cannot be dragged | drag findings (on-bar only) | reorder of a parked item uses the fallback or is disabled until shown |
 | Stale / heuristic identity | gdu.23, gdu.4 | greyed with "unverified" badge, actions disabled until a fresh full scan |
@@ -359,7 +361,7 @@ restore afterwards).
 
 ## Follow-up beads
 
-* **sommelier-gdu.24**: investigate hiding apps with no Control Center tracked entry.
+* **sommelier-gdu.24** (done): see findings-untracked-hide.md; follow-up: implement the entry-creation recipe for ad-hoc apps, prove the signed-app form first.
 * Not wholly infeasible: nothing else; every required capability (reorder, hide/show, panel activation) has a working mechanism.
 * `mbprobe --fake` plumbing was skipped (not trivial: mbprobe has no actuator subcommands yet; gdu.9 adds `move/hide/show`).
 
