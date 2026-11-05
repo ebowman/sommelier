@@ -209,8 +209,8 @@ public struct Reconciler: Sendable {
         // the drawn bar: the order is planned on the drawn items right of it only, so no move has an overflowed item or the
         // chevron as subject or relation target, and none lands left of the chevron (`.leftmost` is rewritten, see `moves`).
         // gdu.80: churn-zone keys (in the pile, or beside the first drawn item, in either of the last two complete reads) are
-        // treated exactly like overflowed keys: never a move subject or anchor. Only meaningful with a chevron on the bar.
-        let churnKeys = observed.overflowChevron == nil ? [] : churn.intersection(onBarSet).subtracting(observed.systemOverflow)
+        // treated exactly like overflowed keys: never a move subject or anchor. The caller passes a non-empty set only while one of the last two complete reads had a chevron (the chevron may be gone now).
+        let churnKeys = churn.intersection(onBarSet).subtracting(observed.systemOverflow)
         let ovf = observed.systemOverflow.intersection(onBarSet).union(churnKeys)
         let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }
         let ovfKept = onBar.filter { ovf.contains($0) && wantOnBar.contains($0) && !hideSet.contains($0) }

@@ -83,13 +83,13 @@ struct FullBarChurnRuleTests {
         #expect(with.skipped.contains { $0.key == k("D1") && $0.reason == SystemOverflowRule.churnSkipReason })
     }
 
-    @Test func aBarWithoutAChevronIgnoresTheChurnSet() {
+    @Test func anEmptyChurnSetChangesNothing() {
         let on = [k("A"), k("B"), k("C")]
         let observed = ObservedOrder(onBar: on, parked: [])
         let layout = Layout(visible: [k("C"), k("B"), k("A")])
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
         let plain = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
-        let withStale = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: [k("A"), k("B")])
+        let withStale = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: [])
         #expect(plain == withStale)
         #expect(!plain.actions.isEmpty)
     }
@@ -101,6 +101,19 @@ private final class Geometry: @unchecked Sendable {
     private var _pile = 3
     private var _alternate = false
     private var reads = 0
+    enum Chevron { case fixed(Bool), dropsOnceSomethingIsHidden, appearsOnceSomethingIsHidden }
+    private var _chevron = Chevron.fixed(true)
+    var chevron: Chevron {
+        get { lock.lock(); defer { lock.unlock() }; return _chevron }
+        set { lock.lock(); _chevron = newValue; lock.unlock() }
+    }
+    func hasChevron(hidden: Set<ItemKey>) -> Bool {
+        switch chevron {
+        case .fixed(let b): return b
+        case .dropsOnceSomethingIsHidden: return hidden.isEmpty
+        case .appearsOnceSomethingIsHidden: return !hidden.isEmpty
+        }
+    }
     var pile: Int {
         get { lock.lock(); defer { lock.unlock() }; return _pile }
         set { lock.lock(); _pile = newValue; lock.unlock() }
@@ -124,7 +137,8 @@ private final class Lines: @unchecked Sendable {
     func has(_ s: String) -> Bool { all.contains { $0.contains(s) } }
 }
 
-private func snapshot(_ g: Geometry, order: [ItemKey], hidden: Set<ItemKey>, chevron: Bool) -> MenuBarSnapshot {
+private func snapshot(_ g: Geometry, order: [ItemKey], hidden: Set<ItemKey>) -> MenuBarSnapshot {
+    let chevron = g.hasChevron(hidden: hidden)
     func item(_ key: ItemKey, _ frame: CGRect, onBar: Bool, chev: Bool = false) -> MenuBarItem {
         MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: key.description, axDescription: "", axIdentifier: key.description,
                     frame: frame, source: .appExtras, isOnMenuBar: onBar, isOverflowChevron: chev)
@@ -146,10 +160,9 @@ private func snapshot(_ g: Geometry, order: [ItemKey], hidden: Set<ItemKey>, che
 private struct GeoObserver: MenuBarObserver {
     let actuator: FakeActuator
     let geo: Geometry
-    let chevron: Bool
     func observe() async throws -> [ResolvedItem] {
         let order = await actuator.order, hidden = await actuator.hidden
-        return FakeMenuBar.resolve(snapshot(geo, order: order, hidden: hidden, chevron: chevron))
+        return FakeMenuBar.resolve(snapshot(geo, order: order, hidden: hidden))
     }
 }
 
@@ -163,13 +176,14 @@ private struct ChevRig {
 
 @MainActor
 private func chevRig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout, chevron: Bool = true,
-                     reveal: Bool = false) async -> ChevRig {
+                     reveal: Bool = false, mode: Geometry.Chevron? = nil) async -> ChevRig {
     let geo = Geometry()
     let lines = Lines()
+    geo.chevron = mode ?? .fixed(chevron)
     let act = FakeActuator(order: order, hidden: hidden, capabilities: Caps(),
-                           makeSnapshot: { snapshot(geo, order: $0, hidden: $1, chevron: chevron) })
+                           makeSnapshot: { snapshot(geo, order: $0, hidden: $1) })
     let state = EngineState()
-    let engine = LayoutEngine(observer: GeoObserver(actuator: act, geo: geo, chevron: chevron), actuator: act,
+    let engine = LayoutEngine(observer: GeoObserver(actuator: act, geo: geo), actuator: act,
                               store: InMemoryLayoutStore(layout), capabilities: Caps(), state: state,
                               resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { lines.add($0) },
                               showHiddenSection: reveal)
@@ -260,6 +274,62 @@ struct FullBarChurnEngineTests {
         }
         #expect(!touched.contains(k("D1")))
         #expect(!touched.contains(k("P3")))
+    }
+}
+
+@MainActor
+@Suite("Full-bar churn (gdu.80): chevron changes across the write")
+struct FullBarChevronChangeTests {
+    static let layout = FullBarChurnEngineTests.layout
+    static let order = FullBarChurnEngineTests.order
+    static func touched(_ calls: [FakeActuator.Call]) -> [ItemKey] {
+        moves(calls).flatMap { c -> [ItemKey] in
+            guard case .move(let s, let rel) = c else { return [] }
+            switch rel { case .before(let t), .after(let t): return [s, t]; default: return [s] }
+        }
+    }
+
+    @Test func noChevronBeforeChevronAfterDefersTheOrderPhase() async {
+        let r = await chevRig(order: Self.order, layout: Self.layout, mode: .appearsOnceSomethingIsHidden)
+        let rep = await r.engine.reconcileOnce()
+        let calls = await r.actuator.calls
+        #expect(calls.contains { if case .applyHiddenBatch = $0 { true } else { false } })
+        #expect(moves(calls).isEmpty)
+        #expect(rep.outcome == .incomplete && r.state.isConverged == false)
+        #expect(r.lines.has("order deferred: membership changed this pass"))
+    }
+
+    @Test func chevronBeforeNoneAfterAReHideDefersAndOrdersOnlyAfterTwoAgreeingReads() async {
+        let r = await chevRig(order: Self.order, layout: Self.layout, mode: .dropsOnceSomethingIsHidden)
+        let rep = await r.engine.reconcileOnce()
+        let calls = await r.actuator.calls
+        #expect(calls.contains { if case .applyHiddenBatch = $0 { true } else { false } })
+        #expect(moves(calls).isEmpty)                      // the incident pattern: no drag right after the write
+        #expect(rep.outcome == .incomplete && r.state.isConverged == false)
+        #expect(r.lines.has("order deferred: membership changed this pass"))
+        // the post-write read (no chevron) does not agree with the pre-write one (chevron); the follow-up pass's own read agrees
+        // with the post-write read, so ordering happens there and only there
+        _ = await r.engine.reconcileOnce()
+        #expect(!moves(await r.actuator.calls).isEmpty)
+    }
+
+    @Test func theChurnZoneSurvivesTheVanishedChevronForPlannerAndEngine() {
+        let on = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3")]
+        let observed = ObservedOrder(onBar: on, parked: [])
+        let layout = Layout(visible: [k("P3"), k("P2"), k("P1"), k("D1"), k("D3"), k("D2")])
+        let zone = SystemOverflowRule.churnZone([rv65Read(), ChurnRead(entries: [])])
+        #expect(zone.contains(k("P3")) && zone.contains(k("D1")))
+        let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
+        let open = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
+        let guarded = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: zone)
+        func ks(_ p: Plan) -> Set<ItemKey> {
+            Set(p.actions.flatMap { a -> [ItemKey] in
+                guard case .move(let s, let rel) = a else { return [] }
+                switch rel { case .before(let t), .after(let t): return [s, t]; default: return [s] }
+            })
+        }
+        #expect(!ks(open).isDisjoint(with: zone))
+        #expect(ks(guarded).isDisjoint(with: zone))
     }
 }
 

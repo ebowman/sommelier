@@ -470,7 +470,7 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   hosted item, 40 pt fallback) of the first drawn item right of the chevron, in EITHER of the last two complete reads. The planner
   treats them like overflowed keys (`Reconciler.plan(churn:)`: never move subject or anchor; skip "bar is full; macOS decides what
   fits") and `LiveActuator.setChurnZone` makes the actuator refuse a move whose subject or anchor is in it (an overflow refusal:
-  skip, no strike). Bars without a chevron are unchanged: membership and order still run in one pass.
+  skip, no strike). The zone is computed whenever EITHER of the last two reads had a chevron, so a re-hide that empties the pile (chevron gone) still defers and still guards; the gate also keys on a chevron before the write (`fullBefore`). The widest hosted item can be a ~140 pt clock, which widens the zone to 4-5 drawn items (accepted). Bars without a chevron are unchanged: membership and order still run in one pass.
 - Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
   warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. The Arrange window's
   "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls

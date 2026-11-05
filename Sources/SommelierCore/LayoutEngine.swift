@@ -541,7 +541,7 @@ public actor LayoutEngine {
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          selfPositioningOwners: config.selfPositioningOwners, units: rule,
-                                         churn: obs.overflowChevron == nil ? [] : SystemOverflowRule.churnZone(recentReads))
+                                         churn: SystemOverflowRule.churnZone(recentReads))
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -928,7 +928,7 @@ public actor LayoutEngine {
         let generation = layoutGeneration
         lastStart = .now
         var actionCount = 0
-        await publish { $0.passesStarted += 1 }
+        await publish { $0.passesStarted += 1; if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil } }
 
         var userPass = false
         if let r = requestedAt {
@@ -1004,7 +1004,6 @@ public actor LayoutEngine {
         if generation != layoutGeneration { return await endSuperseded(PassReport(outcome: .superseded)) }   // the layout changed during observation
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
         pruneFailures(obs)
-        await publish { if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil } }
 
         // (c) plan
         var plan = makePlan(obs)
@@ -1067,7 +1066,7 @@ public actor LayoutEngine {
         }
 
         // (f2) gdu.80: on a full bar (a chevron) the order phase needs a settled overflow set; a reveal never orders.
-        if plan.phase == .order, let r = await fullBarOrderGate(obs: obs, wroteMembership: false, actionCount: actionCount, phase: phaseReached) { return r }
+        if plan.phase == .order, let r = await fullBarOrderGate(obs: obs, wroteMembership: false, fullBefore: false, actionCount: actionCount, phase: phaseReached) { return r }
 
         // (g) membership phase
         if plan.phase == .membership {
@@ -1195,8 +1194,7 @@ public actor LayoutEngine {
             }
             // gdu.80: the membership batch changed what fits: on a full bar the overflow pile just changed, so nothing is dragged
             // in this pass. A follow-up pass orders once two complete reads agree on the pile.
-            if fullBefore || obs.overflowChevron != nil,
-               let r = await fullBarOrderGate(obs: obs, wroteMembership: true, actionCount: actionCount, phase: phaseReached) { return r }
+            if let r = await fullBarOrderGate(obs: obs, wroteMembership: true, fullBefore: fullBefore, actionCount: actionCount, phase: phaseReached) { return r }
         }
 
         // (h) order phase
@@ -1243,7 +1241,7 @@ public actor LayoutEngine {
             }
             lastAction = action
             await setStatus(key, .moving, inFlight: action)
-            await actuator.setChurnZone(obs.overflowChevron == nil ? [] : SystemOverflowRule.churnZone(recentReads))
+            await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
             let result = await actuator.move(key, relation: rel)
             actionCount += 1
             switch result {
@@ -1288,8 +1286,9 @@ public actor LayoutEngine {
     ///  - membership was written this pass: order deferred; a follow-up pass orders after the bar has settled
     ///  - the last two complete reads disagree on the overflow set: order deferred until they agree
     /// nil: proceed (no chevron, or the pile is settled and nothing was written).
-    private func fullBarOrderGate(obs: ObservedOrder, wroteMembership: Bool, actionCount: Int, phase: PlanPhase) async -> PassReport? {
-        guard obs.overflowChevron != nil || (wroteMembership && recentReads.last?.hasChevron == true) else { return nil }
+    private func fullBarOrderGate(obs: ObservedOrder, wroteMembership: Bool, fullBefore: Bool, actionCount: Int, phase: PlanPhase) async -> PassReport? {
+        // Full now, full before the write (a re-hide can empty the pile and drop the chevron), or full in either of the last two reads.
+        guard obs.overflowChevron != nil || (wroteMembership && fullBefore) || recentReads.suffix(2).contains(where: \.hasChevron) else { return nil }
         func end(_ o: PassReport.Outcome, converged: Bool, retry: Bool) async -> PassReport {
             let r = PassReport(outcome: o, phase: phase, actionCount: actionCount)
             if retry, draining, !stopped, chained < config.maxChainedPasses { chained += 1; pending = true }
