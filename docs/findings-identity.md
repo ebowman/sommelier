@@ -167,22 +167,30 @@ rules above, ordinal per owner and fingerprint). The dumps span FOUR different M
 95109; ascending pid taken as chronological), i.e. 3 restart transitions, NOT 5; the remaining measurement (5 plain restarts of the
 live agent, including `signal`, whose multi-line title the dump format does not carry) is pending the gdu.42 trial. Not performed here.
 
-| identifier-less item (derived key) | dumps present (of 9) | key identical across the 3 restarts | join corroborated (`frameUnique`) |
-|---|---|---|---|
-| `info.marcel-dierkes.KeepingYouAwake::#0` | 9 | 3/3 | 9/9 |
-| `ie.boboco.GateOpener::GateOpener — click to open the gate#0` | 9 | 3/3 | 9/9 |
-| `ie.boboco.FloTile::FlöTile#0` | 9 | 3/3 | 9/9 |
-| `ie.boboco.FloTile::FlöTile#1` (second FlöTile element, 5 dumps) | 5 | 2/2 transitions where present on both sides (absent in ax-final4) | 5/5 |
-| `ie.boboco.vpnswitch::Shield Lefthalf ... Badge#0` | 9 | 3/3 | 9/9 |
-| `com.airmail2hookmark.app::Airmail2Hookmark#0` | 9 | 3/3 | 9/9 |
-| `com.corsair.ControlCenter::#0` | 9 | 3/3 | 9/9 |
-| `com.apple.TextInputMenuAgent::Show Emoji & Symbols#0` | 9 | 3/3 | 9/9 |
-| `com.apple.systemuiserver::#0` | 9 | 3/3 | 0/9 (no hosted counterpart: app-side only, stays unchecked) |
-| `com.stairways.keyboardmaestro.engine::#0` | 5 | 0 transitions with both sides present (parked) | 0/5 (parked) |
+Evidence kind per item = what the shipped `MenuBarScanner.joinEvidence` rule produces on each dump (re-derived offline from the
+recorded `[Extras]`/`[Agent]` lines: description pass first, then the mutual-exclusive frame rule; the description rule needs the
+description unique among ALL owner items and among hosted elements, so two owners/instances sharing a description are
+`frameAmbiguous`). Counts are dumps (of 9 unless noted).
 
-Disagreements: 0 key disagreements for any item present on both sides of a restart (28 item-transitions). With the earlier
-overlap-any rule (any positive intersection) KeepingYouAwake and the Emoji item flipped to ambiguous in the 84383 session (a 2 px
-overlap between neighbours), which is why the rule needs the half-width threshold. Live state today (mbprobe list, bar in system
+| identifier-less item (derived key) | key identical across restarts | evidence produced |
+|---|---|---|
+| `info.marcel-dierkes.KeepingYouAwake::#0` | 3/3 | frameUnique 9 |
+| `ie.boboco.vpnswitch::Shield Lefthalf ... Badge#0` | 3/3 | frameUnique 9 |
+| `com.corsair.ControlCenter::#0` | 3/3 | frameUnique 9 |
+| `ie.boboco.GateOpener::GateOpener — click to open the gate#0` | 3/3 | description 9 |
+| `com.apple.TextInputMenuAgent::Show Emoji & Symbols#0` | 3/3 | description 9 |
+| `com.airmail2hookmark.app::Airmail2Hookmark#0` | 3/3 | description 9 |
+| `ie.boboco.FloTile::FlöTile#0` | 3/3 | description 4 (one instance), frameAmbiguous 5 (two instances, pids 86110 and 89167 share the description) |
+| `ie.boboco.FloTile::FlöTile#1` (only in the 5 two-instance dumps) | 2/2 where present both sides (absent in ax-final4) | frameAmbiguous 5 (never corroborated) |
+| `com.apple.systemuiserver::#0` | 3/3 | none 9 (no hosted counterpart; stays unchecked) |
+| `com.stairways.keyboardmaestro.engine::#0` (5 dumps) | 0 transitions with both sides present | none 4, frameAmbiguous 1 |
+
+Corroborated (identifier/description/frameUnique): 6 of 8 on-bar, hosted-paired items in every dump with one FlöTile instance; with
+two instances FlöTile drops out and the item stays uncorroborated (correct: the two instances cannot be told apart by description).
+Key stability: 26 item-transitions over the 3 restarts (9 + 9 + 8 items present on both sides), 26 identical keys, 0
+disagreements. (An earlier draft of this section said 28 and listed FlöTile, GateOpener and the Emoji item as frameUnique; both were wrong.)
+With an overlap-any frame rule KeepingYouAwake and the Emoji item would have been ambiguous in the 84383 session (a 2 px overlap
+between neighbours), which is why the frame rule needs the half-width threshold. Live state today (mbprobe list, bar in system
 overflow, many frames stacked): identifier-less on-bar fresh items by evidence: description=4, frameUnique=1, frameAmbiguous=4,
 none=2 (the stacked overflow frames are correctly NOT corroborated).
 

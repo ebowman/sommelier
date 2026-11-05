@@ -333,3 +333,18 @@ private func twinFixture(shift: CGFloat = 0, otherFirst: Bool = false, newHandle
     let with = try JSONEncoder().encode(ev(item(frame: bar(100)), .frameUnique))
     #expect(try JSONDecoder().decode(MenuBarItem.self, from: with).joinEvidence == .frameUnique)
 }
+
+// gdu.28 corrective: which corroboration lets a heuristic-keyed identifier-less item support a verified move.
+@Test func verifiedMoveNeedsNonFrameCorroborationForIdentifierLessHeuristicItems() {
+    func run(_ e: JoinEvidence, _ c: KeyConfidence) -> Bool {
+        let a = ResolvedItem(item: ev(item(pid: 1, bid: "a.app", name: "A", desc: "A", frame: bar(100)), e),
+                             key: .heuristic(bundleID: "a.app", fingerprint: "A", ordinal: 0), confidence: c)
+        let b = ResolvedItem(item: item(pid: 2, bid: "b.app", name: "B", id: "b.id", frame: bar(200)),
+                             key: .status(ownerKey: "b.app", autosaveName: "b.id"), confidence: .exact)
+        return ActuationVerifier.moveVerdict(subject: a.key, relation: .before(b.key), resolved: [a, b]).ok
+    }
+    #expect(run(.description, .corroborated))     // unique-description join: can support a verified move
+    #expect(!run(.frameUnique, .corroborated))    // frame-only corroboration: still cannot
+    #expect(!run(.none, .heuristic))              // no evidence: cannot
+    #expect(!run(.frameAmbiguous, .heuristic))
+}

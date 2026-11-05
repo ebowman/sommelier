@@ -240,3 +240,18 @@ private func mainMenuFixture(withMenu: Bool, timedOutMenu: Bool = false) -> Fixt
     s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(axDescription: "Twin", frame: bar(100)), AXElementInfo(axDescription: "Twin", frame: bar(200))])
     #expect(MenuBarScanner(source: s).scan().items.allSatisfy { $0.joinEvidence == .frameAmbiguous })
 }
+
+// gdu.28 corrective: system overflow (gdu.45) stacks several hosted elements on one identical frame.
+@Test func stackedIdenticalHostedFramesAreAmbiguousNeverUnique() {
+    let a = RunningAppInfo(pid: 10, bundleID: "a.b", name: "A")
+    var s = FixtureSource(apps: [agent, a])
+    s.extras[10] = [AXElementInfo(frame: bar(800))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+        AXElementInfo(title: "t1", frame: bar(800)), AXElementInfo(title: "t2", frame: bar(800)), AXElementInfo(title: "t3", frame: bar(800)),   // distinct items (fully identical ones are deduped as group+button)
+    ])
+    let items = MenuBarScanner(source: s).scan().items
+    let owned = items.filter { $0.source == .appExtras }
+    #expect(owned.count == 1)
+    #expect(owned[0].joinEvidence == .frameAmbiguous)
+    #expect(!items.contains { $0.joinEvidence == .frameUnique })
+}
