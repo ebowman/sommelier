@@ -89,7 +89,7 @@ private func info(_ key: ItemKey, _ title: String) -> ItemInfo {
 }
 
 @Test func arrangeShowsTheUnitNoteAndADropMovesBothMembers() {
-    let layout = Layout(visible: [other, helper, parent, clock])
+    let layout = Layout(visible: [other, helper, parent, clock]).withOrderMode(.placedOnly)
     let items = [other: info(other, "Other"), helper: info(helper, "Hazel Helper"), parent: info(parent, "Hazel"), clock: info(clock, "Clock")]
     let c = ArrangeSections.make(observed: ObservedOrder(onBar: [other, helper, parent, clock], parked: []), layout: layout, items: items,
                                  perItem: [:], capabilities: free, units: rule)

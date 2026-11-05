@@ -287,6 +287,11 @@ final class ArrangeViewModel {
                 AppLog.log(.arrange, "arrange: " + DropTrace.doneLine(id: dropID, outcome: "rejected"))
             }
             return false
+        case .unplaced(let l, let keys):
+            message = nil
+            AppLog.log(.arrange, "arrange: unplaced \(key)" + (keys.count > 1 ? " (+mates \(keys.filter { $0 != key }.map { "\($0)" }.joined(separator: ", ")))" : ""))
+            apply(l, tracking: [], basedOn: state.layoutRevision, dropID: dropID)
+            return true
         case .move(let l, let moved, let willNotFit):
             let old = layout
             var track: [ItemKey] = []

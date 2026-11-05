@@ -182,7 +182,7 @@ struct LayoutPlacedModelTests {
 
     // the Arrange drop is the only thing that marks keys
     @Test func aDropIntoVisibleMarksTheMovedKeysAndOrderOnlyHiddenDropsDoNot() {
-        let base = Layout(visible: [k("a"), k("b")], hidden: [k("h1"), k("h2")])
+        let base = Layout(visible: [k("a"), k("b")], hidden: [k("h1"), k("h2")], orderMode: .placedOnly)
         guard case .move(let l1, let moved, _) = ArrangeDrop.outcome(layout: base, key: k("h2"), to: .visible, index: 1, capabilities: free) else { Issue.record("no move"); return }
         #expect(moved == [k("h2")])
         #expect(l1.placed == [k("h2")])

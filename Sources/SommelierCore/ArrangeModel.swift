@@ -85,6 +85,12 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var badgeTooltip: String { badge == .moving ? (moveReason ?? badge.tooltip) : badge.tooltip }
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
     public var capabilityNote: String?
+    /// sommelier-8z5.3: the key is in `layout.placed`.
+    public var isPlaced: Bool = false
+    /// Placed but not enforced (order mode macOSOwns): the badge shows it as remembered only.
+    public var placementInert: Bool = false
+    /// Tooltip text for a placed item (nil when not placed); rendered by the badge in 8z5.5.
+    public var placementNote: String? = nil
     public var id: String { isGhost ? key.description + "#ghost" : key.description }
 
     public var unitTooltip: String? { HideUnitNames.unitNote(mates: unitMates, app: unitApp) }
@@ -237,6 +243,9 @@ public enum ArrangeSections {
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
                               unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
             r.staleFrame = stale
+            r.isPlaced = layout.placed.contains(k)
+            r.placementInert = r.isPlaced && !layout.enforcesOrder
+            r.placementNote = !r.isPlaced ? nil : (layout.enforcesOrder ? "Sommelier keeps this item here" : "Placement remembered, not enforced (order follows macOS)")
             if b == .moving, !ghost { r.moveReason = moveReasons[k] }
             return r
         }
@@ -427,6 +436,8 @@ public enum ArrangeDrop {
     public static let positionsItself = "This item positions itself: Sommelier does not manage its order. You can still hide or show it."
     /// gdu.67: refusal text for an order-only drop that would put a movable row on the other side of a self-positioning row.
     public static func cannotCross(_ name: String) -> String { "cannot cross \(name): it positions itself; move it in iStat Menus instead" }
+    /// sommelier-8z5.3: refusal for a pure reorder inside Visible while macOS owns the order.
+    public static let orderFollowsMacOS = "Order follows macOS here. Command-drag the item in the menu bar to move it, or turn on \"Let Sommelier keep an order for items I place\"."
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
     /// gdu.101: refusal for a drop (or step) in Visible next to an item whose position has not been refreshed.
     public static let barNotFullyObserved = "The bar is not fully observed right now; try again in a moment."
@@ -437,6 +448,8 @@ public enum ArrangeDrop {
         /// The drop would not change the layout (e.g. dropped on its own position).
         case noop
         case rejected(String)
+        /// sommelier-8z5.3: the key (and its hide-unit mates, listed) stopped being "placed"; nothing moves, nothing is tracked.
+        case unplaced(Layout, [ItemKey])
         /// `moved` lists every key that moves (the unit's siblings come along, `key` first). `willNotFit`: the target is left
         /// of the overflow boundary, so the item will land behind macOS's chevron.
         case move(layout: Layout, moved: [ItemKey], willNotFit: Bool)
@@ -460,12 +473,16 @@ public enum ArrangeDrop {
         if section == .visible, layout.section(of: key) == .visible, SelfPositioning.isSelfPositioning(key) {
             return .rejected(positionsItself)
         }
+        // sommelier-8z5.3: while macOS owns the order a pure reorder inside Visible (any index, any step) is refused. Evaluated after
+        // the observation/capability/self-positioning refusals so their messages win; before the move so nothing is computed or saved.
+        if !layout.enforcesOrder, section == .visible, layout.section(of: key) == .visible { return .rejected(orderFollowsMacOS) }
         var l = layout
         let moved = l.move(key, to: section, index: index, units: units)
         if l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
         // gdu.89: a drop INTO Visible (from anywhere, siblings included) is the user's placement: it creates an order obligation.
         // Order-only drops inside Hidden/Always hidden are our own data and create none (and a hide drops the key's obligation: `move`).
-        if section == .visible { l.markPlaced(moved) }
+        // sommelier-8z5.3: only when Sommelier enforces order; in macOSOwns `placed` stays untouched (inert).
+        if section == .visible, layout.enforcesOrder { l.markPlaced(moved) }
         // gdu.67: a planner anchor keeps its observed slot, so an order-only move that puts a movable row on the far side of a
         // self-positioning row (relative to the OBSERVED bar) is never reached: the next pass re-plans around the anchor. Refuse it.
         // Only a move that changes the row's side of the anchor in the layout AND disagrees with the bar is a crossing; a layout
@@ -475,6 +492,16 @@ public enum ArrangeDrop {
             return .rejected(cannotCross(displayName(anchor)))
         }
         return .move(layout: l, moved: moved, willNotFit: willNotFit && section == .visible)
+    }
+
+    /// Stops managing the order of `key` and its hide-unit mates: removes them from `placed`, moves nothing. `.noop` when none is placed.
+    public static func unplace(layout: Layout, key: ItemKey, units: HideUnitRule = .ownerKeys) -> Outcome {
+        let unit = units.unit(of: key)
+        let keys = layout.placed.filter { $0 == key || units.unit(of: $0) == unit }
+        guard !keys.isEmpty else { return .noop }
+        var l = layout
+        l.placed.removeAll { keys.contains($0) }
+        return .unplaced(l, keys)
     }
 
     /// The first self-positioning key on `bar` that a moved key passes in `new` (vs `old`) and that ends on the other side of
