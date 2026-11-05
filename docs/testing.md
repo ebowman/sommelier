@@ -439,3 +439,7 @@ Human checklist (Settings > Spacing):
 3. Selection padding: set 0 and 8, relaunch an app, click its item and compare the highlight size by eye (not measurable headlessly).
 4. "Reset to system default": both keys are removed (`defaults ... read` says the key does not exist) and the labels show "default".
 5. Confirm no menu bar flash happens at any point.
+
+## Main-menu entries dropped (gdu.29)
+Unit tests (`MenuBarScannerTests`): main-menu elements dropped, genuine parked (x 2, y 1204, w 24) and a zero-width genuine hosted item unchanged; timed-out main-menu group not a failure; old cache records ignored on load.
+Live `mbprobe list` (read-only), count of Apple/File/Edit/.../`_NS:` entries and total `x=` rows: Finder front 0 (50 rows), TextEdit front 0 (48), Safari front 0 (50); the only `heuristic:com.apple.MenuBarAgent` row is the unnamed "System item" button (x=774). "Before" was also 0 live: the running agent did not mirror the main menu during this session (see docs/findings-identity.md, gdu.29); the 7-8 entries were recorded in docs/evidence/ax-b-drag-unrelated.txt.

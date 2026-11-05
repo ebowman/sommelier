@@ -27,12 +27,23 @@ public struct AXElementInfo: @unchecked Sendable {
     /// True when the element sits directly under the agent's window, not inside a per-app AXMenuBar group. Only the
     /// agent's own controls do (the overflow chevron, gdu.45); every hosted status item is wrapped in an AXMenuBar.
     public var directWindowChild: Bool
+    /// True for an entry of the frontmost app's MAIN menu (Apple, File, Edit, ... and the app-name menu) that MenuBarAgent
+    /// mirrors into its tree: role AXMenuBarItem WITHOUT subrole AXMenuExtra, size 0x0 (docs/findings-identity.md, gdu.29).
+    /// Set by the live source only; the scanner drops such elements, so they are never items, parked, stale or incomplete.
+    public var isMainMenuEntry: Bool
     public init(title: String = "", axDescription: String = "", identifier: String = "",
                 frame: CGRect, element: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0,
-                directWindowChild: Bool = false) {
+                directWindowChild: Bool = false, isMainMenuEntry: Bool = false) {
         self.title = title; self.axDescription = axDescription
         self.identifier = identifier; self.frame = frame; self.element = element
         self.stale = stale; self.staleCount = staleCount; self.directWindowChild = directWindowChild
+        self.isMainMenuEntry = isMainMenuEntry
+    }
+
+    /// Signature of a main-menu record persisted by a build that did not yet drop them (the cache stores no role): an
+    /// empty 0x0 frame with a title and no description. Used only to prune old cache files on load (gdu.29).
+    var looksLikeMainMenuRecord: Bool {
+        frame.width <= 0 && frame.height <= 0 && !title.isEmpty && axDescription.isEmpty
     }
 
     /// The agent's overflow chevron. Locale-independent signal first: an AXButton that is a direct child of the agent
@@ -369,6 +380,9 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         } else if hostedRoles.contains(r.role) {
             var info = r.info
             info.directWindowChild = depth == 1 && r.role == "AXButton"
+            // The frontmost app's main menu is mirrored here as AXMenuBarItem with NO AXMenuExtra subrole (gdu.29); every
+            // hosted status item is either an AXMenuExtra or an AXButton. The 0x0 check guards against a subrole read that failed alone.
+            info.isMainMenuEntry = r.role == "AXMenuBarItem" && r.subrole != "AXMenuExtra" && info.frame.size == .zero
             c.found.append(info)
         }
         guard depth < 4 else { return }
