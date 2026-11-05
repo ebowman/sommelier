@@ -206,3 +206,52 @@ private func mainMenuFixture(withMenu: Bool, timedOutMenu: Bool = false) -> Fixt
     reader.loadIfNeeded()
     #expect(reader.lastHosted.map(\.axDescription) == ["Clock"])
 }
+
+// MARK: - gdu.28: join evidence
+
+@Test func frameJoinIsCorroboratedOnlyWhenMutualAndExclusive() {
+    let a = RunningAppInfo(pid: 10, bundleID: "a.b", name: "A"), b = RunningAppInfo(pid: 11, bundleID: "c.d", name: "B")
+    var s = FixtureSource(apps: [agent, a, b])
+    // Well separated: unique pairs.
+    s.extras[10] = [AXElementInfo(frame: bar(100))]
+    s.extras[11] = [AXElementInfo(frame: bar(200))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(101)), AXElementInfo(frame: bar(201))])
+    #expect(MenuBarScanner(source: s).scan().items.map(\.joinEvidence) == [.frameUnique, .frameUnique])
+    // B's app-side frame lags and overlaps A's hosted element too: neither pairing can be trusted.
+    s.extras[11] = [AXElementInfo(frame: bar(110))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(101)), AXElementInfo(frame: bar(300))])
+    let amb = MenuBarScanner(source: s).scan().items
+    #expect(amb.allSatisfy { $0.joinEvidence != .frameUnique })
+    // A width disagreement over 2 pt is not corroboration either.
+    s.extras[10] = [AXElementInfo(frame: bar(100, w: 24))]; s.extras[11] = []
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(100, w: 40))])
+    #expect(MenuBarScanner(source: s).scan().items.first?.joinEvidence == .frameAmbiguous)
+}
+
+@Test func identifierAndUniqueDescriptionJoinsAreCorroboratedDuplicateDescriptionIsNot() {
+    let a = RunningAppInfo(pid: 10, bundleID: "a.b", name: "A"), b = RunningAppInfo(pid: 11, bundleID: "c.d", name: "B")
+    var s = FixtureSource(apps: [agent, a, b])
+    s.extras[10] = [AXElementInfo(axDescription: "Solo", frame: bar(100)), AXElementInfo(identifier: "id.x", frame: bar(150))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(axDescription: "Solo", frame: bar(500)), AXElementInfo(identifier: "id.x", frame: bar(550))])
+    let r = MenuBarScanner(source: s).scan().items
+    #expect(Set(r.map(\.joinEvidence)) == [.description, .identifier])
+    s.extras[10] = [AXElementInfo(axDescription: "Twin", frame: bar(100))]
+    s.extras[11] = [AXElementInfo(axDescription: "Twin", frame: bar(200))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(axDescription: "Twin", frame: bar(100)), AXElementInfo(axDescription: "Twin", frame: bar(200))])
+    #expect(MenuBarScanner(source: s).scan().items.allSatisfy { $0.joinEvidence == .frameAmbiguous })
+}
+
+// gdu.28 corrective: system overflow (gdu.45) stacks several hosted elements on one identical frame.
+@Test func stackedIdenticalHostedFramesAreAmbiguousNeverUnique() {
+    let a = RunningAppInfo(pid: 10, bundleID: "a.b", name: "A")
+    var s = FixtureSource(apps: [agent, a])
+    s.extras[10] = [AXElementInfo(frame: bar(800))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+        AXElementInfo(title: "t1", frame: bar(800)), AXElementInfo(title: "t2", frame: bar(800)), AXElementInfo(title: "t3", frame: bar(800)),   // distinct items (fully identical ones are deduped as group+button)
+    ])
+    let items = MenuBarScanner(source: s).scan().items
+    let owned = items.filter { $0.source == .appExtras }
+    #expect(owned.count == 1)
+    #expect(owned[0].joinEvidence == .frameAmbiguous)
+    #expect(!items.contains { $0.joinEvidence == .frameUnique })
+}

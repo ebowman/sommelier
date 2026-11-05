@@ -9,6 +9,9 @@ public struct ResolvedItem: Sendable {
     public init(item: MenuBarItem, key: ItemKey, confidence: KeyConfidence) {
         self.item = item; self.key = key; self.confidence = confidence
     }
+    /// Whether this item's frame is trustworthy evidence for order checks (gdu.28): it carries an AX identifier, or its
+    /// owner/hosted pairing was corroborated by the scanner (`JoinEvidence.corroborated`).
+    public var frameTrusted: Bool { !item.axIdentifier.isEmpty || item.joinEvidence.corroborated }
     /// The owner key actually matched in the store/defaults (nil for heuristic/module keys).
     public var ownerKey: String? {
         if case .status(let o, _) = key { return o }
@@ -31,7 +34,8 @@ public struct ResolvedItem: Sendable {
 ///      value is the distance from the trailing (right) edge, so a bigger value means further left; sort names by
 ///      value descending, items by x ascending, zip. `.inferred`. Only valid for on-bar items: parked items have
 ///      meaningless x, and hidden items' values may be huge (5000+) without being on the bar.
-///    * anything else -> `.heuristic`.
+///    * anything else -> `.heuristic`, or `.corroborated` (same key) when the scanner's owner/hosted pairing was corroborated
+///      (`JoinEvidence`, gdu.28).
 /// 4. Heuristic key: `(bundle id or owner name, fingerprint, ordinal)`, fingerprint = AXIdentifier, else
 ///    description, else title with digits masked (live readouts like "64%"). Ordinal counts same-fingerprint items
 ///    of that owner by (x, y, discovery order). Deterministic while the owner's frames are stable.
@@ -214,7 +218,9 @@ public struct IdentityResolver: Sendable {
         for n in order where out[n] == nil {
             let fp = fingerprint(items[n])
             let o = ordinals[fp, default: 0]; ordinals[fp] = o + 1
-            out[n] = (.heuristic(bundleID: bundleLabel, fingerprint: fp, ordinal: o), .heuristic)
+            // gdu.28: an identifier-less item whose owner/hosted pairing was corroborated keeps the same key string but is
+            // `.corroborated` instead of a bare guess (the key itself is already stable: it contains no frame, pid or handle).
+            out[n] = (.heuristic(bundleID: bundleLabel, fingerprint: fp, ordinal: o), items[n].joinEvidence.corroborated ? .corroborated : .heuristic)
         }
     }
 

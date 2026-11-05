@@ -102,12 +102,14 @@ func runList(_ rawFlags: [String]) {
         // resolved is in snap.items order: on-bar items first (left to right), then parked.
         let onCount = snap.onBarLeftToRight.count
         print("level=\(levelName(snap.completeness))\(snap.completenessReason.map { " (\($0))" } ?? "")")
-        print("on bar (left to right):   [key marker: = exact, ~ inferred, ? heuristic]")
+        print("on bar (left to right):   [key marker: = exact, ~ inferred, + corroborated, ? heuristic]")
         for (n, r) in resolved.prefix(onCount).enumerated() { print(row(n, r)) }
         print("\nparked / off-bar:")
         for (n, r) in resolved.dropFirst(onCount).enumerated() { print(row(n, r)) }
         let counts = Dictionary(grouping: resolved, by: \.confidence).mapValues(\.count)
-        print("\nkeys: \(counts[.exact] ?? 0) exact, \(counts[.inferred] ?? 0) inferred, \(counts[.heuristic] ?? 0) heuristic")
+        print("\nkeys: \(counts[.exact] ?? 0) exact, \(counts[.inferred] ?? 0) inferred, \(counts[.corroborated] ?? 0) corroborated, \(counts[.heuristic] ?? 0) heuristic")
+        let onBarResolved = resolved.prefix(onCount).filter { !$0.item.stale }
+        print("frame-trusted on bar: \(onBarResolved.filter(\.frameTrusted).count) of \(onBarResolved.count) (identifier-less with corroborated join: \(onBarResolved.filter { $0.item.axIdentifier.isEmpty && $0.frameTrusted }.count); evidence: \(Dictionary(grouping: onBarResolved.filter { $0.item.axIdentifier.isEmpty }, by: { $0.item.joinEvidence.rawValue }).mapValues(\.count).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")))")
     }
     if flags.contains("--timing") {
         let msg = String(format: "scan time: %.0f ms (%@)\n", elapsed * 1000, fast ? "fast" : "full")

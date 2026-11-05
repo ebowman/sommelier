@@ -468,7 +468,7 @@ public actor LiveActuator: MenuBarActuator {
                 if expectations[r.key] == nil { expectations[r.key] = want }
             }
         }
-        let before = Dictionary(resolved.filter { $0.confidence != .heuristic && !$0.item.stale }.map { ($0.key, ActuationVerifier.onBar($0)) },
+        let before = Dictionary(resolved.filter { $0.confidence.isStoreBacked && !$0.item.stale }.map { ($0.key, ActuationVerifier.onBar($0)) },
                                 uniquingKeysWith: { a, _ in a })
 
         // Already in the requested state? Then there is nothing to do (and no restart flash).
@@ -837,13 +837,16 @@ public actor LiveActuator: MenuBarActuator {
     /// Number of batches whose post-restart drift check triggered a repair (diagnostics for the soak).
     public private(set) var driftRepairs = 0
 
-    /// Fresh (non-stale), non-heuristic on-bar keys left to right by frame, minus `excluding`.
+    /// Fresh (non-stale) on-bar keys left to right by frame whose frame is trustworthy (`ResolvedItem.frameTrusted`: an AX
+    /// identifier, or an identifier-less item whose owner/hosted pairing was corroborated, gdu.28), minus `excluding`, minus
+    /// bare-heuristic keys and self-positioning owners.
     private func freshFrameOrder(_ rs: [ResolvedItem], excluding: Set<ItemKey>) -> [ItemKey] {
         var seen = Set<ItemKey>()
         return ActuationVerifier.barOrder(rs).filter { $0.confidence != .heuristic && !$0.item.stale && !excluding.contains($0.key) && !selfPositioning($0.key)
                 // Items without an AX identifier are attributed by frame join, which mislabels neighbours (docs/findings-drag
-                // pitfall 2): signal/GateOpener swapped with an unchanged store. Frame order is only evidence for identified items.
-                && !$0.item.axIdentifier.isEmpty }
+                // pitfall 2): signal/GateOpener swapped with an unchanged store. Their frame is evidence only when the scanner
+                // corroborated the pairing (description match or a mutual-exclusive frame overlap, `JoinEvidence`).
+                && $0.frameTrusted }
             .map(\.key).filter { seen.insert($0).inserted }
     }
 
@@ -853,7 +856,7 @@ public actor LiveActuator: MenuBarActuator {
     private func storeOrder(_ rs: [ResolvedItem], _ store: [String: Double], extra: Set<ItemKey>, excluding: Set<ItemKey>) -> [ItemKey] {
         var seen = Set<ItemKey>()
         let keys = rs.filter { r in
-            guard r.confidence != .heuristic, !excluding.contains(r.key), !selfPositioning(r.key), store[r.key.description] != nil else { return false }
+            guard r.confidence.isStoreBacked, !excluding.contains(r.key), !selfPositioning(r.key), store[r.key.description] != nil else { return false }
             if case .heuristic = r.key { return false }
             return ActuationVerifier.onBar(r) || extra.contains(r.key)
         }.map(\.key).filter { seen.insert($0).inserted }

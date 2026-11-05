@@ -141,3 +141,60 @@ Persisted cache: `ScanCache` stores no role, so on load `lastHosted` records wit
 
 Limitation: the live agent did not mirror the main menu during the gdu.29 session (12 dumps, Finder/Terminal/TextEdit/Safari/Mail, 0 occurrences),
 so the live "before" could not be reproduced; the rule rests on the recorded evidence plus the unit tests.
+
+## Corroborated keys for identifier-less items (gdu.28)
+
+Problem: after exempting iStat, modules and identifier-less items the frame-based drift check in `LiveActuator` saw only ~6 items.
+Identifier-less items (KeepingYouAwake, signal, GateOpener, FlöTile, VPN Switch, ...) were excluded because their frame comes from a frame
+join (pitfall 2 in findings-drag.md: a lagging app-side frame labels a neighbour's hosted element).
+
+Signal chosen: candidate (b), refined. The key stays `fingerprint(AXDescription, else title with digits masked) + owner bundle id +
+ordinal among the owner's same-fingerprint items left to right` (candidate (a); it contains no frame, pid or AX handle, so respawns and
+the item's own moves cannot change it; no key-format change and therefore no migration). What is new is evidence about the frame
+pairing, `MenuBarItem.joinEvidence`, computed by the scanner for every owner item that was paired with a hosted element:
+`identifier` (same AXIdentifier), `description` (same non-empty description, unique on both sides), `frameUnique` (the hosted element
+overlaps >= 50% of the narrower width with exactly this owner item, this owner item overlaps no other hosted element, widths within
+2 pt) else `frameAmbiguous`. A lagging app-side frame also overlaps the neighbour's hosted element, so it fails the exclusivity test.
+Candidate (a)'s own relative-order idea alone was rejected as a corroborator: it is the ordinal, which cannot say whether the frame
+under it belongs to the item. The owner's own AXExtrasMenuBar element frames ARE the other side of the join, so (b) is what the
+exclusivity test uses.
+
+Effects: identifier-less items with a corroborated join are `frameTrusted` and enter the frame drift check; synthesized keys with a
+corroborated join get `KeyConfidence.corroborated` (marker `+` in `mbprobe list`). `mbprobe list` prints the evidence counts.
+
+Stability measured from the recorded AX dumps (`docs/evidence/ax-*.txt`; script logic: parse `[Extras]`/`[Agent]` lines, apply the
+rules above, ordinal per owner and fingerprint). The dumps span FOUR different MenuBarAgent processes (pids 84383 -> 93123 -> 93799 ->
+95109; ascending pid taken as chronological), i.e. 3 restart transitions, NOT 5; the remaining measurement (5 plain restarts of the
+live agent, including `signal`, whose multi-line title the dump format does not carry) is pending the gdu.42 trial. Not performed here.
+
+Evidence kind per item = what the shipped `MenuBarScanner.joinEvidence` rule produces on each dump (re-derived offline from the
+recorded `[Extras]`/`[Agent]` lines: description pass first, then the mutual-exclusive frame rule; the description rule needs the
+description unique among ALL owner items and among hosted elements, so two owners/instances sharing a description are
+`frameAmbiguous`). Counts are dumps (of 9 unless noted).
+
+| identifier-less item (derived key) | key identical across restarts | evidence produced |
+|---|---|---|
+| `info.marcel-dierkes.KeepingYouAwake::#0` | 3/3 | frameUnique 9 |
+| `ie.boboco.vpnswitch::Shield Lefthalf ... Badge#0` | 3/3 | frameUnique 9 |
+| `com.corsair.ControlCenter::#0` | 3/3 | frameUnique 9 |
+| `ie.boboco.GateOpener::GateOpener — click to open the gate#0` | 3/3 | description 9 |
+| `com.apple.TextInputMenuAgent::Show Emoji & Symbols#0` | 3/3 | description 9 |
+| `com.airmail2hookmark.app::Airmail2Hookmark#0` | 3/3 | description 9 |
+| `ie.boboco.FloTile::FlöTile#0` | 3/3 | description 4 (one instance), frameAmbiguous 5 (two instances, pids 86110 and 89167 share the description) |
+| `ie.boboco.FloTile::FlöTile#1` (only in the 5 two-instance dumps) | 2/2 where present both sides (absent in ax-final4) | frameAmbiguous 5 (never corroborated) |
+| `com.apple.systemuiserver::#0` | 3/3 | none 9 (no hosted counterpart; stays unchecked) |
+| `com.stairways.keyboardmaestro.engine::#0` (5 dumps) | 0 transitions with both sides present | none 4, frameAmbiguous 1 |
+
+Corroborated (identifier/description/frameUnique): 7 of 7 on-bar, hosted-paired items in the dumps with one FlöTile instance
+(SystemUIServer has no hosted counterpart); 6 of 8 with two instances, where FlöTile drops out and stays uncorroborated (correct: the two instances cannot be told apart by description).
+Key stability: 26 item-transitions over the 3 restarts (9 + 9 + 8 items present on both sides), 26 identical keys, 0
+disagreements. (An earlier draft of this section said 28 and listed FlöTile, GateOpener and the Emoji item as frameUnique; both were wrong.)
+With an overlap-any frame rule KeepingYouAwake and the Emoji item would have been ambiguous in the 84383 session (a 2 px overlap
+between neighbours), which is why the frame rule needs the half-width threshold. Live state today (mbprobe list, bar in system
+overflow, many frames stacked): identifier-less on-bar fresh items by evidence: description=4, frameUnique=1, frameAmbiguous=4,
+none=2 (the stacked overflow frames are correctly NOT corroborated).
+
+Migration: none needed. Key strings are unchanged, so `layout.json`, the scan cache and saved hide choices (KeepingYouAwake's
+`status:info.marcel-dierkes.KeepingYouAwake::Item-0` etc.) load and match as before; old `heuristic:` keys parse to the same key the
+resolver now emits as `.corroborated` (tests: `corroborationNeverChangesAStoredInferredKeyAndOldKeysStillLoad`). `MenuBarItem` JSON
+without `joinEvidence` decodes as `.none`. The soak run of the original bead criteria needs the live bar and is NOT done here.

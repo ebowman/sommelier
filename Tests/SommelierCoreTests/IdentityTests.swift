@@ -261,3 +261,90 @@ private let istatInfo: [pid_t: OwnerAppInfo] = [20: OwnerAppInfo(
     #expect(e[0] == AutosaveEntry(name: "A", storeValue: 10, legacyPosition: 5, legacyVisible: 1))
     #expect(e[1] == AutosaveEntry(name: "B", storeValue: nil, legacyPosition: 7, legacyVisible: nil))
 }
+
+// MARK: - gdu.28: corroborated keys for identifier-less items
+
+private func ev(_ i: MenuBarItem, _ e: JoinEvidence) -> MenuBarItem { var j = i; j.joinEvidence = e; return j }
+
+/// Owner X has two identical identifier-less items (same description); owner Y has one. All paired by a mutual-exclusive frame.
+private func twinFixture(shift: CGFloat = 0, otherFirst: Bool = false, newHandles: Bool = false) -> [MenuBarItem] {
+    var x1 = ev(item(pid: 10, bid: "x.app", name: "X", desc: "Twin", frame: bar(300 + shift)), .frameUnique)
+    var x2 = ev(item(pid: 10, bid: "x.app", name: "X", desc: "Twin", frame: bar(400 + shift)), .frameUnique)
+    let y = ev(item(pid: 20, bid: "y.app", name: "Y", desc: "Twin", frame: bar(350 + shift)), .frameUnique)
+    let other1 = item(pid: 30, bid: "z.app", name: "Z", id: "z.id", frame: bar(100 + shift))
+    let other2 = item(pid: 31, bid: "w.app", name: "W", id: "w.id", frame: bar(500 + shift))
+    if newHandles { x1.ownerPID = 10; x2.ownerPID = 10 }   // a respawn changes AX handles, never owner pids; handles are not in the key
+    return otherFirst ? [other2, y, x2, other1, x1] : [other1, x1, y, x2, other2]
+}
+
+@Test func corroboratedKeysAreDistinctAndStableAcrossOtherReorderAndRespawn() {
+    let r = resolver(FixturePrefs())
+    func keys(_ items: [MenuBarItem]) -> [String: String] {
+        // label each item by (owner, x order within owner) so results from differently ordered inputs compare
+        var out: [String: String] = [:]
+        let res = r.resolve(snapshot: snap(items))
+        for owner in ["x.app", "y.app"] {
+            let mine = zip(items, res).filter { $0.0.ownerBundleID == owner }.sorted { $0.0.frame.minX < $1.0.frame.minX }
+            for (n, p) in mine.enumerated() { out["\(owner)#\(n)"] = p.1.key.description; #expect(p.1.confidence == .corroborated) }
+        }
+        return out
+    }
+    let base = keys(twinFixture())
+    #expect(Set(base.values).count == 3)                                   // distinct, even with identical descriptions
+    #expect(base["x.app#0"] == "heuristic:x.app::Twin#0" && base["x.app#1"] == "heuristic:x.app::Twin#1")
+    #expect(base["y.app#0"] == "heuristic:y.app::Twin#0")                  // ordinals are per owner
+    #expect(keys(twinFixture(otherFirst: true)) == base)                  // other items reordered / snapshot order changed
+    #expect(keys(twinFixture(shift: 37)) == base)                         // respawn: new frames shifted by 37 px, new handles
+    #expect(keys(twinFixture(shift: 37, newHandles: true)) == base)
+    // The key text carries no frame, pid or handle.
+    #expect(!base.values.contains { $0.contains("37") || $0.contains("300") })
+}
+
+@Test func ownItemMoveDoesNotChangeTheKeyOfASingletonButUncorroboratedStaysHeuristic() {
+    let a = ev(item(pid: 10, bid: "x.app", name: "X", desc: "Solo", frame: bar(100)), .description)
+    let moved = ev(item(pid: 10, bid: "x.app", name: "X", desc: "Solo", frame: bar(700)), .description)
+    let r1 = resolver(FixturePrefs()).resolve(snapshot: snap([a])), r2 = resolver(FixturePrefs()).resolve(snapshot: snap([moved]))
+    #expect(r1[0].key == r2[0].key && r1[0].confidence == .corroborated && r1[0].frameTrusted)
+    let amb = ev(item(pid: 10, bid: "x.app", name: "X", desc: "Solo", frame: bar(100)), .frameAmbiguous)
+    let plain = item(pid: 10, bid: "x.app", name: "X", desc: "Solo", frame: bar(100))
+    for i in [amb, plain] {
+        let r = resolver(FixturePrefs()).resolve(snapshot: snap([i]))
+        #expect(r[0].key == r1[0].key)                      // same key text either way ...
+        #expect(r[0].confidence == .heuristic && !r[0].frameTrusted)   // ... but not trusted for frame checks
+    }
+    // an identifier already makes the frame trustworthy
+    #expect(resolver(FixturePrefs()).resolve(snapshot: snap([item(id: "id", frame: bar(100))]))[0].frameTrusted)
+}
+
+@Test func corroborationNeverChangesAStoredInferredKeyAndOldKeysStillLoad() throws {
+    // gdu.28 keeps the key format, so a layout written before it loads unchanged; an old heuristic key string parses to the
+    // same key the resolver now emits as `.corroborated`, and an `.inferred` store key stays `.inferred`.
+    let old = "heuristic:x.app::Twin#1"
+    #expect(ItemKey(storeKey: old) == .heuristic(bundleID: "x.app", fingerprint: "Twin", ordinal: 1))
+    let r = resolver(FixturePrefs()).resolve(snapshot: snap(twinFixture()))
+    #expect(r.contains { $0.key.description == old && $0.confidence == .corroborated })
+    var p = FixturePrefs(); p.store["status:a.b::Item-0"] = 100
+    let single = ev(item(frame: bar(100)), .frameUnique)
+    let k = resolver(p).resolve(snapshot: snap([single]))[0]
+    #expect(k.key.description == "status:a.b::Item-0" && k.confidence == .inferred && k.frameTrusted)
+    // MenuBarItem JSON written before the field existed still decodes (joinEvidence defaults to none)
+    let json = try JSONEncoder().encode(item(frame: bar(100)))
+    #expect(try JSONDecoder().decode(MenuBarItem.self, from: json).joinEvidence == .none)
+    let with = try JSONEncoder().encode(ev(item(frame: bar(100)), .frameUnique))
+    #expect(try JSONDecoder().decode(MenuBarItem.self, from: with).joinEvidence == .frameUnique)
+}
+
+// gdu.28 corrective: which corroboration lets a heuristic-keyed identifier-less item support a verified move.
+@Test func verifiedMoveNeedsNonFrameCorroborationForIdentifierLessHeuristicItems() {
+    func run(_ e: JoinEvidence, _ c: KeyConfidence) -> Bool {
+        let a = ResolvedItem(item: ev(item(pid: 1, bid: "a.app", name: "A", desc: "A", frame: bar(100)), e),
+                             key: .heuristic(bundleID: "a.app", fingerprint: "A", ordinal: 0), confidence: c)
+        let b = ResolvedItem(item: item(pid: 2, bid: "b.app", name: "B", id: "b.id", frame: bar(200)),
+                             key: .status(ownerKey: "b.app", autosaveName: "b.id"), confidence: .exact)
+        return ActuationVerifier.moveVerdict(subject: a.key, relation: .before(b.key), resolved: [a, b]).ok
+    }
+    #expect(run(.description, .corroborated))     // unique-description join: can support a verified move
+    #expect(!run(.frameUnique, .corroborated))    // frame-only corroboration: still cannot
+    #expect(!run(.none, .heuristic))              // no evidence: cannot
+    #expect(!run(.frameAmbiguous, .heuristic))
+}

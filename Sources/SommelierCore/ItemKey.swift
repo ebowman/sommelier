@@ -85,11 +85,17 @@ public enum KeyConfidence: String, Codable, Sendable, Comparable {
     case exact
     /// Real store key, but the item-to-autosave-name pairing rests on an assumption (order, single candidate).
     case inferred
+    /// Synthesized from item attributes (fingerprint + ordinal), not a store key, but the owner/hosted-frame pairing was
+    /// independently corroborated (`JoinEvidence.corroborated`, gdu.28): the key is stable across MenuBarAgent respawns and
+    /// the item's own moves and its frame can be trusted for order checks.
+    case corroborated
     /// Synthesized from item attributes; not a store key.
     case heuristic
 
-    private var rank: Int { switch self { case .exact: 0; case .inferred: 1; case .heuristic: 2 } }
+    private var rank: Int { switch self { case .exact: 0; case .inferred: 1; case .corroborated: 2; case .heuristic: 3 } }
+    /// True when the key is a real order-store key (exact or inferred), as opposed to a synthesized fingerprint.
+    public var isStoreBacked: Bool { self == .exact || self == .inferred }
     public static func < (a: Self, b: Self) -> Bool { a.rank < b.rank }
     /// Single-character marker for tables.
-    public var marker: String { switch self { case .exact: "="; case .inferred: "~"; case .heuristic: "?" } }
+    public var marker: String { switch self { case .exact: "="; case .inferred: "~"; case .corroborated: "+"; case .heuristic: "?" } }
 }
