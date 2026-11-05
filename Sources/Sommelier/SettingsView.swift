@@ -12,75 +12,155 @@ struct SettingsView: View {
     @AppStorage("allowAgentRestart") private var allowAgentRestart = !AppGroupEntitlement.hasControlCenterGroup()
     @State private var login = LoginItem.isEnabled
 
+    private enum Tab: Hashable { case general, permissions, spacing }
+    @State private var tab: Tab = .general
+
+    /// Width shared by all tabs; heights are per tab so the window fits each pane's content (no dead bands).
+    private static let width: CGFloat = 540
+    private var height: CGFloat {
+        switch tab {
+        case .general: return 340
+        case .permissions: return 384
+        case .spacing: return 278
+        }
+    }
+
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             Form {
-                Toggle("Start at login", isOn: Binding(get: { login }, set: { LoginItem.set($0); login = LoginItem.isEnabled }))
-                Picker("New items", selection: $model.newItemPolicy) {
-                    Text("Visible at end").tag(NewItemPolicy.visibleAtEnd)
-                    Text("Hidden").tag(NewItemPolicy.hidden)
+                Section {
+                    Toggle("Start at login", isOn: Binding(get: { login }, set: { LoginItem.set($0); login = LoginItem.isEnabled }))
+                    Picker("New items", selection: $model.newItemPolicy) {
+                        Text("Visible at end").tag(NewItemPolicy.visibleAtEnd)
+                        Text("Hidden").tag(NewItemPolicy.hidden)
+                    }
+                    Picker("Reveal mode", selection: $revealMode) {
+                        Text("Panel below menu bar").tag("panel")
+                        Text("Inline").tag("inline")
+                    }
+                    Toggle("Show names in panel", isOn: $showNames)
+                    Stepper("Auto re-hide after \(autoRehide == 0 ? "never" : "\(autoRehide) s")", value: $autoRehide, in: 0...60)
                 }
-                Picker("Reveal mode", selection: $revealMode) {
-                    Text("Panel below menu bar").tag("panel")
-                    Text("Inline").tag("inline")
+                Section {
+                    Toggle("Allow menu bar restart as a last resort", isOn: $allowAgentRestart)
+                        .help("If hiding or showing an item cannot be written to Control Center, restarting the menu bar (a brief blank bar) is the only fallback. Off: the item is reported as failed instead.")
+                } footer: {
+                    Text("If hiding or showing an item cannot be written to Control Center, restarting the menu bar (a brief blank bar) is the only fallback. Off: the item is reported as failed instead.")
                 }
-                Toggle("Show names in panel", isOn: $showNames)
-                Toggle("Allow menu bar restart as a last resort", isOn: $allowAgentRestart)
-                    .help("If hiding or showing an item cannot be written to Control Center, restarting the menu bar (a brief blank bar) is the only fallback. Off: the item is reported as failed instead.")
-                Stepper("Auto re-hide after \(autoRehide == 0 ? "never" : "\(autoRehide) s")", value: $autoRehide, in: 0...60)
             }
-            .padding()
+            .formStyle(.grouped)
+            .tag(Tab.general)
             .tabItem { Text("General") }
 
             OnboardingView(model: model.permissions)
+                .tag(Tab.permissions)
                 .tabItem { Text("Permissions") }
 
             SpacingTab()
+                .tag(Tab.spacing)
                 .tabItem { Text("Spacing") }
         }
-        .frame(width: 480, height: 320)
+        .frame(width: Self.width, height: height)
         .onAppear { login = LoginItem.isEnabled }
     }
 }
 
-/// Spacing tab (gdu.20). Writes on slider release only; never restarts the menu bar (gdu.55).
+/// Spacing tab (gdu.20, layout gdu.59). Slider writes on release, field on Return and focus loss; never restarts the menu bar (gdu.55).
 struct SpacingTab: View {
-    static let statusText = "Each app picks up a change when it is relaunched; apps that are already running keep their old spacing. Nothing restarts the menu bar for you. Padding only changes the highlight around an item."
+    static let statusText = "Each app picks up a change when it relaunches; running apps keep their old spacing. Nothing restarts the menu bar."
     private let settings = SpacingSettings()
-    @State private var spacing: Double = 8
-    @State private var padding: Double = 8
-    @State private var spacingSet = false
-    @State private var paddingSet = false
+    @State private var spacing: Int?
+    @State private var padding: Int?
+
+    private static let fallback = 8
 
     var body: some View {
-        Form {
-            row("Item spacing", value: $spacing, isSet: spacingSet) { settings.set(spacing: $0); reload() }
-            row("Selection padding", value: $padding, isSet: paddingSet) { settings.set(padding: $0); reload() }
-            Button("Reset to system default") { settings.reset(); reload() }
-            Text(Self.statusText).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-        .padding()
-        .onAppear { reload() }
-    }
-
-    private func row(_ title: String, value: Binding<Double>, isSet: Bool, commit: @escaping (Int) -> Void) -> some View {
-        HStack {
-            Text(title).frame(width: 120, alignment: .leading)
-            Slider(value: value, in: 0...24, step: 1) { editing in
-                if !editing { commit(Int(value.wrappedValue)) }
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    SpacingRow(title: "Item spacing", caption: "Gap between items", value: $spacing, fallback: Self.fallback) {
+                        settings.set(spacing: $0); reload()
+                    }
+                    SpacingRow(title: "Selection padding", caption: "Highlight padding around a clicked item", value: $padding, fallback: Self.fallback) {
+                        settings.set(padding: $0); reload()
+                    }
+                } footer: {
+                    Text(Self.statusText).fixedSize(horizontal: false, vertical: true)
+                }
             }
-            TextField("", value: Binding(get: { Int(value.wrappedValue) }, set: { value.wrappedValue = Double(SpacingSettings.clamp($0)) }),
-                      format: .number)
-                .frame(width: 44)
-                .onSubmit { commit(Int(value.wrappedValue)) }
-            Text(isSet ? "set" : "default").font(.caption).foregroundStyle(.secondary).frame(width: 48)
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Reset to system default") { settings.reset(); reload() }
+                    .disabled(spacing == nil && padding == nil)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
         }
+        .onAppear { reload() }
     }
 
     private func reload() {
         let c = settings.current()
-        spacingSet = c.spacing != nil; paddingSet = c.padding != nil
-        spacing = Double(c.spacing ?? 8); padding = Double(c.padding ?? 8)
+        spacing = c.spacing; padding = c.padding
+    }
+}
+
+/// One labelled setting: slider + numeric field + "pt" + stepper on one line, caption underneath.
+private struct SpacingRow: View {
+    let title: String
+    let caption: String
+    @Binding var value: Int?
+    let fallback: Int
+    let commit: (Int) -> Void
+    @State private var text = ""
+    @State private var dragValue: Double = 8
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(title) {
+                HStack(spacing: 8) {
+                    Slider(value: $dragValue, in: 0...24) { editing in
+                        if !editing { apply(Int(dragValue.rounded())) }
+                    }
+                    .frame(width: 150)
+                    TextField("", text: $text, prompt: Text("Default"))
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 64)
+                        .focused($focused)
+                        .onSubmit { applyText() }
+                        .onChange(of: focused) { _, now in if !now { applyText() } }
+                    Text("pt").foregroundStyle(.secondary)
+                    Stepper("", value: Binding(get: { value ?? fallback }, set: { apply($0) }),
+                            in: SpacingSettings.range)
+                        .labelsHidden()
+                }
+            }
+            Text(value == nil ? "\(caption) \u{00B7} 0\u{2013}24 pt \u{00B7} System default" : "\(caption) \u{00B7} 0\u{2013}24 pt")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onAppear { sync() }
+        .onChange(of: value) { _, _ in sync() }
+    }
+
+    private func sync() {
+        text = value.map(String.init) ?? ""
+        dragValue = Double(value ?? fallback)
+    }
+
+    private func apply(_ v: Int) {
+        let c = SpacingSettings.clamp(v)
+        text = String(c); dragValue = Double(c)
+        commit(c)
+    }
+
+    private func applyText() {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { sync(); return }
+        guard let n = Int(t) else { sync(); return }
+        if n != value || n != SpacingSettings.clamp(n) { apply(n) } else { sync() }
     }
 }
 

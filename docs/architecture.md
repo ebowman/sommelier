@@ -354,6 +354,7 @@ restore afterwards).
   poll every 5 s -> build engine, `start()` -> no layout file: initialize from one agreed scan (on bar visible, parked hidden)
   -> `requestReconcile()` once -> `EngineTriggers.start()`.
 - Left click toggles the hidden section; right click shows the menu (rebuilt per open). Our own item is never scanned.
+- Settings layout convention (gdu.59): a `TabView` of `Form`s with `.formStyle(.grouped)` (labels leading, controls trailing, captions and footnotes in secondary style); one shared width (540 pt) and a per-tab height chosen in `SettingsView.height`, so the window fits each pane with no dead band. New controls go into a Form row, never a fixed-width HStack.
 - Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
   re-grant calls `clearFailures()` and restarts.
 

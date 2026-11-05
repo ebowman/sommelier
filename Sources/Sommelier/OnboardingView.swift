@@ -4,35 +4,52 @@ import SwiftUI
 
 struct OnboardingView: View {
     let model: PermissionsModel
+    /// True in the standalone onboarding window (heading + fixed size); false when embedded in the Settings tab.
+    var standalone = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Sommelier needs permission").font(.title2).bold()
+        if standalone {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Sommelier needs permission").font(.title2).bold()
+                    .padding(.horizontal, 20).padding(.top, 16)
+                form
+            }
+            .frame(width: 540, height: 396)
+        } else {
+            form.frame(minWidth: 460)
+        }
+    }
+
+    private var form: some View {
+        Form {
             row(title: "Accessibility (required)", state: model.accessibility, optional: false,
                 text: "Required to read and arrange menu bar items.",
                 request: { model.requestAccessibility() }, pane: .accessibility)
             row(title: "Screen Recording (optional)", state: model.screenRecording, optional: true,
                 text: "Optional: enables live images in the overflow panel.",
                 request: { model.requestScreenRecording() }, pane: .screenRecording)
-            Text("Rebuilding from source changes the app's signature, so macOS asks for Accessibility again; the notarized release keeps its grant across updates signed with the same Developer ID.")
-                .font(.footnote).foregroundStyle(.secondary)
+            Section {
+            } footer: {
+                Text("Rebuilding from source changes the app's signature, so macOS asks for Accessibility again; the notarized release keeps its grant across updates signed with the same Developer ID.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(20)
-        .frame(minWidth: 460)
+        .formStyle(.grouped)
     }
 
     @ViewBuilder
     private func row(title: String, state: PermissionState, optional: Bool, text: String,
                      request: @escaping () -> Void, pane: PermissionPane) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.headline)
-                Spacer()
-                Circle().fill(color(state, optional: optional)).frame(width: 10, height: 10)
-                Text(label(state, optional: optional))
+        Section {
+            LabeledContent(title) {
+                HStack(spacing: 6) {
+                    Circle().fill(color(state, optional: optional)).frame(width: 10, height: 10)
+                    Text(label(state, optional: optional))
+                }
             }
-            Text(text).foregroundStyle(.secondary)
+            Text(text).font(.callout).foregroundStyle(.secondary)
             HStack {
+                Spacer()
                 Button("Request…", action: request)
                 Button("Open System Settings") { model.openSettings(pane) }
             }
@@ -51,7 +68,7 @@ struct OnboardingView: View {
 @MainActor
 final class OnboardingWindowController: NSWindowController {
     init(model: PermissionsModel) {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: OnboardingView(model: model)))
+        let window = NSWindow(contentViewController: NSHostingController(rootView: OnboardingView(model: model, standalone: true)))
         window.title = "Sommelier Permissions"
         window.styleMask = [.titled, .closable]
         window.level = .floating

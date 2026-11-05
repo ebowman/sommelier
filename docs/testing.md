@@ -37,6 +37,17 @@ panel has no observed state. Relaunch it afterwards (`open -a "Bartender 7"`). A
 7. Inline mode: Reveal mode = "Inline" restores the old toggle that reveals the hidden section in the real bar.
 8. Clicking an entry only logs `overflow click <key>` for now (forwarding arrives with gdu.17).
 
+## Settings window (gdu.59)
+
+Open with `SOMMELIER_OPEN_SETTINGS=1 make app-run` (Bartender quit first). Title bar reads "Sommelier Settings"; the window resizes per tab (540 pt wide). On every tab check: nothing clipped at
+any edge, labels left and controls right in aligned columns, captions in secondary style, no empty band at the bottom, no wrapped single words.
+- General: grouped rows (Start at login, New items, Reveal mode, Show names, Auto re-hide); a second group with "Allow menu bar restart as a last resort" plus its footnote.
+- Permissions: one group per permission (status dot at the trailing edge, caption, Request/Open buttons trailing), signature footnote below.
+- Spacing: each row has label, slider (no tick marks), numeric field, "pt", stepper, caption underneath. The caption shows the range ("0–24 pt"), "pt" stays visible, the field has a bezel and the stepper steps 1 pt within 0–24. Unset shows "Default" in the field and "System default" in the caption. Type 4 then Return (or
+  click elsewhere): `defaults -currentHost read -globalDomain NSStatusItemSpacing` prints 4. "Reset to system default" (bottom trailing) is disabled while both keys are unset and removes both keys.
+  Footnote spans the full width. Leave both keys absent afterwards.
+- Standalone onboarding window (`SOMMELIER_SHOW_ONBOARDING=1`): heading "Sommelier needs permission", 540 x 396 pt, both groups and the footnote visible without scrolling.
+
 ## Live hide detection
 
 Bead sommelier-gdu.38, 2026-11-04, MBDummy only, Bartender 7 quit, entitled writer `scripts/ccset.swift` (built outside the repo). After a cfprefsd-notified hide
