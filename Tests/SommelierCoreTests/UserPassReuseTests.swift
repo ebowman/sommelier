@@ -65,6 +65,16 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         #expect(st.lastObserveMillis != nil)
     }
 
+    @Test func theCoalescedSetLayoutPathIsUserInitiatedToo() async {
+        var c = cfg(); c.layoutCoalesce = .milliseconds(40)
+        let (e, st, rec) = await rig(config: c)
+        await e.requestReconcile()
+        #expect(await settle(st, passes: 1))
+        await e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        #expect(await settle(st, passes: 2))
+        #expect(rec.seeds == [false, true])
+    }
+
     @Test func revealOffersASeedToo() async {
         let (e, st, rec) = await rig(config: cfg())
         await e.requestReconcile()
