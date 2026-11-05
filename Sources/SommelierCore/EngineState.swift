@@ -82,6 +82,8 @@ public final class EngineState {
     /// gdu.80: set by a reveal pass on a full bar whose layout order differs from the bar: membership was applied, the order was
     /// not (macOS decides what fits). Cleared at the start of every pass.
     public var orderNotAppliedNotice: String?
+    /// gdu.78: set when the retries of units left unsettled (stale member) ran out; cleared when they apply or a trigger restarts the back-off.
+    public var unsettledNotice: String?
     /// Keys the engine moved to `visible` when it adopted the last layout (`start`, `setLayout`) because their app also had a
     /// visible item: hide units are all-or-nothing (gdu.44). Empty when nothing was moved. Replaced by every adoption, so the
     /// Arrange status line can show "N items moved to Visible with their app" for the latest layout only.

@@ -129,4 +129,20 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         #expect(rec.seeds[0] == false)
         #expect(before >= 1)
     }
+
+    @Test func theUnsettledRetryPassIsNeitherSeededNorUserInitiated() async {
+        // gdu.78 (e): the delayed "unsettled units" pass is a plain trigger pass: no seed, and it is not the poll's trigger
+        // (the gdu.58 cap counts `requestReconcile(reason: "poll")` calls, which this retry never makes).
+        let act = FakeActuator(order: ["A", "B"].map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        await act.setUnsettled([k("A"): "stale member"])
+        let rec = SeedRecorder(actuator: act)
+        let st = EngineState()
+        var c = cfg(); c.unsettledRetryBase = .milliseconds(30); c.unsettledRetryCap = .milliseconds(30); c.unsettledRetryMaxAttempts = 2
+        let e = LayoutEngine(observer: rec, actuator: act, store: InMemoryLayoutStore(Layout(visible: [k("B")], hidden: [k("A")])),
+                             capabilities: Caps(), state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: c)
+        await e.start()
+        await e.requestReconcile()
+        #expect(await settle(st, passes: 3))
+        #expect(rec.seeds.count >= 3 && rec.seeds.allSatisfy { !$0 })
+    }
 }

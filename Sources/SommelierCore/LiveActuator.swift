@@ -500,8 +500,9 @@ public actor LiveActuator: MenuBarActuator {
         }
         batchRefused.merge(refused.filter { unsettled[$0.key] == nil }) { a, _ in a }
         batchUnsettled.merge(unsettled) { a, _ in a }   // merge: the gdu.26 recheck recurses with the filtered batch and must not wipe earlier refusals
-        if !refused.isEmpty {
-            note("refused \(refused.count) unit(s) before the write: " + refused.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
+        let refusedLogged = refused.filter { unsettled[$0.key] == nil }   // gdu.78: unsettled units are logged once, by the engine
+        if !refusedLogged.isEmpty {
+            note("refused \(refusedLogged.count) unit(s) before the write: " + refusedLogged.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
         }
         if refused.count == changes.count {
             // Nothing applicable: no scan-dependent work, no write.

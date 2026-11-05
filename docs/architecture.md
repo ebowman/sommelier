@@ -160,7 +160,15 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   flip would also move an unrequested member, is refused whole ("hides together with <entry>: move the whole group"). A STALE unrequested member also leaves the unit alone,
   but TRANSIENTLY ("...: a member's state is unknown; retrying when the bar settles"): `ActuationError.memberStale`, reported through
   `lastBatchUnsettled`, never `lastBatchRefused`; the engine records no `actuatorRefused` entry and no strike, keeps the unit pending, and
-  the next pass plans it again (unlike a capability refusal, which stays `.unsupported` until Retry/setLayout; a stale REQUESTED member is fine, a fresh unrequested member already in
+  the next pass plans it again. gdu.78: because the poll ignores stale flags, nothing else would notice the member settling, so the engine
+  schedules a delayed pass (`scheduleReconcile(after:reason: "unsettled units")`, `LayoutEngine.noteUnsettled`) with back-off 3, 6, 12, 24 s
+  capped at 60 s (`Config.unsettledRetry*`); the retry is a plain trigger pass (not user-initiated, so no observation seed; not a poll trigger, so
+  outside the gdu.58 cap). Any real trigger or user action (every `requestReconcile` other than the retry) resets the back-off; applying the units
+  cancels it. After 10 attempts or 5 min the engine stops scheduling and the Arrange status line says "N items waiting for the bar to settle"
+  (`EngineState.unsettledNotice`, below the reveal-skip notice); the units stay `.pending`, never struck or `.failed`. A batch mixing stale and
+  written units keeps the write error and strike of the written ones. During a reveal an actuator-refused parked unit is withheld as
+  "cannot be shown: <reason>" so `revealSkipNotice` counts it (a same-pass failed sibling may briefly read "cannot be shown: failed earlier"
+  while its retry is pending) (unlike a capability refusal, which stays `.unsupported` until Retry/setLayout; a stale REQUESTED member is fine, a fresh unrequested member already in
   the target state is allowed). The actuator reads the Control Center entries ONCE per batch (`ActuatorPlatform.beginTrackedSnapshot()` /
   `endTrackedSnapshot()` around `applyHiddenBatchDetailed`; `LivePlatform` otherwise parses the plist per `trackedKey(for:)` call) and
   names the entry by its running app's name (`HideUnitNames`, key as fallback), as does the Arrange unit tooltip (`ArrangeRow.unitApp`).

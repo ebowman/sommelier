@@ -33,7 +33,11 @@ public actor FakeActuator: MenuBarActuator {
     public func addItem(_ key: ItemKey) { if !order.contains(key) { order.append(key) } }
 
     /// Makes the Nth call apply its changes normally but report `.failed(.notVerified(expected:observed:), snapshot)`.
-    public func scriptDrift(onCall n: Int, expected: String, observed: String) { drift[n] = (expected, observed) }
+    /// `unapplied` (gdu.78): the batch's changes are NOT written, so the write genuinely did not take effect.
+    public func scriptDrift(onCall n: Int, expected: String, observed: String, unapplied: Bool = false) {
+        drift[n] = (expected, observed); if unapplied { driftUnapplied.insert(n) }
+    }
+    private var driftUnapplied = Set<Int>()
     /// Moves `key` to `index` in the order without recording a call (simulates an item shifted by the agent restart).
     public func displace(_ key: ItemKey, toIndex index: Int) {
         guard let i = order.firstIndex(of: key) else { return }
@@ -128,6 +132,7 @@ public actor FakeActuator: MenuBarActuator {
             lastBatchUnconfirmed = Set(changes.keys)
             return .verified(unconfirmedApplies ? snapshot() : snap)
         }
+        if let d = drift[n], driftUnapplied.contains(n) { return .failed(.notVerified(expected: d.0, observed: d.1), snapshot()) }
         let r = apply(changes)
         if let d = drift[n], case .verified = r {
             return .failed(.notVerified(expected: d.0, observed: d.1), snapshot())

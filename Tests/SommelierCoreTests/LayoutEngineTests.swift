@@ -921,6 +921,91 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.hidden == [a])
     }
 
+    private static let staleWhy = "hides together with X: a member's state is unknown; retrying when the bar settles"
+    private static func retryConfig(base: Duration = .milliseconds(150), attempts: Int = 10) -> LayoutEngine.Config {
+        var c = LayoutEngine.Config(); c.unsettledRetryBase = base; c.unsettledRetryCap = base; c.unsettledRetryMaxAttempts = attempts; return c
+    }
+
+    @Test func unsettledBatchSchedulesADelayedRetryWithTheFirstBackoff() async {
+        // gdu.78 (a)
+        let a = k("A"), b = k("B")
+        var c = Self.retryConfig(); c.unsettledRetryBase = .seconds(30); c.unsettledRetryCap = .seconds(60)
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: c)
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        _ = await r.engine.reconcileOnce()
+        let info = await r.engine.unsettledRetryInfo
+        #expect(info.scheduledDelay == .seconds(30) && info.attempts == 0 && info.waiting == 1)
+    }
+
+    @Test func memberFreshBeforeTheRetryAppliesTheUnitWithoutRetryOrSetLayout() async {
+        // gdu.78 (b)
+        let a = k("A"), b = k("B")
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(60)))
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden.isEmpty)
+        await r.actuator.setUnsettled([:])
+        #expect(await waitUntil { await r.actuator.hidden == [a] })
+        #expect(await waitUntil { let w = await r.engine.unsettledRetryInfo.waiting; return await MainActor.run { w == 0 && !r.state.perItem.values.contains(.pending) } })
+        #expect(await r.engine.unsettledRetryInfo.scheduledDelay == nil)
+        #expect(r.state.unsettledNotice == nil)
+    }
+
+    @Test func boundReachedReportsTheUnitsAndStopsSchedulingWithoutAStrike() async {
+        // gdu.78 (c) + (d, notice part): a real trigger restarts the back-off
+        let a = k("A"), b = k("B")
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(20), attempts: 2))
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        _ = await r.engine.reconcileOnce()
+        #expect(await waitUntil { await MainActor.run { r.state.unsettledNotice != nil } })
+        #expect(r.state.unsettledNotice == "1 item waiting for the bar to settle")
+        #expect(r.state.perItem[a] == .pending)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else if case .unsupported = $0 { false } else { true } })
+        #expect(await r.engine.unsettledRetryInfo.scheduledDelay == nil)
+        try? await Task.sleep(for: .milliseconds(150))
+        let passes = r.state.passesStarted
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(r.state.passesStarted == passes)   // nothing scheduled any more
+        await r.engine.requestReconcile(reason: "app launch/quit")   // a real trigger
+        #expect(await waitUntil { await MainActor.run { r.state.passesStarted > passes } })
+        #expect(r.state.perItem[a] == .pending)
+    }
+
+    @Test func aRealTriggerResetsTheBackoff() async {
+        // gdu.78 (d)
+        let a = k("A"), b = k("B")
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(250)))
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        _ = await r.engine.reconcileOnce()
+        #expect(await waitUntil { await r.engine.unsettledRetryInfo.attempts >= 1 })
+        await r.engine.requestReconcile(reason: "app launch/quit")
+        #expect(await r.engine.unsettledRetryInfo.attempts == 0)
+    }
+
+    @Test func mixedBatchKeepsTheWriteErrorForTheWrittenUnit() async {
+        // gdu.72 review: one unit stale, a WRITTEN unit fails to verify: the write error and strike stand
+        let a = k("A"), b = k("B"), c = k("C")
+        var cfg = Self.retryConfig(); cfg.unsettledRetryBase = .seconds(30); cfg.unsettledRetryCap = .seconds(60)
+        let r = await rig(order: [a, b, c], layout: Layout(visible: [c], hidden: [a, b]), config: cfg)
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        for n in 1...5 { await r.actuator.scriptDrift(onCall: n, expected: "B hidden", observed: "B on the bar", unapplied: true) }
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }   // more passes than maxKeyFailures
+        if case .failed? = r.state.perItem[a] { Issue.record("the stale unit must not be failed") }
+        if case .failed(.notVerified)? = r.state.perItem[b] {} else { Issue.record("the written unit keeps its write error, got \(String(describing: r.state.perItem[b]))") }
+        #expect(await r.engine.unsettledRetryInfo.waiting == 1)
+    }
+
+    @Test func revealSkipNoticeCountsAnActuatorRefusedParkedUnit() async {
+        // gdu.78 (f)
+        let a = k("A"), b = k("B")
+        let r = await rig(order: [b], hidden: [a], layout: Layout(visible: [b], hidden: [a]))
+        await r.actuator.setRefusals([a: "no Control Center entry"])
+        await r.engine.setReveal(hidden: true, alwaysHidden: false)
+        #expect(await waitUntil { await MainActor.run { ArrangeSections.revealSkipNotice(state: r.state) != nil } })
+        _ = await r.engine.reconcileOnce()
+        #expect(ArrangeSections.revealSkipNotice(state: r.state) == "1 item could not be shown")
+    }
+
     @Test func capabilityRefusalStaysStickyUntilRetry() async {
         let a = k("A"), b = k("B")
         let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]))

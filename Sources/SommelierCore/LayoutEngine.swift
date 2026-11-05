@@ -68,6 +68,13 @@ public actor LayoutEngine {
         /// gdu.77: the window for an adopted observation whose age was refreshed by an unchanged poll (`notePollUnchanged`); the
         /// poll interval (10 s) plus the scan and timer slack. The fresh full scan must still agree on the full signature.
         public var polledSeedReuseWindow: Duration = .seconds(13)
+        /// gdu.78: delayed retry of units a batch left unsettled (stale member): first delay, doubling per attempt up to the cap; after
+        /// `unsettledRetryMaxAttempts` attempts or `unsettledRetryMaxWait` since the first unsettled batch the engine stops scheduling
+        /// and the status line reports the units (they stay pending, never struck) until a real trigger or user action.
+        public var unsettledRetryBase: Duration = .seconds(3)
+        public var unsettledRetryCap: Duration = .seconds(60)
+        public var unsettledRetryMaxAttempts = 10
+        public var unsettledRetryMaxWait: Duration = .seconds(300)
         /// Builds the planner's capability rules from the SAME per-pass tracked-entry snapshot as the hide units (gdu.74), so an
         /// entry appearing or disappearing after launch is seen by planner and actuator alike. nil = the fixed provider given to `init`.
         /// gdu.79: the live Control Center `isAllowed` for a tracked entry key (nil = unreadable). The membership guard reads it; nil
@@ -149,6 +156,51 @@ public actor LayoutEngine {
         pollSignature = v; pollSignatureSerial += 1
     }
     private func noteUserAction() { userActionAt = .now; userActions += 1 }
+
+    // MARK: Unsettled-unit retry (gdu.78)
+    /// The reason of the delayed pass that retries unsettled units. Not a poll trigger (the poll calls `requestReconcile(reason: "poll")`,
+    /// which the gdu.58 cap counts at the trigger) and not user-initiated (`fireDelayed` seeds only "setLayout").
+    static let unsettledReason = "unsettled units"
+    private var unsettledKeys = Set<ItemKey>()
+    private var unsettledAttempts = 0
+    private var unsettledSince: ContinuousClock.Instant?
+    private var unsettledDelay: Duration?
+    private var unsettledNoticeShown = false
+    /// Test/diagnostic view: retry attempts fired so far, the delay of the retry currently scheduled (nil = none), units waiting.
+    public var unsettledRetryInfo: (attempts: Int, scheduledDelay: Duration?, waiting: Int) { (unsettledAttempts, unsettledDelay, unsettledKeys.count) }
+
+    /// A batch left `now` unsettled and applied/ruled on the rest of `batch`: schedule the back-off retry, or give up honestly.
+    private func noteUnsettled(_ now: Set<ItemKey>, batch: Set<ItemKey>) async {
+        unsettledKeys.subtract(batch); unsettledKeys.formUnion(now)
+        if unsettledKeys.isEmpty { return await clearUnsettled() }
+        if unsettledSince == nil { unsettledSince = .now }
+        if unsettledAttempts >= config.unsettledRetryMaxAttempts || (unsettledSince.map { $0.duration(to: .now) >= config.unsettledRetryMaxWait } ?? false) {
+            delayed[Self.unsettledReason]?.cancel(); delayed[Self.unsettledReason] = nil; unsettledDelay = nil
+            log("engine: \(unsettledKeys.count) unit(s) still waiting for the bar to settle after \(unsettledAttempts) retries; no further retry until a trigger")
+            let n = unsettledKeys.count
+            unsettledNoticeShown = true
+            await publish { $0.unsettledNotice = n == 1 ? "1 item waiting for the bar to settle" : "\(n) items waiting for the bar to settle" }
+            return
+        }
+        var d = config.unsettledRetryBase
+        for _ in 0..<unsettledAttempts { d = d * 2; if d >= config.unsettledRetryCap { break } }
+        if d > config.unsettledRetryCap { d = config.unsettledRetryCap }
+        unsettledDelay = d
+        scheduleReconcile(after: d, reason: Self.unsettledReason)
+    }
+
+    /// Nothing is unsettled any more (applied, or superseded): cancel the retry and reset the back-off and notice.
+    private func clearUnsettled() async {
+        unsettledKeys = []
+        resetUnsettledBackoff()
+        if unsettledNoticeShown { unsettledNoticeShown = false; await publish { $0.unsettledNotice = nil } }
+    }
+
+    private func resetUnsettledBackoff() {
+        unsettledAttempts = 0; unsettledSince = nil; unsettledDelay = nil
+        delayed[Self.unsettledReason]?.cancel(); delayed[Self.unsettledReason] = nil
+        if unsettledNoticeShown { unsettledNoticeShown = false; Task { await self.publish { $0.unsettledNotice = nil } } }
+    }
     private var stopped = false
     private var busyRetried = false
     private var chained = 0
@@ -402,6 +454,7 @@ public actor LayoutEngine {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
         guard !stopped, !sleeping, !conflicted else { return }
         if supersede { noteUserAction() }
+        if reason != Self.unsettledReason { resetUnsettledBackoff() }   // gdu.78: a real trigger / user action restarts the back-off
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass; requestUserInitiated = userInitiated }
         else if userInitiated { requestUserInitiated = true }
         pending = true
@@ -442,6 +495,7 @@ public actor LayoutEngine {
 
     private func fireDelayed(_ reason: String, supersede: Bool) {
         delayed[reason] = nil
+        if reason == Self.unsettledReason { unsettledAttempts += 1; unsettledDelay = nil }
         if reason == "setLayout" { burstStart = nil }
         requestReconcile(supersede: supersede, reason: reason, userInitiated: reason == "setLayout")
     }
@@ -587,7 +641,9 @@ public actor LayoutEngine {
         }
         for k in refusedParked {
             p.skipped.removeAll { $0.key == k }
-            p.skipped.append(SkippedAction(k, actuatorRefused[k] ?? "cannot be shown"))
+            // gdu.78: during a reveal the refusal is a "cannot be shown" skip, so `revealSkipNotice` counts it.
+            let why = actuatorRefused[k] ?? "cannot be shown"
+            p.skipped.append(SkippedAction(k, (showHidden || showAlways) && !why.hasPrefix("cannot be shown") ? "cannot be shown: " + why : why))
         }
         if !overflowRefused.isEmpty {
             func refused(_ a: PlannedAction) -> ItemKey? {
@@ -779,6 +835,7 @@ public actor LayoutEngine {
                 s.revealedObserved = anyShown
             }
         }
+        if converged, !unsettledKeys.isEmpty { await clearUnsettled() }   // gdu.78
         // A key that failed fewer than `maxKeyFailures` passes in a row is retried by one more pass (bounded by the strikes).
         if !converged, draining, !pending, !stopped, !cutThisPass, chained < config.maxChainedPasses, hasRetryableFailure { chained += 1; pending = true }
         return report
@@ -1161,6 +1218,8 @@ public actor LayoutEngine {
                 log("engine: actuator left \(unsettledNow.count) unit(s) pending (not failures, not refused): " + unsettledNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
                 if refusedNow.count + unsettledNow.count == batch.count { err = nil }
             }
+            // gdu.78: delayed retry with back-off (the poll ignores stale flags, so nothing else would notice the member settling).
+            await noteUnsettled(Set(unsettledNow.keys), batch: Set(batch.keys))
             for k in batch.keys { unconfirmed[k] = nil }
             if err == nil {
                 for k in await actuator.lastBatchUnconfirmed { if let hide = batch[k] { unconfirmed[k] = hide } }
