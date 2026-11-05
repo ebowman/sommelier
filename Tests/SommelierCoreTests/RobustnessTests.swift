@@ -367,3 +367,38 @@ private struct OneItemSource: AccessibilitySource {
         #expect(scanner.assumedHiddenPIDs == [42])   // the Control Center store still says hidden
     }
 }
+
+// MARK: - Conflicting manager during a pass (gdu.35)
+
+
+@MainActor
+@Suite struct ConflictDuringPassTests {
+    @Test func aPassStopsBeforeTheNextActuatorCallOnceBartenderIsDetected() async {
+        let names = ["A", "B", "C", "D"]
+        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)))
+        let engine = r.engine
+        await r.actuator.setAfterCall { n in if n == 1 { engine.setConflict("Bartender 7") } }
+        let rep = await engine.reconcileOnce()
+        #expect(rep.outcome == .paused)
+        #expect(await r.actuator.calls.count == 1)
+        #expect(rep.actionCount == 1)
+        let st = r.state
+        #expect(!st.perItem.values.contains { if case .failed = $0 { return true } else { return false } })
+        #expect(st.inFlight == nil)
+        #expect(st.lastError == nil)
+        // Nothing was suppressed: once Bartender quits the next pass converges.
+        await r.actuator.setAfterCall(nil)
+        engine.setConflict(nil)
+        #expect(await engine.reconcileOnce().outcome == .converged)
+        #expect(await r.actuator.order == names.reversed().map(k))
+    }
+
+    @Test func aPassStartedWhileConflictedMakesNoCalls() async {
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)))
+        r.engine.setConflict("Bartender 7")
+        #expect(await r.engine.reconcileOnce().outcome == .paused)
+        await r.engine.requestReconcile()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await r.actuator.calls.isEmpty)
+    }
+}

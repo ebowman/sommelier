@@ -42,6 +42,10 @@ public actor FakeActuator: MenuBarActuator {
     public private(set) var batchStarts = 0
     private var batchDelay: Duration = .zero
 
+    /// Runs synchronously each time a call is recorded (before it is applied), with the 1-based call count.
+    public func setAfterCall(_ f: (@Sendable (Int) -> Void)?) { afterCall = f }
+    private var afterCall: (@Sendable (Int) -> Void)?
+
     public func failOnCall(_ n: Int, _ error: ActuationError) { scripted[n] = error }
 
     /// The next `batches` batches report every key as applied-but-unconfirmed (`.liveUnverified`); with `applyChange: false` the
@@ -55,6 +59,7 @@ public actor FakeActuator: MenuBarActuator {
     /// Records the call; returns a scripted failure if one is due.
     private func begin(_ call: Call) -> ActuationResult? {
         calls.append(call)
+        afterCall?(calls.count)
         if let e = scripted[calls.count] { return .failed(e, snapshot()) }
         return nil
     }

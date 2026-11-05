@@ -105,11 +105,13 @@ final class AppModel {
         defer { starting = false }
         if let m = platform.conflictingManager() {
             conflictingManager = m
+            engine?.setConflict(m)
             NSLog("[Sommelier] paused: \(m)")
             pollConflict()
             return
         }
         conflictingManager = nil
+        engine?.setConflict(nil)
         conflictTask?.cancel(); conflictTask = nil
         if engine == nil {
             let e = EngineFactory.makeLive(platform: platform, store: store, state: state,
@@ -187,6 +189,7 @@ final class AppModel {
         if let m = platform.conflictingManager() {
             NSLog("[Sommelier] \(m); pausing")
             conflictingManager = m
+            engine?.setConflict(m)   // a pass already running issues no further actuator call
             triggers?.stop()
             agentWatcher?.stop()
             pollConflict()

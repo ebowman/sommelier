@@ -16,6 +16,8 @@ public struct PassReport: Equatable, Sendable {
         case stopped
         /// MenuBarAgent was respawned (by someone else) during the pass: nothing was actuated from observations of the new agent.
         case agentRestarted
+        /// A conflicting manager (Bartender) is running (`setConflict`): no further actuator call was made; nothing struck or failed.
+        case paused
     }
     public var outcome: Outcome
     /// Phase of the last plan computed in the pass.
@@ -126,6 +128,10 @@ public actor LayoutEngine {
     private var notReadyUntil: ContinuousClock.Instant?
     /// Between willSleep and didWake: no pass starts, a running pass ends after its current action.
     private var sleeping = false
+    /// Name of a conflicting menu bar manager (Bartender), set from outside the actor so it takes effect between two actuator
+    /// calls of a running pass. While set, no pass starts and a running pass ends `.paused` before its next actuator call.
+    private nonisolated let conflictBox = ConflictBox()
+    private var conflicted: Bool { conflictBox.value != nil }
     private var delayed: [String: Task<Void, Never>] = [:]
     private var noticeSerial = 0
     private let agentPID: @Sendable () -> pid_t?
@@ -287,7 +293,7 @@ public actor LayoutEngine {
     /// pass for this request starts at once instead of after up to `AgreedScanObserver.deadline` seconds.
     public func requestReconcile(supersede: Bool = false, reason: String = "trigger") {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
-        guard !stopped, !sleeping else { return }
+        guard !stopped, !sleeping, !conflicted else { return }
         if supersede { noteUserAction() }
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
         pending = true
@@ -368,6 +374,11 @@ public actor LayoutEngine {
 
     public var isSleeping: Bool { sleeping }
 
+    /// A conflicting manager appeared (`who`) or went away (`nil`). Callable from any context and effective at once: the pass in
+    /// flight issues no further actuator call and ends `.paused` (no failure recorded). Clearing does not start a pass; the
+    /// caller reconciles afterwards.
+    public nonisolated func setConflict(_ who: String?) { conflictBox.value = who }
+
     // MARK: Scheduling
 
     private func kick() {
@@ -377,7 +388,7 @@ public actor LayoutEngine {
     }
 
     private func drain() async {
-        while pending, !stopped, !sleeping {
+        while pending, !stopped, !sleeping, !conflicted {
             if let last = lastStart {
                 let wait = config.minPassInterval - last.duration(to: .now)
                 if wait > .zero { await sleep(wait) }
@@ -695,6 +706,15 @@ public actor LayoutEngine {
         }
     }
 
+    /// A conflicting manager was detected during the pass: end it before the next actuator call. Not a failure: no strike,
+    /// no suppression, `perItem` statuses stay as published (pending, never `.failed`).
+    private func pausedMidPass(_ r: PassReport) async -> PassReport {
+        log("conflicting manager running (\(conflictBox.value ?? "?")); pass ends before the next actuator call")
+        pending = false
+        await publish { $0.inFlight = nil }
+        return await finish(r, converged: false)
+    }
+
     /// Ends a pass whose plan a newer request made stale (gdu.47): nothing is recorded as a failure, no strikes, the next pass
     /// plans from the NEW layout and a fresh full scan. While a `setLayout` coalescing window is open its timer starts that pass.
     private func endSuperseded(_ r: PassReport) async -> PassReport {
@@ -787,6 +807,12 @@ public actor LayoutEngine {
             _ = await finish(r, converged: false)
             return r
         }
+        if conflicted {
+            log("conflicting manager running; pass skipped")
+            let r = PassReport(outcome: .paused)
+            _ = await finish(r, converged: false)
+            return r
+        }
         if let until = notReadyUntil {
             if .now < until {
                 log("agent restarted moments ago; not acting on this observation")
@@ -875,6 +901,7 @@ public actor LayoutEngine {
                 }
             }
             guard let first = order.first else { return await abort(.incomplete) }
+            if conflicted { return await pausedMidPass(report(.paused)) }
             let firstAction: PlannedAction = batch[first] == true ? .hide(first) : .show(first)
             await publish { s in for k in order { s.perItem[k] = .pending }; s.inFlight = firstAction }
             // The actuator computes its expectations and `before` map from ITS OWN scan taken right before the write; the engine
@@ -982,6 +1009,7 @@ public actor LayoutEngine {
                 log("\(requestReason) picked up by the running pass at its next re-plan, \(Self.ms(r.duration(to: .now))) ms after the request")
             }
             if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
+            if conflicted { return await pausedMidPass(report(.paused)) }
             if sleeping {
                 log("system is going to sleep; pass ends after the action in flight")
                 await publish { $0.inFlight = nil }
@@ -1147,4 +1175,13 @@ public struct PollSuppression: Sendable, Equatable {
     public var until: Date
     public var keys: [ItemKey]
     public init(until: Date, keys: [ItemKey]) { self.until = until; self.keys = keys }
+}
+
+final class ConflictBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var v: String?
+    var value: String? {
+        get { lock.lock(); defer { lock.unlock() }; return v }
+        set { lock.lock(); v = newValue; lock.unlock() }
+    }
 }

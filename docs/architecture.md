@@ -302,6 +302,7 @@ Every event becomes a (delayed) `LayoutEngine.requestReconcile`; none of them ac
 - **Sleep/wake**: `EngineTriggers` calls `willSleep()` (no new pass starts, pending requests and delayed reconciles are dropped; a running pass ends
   after the action in flight, re-checked before every move) and `didWake()` (reconcile 3 s later). `triggers.start()` clears a sleep flag left by a
   missed wake.
+- **Conflicting manager (gdu.35)**: `AppModel` calls `engine.setConflict(who)` (nonisolated, lock-protected) when Bartender is detected; a pass already running checks it before the membership batch and before every order move, issues no further actuator call and ends `.paused` (no failure, strike or suppression), no new pass starts until `setConflict(nil)` on resume.
 - **Display changes** (`AppModel`, `NSApplication.didChangeScreenParametersNotification`): `platform.invalidateStrip()` (the strip is recomputed from
   the next agent read), the open overflow panel is re-anchored to the status item's screen after 0.4 s (`OverflowPanelController.reposition`; its
   frame comes from `OverflowPlacement.panelFrame` on the screen under the item), and ONE reconcile after 1 s (bursts of notifications collapse).
