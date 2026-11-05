@@ -239,6 +239,16 @@ public struct AgreedScanObserver: MenuBarObserver {
         return (o.items, o.scans, nil, o.completeness, r.unknownSeen, r.unknownReasons, r.incompleteReasons)
     }
 
+    /// gdu.85: reasons that differ only in their numbers ("3 unnamed timeouts, ..." vs "2 unnamed timeouts, ...") are one reason; keep the
+    /// one with the highest numbers (the worst scan). Exact duplicates collapse too.
+    static func mergeIncompleteReason(_ why: String, into list: inout [String]) {
+        func shape(_ s: String) -> String { s.split(whereSeparator: \.isNumber).joined(separator: "#") }
+        func weight(_ s: String) -> Int { s.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.reduce(0, +) }
+        if let i = list.firstIndex(where: { shape($0) == shape(why) }) {
+            if weight(why) > weight(list[i]) { list[i] = why }
+        } else { list.append(why) }
+    }
+
     private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed? = nil) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement, unknownSeen: [ItemKey],
                                                                                                                                                   unknownReasons: [ItemKey: String], incompleteReasons: [String]) {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
@@ -274,7 +284,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             lastRes = res
             for k in LayoutBuilder.unknownPlacement(in: res) where !unknownSeen.contains(k) { unknownSeen.append(k) }
             unknownReasons.merge(LayoutBuilder.unknownReasons(in: res)) { old, _ in old }
-            if let why = snap.completenessReason, !incompleteReasons.contains(why) { incompleteReasons.append(why) }
+            if let why = snap.completenessReason { Self.mergeIncompleteReason(why, into: &incompleteReasons) }
             if !dups.isEmpty {
                 // Which copies existed (so the cause is visible in the log): x, size, stale flag, source, identifier.
                 let detail = dups.map { k in

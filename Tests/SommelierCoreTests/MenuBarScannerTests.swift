@@ -219,9 +219,11 @@ private func mainMenuFixture(withMenu: Bool, timedOutMenu: Bool = false) -> Fixt
     #expect(MenuBarScanner(source: s).scan().items.map(\.joinEvidence) == [.frameUnique, .frameUnique])
     // B's app-side frame lags and overlaps A's hosted element too: neither pairing can be trusted.
     s.extras[11] = [AXElementInfo(frame: bar(110))]
-    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(104)), AXElementInfo(frame: bar(300))])   // gdu.84: 2+ pt off, so no exact-frame tie-break
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(101)), AXElementInfo(frame: bar(300))])   // 1 pt off, outside the pile: only the gdu.28 rule (gdu.85); 4 pt variant below
     let amb = MenuBarScanner(source: s).scan().items
     #expect(amb.allSatisfy { $0.joinEvidence != .frameUnique })
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(104)), AXElementInfo(frame: bar(300))])
+    #expect(MenuBarScanner(source: s).scan().items.allSatisfy { $0.joinEvidence != .frameUnique })
     // A width disagreement over 2 pt is not corroboration either.
     s.extras[10] = [AXElementInfo(frame: bar(100, w: 24))]; s.extras[11] = []
     s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(100, w: 40))])

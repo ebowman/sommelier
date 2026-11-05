@@ -315,3 +315,40 @@ private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenu
         #expect(i.placementReason?.contains("overflow pile") == true && i.placementReason?.contains("make room in the bar") == true)
     }
 }
+
+/// gdu.85: the exact-frame tie-break is limited to the overflow pile.
+@Suite struct ExactFrameTieBreakScopeTests {
+    private let a = RunningAppInfo(pid: 30, bundleID: "ie.test.a", name: "A")
+    private let b = RunningAppInfo(pid: 31, bundleID: "ie.test.b", name: "B")
+    @Test func aOnePointCoincidenceOutsideThePileIsNotJoinedByTheExactPass() {
+        // Chevron at 795; A at 1000 (right of the chevron, not stacked): B's lagging frame overlaps A's hosted element too.
+        var s = Src(apps: [agent, a, b])
+        s.extras[30] = [AXElementInfo(frame: bar(1000))]
+        s.extras[31] = [AXElementInfo(frame: bar(1010))]
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+            AXElementInfo(axDescription: MenuBarItem.overflowChevronName, frame: bar(795, w: 17)),
+            AXElementInfo(frame: bar(1001)), AXElementInfo(frame: bar(1300)),
+        ])
+        let items = MenuBarScanner(source: s).scan().items
+        #expect(items.allSatisfy { $0.joinEvidence != .frameUnique })   // gdu.28 mutual-and-exclusive rule decides (A and B both overlap)
+    }
+    @Test func theKyaShapeStillJoinsInThePile() {
+        var s = Src(apps: [agent, a])
+        s.extras[30] = [AXElementInfo(frame: bar(795, w: 30))]
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+            AXElementInfo(frame: bar(798, w: 27)), AXElementInfo(frame: bar(795, w: 30)), AXElementInfo(frame: bar(799, w: 22)),
+            AXElementInfo(axDescription: MenuBarItem.overflowChevronName, frame: bar(795, w: 17)),
+        ])
+        var sc = MenuBarScanner(source: s); sc.trackedEntries = { [entry("ie.test.a", true)] }
+        let i = sc.scan().items.first { $0.ownerName == "A" }!
+        #expect(i.joinEvidence == .frameUnique && i.isOnMenuBar && i.systemOverflow)
+    }
+}
+
+@Test func incompleteReasonsDifferingOnlyInNumbersMergeKeepingTheHighest() {
+    var l: [String] = []
+    for w in ["2 unnamed timeouts, absent: 1", "5 unnamed timeouts, absent: 3", "3 unnamed timeouts, absent: 1", "other", "other"] {
+        AgreedScanObserver.mergeIncompleteReason(w, into: &l)
+    }
+    #expect(l == ["5 unnamed timeouts, absent: 3", "other"])
+}

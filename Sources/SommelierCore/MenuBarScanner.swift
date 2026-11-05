@@ -593,12 +593,18 @@ public struct MenuBarScanner {
         }
         pass(.identifier) { !$0.identifier.isEmpty && $0.identifier == $1.identifier }
         pass(.description) { !$0.axDescription.isEmpty && $0.axDescription == $1.axDescription }
+        let chevronFrame = hosted.first(where: \.isOverflowChevron)?.frame
+        let pileFrames = hosted.filter { !$0.isOverflowChevron }.map(\.frame)
         // gdu.84 exact-frame tie-break (`SystemOverflowRule.exactFrameMatch`): before the loose intersection pass, an unmatched, allowed
         // candidate and an unowned hosted element that coincide exactly pair up as `frameUnique` when neither has a second exact match.
-        // Flag-false candidates (gdu.79), assumed-hidden ones and the chevron (gdu.69) never take part.
+        // Flag-false candidates (gdu.79), assumed-hidden ones and the chevron (gdu.69) never take part. gdu.85: ONLY in the overflow pile
+        // (the unowned element's frame OR the candidate's is overflowed against the chevron); elsewhere on the bar the gdu.28
+        // mutual-and-exclusive rule stays the only frame join, so a 1 pt coincidence outside the pile is not promoted to frameUnique.
+        func inPile(_ f: CGRect) -> Bool { chevronFrame.map { SystemOverflowRule.isOverflowed(f, chevron: $0, hosted: pileFrames) } ?? false }
         for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) && !h.isOverflowChevron {
             let eligible = candidates.indices.filter { matchedCandidates[$0] == nil && !assumedIdx.contains($0) && !flagFalseIdx.contains($0) }
-            let exact = eligible.filter { SystemOverflowRule.exactFrameMatch(h.frame, candidates[$0].info.frame) }
+            let hInPile = inPile(h.frame)
+            let exact = eligible.filter { SystemOverflowRule.exactFrameMatch(h.frame, candidates[$0].info.frame) && (hInPile || inPile(candidates[$0].info.frame)) }
             guard exact.count == 1, let ci = exact.first else { continue }
             let rivals = hosted.indices.filter {
                 $0 != hi && !matchedHosted.contains($0) && !Self.isOwnHostedElement(hosted[$0]) && !hosted[$0].isOverflowChevron
@@ -712,8 +718,6 @@ public struct MenuBarScanner {
         // trusted (complete) hosted read, unknown placement. Items no entry governs (SystemUIServer's, system extras) cannot be
         // live-hidden and keep the frame rule; so does everything while the store is unreadable or the hosted read is incomplete.
         // One place: mbprobe list, the engine observation, LayoutBuilder and init-from-current all read this classification.
-        let chevronFrame = hosted.first(where: \.isOverflowChevron)?.frame
-        let pileFrames = hosted.filter { !$0.isOverflowChevron }.map(\.frame)
         var items: [MenuBarItem] = []
         var carriedUnverified: [String: Int] = [:]
         var newHidden = Set<String>()
