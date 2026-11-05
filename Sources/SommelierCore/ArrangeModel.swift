@@ -167,6 +167,8 @@ public enum ArrangeSections {
         switch sec {
         case .visible:
             guard observed.onBar.contains(key) else { return false }
+            // macOSOwns: macOS decides the order, so a shown item is in place wherever it landed on the bar.
+            if !layout.enforcesOrder { return true }
             return drawnOrder(layout.visible, observed) == drawnOrder(observed.onBar, observed, within: layout.visible)
         case .hidden:
             return observed.parked.contains(key) || (showHiddenSection && observed.onBar.contains(key))
@@ -230,7 +232,9 @@ public enum ArrangeSections {
             let cap = capabilities(k)
             let anchor = !cap.canMove
             let info = items[k]
-            let pending = ghost || awaiting.contains(k)
+            // macOSOwns: a Visible key already on the bar is never "moving" (nothing reorders it); only arrival (ghost) is pending.
+            let orderFree = !layout.enforcesOrder && layout.section(of: k) == .visible && onBar.contains(k)
+            let pending = ghost || (awaiting.contains(k) && !orderFree)
             let stale = !ghost && observed.staleOnBar.contains(k)
             var b = hasObs
                 ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k),
@@ -246,7 +250,7 @@ public enum ArrangeSections {
             r.isPlaced = layout.placed.contains(k)
             r.placementInert = r.isPlaced && !layout.enforcesOrder
             r.placementNote = !r.isPlaced ? nil : (layout.enforcesOrder ? "Sommelier keeps this item here" : "Placement remembered, not enforced (order follows macOS)")
-            if b == .moving, !ghost { r.moveReason = moveReasons[k] }
+            if b == .moving, !ghost, layout.enforcesOrder { r.moveReason = moveReasons[k] }
             return r
         }
 
@@ -262,7 +266,7 @@ public enum ArrangeSections {
                     if case .module = k { continue }
                     if items[k] == nil && !parked.contains(k) { vNot.append(row(k, ghost: false, running: false)); continue }
                     ghost = true
-                } else if awaiting.contains(k) && !placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {
+                } else if layout.enforcesOrder && awaiting.contains(k) && !placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {
                     ghost = true
                 }
                 guard ghost else { continue }
@@ -339,10 +343,19 @@ public enum ArrangeSections {
         revealSkipNotice(perItem: state.perItem, showHiddenSection: state.showHiddenSection, showAlwaysHidden: state.showAlwaysHidden)
     }
 
+    /// Status-line suffix naming the order mode (only shown when converged and nothing is pending).
+    static func orderSuffix(_ mode: OrderMode, _ placed: Int) -> String {
+        switch mode {
+        case .macOSOwns: return "Order follows macOS"
+        case .placedOnly: return placed == 0 ? "No placed items" : "Keeping the order of \(placed) placed item\(placed == 1 ? "" : "s")"
+        }
+    }
+
     /// Bottom line: errors and counts first, "Converged" only when nothing is pending or failed.
     public static func statusLine(perItem: [ItemKey: ItemStatus], lastError: EngineError?, isConverged: Bool, inFlight: Bool,
                                   pendingAwaiting: Int = 0, observationSettled: Bool = true,
-                                  notice: String? = nil, pollPausedNames: [String]? = nil) -> String {
+                                  notice: String? = nil, pollPausedNames: [String]? = nil,
+                                  orderMode: OrderMode? = nil, placedCount: Int = 0) -> String {
         let pending = perItem.values.filter { if case .pending = $0 { return true }; if case .moving = $0 { return true }; return false }.count
         let failed = perItem.values.filter { if case .failed = $0 { return true }; return false }.count
         let waitingPos = perItem.values.filter { if case .waitingForPosition = $0 { return true }; return false }.count
@@ -356,6 +369,7 @@ public enum ArrangeSections {
         if waitingPos > 0 { parts.append("Waiting for a trustworthy read of \(waitingPos) item\(waitingPos == 1 ? "" : "s")") }
         if parts.isEmpty {
             var line = notice.map { "\($0) · \(base)" } ?? base
+            if base == "Converged", let m = orderMode { line += " · " + orderSuffix(m, placedCount) }
             if let n = pollPausedNames { line += " · " + pollPausedText(n) }
             return line
         }
@@ -366,6 +380,19 @@ public enum ArrangeSections {
 }
 
 // MARK: - Drops, steps and toolbar actions
+
+/// Which keys of a submitted move the window tracks (spinner/timeout). Hidden-strip reorders are our own data (never tracked);
+/// in macOSOwns a key that stays in Visible is never tracked either (macOS owns the order, nothing to verify).
+public func keysToTrack(moved: [ItemKey], old: Layout, new: Layout) -> [ItemKey] {
+    moved.filter { k in
+        let was = old.section(of: k), now = new.section(of: k)
+        if was == now {
+            if now != .visible { return false }
+            if !new.enforcesOrder { return false }
+        }
+        return true
+    }
+}
 
 /// The layout the Arrange window submitted, until the engine has published it (so rapid consecutive drops build on each other).
 /// Compared by REVISION, never by equality (gdu.48): the engine may append new items to the layout before it is published, so the

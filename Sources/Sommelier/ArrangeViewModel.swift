@@ -104,7 +104,8 @@ final class ArrangeViewModel {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
                                    observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice ?? selfPositioningNote,
-                                   pollPausedNames: pollPausedNames)
+                                   pollPausedNames: pollPausedNames,
+                                   orderMode: state.layout.orderMode, placedCount: state.layout.placed.count)
     }
     /// gdu.67: shown after the engine rewrote a layout that straddled a self-positioning item (`lastNormalization` holds only those keys then).
     private var selfPositioningNote: String? {
@@ -296,11 +297,7 @@ final class ArrangeViewModel {
             let old = layout
             var track: [ItemKey] = []
             message = willNotFit ? "Dropped left of the overflow boundary: macOS will keep it behind the chevron." : nil
-            for k in moved {
-                let was = old.section(of: k), now = l.section(of: k)
-                if was == now, now != .visible { continue }   // pure reorder inside a hidden strip: our data, nothing to verify
-                track.append(k)
-            }
+            track = keysToTrack(moved: moved, old: old, new: l)   // hidden-strip reorders and (macOSOwns) Visible stayers are not tracked
             AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
             if let dropID { AppLog.log(.arrange, "arrange: " + DropTrace.layoutLine(id: dropID, key: key, layout: l)) }
             apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved), dropID: dropID)
