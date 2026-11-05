@@ -403,16 +403,40 @@ private final class FakeApps: RunningAppsSource {
         #expect(hits.count == 2)
     }
 
-    @Test func notificationAndKVOForSamePidMakeOnePass() async {
+    @Test func notificationAndKVOWithinDebounceMakeOneRequestWindow() async {
+        // Both paths request the same-reason delayed reconcile; the engine replaces the pending one, so close arrivals are one pass.
+        // Here: KVO diff requests once, the notification re-arms (a second call of the same reason), no third from repeated KVO.
         let (t, apps, hits) = make()
         t.start(); defer { t.stop() }
         apps.list = [agent]
-        await t.syncApps()          // notification path
-        apps.handler?(); await Task.yield(); await t.syncApps()   // KVO path for the same launch
+        await t.syncApps()
+        await t.syncApps()   // repeated KVO: no diff, nothing
         #expect(hits.count == 1)
-        apps.list = []
-        await t.syncApps(); await t.syncApps()
+        await t.syncApps(notified: (agent, true))
+        #expect(hits.count == 2)   // re-arm, replaces the pending request in the engine
+    }
+
+    @Test func lateLaunchNotificationRearmsAfterKVOPass() async {
+        let (t, apps, hits) = make()
+        t.start(); defer { t.stop() }
+        apps.list = [agent]; await t.syncApps()
+        #expect(hits.count == 1)
+        await t.syncApps(notified: (agent, true))   // arrives after the KVO pass has run
         #expect(hits.count == 2)
+    }
+
+    @Test func nonOwnerAccessoryQuitIgnoredOwnerQuitFires() async {
+        let (t, apps, hits) = make(owners: [500])
+        t.start(); defer { t.stop() }
+        let other = RunningApp(pid: 600, bundleID: "o", policy: .accessory)
+        apps.list = [agent, other]; await t.syncApps()
+        let base = hits.count
+        apps.list = [agent]
+        await t.syncApps(notified: (other, false))
+        #expect(hits.count == base)
+        apps.list = []
+        await t.syncApps(notified: (agent, false))
+        #expect(hits.count == base + 1)
     }
 
     @Test func prohibitedAppsAndUnownedQuitsAreIgnored() async {

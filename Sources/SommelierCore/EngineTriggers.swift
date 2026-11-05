@@ -140,11 +140,13 @@ public final class EngineTriggers {
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
                 let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let launch = n.name == NSWorkspace.didLaunchApplicationNotification
+                let note = app.map { RunningApp(pid: $0.processIdentifier, bundleID: $0.bundleIdentifier, policy: $0.activationPolicy) }
                 let what = app.map { "\(n.name.rawValue): pid \($0.processIdentifier) bundle \($0.bundleIdentifier ?? "-") policy \($0.activationPolicy.rawValue)" }
                 Task { @MainActor in
                     guard let self else { return }
                     if let what { self.log("notification \(what)") }
-                    await self.syncApps()
+                    await self.syncApps(notified: note.map { ($0, launch) })
                 }
             })
         }
@@ -185,19 +187,24 @@ public final class EngineTriggers {
     /// further coalesced by the engine's trailing 1 s window). Launch: policy .accessory or .regular (menu-bar-only utilities are
     /// .accessory; .prohibited background apps own no items). Quit: an app that was .accessory/.regular and, when the owner set is
     /// known, owned an item in the latest scan; with ownership unknown (`ownerPIDs()` nil) any such app counts.
-    func syncApps() async {
+    /// `notified`: a didLaunch/didTerminate notification always requests (re-arms) the pass even when KVO already updated `known`:
+    /// KVO fires at process registration, the notification when the app finished launching, and its status item may appear after
+    /// the KVO pass already scanned (same-reason requests replace each other within the debounce, so close arrivals stay one pass).
+    func syncApps(notified: (app: RunningApp, launch: Bool)? = nil) async {
         let now = Dictionary(apps.current().map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
         let launched = now.values.filter { known[$0.pid] == nil }
         let quit = known.values.filter { now[$0.pid] == nil }
         known = now
-        guard !launched.isEmpty || !quit.isEmpty else { return }
         func visible(_ a: RunningApp) -> Bool { a.policy == .accessory || a.policy == .regular }
         let owners = ownerPIDs()
+        var force = false
+        if let n = notified, visible(n.app), n.launch || (owners?.contains(n.app.pid) ?? true) { force = true }
+        guard !launched.isEmpty || !quit.isEmpty || force else { return }
         let l = launched.filter(visible)
         let q = quit.filter { visible($0) && (owners?.contains($0.pid) ?? true) }
         for a in launched { log("launch pid \(a.pid) bundle \(a.bundleID ?? "-") policy \(a.policy.rawValue)\(visible(a) ? "" : " (ignored)")") }
         for a in quit { log("quit pid \(a.pid) bundle \(a.bundleID ?? "-") policy \(a.policy.rawValue)\(q.contains(a) ? "" : " (ignored)")") }
-        guard !l.isEmpty || !q.isEmpty else { return }
+        guard force || !l.isEmpty || !q.isEmpty else { return }
         await launchQuitTrigger()
     }
 
