@@ -35,6 +35,20 @@ public struct SpacingSettings: Sendable {
 
     public static func clamp(_ v: Int) -> Int { min(max(v, range.lowerBound), range.upperBound) }
 
+    /// What `mbprobe spacing set` does with one requested value: negative = refused (exit 2), above the range = clamped with a
+    /// warning, otherwise used as is.
+    public enum Decision: Equatable, Sendable {
+        case use(Int)
+        case clamped(from: Int, to: Int)
+        case refused(Int)
+    }
+
+    public static func decide(_ v: Int) -> Decision {
+        if v < range.lowerBound { return .refused(v) }
+        let c = clamp(v)
+        return c == v ? .use(v) : .clamped(from: v, to: c)
+    }
+
     public func current() -> (spacing: Int?, padding: Int?) {
         (backend.integer(forKey: Self.spacingKey), backend.integer(forKey: Self.paddingKey))
     }

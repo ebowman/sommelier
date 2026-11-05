@@ -49,6 +49,46 @@ public extension MenuBarObserver {
     }
 }
 
+/// Why the last two scans did not agree (gdu.30): the keys that were stale on the bar in the last scan, and, when both scans
+/// were usable, the keys whose presence/placement differed between them.
+public struct ScanDisagreement: Equatable, Sendable {
+    public var scans: Int
+    public var staleKeys: [String]
+    public var changedKeys: [String]
+
+    public init(scans: Int, staleKeys: [String], changedKeys: [String]) {
+        self.scans = scans; self.staleKeys = staleKeys; self.changedKeys = changedKeys
+    }
+
+    /// `previous`/`last` are the two final scans (previous nil = only one scan was taken).
+    public static func make(scans: Int, previous: [ResolvedItem]?, last: [ResolvedItem], rule: BarSignature) -> ScanDisagreement {
+        let stale = Set(rule.blockingStale(last).map { $0.key.description }).sorted()
+        var changed: [String] = []
+        // The diff ignores the blocking stale items (reported separately), so a stale scan still shows what else moved.
+        let blocked = Set(rule.blockingStale(last).map(\.key)).union(previous.map { rule.blockingStale($0).map(\.key) } ?? [])
+        func usable(_ x: [ResolvedItem]) -> [ResolvedItem] { x.filter { !blocked.contains($0.key) } }
+        if let previous, let a = rule.value(usable(previous)), let b = rule.value(usable(last)) {
+            func set(_ v: BarSignature.Value) -> Set<String> { Set(v.order).union(v.presence).union(v.parked).union(v.staleParked) }
+            var diff = set(a).symmetricDifference(set(b))
+            // Same members, different order: the keys whose position among the ordered keys moved.
+            if a.order != b.order {
+                for (i, k) in b.order.enumerated() where a.order.firstIndex(of: k) != i { diff.insert(k) }
+                for (i, k) in a.order.enumerated() where b.order.firstIndex(of: k) != i { diff.insert(k) }
+            }
+            changed = diff.sorted()
+        }
+        return ScanDisagreement(scans: scans, staleKeys: stale, changedKeys: changed)
+    }
+
+    public var message: String {
+        var m = "scans did not agree after \(scans) attempts; not writing"
+        if !staleKeys.isEmpty { m += "\n  stale in the last scan: " + staleKeys.joined(separator: ", ") }
+        if !changedKeys.isEmpty { m += "\n  differed between the last two scans: " + changedKeys.joined(separator: ", ") }
+        if staleKeys.isEmpty, changedKeys.isEmpty { m += "\n  (no stale or differing keys identified; the last scan may have been incomplete)" }
+        return m
+    }
+}
+
 /// Polls full scans until two consecutive fresh scans agree, or gives up (gdu.46).
 ///
 /// Agreement rule (`signature`): the two scans must show the same
@@ -129,10 +169,25 @@ public struct AgreedScanObserver: MenuBarObserver {
     }
 
     public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        let r = try await scanLoop(progress: progress)
+        if let o = r.observation { return o }
+        throw ObserveError.noAgreement(scans: r.disagreement.scans)
+    }
+
+    /// Strict like `observeCounting`, but a failure to agree reports WHY (stale / differing keys of the last scans).
+    public func observeDiagnosed() async throws -> (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?) {
+        let r = try await scanLoop(progress: nil)
+        guard let o = r.observation, o.settled else { return ([], r.disagreement.scans, r.disagreement) }
+        return (o.items, o.scans, nil)
+    }
+
+    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement) {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
         let limit = Date().addingTimeInterval(deadline)
         var scans = 0
         var prevSig: BarSignature.Value?
+        var prevRes: [ResolvedItem]?
+        var lastRes: [ResolvedItem] = []
         var sawNonEmpty = false
         var sentProgress = false
         // Latest complete read; a read without a stale item on the bar is preferred over one with.
@@ -146,6 +201,8 @@ public struct AgreedScanObserver: MenuBarObserver {
             scans += 1
             let raw = resolve(snap)
             let (res, dups) = Self.dedupe(raw)
+            prevRes = scans == 1 ? nil : lastRes
+            lastRes = res
             if !dups.isEmpty {
                 // Which copies existed (so the cause is visible in the log): x, size, stale flag, source, identifier.
                 let detail = dups.map { k in
@@ -172,7 +229,8 @@ public struct AgreedScanObserver: MenuBarObserver {
                 if sig != nil || !bestClean { best = res; bestClean = sig != nil; bestLevel = level }
             }
             if !empty, let sig, sig == prevSig {
-                return BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel))
+                return (BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel)),
+                        ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []))
             }
             prevSig = sig
             prevLevel = level
@@ -180,11 +238,12 @@ public struct AgreedScanObserver: MenuBarObserver {
         }
         if Task.isCancelled { throw ObserveError.superseded }
         if scans > 0, !sawNonEmpty { throw ObserveError.empty }
+        let disagreement = ScanDisagreement.make(scans: scans, previous: prevRes, last: lastRes, rule: rule)
         if let best {
             log("scans did not agree after \(scans) attempts; returning the latest complete read, unsettled")
-            return BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel)
+            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel), disagreement)
         }
-        throw ObserveError.noAgreement(scans: scans)
+        return (nil, disagreement)
     }
 }
 
@@ -250,11 +309,17 @@ public struct BarSignature: Sendable {
         return true
     }
 
+    /// The on-bar stale items that make a scan unusable for agreement (after the shared non-item/noise exclusions).
+    public func blockingStale(_ all: [ResolvedItem]) -> [ResolvedItem] {
+        all.filter { !LayoutBuilder.isNonItem($0) && !volatileKeys.contains($0.key) && !Self.isAgentNoise($0.key) }
+            .filter { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }
+    }
+
     /// nil = this scan cannot be used (a stale item of a non-self-positioning owner is on the bar).
     public func value(_ all: [ResolvedItem]) -> Value? {
-        let r = all.filter { $0.item.frame.width > 1 && !volatileKeys.contains($0.key) && !Self.isAgentNoise($0.key) }
+        let r = all.filter { !LayoutBuilder.isNonItem($0) && !volatileKeys.contains($0.key) && !Self.isAgentNoise($0.key) }
         // A stale item of a self-positioning owner does not block (gdu.51): it counts for presence, never for order.
-        if r.contains(where: { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }) { return nil }
+        if !blockingStale(all).isEmpty { return nil }
         let bar = r.filter { $0.item.isOnMenuBar }
         let off = r.filter { !$0.item.isOnMenuBar }
         return Value(order: bar.filter(orderable).map { $0.key.description },

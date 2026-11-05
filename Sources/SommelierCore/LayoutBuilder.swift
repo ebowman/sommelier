@@ -2,6 +2,10 @@ import Foundation
 
 /// Builds a `Layout` from an observed, resolved snapshot (pure; no AX).
 public enum LayoutBuilder {
+    /// The one shared "not a status item" rule: width <= 1 (the frontmost app's main-menu entries and zero-width read noise).
+    /// Used by `build` and by `BarSignature` so the agreement signature sees exactly what the layout will contain.
+    public static func isNonItem(_ r: ResolvedItem) -> Bool { r.item.frame.width <= 1 }
+
     /// On-bar items -> `visible` (order preserved); parked items -> `hidden`. Items with width <= 1 (e.g. the frontmost
     /// app's main-menu entries reported by MenuBarAgent) are not status items and are excluded. Duplicate keys collapse
     /// (first occurrence wins). `excluded` lists "key (title)" for each ignored non-item.
@@ -27,7 +31,7 @@ public enum LayoutBuilder {
         var seen = Set<ItemKey>()
         for r in resolved {
             if EngineFactory.isOwnHosted(r) { continue }   // our own status item is never part of a layout
-            if r.item.frame.width <= 1 {
+            if isNonItem(r) {
                 excluded.append("\(r.key) (\(r.item.title))")
                 continue
             }

@@ -29,7 +29,7 @@ func usage() -> Never {
            mbprobe layout remove <key> [--file PATH]
            mbprobe plan [--show-hidden] [--file PATH] [--json]      (read-only: prints the reconciler plan, executes nothing)
            mbprobe apply --file PATH [--show-hidden] [--fake] [--max-actions N] [--allow-fallback] [--allow-agent-restart]      (ONE engine pass: executes the plan)
-           mbprobe spacing get | set <spacing|-> <padding|-> | reset      (global current-host NSStatusItemSpacing / NSStatusItemSelectionPadding, 0...24; '-' leaves that key unchanged)
+           mbprobe spacing get | set <spacing|-> <padding|-> | reset      (global current-host NSStatusItemSpacing / NSStatusItemSelectionPadding, 0...24; '-' leaves that key unchanged; negative = refused, exit 2; above 24 = clamped to 24 with a stderr warning)
            mbprobe press <bundleID-or-key> [--escape-after SECONDS]
            mbprobe activate <key> [--right] [--ax-press] [--escape-after SECONDS] [--force]      (ItemActivator: reveal + click, or AXPress; waits for the menu to close)
 
@@ -758,11 +758,11 @@ func runLayout(_ a: [String]) async {
         }
         let res: [ResolvedItem]
         let scans: Int
-        do { (res, scans) = try await makeObserver().observeCounting() } catch ObserveError.noAgreement(let n) {
-            fail("scans did not agree after \(n) attempts; not writing")
+        do {
+            let r = try await makeObserver().observeDiagnosed()
+            if let d = r.disagreement { fail(d.message) }
+            (res, scans) = (r.items, r.scans)
         } catch { fail("\(error); not writing") }
-        let stale = res.filter { $0.item.stale }.map { $0.key.description }
-        if !stale.isEmpty { fail("stale items, not writing: " + stale.joined(separator: ", ")) }
         let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res)
         guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
         if !normalized.isEmpty {
@@ -879,6 +879,16 @@ func runSpacing(_ a: [String]) {
     case "get": show()
     case "set":
         guard a.count == 3, a[1] == "-" || Int(a[1]) != nil, a[2] == "-" || Int(a[2]) != nil else { usage() }
+        for (name, raw) in [("spacing", a[1]), ("padding", a[2])] {
+            guard let v = Int(raw) else { continue }
+            switch SpacingSettings.decide(v) {
+            case .use: break
+            case .clamped(let from, let to):
+                FileHandle.standardError.write(Data("warning: \(name) clamped \(from) -> \(to) (range 0...24)\n".utf8))
+            case .refused(let v):
+                FileHandle.standardError.write(Data("mbprobe: \(name) \(v) is negative; refusing (nothing written)\n".utf8)); exit(2)
+            }
+        }
         if !s.set(spacing: Int(a[1]), padding: Int(a[2])) { print("warning: synchronize failed") }
         show()
     case "reset":

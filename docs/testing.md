@@ -122,6 +122,7 @@ Read-only check (never the real layout file):
 
     MB=$(swift build --show-bin-path)/mbprobe
     $MB layout init-from-current --file SCRATCH/layout.json --force   # retry on "scans did not agree"
+    # on "scans did not agree" it names the keys stale in the last scan and the keys that differed between the last two scans (gdu.30)
     $MB list                                                           # on-bar section, left to right
     $MB plan --file SCRATCH/layout.json                                # phase: converged, actions (0), skipped (0)
 
