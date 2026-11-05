@@ -374,6 +374,8 @@ public enum ArrangeCapabilities {
 public enum ArrangeDrop {
     /// Refusal for an order-only drop of a self-positioning row (gdu.61): the planner treats it as an anchor and would ignore the order.
     public static let positionsItself = "This item positions itself: Sommelier does not manage its order. You can still hide or show it."
+    /// gdu.67: refusal text for an order-only drop that would put a movable row on the other side of a self-positioning row.
+    public static func cannotCross(_ name: String) -> String { "cannot cross \(name): it positions itself; move it in iStat Menus instead" }
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
 
     public enum Direction: Sendable { case left, right }
@@ -390,7 +392,8 @@ public enum ArrangeDrop {
     /// Applies the move with capability checks. `index` is a position in `section` AFTER the unit is lifted out
     /// (`Layout.move` semantics); nil appends (Visible: before the trailing system block).
     public static func outcome(layout: Layout, key: ItemKey, to section: LayoutSection, index: Int?,
-                               capabilities: (ItemKey) -> Capability, willNotFit: Bool = false, observationAvailable: Bool = true) -> Outcome {
+                               capabilities: (ItemKey) -> Capability, willNotFit: Bool = false, observationAvailable: Bool = true,
+                               bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
         // Only moves that stay inside our own data (Hidden <-> Always hidden) may proceed without an observation.
         if !observationAvailable, section == .visible || layout.section(of: key) == .visible || layout.section(of: key) == nil {
             return .rejected(noObservation)
@@ -406,7 +409,31 @@ public enum ArrangeDrop {
         var l = layout
         let moved = l.move(key, to: section, index: index)
         if l == layout { return .noop }
+        // gdu.67: a planner anchor keeps its observed slot, so an order-only move that puts a movable row on the far side of a
+        // self-positioning row (relative to the OBSERVED bar) is never reached: the next pass re-plans around the anchor. Refuse it.
+        // Only a move that changes the row's side of the anchor in the layout AND disagrees with the bar is a crossing; a layout
+        // that already straddles (older layout.json) can still be moved back to agree with the bar.
+        if section == .visible, layout.section(of: key) == .visible,
+           let anchor = crossedSelfPositioning(old: layout, new: l, moved: moved, bar: bar) {
+            return .rejected(cannotCross(displayName(anchor)))
+        }
         return .move(layout: l, moved: moved, willNotFit: willNotFit && section == .visible)
+    }
+
+    /// The first self-positioning key on `bar` that a moved key passes in `new` (vs `old`) and that ends on the other side of
+    /// it than the key's observed slot. nil when none (also when the moved key or the anchor is not on the bar).
+    static func crossedSelfPositioning(old: Layout, new: Layout, moved: [ItemKey], bar: [ItemKey]) -> ItemKey? {
+        let anchors = bar.filter { SelfPositioning.isSelfPositioning($0) }
+        guard !anchors.isEmpty else { return nil }
+        for k in moved where !SelfPositioning.isSelfPositioning(k) {
+            guard let kb = bar.firstIndex(of: k), let ko = old.visible.firstIndex(of: k), let kn = new.visible.firstIndex(of: k) else { continue }
+            for a in anchors {
+                guard let ab = bar.firstIndex(of: a), let ao = old.visible.firstIndex(of: a), let an = new.visible.firstIndex(of: a) else { continue }
+                let sideOld = ko < ao, sideNew = kn < an, sideBar = kb < ab
+                if sideOld != sideNew, sideNew != sideBar { return a }
+            }
+        }
+        return nil
     }
 
     /// The `Layout.move` index for dropping into the gap `slot` (0...rows.count) of a strip: the position of the first row
@@ -452,25 +479,29 @@ public enum ArrangeDrop {
 
     /// The same drop as the UI, addressed by movable index (see above).
     public static func drop(layout: Layout, key: ItemKey, section: LayoutSection, movableIndex: Int?,
-                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true) -> Outcome {
+                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
+                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
         let idx = movableIndex.flatMap { index(layout: layout, movableIndex: $0, key: key, section: section) }
-        return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, observationAvailable: observationAvailable)
+        return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, observationAvailable: observationAvailable,
+                       bar: bar, displayName: displayName)
     }
 
     /// Full drop: slot in the displayed strip -> outcome.
     public static func drop(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection,
-                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true) -> Outcome {
+                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
+                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
         let idx = index(layout: layout, rows: rows, slot: slot, key: key, section: section)
         let boundary = rows.firstIndex { $0.isBoundary }
         let notFit = boundary.map { slot <= $0 } ?? false
         return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, willNotFit: notFit,
-                       observationAvailable: observationAvailable)
+                       observationAvailable: observationAvailable, bar: bar, displayName: displayName)
     }
 
     /// "Move left/right" inside Visible: past the next movable capsule (anchors, the boundary and ghosts are skipped; the
     /// trailing system block is therefore never crossed).
     public static func step(layout: Layout, rows: [ArrangeRow], key: ItemKey, _ dir: Direction,
-                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true) -> Outcome {
+                            capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
+                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
         guard observationAvailable else { return .rejected(noObservation) }
         guard let r = rows.firstIndex(where: { $0.key == key && !$0.isGhost }), layout.visible.contains(key) else { return .noop }
         let unit = key.hideUnit
@@ -480,7 +511,8 @@ public enum ArrangeDrop {
             let c = rows[j]
             guard !c.isAnchor, !c.isBoundary, !c.isGhost, c.key.hideUnit != unit, let p = lifted.firstIndex(of: c.key) else { continue }
             let notFit = c.notFitting && dir == .left
-            return outcome(layout: layout, key: key, to: .visible, index: dir == .left ? p : p + 1, capabilities: capabilities, willNotFit: notFit)
+            return outcome(layout: layout, key: key, to: .visible, index: dir == .left ? p : p + 1, capabilities: capabilities, willNotFit: notFit,
+                           bar: bar, displayName: displayName)
         }
         return .noop
     }
