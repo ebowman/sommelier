@@ -42,6 +42,13 @@ public final class EngineState {
     /// Display metadata for currently known items (parked or on bar), refreshed with every adopted scan.
     public var items: [ItemKey: ItemInfo] = [:]
     public var showHiddenSection: Bool
+    /// Requested reveal of the always-hidden section too (option-click). Request only, like `showHiddenSection`.
+    public var showAlwaysHidden: Bool = false
+    /// OBSERVED reveal state (never optimistic): written only when a pass ends (converged or incomplete) from the bar it
+    /// observed. True when a reveal is requested and at least one item of the revealed sections is on the bar (a partial
+    /// reveal counts as shown; failed items carry their own `perItem` status); with no reveal requested, true while a
+    /// hidden-listed item (not failed/unsupported) is still on the bar, i.e. until the re-hide has landed.
+    public var revealedObserved: Bool = false
     public var inFlight: PlannedAction?
     public var perItem: [ItemKey: ItemStatus]
     /// Keys that are `.inPlace` because a live hide/show was APPLIED per the Control Center store, but no usable complete read

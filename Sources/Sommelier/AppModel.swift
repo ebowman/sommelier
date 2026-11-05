@@ -30,6 +30,10 @@ final class AppModel {
             store = FileLayoutStore(url: FileLayoutStore.defaultURL())
         }
         NSLog("[Sommelier] layout file: %@", store.url.path)
+        reveal = RevealController(state: state, apply: { [weak self] hidden, always in
+            guard let engine = self?.engine else { return }
+            Task { await engine.setReveal(hidden: hidden, alwaysHidden: always) }
+        }, now: { ContinuousClock.now }, log: { NSLog("[Sommelier] reveal: %@", $0) })
         permissions.onAccessibilityGranted = { [weak self] in
             NSLog("[Sommelier] accessibility granted")
             Task { @MainActor in
@@ -90,6 +94,9 @@ final class AppModel {
             Task { await engine.setLayout(l) }
         }
     }
+
+    /// Inline "show the rest": click handling, debounce and click -> converged timing (SommelierCore.RevealController).
+    @ObservationIgnored private(set) var reveal: RevealController!
 
     func setShowHidden(_ on: Bool) {
         guard let engine else { return }

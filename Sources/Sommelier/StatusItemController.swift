@@ -12,6 +12,8 @@ final class StatusItemController: NSObject {
         guard let self else { return .failed(.unavailable("Sommelier is closing")) }
         return await self.model.activate(key, button: button)
     })
+    private lazy var autoRehide = RevealAutoRehide(state: model.state, controller: model.reveal,
+                                                    ownFrame: { [weak self] in self?.statusItem.button?.window?.frame })
     private let onSettings: () -> Void
     private let onArrange: () -> Void
     private let onPermissions: () -> Void
@@ -28,6 +30,7 @@ final class StatusItemController: NSObject {
             b.action = #selector(clicked(_:))
             b.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
+        observeReveal()
     }
 
     @objc private func clicked(_ sender: Any?) {
@@ -36,11 +39,36 @@ final class StatusItemController: NSObject {
             showMenu()
         } else {
             if UserDefaults.standard.string(forKey: "revealMode") == "inline" {
-                model.setShowHidden(!model.state.showHiddenSection)
+                let r = model.reveal.click(option: ev?.modifierFlags.contains(.option) == true)
+                NSLog("[Sommelier] reveal click: %@", "\(r)")
             } else {
                 togglePanel()
             }
         }
+    }
+
+    /// Icon and auto re-hide follow the engine's OBSERVED reveal state (`wineglass.fill` once the reveal pass has converged,
+    /// including a partial one); the request alone changes nothing visible. Re-arms itself on every change.
+    private func observeReveal() {
+        let st = model.state
+        withObservationTracking {
+            _ = st.revealedObserved; _ = st.showHiddenSection; _ = st.showAlwaysHidden
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.applyRevealState()
+                self.observeReveal()
+            }
+        }
+    }
+
+    private func applyRevealState() {
+        let st = model.state
+        let name = st.revealedObserved ? "wineglass.fill" : "wineglass"
+        statusItem.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "Sommelier")
+        if st.showHiddenSection || st.showAlwaysHidden { autoRehide.start() }
+        model.reveal.stateChanged()
+        NSLog("[Sommelier] reveal state: requested=%@ always=%@ observed=%@ icon=%@", "\(st.showHiddenSection)", "\(st.showAlwaysHidden)", "\(st.revealedObserved)", name)
     }
 
     /// Display change: an open overflow panel follows the status item to its (possibly new) screen.

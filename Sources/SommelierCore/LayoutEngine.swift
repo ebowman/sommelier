@@ -81,6 +81,7 @@ public actor LayoutEngine {
 
     private var layout: Layout = .empty
     private var showHidden = false
+    private var showAlways = false
     private var loaded = false
     private var failures: [ItemKey: ActuationError] = [:]
     private var pending = false
@@ -149,11 +150,12 @@ public actor LayoutEngine {
                 resolveSnapshot: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
                 log: @escaping @Sendable (String) -> Void = { _ in },
-                showHiddenSection: Bool = false, config: Config = Config(),
+                showHiddenSection: Bool = false, showAlwaysHidden: Bool = false, config: Config = Config(),
                 agentPID: @escaping @Sendable () -> pid_t? = { nil },
                 isOwnAgentPID: @escaping @Sendable (pid_t) -> Bool = { _ in false }) {
         self.agentPID = agentPID; self.isOwnAgentPID = isOwnAgentPID
         self.showHidden = showHiddenSection
+        self.showAlways = showAlwaysHidden
         self.observer = observer; self.actuator = actuator; self.store = store; self.capabilities = capabilities
         self.state = state; self.busy = busy; self.resolveSnapshot = resolveSnapshot; self.sleep = sleep
         self.log = log; self.config = config
@@ -270,9 +272,16 @@ public actor LayoutEngine {
     }
 
     public func setShowHiddenSection(_ on: Bool) async {
-        showHidden = on
+        await setReveal(hidden: on, alwaysHidden: showAlways && on)
+    }
+
+    /// Reveal request (inline "show the rest"): `hidden` shows the hidden section, `alwaysHidden` also the always-hidden one.
+    /// A normal pass follows (live writes, verification); `EngineState.revealedObserved` follows the pass, not this call.
+    public func setReveal(hidden: Bool, alwaysHidden: Bool) async {
+        showHidden = hidden
+        showAlways = alwaysHidden
         noteSupersede("setShowHiddenSection")
-        await publish { $0.showHiddenSection = on }
+        await publish { $0.showHiddenSection = hidden; $0.showAlwaysHidden = alwaysHidden }
         requestReconcile(supersede: true, reason: "setShowHiddenSection")
     }
 
@@ -431,7 +440,7 @@ public actor LayoutEngine {
     }
 
     private func makePlan(_ obs: ObservedOrder) -> Plan {
-        var p = Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden,
+        var p = Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          selfPositioningOwners: config.selfPositioningOwners)
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
@@ -547,7 +556,7 @@ public actor LayoutEngine {
         let acting = Set(plan.actions.map(Self.key(of:)))
         for k in Array(failures.keys) where !acting.contains(k) && !failedThisPass.contains(k) && transientReveals[k.hideUnit] == nil
             && (obs.onBar.contains(k) || obs.parked.contains(k))
-            && ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden) {
+            && ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden, showAlwaysHidden: showAlways) {
             failures[k] = nil; strikes[k] = nil
             log("cleared failure for \(k): now in place")
         }
@@ -604,8 +613,27 @@ public actor LayoutEngine {
 
     private func finish(_ report: PassReport, converged: Bool) async -> PassReport {
         let now = Date()
+        // Observed reveal state, only from a pass that completed its work (converged or incomplete) and from what it observed.
+        let judge = report.outcome == .converged || report.outcome == .incomplete
+        let lay = layout, wantHidden = showHidden, wantAlways = showAlways
         await publish { s in
             s.inFlight = nil; s.lastPassAt = now; s.passCount += 1; s.passSequence += 1; s.isConverged = converged
+            if judge {
+                let onBar = Set(s.observed.onBar)
+                let usable: (ItemKey) -> Bool = { k in
+                    switch s.perItem[k] { case .failed?, .unsupported?: return false; default: return true }
+                }
+                let anyShown: Bool
+                if wantHidden || wantAlways {
+                    var wanted: [ItemKey] = []
+                    if wantHidden { wanted += lay.hidden }
+                    if wantAlways { wanted += lay.alwaysHidden }
+                    anyShown = wanted.contains { onBar.contains($0) }
+                } else {
+                    anyShown = (lay.hidden + lay.alwaysHidden).contains { onBar.contains($0) && usable($0) }
+                }
+                s.revealedObserved = anyShown
+            }
         }
         // A key that failed fewer than `maxKeyFailures` passes in a row is retried by one more pass (bounded by the strikes).
         if !converged, draining, !pending, !stopped, !cutThisPass, chained < config.maxChainedPasses, hasRetryableFailure { chained += 1; pending = true }

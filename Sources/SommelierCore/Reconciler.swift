@@ -85,7 +85,7 @@ public struct Reconciler: Sendable {
     public init() {}
 
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
-                     showHiddenSection: Bool = false,
+                     showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
                      selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners) -> Plan {
         // Self-positioning owners (iStat Menus) move between slots on their own, so they are ANCHORS: never dragged,
         // never targeted by a relation that needs them to move, and their slot is authoritative (gdu.33). Hide/show
@@ -128,8 +128,9 @@ public struct Reconciler: Sendable {
             let allHidden = secs.allSatisfy { $0 != .visible }
             // An always-hidden item keeps its whole app hidden even while the hidden section is revealed: the reveal is
             // temporary, "never show" is not.
-            let pinned = secs.contains(.alwaysHidden)
-            let revealed = showHiddenSection && secs.contains(.hidden) && !pinned
+            // `showAlwaysHidden` (option-click) lifts the pin for this reveal only.
+            let pinned = secs.contains(.alwaysHidden) && !showAlwaysHidden
+            let revealed = (showHiddenSection && secs.contains(.hidden) && !pinned) || (showAlwaysHidden && secs.contains(.alwaysHidden))
             let wants = !allHidden || revealed
             unitWantsBar[unit] = wants
             if !wants {
@@ -143,7 +144,7 @@ public struct Reconciler: Sendable {
             if !allHidden, let anchor = ks.first(where: { layout.section(of: $0) == .visible }) {
                 for k in ks {
                     let s = layout.section(of: k)
-                    if s == .alwaysHidden || (s == .hidden && !showHiddenSection) {
+                    if (s == .alwaysHidden && !showAlwaysHidden) || (s == .hidden && !showHiddenSection) {
                         skipped.append(SkippedAction(k, "hidden together with \(anchor.hideUnit.id): all items of an app hide or show at once"))
                     }
                 }
@@ -184,6 +185,7 @@ public struct Reconciler: Sendable {
         // follow the visible ones, in layout order.
         var desired: [ItemKey] = layout.visible.filter { wantOnBar.contains($0) }
         if showHiddenSection { desired += layout.hidden.filter { wantOnBar.contains($0) } }
+        if showAlwaysHidden { desired += layout.alwaysHidden.filter { wantOnBar.contains($0) } }
         let placed = Set(desired)
         desired += (layout.hidden + layout.alwaysHidden).filter { wantOnBar.contains($0) && !placed.contains($0) }
         desired += unknownVisible

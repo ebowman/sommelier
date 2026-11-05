@@ -137,7 +137,7 @@ public enum ArrangeSections {
 
     /// True when the observed bar/parked state already realizes `key`'s layout position. Visible: the drawn keys common to
     /// layout and bar are in the same relative order. Hidden sections: the key is off the bar (or revealed on purpose).
-    public static func placementMatches(_ key: ItemKey, layout: Layout, observed: ObservedOrder, showHiddenSection: Bool = false) -> Bool {
+    public static func placementMatches(_ key: ItemKey, layout: Layout, observed: ObservedOrder, showHiddenSection: Bool = false, showAlwaysHidden: Bool = false) -> Bool {
         guard let sec = layout.section(of: key) else { return true }
         switch sec {
         case .visible:
@@ -146,7 +146,7 @@ public enum ArrangeSections {
         case .hidden:
             return observed.parked.contains(key) || (showHiddenSection && observed.onBar.contains(key))
         case .alwaysHidden:
-            return observed.parked.contains(key)
+            return observed.parked.contains(key) || (showAlwaysHidden && observed.onBar.contains(key))
         }
     }
 

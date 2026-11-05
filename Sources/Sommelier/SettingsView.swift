@@ -34,9 +34,9 @@ struct SettingsView: View {
                         Text("Visible at end").tag(NewItemPolicy.visibleAtEnd)
                         Text("Hidden").tag(NewItemPolicy.hidden)
                     }
-                    Picker("Reveal mode", selection: $revealMode) {
-                        Text("Panel below menu bar").tag("panel")
-                        Text("Inline").tag("inline")
+                    Picker("Left click", selection: $revealMode) {
+                        Text("Overflow panel (default)").tag("panel")
+                        Text("Show hidden items in the menu bar").tag("inline")
                     }
                     Toggle("Show names in panel", isOn: $showNames)
                     Stepper("Auto re-hide after \(autoRehide == 0 ? "never" : "\(autoRehide) s")", value: $autoRehide, in: 0...60)
