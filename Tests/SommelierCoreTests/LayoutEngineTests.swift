@@ -209,7 +209,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // COMPLETE read (the target's frame is not trusted while its items are stale); it is not a failure and proceeds later.
     @Test func moveNextToSelfPositioningItemWaitsForACompleteRead() async {
         let order = [k("A"), istat, k("B")]
-        let layout = Layout(visible: [k("B"), istat, k("A")])   // iStat keeps its slot; A and B swap around it
+        let layout = Layout(visible: [k("B"), istat, k("A")])   // B is placed before iStat (never dragged); the bar ends [B, A, istat] since anchor slots are kept per pass, not across passes
         let box = ActuatorBox()
         let obs = MutableLevelObserver(box: box, level: .completeExceptSelfPositioning)
         let r = await rig(order: order, layout: layout, observer: obs)
