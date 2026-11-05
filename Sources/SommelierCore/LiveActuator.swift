@@ -414,6 +414,7 @@ public actor LiveActuator: MenuBarActuator {
 
     public func applyHiddenBatchDetailed(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
         await acquire(); defer { release() }
+        platform.beginTrackedSnapshot(); defer { platform.endTrackedSnapshot() }   // gdu.76: one Control Center read per batch
         batchRespawned = false
         batchRefused = [:]
         var out = await performBatch(changes)
@@ -468,14 +469,17 @@ public actor LiveActuator: MenuBarActuator {
         // (the planner groups by the same entry, so this is a belt-and-braces refusal), is refused whole instead.
         var wantByApp: [String: Bool] = [:]   // tracked key -> hidden
         for (tracked, reqs) in requestedBy.sorted(by: { $0.key < $1.key }) {
-            let why = "hides together with \(tracked): move the whole group"
+            let entry = platform.displayName(forTrackedKey: tracked)
+            var why = HideUnitNames.groupRefusal(entry: entry)
             let hide = reqs[0].hide
             var bad = reqs.contains { $0.hide != hide }
             if !bad {
                 let asked = Set(reqs.map(\.key))
-                bad = resolved.contains { r in
-                    !asked.contains(r.key) && !r.item.stale && platform.trackedKey(for: r) == tracked
-                        && (hide ? ActuationVerifier.onBar(r) : !ActuationVerifier.onBar(r))
+                for r in resolved where !asked.contains(r.key) && platform.trackedKey(for: r) == tracked {
+                    // An unrequested member whose state is unknown could be flipped silently: refuse (gdu.76). A fresh one that
+                    // already is in the target state is fine; a fresh one that would change is refused.
+                    if r.item.stale { bad = true; why = HideUnitNames.staleMemberRefusal(entry: entry); break }
+                    if hide ? ActuationVerifier.onBar(r) : !ActuationVerifier.onBar(r) { bad = true; break }
                 }
             }
             if bad { for q in reqs { refused[q.key] = why } } else { wantByApp[tracked] = hide }

@@ -77,7 +77,8 @@ final class ArrangeViewModel {
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
                              suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
                              pendingConfirmation: state.pendingConfirmation,
-                             observationProblem: observationProblem, filter: filter, units: units)
+                             observationProblem: observationProblem, filter: filter, units: units,
+                             unitAppName: HideUnitNames.runningAppName)
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }

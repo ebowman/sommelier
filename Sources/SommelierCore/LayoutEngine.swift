@@ -288,9 +288,10 @@ public actor LayoutEngine {
     /// Publishes `l` as the next layout revision, stamped with the passes started so far (one main-actor hop, so the stamp is exact).
     @discardableResult
     private func publishLayout(_ l: Layout, normalized: [ItemKey]? = nil) async -> LayoutRevision {
-        let s = state
+        let s = state, hu = rule   // gdu.76: the rule setLayout just refreshed is published with the layout, not at the next observation
         return await MainActor.run {
             s.layout = l
+            s.hideUnits = hu
             if let normalized { s.lastNormalization = normalized }
             s.layoutRevision += 1
             s.passesStartedAtRevision = s.passesStarted

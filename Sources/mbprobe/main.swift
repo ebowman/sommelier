@@ -583,8 +583,10 @@ func runPlan(_ a: [String]) async {
     }
     let observed = ObservedOrder(resolved: res)
     let rules = makeCapabilityRules()
+    // The same hide-unit rule as the engine (EngineFactory.makeLive): the tracked entries as stored now, bundle ids from the observation.
+    let unitRule = HideUnitRule(resolver: EngineFactory.currentTrackedResolver(), bundleIDs: Dictionary(res.map { ($0.key, $0.item.ownerBundleID) }.compactMap { k, b in b.map { (k, $0) } }, uniquingKeysWith: { a, _ in a }))
     let plan = Reconciler().plan(observed: observed, layout: layout, capabilities: { rules.capability(for: $0) },
-                                 showHiddenSection: showHidden)
+                                 showHiddenSection: showHidden, units: unitRule)
     func act(_ x: PlannedAction) -> String {
         switch x {
         case .hide(let k): return "hide \(k)"
@@ -683,7 +685,7 @@ func runApply(_ a: [String]) async {
     let t0 = Date()
     let report = await engine.reconcileOnce()
     let view = Reconciler().plan(observed: state.observed, layout: state.layout, capabilities: { rules.capability(for: $0) },
-                                 showHiddenSection: showHidden)
+                                 showHiddenSection: showHidden, units: state.hideUnits)
     var shown = Set<ItemKey>()
     for k in view.desiredOnBar + state.observed.onBar + state.observed.parked where shown.insert(k).inserted {
         switch state.perItem[k] ?? .inPlace {

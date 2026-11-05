@@ -66,11 +66,13 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var unit: HideUnit
     /// Titles of the other layout keys of this hide unit ("hides together with ...").
     public var unitMates: [String]
+    /// Display name of the app whose Control Center entry governs this unit (gdu.76); nil when unknown or not a tracked unit.
+    public var unitApp: String? = nil
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
     public var capabilityNote: String?
     public var id: String { isGhost ? key.description + "#ghost" : key.description }
 
-    public var unitTooltip: String? { unitMates.isEmpty ? nil : "Hides together with " + unitMates.joined(separator: ", ") }
+    public var unitTooltip: String? { HideUnitNames.unitNote(mates: unitMates, app: unitApp) }
 }
 
 public struct ArrangeStrip: Equatable, Sendable {
@@ -191,7 +193,8 @@ public enum ArrangeSections {
                             capabilities: (ItemKey) -> Capability, showHiddenSection: Bool = false,
                             awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
                             pendingConfirmation: Set<ItemKey> = [],
-                            observationProblem: String? = nil, filter: String = "", units: HideUnitRule = .ownerKeys) -> ArrangeContent {
+                            observationProblem: String? = nil, filter: String = "", units: HideUnitRule = .ownerKeys,
+                            unitAppName: (String) -> String? = { _ in nil }) -> ArrangeContent {
         // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
@@ -213,7 +216,7 @@ public enum ArrangeSections {
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,
                               isGhost: ghost, isBoundary: observed.overflowChevron == k,
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
-                              unitMates: mates(k), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
+                              unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
         }
 
         // MARK: Visible = the observed bar + ghosts at layout slots + not-running group
