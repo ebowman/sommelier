@@ -81,6 +81,6 @@ public final class RevealController {
         let ms = Int(d.seconds) * 1000 + Int(d.attoseconds / 1_000_000_000_000_000)
         lastConvergeMillis = ms
         clickAt = nil
-        log("reveal converged \(ms) ms after the click")
+        log("reveal converged \(ms) ms after the click observe=\(state.lastObserveMillis.map(String.init) ?? "?")ms reuse=\(state.lastObserveReused ? "yes" : "no")")
     }
 }

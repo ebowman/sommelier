@@ -208,3 +208,17 @@ private struct UntrackedCaps: CapabilityProvider {
         key == bad ? Capability(canMove: true, canHide: false, reason: "no Control Center entry") : Capability(canMove: true, canHide: true)
     }
 }
+
+@MainActor
+@Test func revealConvergedLogCarriesObserveTimeAndReuse() {
+    let st = EngineState(); final class Lines: @unchecked Sendable { var l: [String] = [] }
+    let lines = Lines(); let clock = RevealClock()
+    let c = RevealController(state: st, apply: { h, a in st.showHiddenSection = h; st.showAlwaysHidden = a }, now: { clock.t }, log: { lines.l.append($0) })
+    c.click(option: false)
+    clock.t = clock.t + .milliseconds(900)
+    st.lastObserveMillis = 420; st.lastObserveReused = true; st.revealedObserved = true
+    c.stateChanged()
+    #expect(lines.l.last == "reveal converged 900 ms after the click observe=420ms reuse=yes")
+}
+
+private final class RevealClock: @unchecked Sendable { var t = ContinuousClock.now }

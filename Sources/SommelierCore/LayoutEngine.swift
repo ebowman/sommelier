@@ -61,6 +61,10 @@ public actor LayoutEngine {
         /// The Control Center tracked entries as stored now (nil = unreadable or not wired: owner-key hide units). Read at the start of
         /// every pass and when a layout is adopted; it decides the hide units (`HideUnitRule`, gdu.75), the same lookup the actuator uses.
         public var trackedResolver: @Sendable () -> TrackedEntryResolver? = { nil }
+        /// gdu.71: a USER-INITIATED pass (reveal / re-hide, Arrange drop) may use the engine's last adopted observation, if it is
+        /// younger than this and its read level is usable, as the first of the two agreeing scans, so one fresh scan must agree
+        /// before planning. Zero disables the reuse. Trigger-, poll- and restart-initiated passes never reuse.
+        public var userPassReuseWindow: Duration = .seconds(2)
         public init() {}
     }
 
@@ -128,6 +132,13 @@ public actor LayoutEngine {
     private var requestedAt: ContinuousClock.Instant?
     private var requestReason = "request"
     private var requestedDuringPass = false
+    /// gdu.71: the oldest unserved request is a user action (setLayout, setReveal), not a trigger.
+    private var requestUserInitiated = false
+    /// gdu.71: the latest adopted observation (a settled observation, or a snapshot adopted after an actuator call), for reuse
+    /// as the first scan of a user-initiated pass.
+    private var lastAdopted: (items: [ResolvedItem], completeness: ReadCompleteness, at: ContinuousClock.Instant)?
+    /// Fresh scans the latest `observeOnce` used.
+    private var lastObserveScans = 0
     /// Hide units temporarily revealed on purpose (overflow-panel click-forwarding, gdu.17): hold token per unit.
     private var transientReveals: [HideUnit: Int] = [:]
     private var nextHoldToken = 0
@@ -259,7 +270,7 @@ public actor LayoutEngine {
             }
             scheduleReconcile(after: delay, reason: "setLayout")
         } else {
-            requestReconcile(supersede: true, reason: "setLayout")
+            requestReconcile(supersede: true, reason: "setLayout", userInitiated: true)
         }
         return stamp
     }
@@ -298,7 +309,7 @@ public actor LayoutEngine {
         showAlways = alwaysHidden
         noteSupersede("setShowHiddenSection")
         await publish { $0.showHiddenSection = hidden; $0.showAlwaysHidden = alwaysHidden }
-        requestReconcile(supersede: true, reason: "setShowHiddenSection")
+        requestReconcile(supersede: true, reason: "setShowHiddenSection", userInitiated: true)
     }
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
@@ -319,11 +330,14 @@ public actor LayoutEngine {
     /// External trigger. Concurrent triggers coalesce: at most one further pass runs after the current one.
     /// `supersede` (explicit user actions only, never the poll): an observation still in progress is abandoned so the
     /// pass for this request starts at once instead of after up to `AgreedScanObserver.deadline` seconds.
-    public func requestReconcile(supersede: Bool = false, reason: String = "trigger") {
+    /// `userInitiated` (gdu.71; set by `setLayout` and `setReveal`, never by the poll, triggers or restarts): the pass may reuse the last
+    /// adopted observation as its first agreeing scan (`Config.userPassReuseWindow`).
+    public func requestReconcile(supersede: Bool = false, reason: String = "trigger", userInitiated: Bool = false) {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
         guard !stopped, !sleeping, !conflicted else { return }
         if supersede { noteUserAction() }
-        if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass }
+        if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass; requestUserInitiated = userInitiated }
+        else if userInitiated { requestUserInitiated = true }
         pending = true
         if supersede, let t = observeTask {
             supersedeReason = reason
@@ -363,13 +377,14 @@ public actor LayoutEngine {
     private func fireDelayed(_ reason: String, supersede: Bool) {
         delayed[reason] = nil
         if reason == "setLayout" { burstStart = nil }
-        requestReconcile(supersede: supersede, reason: reason)
+        requestReconcile(supersede: supersede, reason: reason, userInitiated: reason == "setLayout")
     }
 
     /// MenuBarAgent respawned: every AX element is invalid and its first scans are empty or incomplete. Observations are not
     /// acted on for `settle`, transient reveal holds are dropped (the revealed element is gone), and ONE reconcile follows.
     public func agentRestarted(settle: Duration = .seconds(2)) async {
         notReadyUntil = .now + settle
+        lastAdopted = nil
         let units = Array(transientReveals.keys)
         transientReveals = [:]
         if !units.isEmpty {
@@ -666,7 +681,7 @@ public actor LayoutEngine {
     }
 
     /// `allowUnsettled`: accept the latest complete read although two scans did not agree (the pass shows it, never acts on it).
-    private func observeOnce(allowUnsettled: Bool = false, provisional: Bool = false) async -> Result<(ObservedOrder, Bool), ObserveError> {
+    private func observeOnce(allowUnsettled: Bool = false, provisional: Bool = false, seed: ObservationSeed? = nil) async -> Result<(ObservedOrder, Bool), ObserveError> {
         var progress: (@Sendable ([ResolvedItem]) -> Void)?
         if provisional {
             progress = { @Sendable [weak self] items in
@@ -674,12 +689,14 @@ public actor LayoutEngine {
             }
         }
         do {
-            let r = try await observer.observeDetailed(progress: progress)
+            let r = try await observer.observeDetailed(progress: progress, seed: seed)
             let o = ObservedOrder(resolved: r.items)
             if o.onBar.isEmpty { return .failure(.empty) }
             if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
             observedCompleteness = r.completeness
+            lastObserveScans = r.scans
             if r.settled { notePollSignature(r.items) }
+            if r.settled, r.completeness.membershipUsable { lastAdopted = (r.items, r.completeness, .now) }
             assumedKeys = Set(r.items.filter { $0.item.hiddenReason == .assumedNotHosted }.map(\.key))
             if r.settled, r.completeness == .complete {
                 // A settled complete read confirms a pending hide when the unit is off the bar by evidence (not by assumption),
@@ -724,6 +741,7 @@ public actor LayoutEngine {
             if !o.onBar.isEmpty {
                 itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved), retaining: ItemInfo.staleOnlyKeys(from: resolved))
                 notePollSignature(resolved)
+                if snap.completeness.membershipUsable { lastAdopted = (resolved, snap.completeness, .now) }
                 obs = o; return true
             }
         }
@@ -736,12 +754,21 @@ public actor LayoutEngine {
         }
     }
 
+    /// gdu.71: the last adopted observation as a seed, when reuse applies: enabled, recent, usable read level, no agent restart
+    /// pending. Safe because that observation already passed the agreement rule (or was a verified post-write read) and a fresh
+    /// scan must still agree with it; the writes that follow are verified exactly as before.
+    private func reusableSeed() -> ObservationSeed? {
+        guard config.userPassReuseWindow > .zero, let a = lastAdopted, a.completeness.membershipUsable,
+              notReadyUntil == nil, !foreignRestartInPass, a.at.duration(to: .now) <= config.userPassReuseWindow else { return nil }
+        return ObservationSeed(items: a.items, completeness: a.completeness)
+    }
+
     private enum PassObservation { case settled(ObservedOrder), end(PassReport) }
 
     /// Observes for a pass. Unsettled and failed observations end the pass here (published, nothing planned).
-    private func observeForPass() async -> PassObservation {
+    private func observeForPass(seed: ObservationSeed? = nil) async -> PassObservation {
         let provisional = !hasObservation
-        let task = Task { await self.observeOnce(allowUnsettled: true, provisional: provisional) }
+        let task = Task { await self.observeOnce(allowUnsettled: true, provisional: provisional, seed: seed) }
         observeTask = task
         let t0 = ContinuousClock.now
         let result = await task.value
@@ -749,7 +776,12 @@ public actor LayoutEngine {
         let took = Self.ms(t0.duration(to: .now))
         switch result {
         case .success(let (o, settled)):
-            if settled { return .settled(o) }
+            if settled {
+                let reused = seed != nil && lastObserveScans == 1
+                log("observe=\(took) ms scans=\(lastObserveScans) reuse=\(reused ? "yes" : "no")\(seed != nil && !reused ? " (adopted observation offered, the fresh scan disagreed)" : "")")
+                await publish { s in s.lastObserveMillis = took; s.lastObserveReused = reused }
+                return .settled(o)
+            }
             hasObservation = true
             let info = itemInfo
             log("observation unsettled; not actuating (\(took) ms)")
@@ -830,8 +862,11 @@ public actor LayoutEngine {
         var actionCount = 0
         await publish { $0.passesStarted += 1 }
 
+        var userPass = false
         if let r = requestedAt {
             requestedAt = nil
+            userPass = requestUserInitiated
+            requestUserInitiated = false
             let ms = Self.ms(r.duration(to: .now))
             log("pass started \(ms) ms after \(requestReason)")
             if ms > 2000 {
@@ -841,7 +876,7 @@ public actor LayoutEngine {
 
         // (a) observe. Observation moves nothing, so it proceeds even while the user is busy; only actuation waits.
         var obs: ObservedOrder
-        switch await observeForPass() {
+        switch await observeForPass(seed: userPass ? reusableSeed() : nil) {
         case .settled(let o): obs = o
         case .end(let r): return r
         }

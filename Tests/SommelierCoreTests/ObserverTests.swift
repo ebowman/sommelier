@@ -186,3 +186,47 @@ private func spBar(_ items: [MenuBarItem], level: ReadCompleteness = .completeEx
     let (o, _) = obs([a, a])
     #expect(try await o.observeDetailed(progress: nil).completeness == .complete)
 }
+
+// MARK: - Seeded observation (gdu.71)
+
+private func seedOf(_ s: MenuBarSnapshot, level: ReadCompleteness = .complete, normalize: @escaping @Sendable ([ResolvedItem]) -> [ResolvedItem] = { $0 }) -> ObservationSeed {
+    ObservationSeed(items: s.items.map { ResolvedItem(item: $0, key: .status(ownerKey: $0.ownerName, autosaveName: $0.title), confidence: .inferred) },
+                    completeness: level, normalize: normalize)
+}
+
+@Test func seedAgreeingWithTheFirstFreshScanSettlesAfterOneScan() async throws {
+    let a = bar([plain("A", x: 100), plain("B", x: 140)])
+    let (o, box) = obs([a])
+    let r = try await o.observeDetailed(progress: nil, seed: seedOf(a))
+    #expect(r.settled && r.scans == 1 && box.i == 1)
+}
+
+@Test func seedDisagreeingFallsBackToTwoAgreeingFreshScans() async throws {
+    let a = bar([plain("A", x: 100), plain("B", x: 140)])
+    let b = bar([plain("B", x: 100), plain("A", x: 140)])
+    let (o, box) = obs([b, b])
+    let r = try await o.observeDetailed(progress: nil, seed: seedOf(a))
+    #expect(r.settled && r.scans == 2 && box.i == 2)
+    // The seed never counts toward the disagreement budget: it cannot make a never-agreeing bar settle.
+    let (o2, box2) = obs([b, a, b, a, b, a])
+    let r2 = try await o2.observeDetailed(progress: nil, seed: seedOf(a))
+    #expect(!r2.settled && box2.i == 6)
+}
+
+@Test func incompleteOrStaleSeedIsIgnored() async throws {
+    let a = bar([plain("A", x: 100), plain("B", x: 140)])
+    let (o, box) = obs([a, a])
+    let r = try await o.observeDetailed(progress: nil, seed: seedOf(a, level: .incomplete))
+    #expect(r.settled && r.scans == 2 && box.i == 2)
+}
+
+@Test func seedIsComparedThroughItsNormalizer() async throws {
+    // The engine's view drops one item (e.g. our own status item); the fresh raw scan still has it.
+    let raw = bar([plain("A", x: 100), plain("Own", x: 140), plain("B", x: 180)])
+    let seedScan = bar([plain("A", x: 100), plain("B", x: 180)])
+    let (o, box) = obs([raw])
+    let drop: @Sendable ([ResolvedItem]) -> [ResolvedItem] = { $0.filter { $0.item.ownerName != "Own" } }
+    let r = try await o.observeDetailed(progress: nil, seed: seedOf(seedScan, normalize: drop))
+    #expect(r.settled && r.scans == 1 && box.i == 1)
+    #expect(r.items.count == 3)                                   // the observation itself stays raw; the wrapper filters it
+}
