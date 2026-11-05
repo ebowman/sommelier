@@ -36,3 +36,10 @@ private final class FakeBackend: SpacingPreferencesBackend, @unchecked Sendable 
     s.reset()
     #expect(b.store.isEmpty)
 }
+
+@Test func spacingDecideUsesClampsAndRefuses() {
+    #expect(SpacingSettings.decide(0) == .use(0))
+    #expect(SpacingSettings.decide(24) == .use(24))
+    #expect(SpacingSettings.decide(99) == .clamped(from: 99, to: 24))
+    #expect(SpacingSettings.decide(-1) == .refused(-1))
+}
