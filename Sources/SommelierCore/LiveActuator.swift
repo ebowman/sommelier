@@ -227,7 +227,7 @@ public actor LiveActuator: MenuBarActuator {
         let out = await settleDetector(subjectPIDs: [subjectPID]).settled(maxWait: config.settleMaxWait, stableFor: config.stableFor)
         let resolved = platform.resolve(out.snapshot)
         let v = ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: resolved)
-        note("observe settled=\(out.settled) polls=\(out.polls) full=\(out.fullScans) \(Int(out.elapsed * 1000))ms ok=\(v.ok)")
+        note("observe settled=\(out.settled) polls=\(out.polls) full=\(out.fullScans) \(Int(out.elapsed * 1000))ms ok=\(v.ok)" + (out.settled || out.trace.isEmpty ? "" : " trace=[\(out.trace)]"))
         return Observation(snapshot: out.snapshot, resolved: resolved, settled: out.settled, verdict: v)
     }
 
@@ -779,7 +779,7 @@ public actor LiveActuator: MenuBarActuator {
             let v = verdicts(resolved)
             let collateral = await confirmedCollateral(resolved, allOK: v.values.allSatisfy(\.ok))
             last = (out.settled, v, collateral)
-            note("batch round \(round): settled=\(out.settled) ok=\(v.values.filter(\.ok).count)/\(v.count) collateral=\(collateral.count)")
+            note("batch round \(round): settled=\(out.settled) ok=\(v.values.filter(\.ok).count)/\(v.count) collateral=\(collateral.count)" + (out.settled || out.trace.isEmpty ? "" : " trace=[\(out.trace)]"))
             if out.settled && v.values.allSatisfy(\.ok) && collateral.isEmpty { break }
             // One retry only if the flags landed and nothing visible changed yet.
             guard round == 1,
@@ -812,7 +812,7 @@ public actor LiveActuator: MenuBarActuator {
                     let coll = await confirmedCollateral(resolved, allOK: v.values.allSatisfy(\.ok))
                     last = (o.settled, v, coll)
                     let d1 = drift(resolved)
-                    note("batch after order repair: settled=\(o.settled) ok=\(v.values.filter(\.ok).count)/\(v.count) collateral=\(coll.count) drift=\(d1.drifted)")
+                    note("batch after order repair: settled=\(o.settled) ok=\(v.values.filter(\.ok).count)/\(v.count) collateral=\(coll.count) drift=\(d1.drifted)" + (o.settled || o.trace.isEmpty ? "" : " trace=[\(o.trace)]"))
                     if d1.drifted {
                         driftFailure = .notVerified(expected: "relative order kept: \(expected)",
                                                     observed: "order drifted and the repair did not restore it: " + freshFrameOrder(resolved, excluding: batchKeys).map(\.description).joined(separator: ", "))
