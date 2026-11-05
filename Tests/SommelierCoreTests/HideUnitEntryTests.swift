@@ -145,3 +145,61 @@ private struct EntryActuatorObserver: MenuBarObserver {
     #expect(state.lastNormalization == [helper])
     #expect(Set(state.layout.visible) == [other, parent, helper] && state.layout.hidden.isEmpty)
 }
+
+// gdu.76: the rule setLayout just refreshed is published right away, not at the next observation.
+@MainActor
+@Test func setLayoutRepublishesTheHideUnitRule() async {
+    let order = [other, helper, parent]
+    let act = FakeActuator(order: order, hidden: [], capabilities: CapabilityRules(hasTrackedEntry: { _ in true }),
+                           makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+    let state = EngineState()
+    var cfg = LayoutEngine.Config()
+    cfg.trackedResolver = { resolver }
+    let engine = LayoutEngine(observer: EntryActuatorObserver(actuator: act), actuator: act, store: InMemoryLayoutStore(Layout(visible: order)),
+                              capabilities: CapabilityRules(hasTrackedEntry: { _ in true }), state: state,
+                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: cfg)
+    await engine.start()
+    #expect(state.hideUnits.unit(of: helper) != state.hideUnits.unit(of: parent))   // no observation yet: still the default rule
+    await engine.setLayout(Layout(visible: [other, helper, parent]))
+    #expect(state.hideUnits.unit(of: helper) == state.hideUnits.unit(of: parent))   // no pass ran, yet the rule is published
+}
+
+// gdu.76: display names for the unit note.
+@Test func unitNoteNamesTheGoverningApp() {
+    #expect(HideUnitNames.unitNote(mates: [], app: "Hazel") == nil)
+    #expect(HideUnitNames.unitNote(mates: ["Hazel Helper"], app: nil) == "Hides together with Hazel Helper")
+    #expect(HideUnitNames.unitNote(mates: ["Hazel Helper"], app: "Hazel") == "Hides together with Hazel Helper (all governed by Hazel)")
+    #expect(HideUnitNames.unitNote(mates: ["Hazel"], app: "Hazel") == "Hides together with Hazel")
+    #expect(HideUnitNames.display(trackedKey: "com.noodlesoft.Hazel") { _ in "Hazel" } == "Hazel")
+    #expect(HideUnitNames.display(trackedKey: "com.noodlesoft.Hazel") { _ in nil } == "com.noodlesoft.Hazel")
+    #expect(HideUnitNames.display(trackedKey: "com.noodlesoft.Hazel") { _ in "  " } == "com.noodlesoft.Hazel")
+    #expect(HideUnitNames.groupRefusal(entry: "Hazel") == "hides together with Hazel: move the whole group")
+    #expect(HideUnitNames.staleMemberRefusal(entry: "Hazel") == "hides together with Hazel: a member's state is unknown; retrying when the bar settles")
+}
+
+@Test func arrangeRowCarriesTheGoverningAppName() {
+    let layout = Layout(visible: [helper, parent])
+    let c = ArrangeSections.make(observed: ObservedOrder(onBar: [helper, parent], parked: []), layout: layout, items: [:], perItem: [:],
+                                 capabilities: free, units: rule, unitAppName: { $0 == parentOwner ? "Hazel" : nil })
+    #expect(c.visible.rows.allSatisfy { $0.unitApp == "Hazel" })
+}
+
+// gdu.76: LivePlatform parses the Control Center entries once per batch snapshot, per call otherwise.
+@Test func livePlatformReadsTheTrackedEntriesOncePerSnapshot() {
+    final class Counter: @unchecked Sendable { var n = 0 }
+    let c = Counter()
+    let p = LivePlatform(trackedSource: { c.n += 1; return resolver })
+    let item = ResolvedItem(item: MenuBarItem(ownerPID: 1, ownerBundleID: parentOwner, ownerName: "Hazel", title: "", axDescription: "",
+                                              axIdentifier: "Item-0", frame: CGRect(x: 0, y: 0, width: 20, height: 24),
+                                              source: .appExtras, isOnMenuBar: true),
+                            key: parent, confidence: .exact)
+    #expect(p.trackedKey(for: item) == parentOwner && p.trackedKey(for: item) == parentOwner)
+    #expect(c.n == 2)                       // no snapshot: one read per call
+    c.n = 0
+    p.beginTrackedSnapshot()
+    for _ in 0..<5 { #expect(p.trackedKey(for: item) == parentOwner) }
+    #expect(c.n == 1)
+    p.endTrackedSnapshot()
+    _ = p.trackedKey(for: item)
+    #expect(c.n == 2)                       // snapshot dropped: reads again
+}

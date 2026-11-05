@@ -233,6 +233,9 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func resolve(_ s: MenuBarSnapshot) -> [ResolvedItem] {
         s.items.map { ResolvedItem(item: $0, key: modules.contains(nameOf($0)) ? .module(name: nameOf($0)) : key(nameOf($0)), confidence: .exact) }
     }
+    var snapshotBegins = 0, snapshotEnds = 0
+    func beginTrackedSnapshot() { snapshotBegins += 1 }
+    func endTrackedSnapshot() { snapshotEnds += 1 }
     func trackedKey(for r: ResolvedItem) -> String? { untracked.contains(nameOf(r.item)) ? nil : tracked(nameOf(r.item)) }
     func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {
                 dragCalls.append((steps, toX))
@@ -658,6 +661,47 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     #expect(mixed.perKey[key("Parent")] == nil)
     #expect(w.allowedWrites.count == 1 && w.allowedWrites[0].keys.contains("tracked.Parent") == false)
     #expect(w.order.contains("Parent") && w.order.contains("Helper"))
+}
+
+// gdu.76: a stale UNREQUESTED member could be flipped silently; refuse. A stale REQUESTED member is fine.
+@Test func staleUnrequestedMemberRefusesTheUnit() async {
+    let w = World(["A", "Helper", "Parent"])
+    w.shared = ["Helper": "tracked.Parent", "Parent": "tracked.Parent"]
+    w.staleName = "Parent"; w.staleScans = 1_000_000
+    let act = actuator(w)
+    let out = await act.applyHiddenBatchDetailed([key("Helper"): true])
+    let why = "hides together with tracked.Parent: a member's state is unknown; retrying when the bar settles"
+    if case .failed(.memberStale(let r), _) = out.result { #expect(r == why) } else { Issue.record("got \(out.result)") }
+    #expect(w.allowedWrites.isEmpty && w.restarts == 0)
+    // Transient: not a capability refusal.
+    #expect(await act.lastBatchRefused.isEmpty)
+    #expect(await act.lastBatchUnsettled[key("Helper")] == why)
+    if case .failed(.memberStale, _)? = out.perKey[key("Helper")] {} else { Issue.record("perKey: \(String(describing: out.perKey[key("Helper")]))") }
+    // The stale member REQUESTED too: unchanged behaviour (not refused for staleness).
+    let act2 = actuator(w)
+    let both = await act2.applyHiddenBatchDetailed([key("Helper"): true, key("Parent"): true])
+    #expect(await act2.lastBatchRefused.isEmpty)
+    if case .failed(.unsupportedItem, _) = both.result { Issue.record("requested stale member must not refuse") }
+}
+
+// gdu.76: an unrequested member already in the target state is not changed by the flip, so no refusal.
+@Test func unrequestedMemberAlreadyInTheTargetStateIsAllowed() async {
+    let w = World(["A"])
+    w.hidden = ["Parent"]
+    w.shared = ["Helper": "tracked.Parent", "Parent": "tracked.Parent"]
+    w.order = ["A", "Helper"]
+    let act = actuator(w)
+    let out = await act.applyHiddenBatchDetailed([key("Helper"): true])
+    #expect(await act.lastBatchRefused.isEmpty)
+    if case .failed(.unsupportedItem, _) = out.result { Issue.record("refused: \(out.result)") }
+    #expect(w.allowedWrites == [["tracked.Parent": false]])
+}
+
+// gdu.76: the Control Center entries are read once per batch (snapshot bracket), including the recheck recursion.
+@Test func batchTakesOneTrackedSnapshot() async {
+    let w = World(["A", "B", "C"])
+    _ = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("B"): true])
+    #expect(w.snapshotBegins == 1 && w.snapshotEnds == 1)
 }
 
 @Test func batchRejectsConflictingRequestsForOneApp() async {

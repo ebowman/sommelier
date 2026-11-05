@@ -407,6 +407,9 @@ public actor LiveActuator: MenuBarActuator {
     /// batch's `result`; `BatchOutcome.perKey` carries their `.failed(.unsupportedItem)`. The engine records them as skips.
     public private(set) var lastBatchRefused: [ItemKey: String] = [:]
     private var batchRefused: [ItemKey: String] = [:]
+    /// Units of the last batch left alone because an unrequested member was stale (gdu.76): transient, NOT in `lastBatchRefused`.
+    public private(set) var lastBatchUnsettled: [ItemKey: String] = [:]
+    private var batchUnsettled: [ItemKey: String] = [:]
     /// Keys of the last batch applied per the Control Center store but not yet confirmed by a usable read (`.liveUnverified`).
     public private(set) var lastBatchUnconfirmed: Set<ItemKey> = []
     /// The keys and directions of the last batch that wrote, and when it finished (see `Config.recentWriteSettle`).
@@ -414,14 +417,18 @@ public actor LiveActuator: MenuBarActuator {
 
     public func applyHiddenBatchDetailed(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
         await acquire(); defer { release() }
+        platform.beginTrackedSnapshot(); defer { platform.endTrackedSnapshot() }   // gdu.76: one Control Center read per batch
         batchRespawned = false
         batchRefused = [:]
+        batchUnsettled = [:]
         var out = await performBatch(changes)
         lastBatchRefused = batchRefused
+        lastBatchUnsettled = batchUnsettled
         for (k, why) in batchRefused { out.perKey[k] = .failed(.unsupportedItem(reason: why), nil) }
+        for (k, why) in batchUnsettled { out.perKey[k] = .failed(.memberStale(why), nil) }
         lastBatchRespawned = batchRespawned || out.mechanism == .respawn
-        let applied = changes.filter { batchRefused[$0.key] == nil }
-        lastBatchUnconfirmed = out.mechanism == .liveUnverified ? Set(out.perKey.keys.filter { batchRefused[$0] == nil }) : []
+        let applied = changes.filter { batchRefused[$0.key] == nil && batchUnsettled[$0.key] == nil }
+        lastBatchUnconfirmed = out.mechanism == .liveUnverified ? Set(out.perKey.keys.filter { batchRefused[$0] == nil && batchUnsettled[$0] == nil }) : []
         if out.mechanism == .live || out.mechanism == .respawn || out.mechanism == .liveUnverified { lastWrite = (applied, platform.now()) }
         return out
     }
@@ -451,6 +458,7 @@ public actor LiveActuator: MenuBarActuator {
         // split off with its own reason (gdu.72); the applicable units still go out in ONE write. Missing keys and conflicting
         // requests stay whole-batch failures.
         var refused: [ItemKey: String] = [:]
+        var unsettled: [ItemKey: String] = [:]   // subset of the refused keys: transient stale-member refusals (gdu.76)
         var requestedBy: [String: [(key: ItemKey, hide: Bool)]] = [:]   // tracked key -> requested items
         for (key, hide) in changes.sorted(by: { $0.key.description < $1.key.description }) {
             guard let r = resolved.first(where: { $0.key == key }) else { return uniform(changes.keys, .failed(.notFound, snap)) }
@@ -468,25 +476,32 @@ public actor LiveActuator: MenuBarActuator {
         // (the planner groups by the same entry, so this is a belt-and-braces refusal), is refused whole instead.
         var wantByApp: [String: Bool] = [:]   // tracked key -> hidden
         for (tracked, reqs) in requestedBy.sorted(by: { $0.key < $1.key }) {
-            let why = "hides together with \(tracked): move the whole group"
+            let entry = platform.displayName(forTrackedKey: tracked)
+            var why = HideUnitNames.groupRefusal(entry: entry)
+            var transient = false
             let hide = reqs[0].hide
             var bad = reqs.contains { $0.hide != hide }
             if !bad {
                 let asked = Set(reqs.map(\.key))
-                bad = resolved.contains { r in
-                    !asked.contains(r.key) && !r.item.stale && platform.trackedKey(for: r) == tracked
-                        && (hide ? ActuationVerifier.onBar(r) : !ActuationVerifier.onBar(r))
+                for r in resolved where !asked.contains(r.key) && platform.trackedKey(for: r) == tracked {
+                    // An unrequested member whose state is unknown could be flipped silently: refuse (gdu.76). A fresh one that
+                    // already is in the target state is fine; a fresh one that would change is refused.
+                    if r.item.stale { bad = true; transient = true; why = HideUnitNames.staleMemberRefusal(entry: entry); break }
+                    if hide ? ActuationVerifier.onBar(r) : !ActuationVerifier.onBar(r) { bad = true; break }
                 }
             }
-            if bad { for q in reqs { refused[q.key] = why } } else { wantByApp[tracked] = hide }
+            if bad { for q in reqs { refused[q.key] = why; if transient { unsettled[q.key] = why } } } else { wantByApp[tracked] = hide }
         }
-        batchRefused.merge(refused) { a, _ in a }   // merge: the gdu.26 recheck recurses with the filtered batch and must not wipe earlier refusals
+        batchRefused.merge(refused.filter { unsettled[$0.key] == nil }) { a, _ in a }
+        batchUnsettled.merge(unsettled) { a, _ in a }   // merge: the gdu.26 recheck recurses with the filtered batch and must not wipe earlier refusals
         if !refused.isEmpty {
             note("refused \(refused.count) unit(s) before the write: " + refused.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
         }
         if refused.count == changes.count {
             // Nothing applicable: no scan-dependent work, no write.
-            let first = refused.sorted { $0.key.description < $1.key.description }[0].value
+            let sortedRefused = refused.sorted { $0.key.description < $1.key.description }
+            if refused.keys.allSatisfy({ unsettled[$0] != nil }) { return uniform(changes.keys, .failed(.memberStale(sortedRefused[0].value), snap)) }
+            let first = (sortedRefused.first { unsettled[$0.key] == nil } ?? sortedRefused[0]).value
             return uniform(changes.keys, .failed(.unsupportedItem(reason: first), snap))
         }
         let changes = changes.filter { refused[$0.key] == nil }

@@ -25,6 +25,12 @@ public protocol ActuatorPlatform: SnapshotScanning {
     func resolve(_ snapshot: MenuBarSnapshot) -> [ResolvedItem]
     /// Control Center `trackedApplications` key for this item's app, nil when macOS has no entry (item cannot be hidden).
     func trackedKey(for item: ResolvedItem) -> String?
+    /// A batch reads the Control Center entries ONCE (gdu.76): between `beginTrackedSnapshot()` and `endTrackedSnapshot()` every
+    /// `trackedKey(for:)` answers from that one read. Defaults: no-ops (platforms that do not parse anything per call).
+    func beginTrackedSnapshot()
+    func endTrackedSnapshot()
+    /// Human name of a tracked entry for refusal reasons (the parent app's name); the key itself when unknown.
+    func displayName(forTrackedKey key: String) -> String
     /// Cmd+drag of the item's center to `toX`; returns when the mouse-up was posted. Throws `DragError`.
     func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date
     func menuProbe(for item: MenuBarItem) -> MenuProbe
@@ -100,16 +106,28 @@ final class OwnRestarts: @unchecked Sendable {
     func contains(_ pid: pid_t) -> Bool { lock.lock(); defer { lock.unlock() }; return pids.contains(pid) }
 }
 
+public extension ActuatorPlatform {
+    func beginTrackedSnapshot() {}
+    func endTrackedSnapshot() {}
+    func displayName(forTrackedKey key: String) -> String { key }
+}
+
 public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public static let bartenderBundleID = "com.surteesstudios.Bartender"
     private let scanner: MenuBarScanner
     private let resolver: IdentityResolver
     private let work = DispatchQueue(label: "sommelier.liveplatform", qos: .userInitiated)
 
+    private let trackedSource: @Sendable () -> TrackedEntryResolver?
+    private let snapshotLock = NSLock()
+    private var trackedSnapshot: TrackedEntryResolver??   // .some(x) = read at batch start (x may be nil = unreadable)
+
     public init(scanner: MenuBarScanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL),
-                resolver: IdentityResolver = IdentityResolver()) {
+                resolver: IdentityResolver = IdentityResolver(),
+                trackedSource: @escaping @Sendable () -> TrackedEntryResolver? = { TrackedEntryResolver.current() }) {
         self.scanner = scanner
         self.resolver = resolver
+        self.trackedSource = trackedSource
     }
 
     private func onWork<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
@@ -157,8 +175,21 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public func resolve(_ snapshot: MenuBarSnapshot) -> [ResolvedItem] { resolver.resolve(snapshot: snapshot) }
 
     public func trackedKey(for item: ResolvedItem) -> String? {
-        guard let resolver = TrackedEntryResolver.current() else { return nil }
+        let snap = snapshotLock.withLock { trackedSnapshot }
+        guard let resolver = snap ?? trackedSource() else { return nil }
         return resolver.trackedKey(for: item.key, bundleID: item.item.ownerBundleID)
+    }
+
+    /// Reads the tracked entries once; every `trackedKey(for:)` until `endTrackedSnapshot()` reuses that read (gdu.76).
+    public func beginTrackedSnapshot() {
+        let r = trackedSource()
+        snapshotLock.withLock { trackedSnapshot = .some(r) }
+    }
+
+    public func endTrackedSnapshot() { snapshotLock.withLock { trackedSnapshot = nil } }
+
+    public func displayName(forTrackedKey key: String) -> String {
+        HideUnitNames.display(trackedKey: key, lookup: HideUnitNames.runningAppName)
     }
 
     public func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {

@@ -24,6 +24,9 @@ public enum ActuationError: Error, Equatable, Sendable {
     /// The live `isAllowed` write itself failed (no entitlement, the write threw, or the readback never showed the intended
     /// value) and a MenuBarAgent restart is not allowed (gdu.55). Not a verification failure: nothing was respawned.
     case liveWriteFailed(String)
+    /// An unrequested member of the unit's Control Center entry is STALE (its state unknown), so flipping the entry could change
+    /// it silently. TRANSIENT (gdu.76): not a capability refusal, never in `lastBatchRefused`, never struck; the next pass retries.
+    case memberStale(String)
 }
 
 extension ActuationError {
@@ -63,6 +66,9 @@ public protocol MenuBarActuator: Sendable {
     /// the capability's reason (gdu.72). The rest of the batch was applied; the aggregate result covers only the applied units
     /// (all refused: `.failed(.unsupportedItem)`). The engine treats these as skips, never strikes.
     var lastBatchRefused: [ItemKey: String] { get async }
+    /// Units of the last batch left alone because a member's state was unknown (`ActuationError.memberStale`, gdu.76), with the
+    /// reason. Transient: the engine keeps them pending, records no refusal and no strike, and the next pass tries again.
+    var lastBatchUnsettled: [ItemKey: String] { get async }
 }
 
 public extension MenuBarActuator {
@@ -70,6 +76,7 @@ public extension MenuBarActuator {
     var lastBatchRespawned: Bool { get async { false } }
     var lastBatchUnconfirmed: Set<ItemKey> { get async { [] } }
     var lastBatchRefused: [ItemKey: String] { get async { [:] } }
+    var lastBatchUnsettled: [ItemKey: String] { get async { [:] } }
 }
 
 /// What may be done to one item on this OS; the UI greys out controls and shows `reason`.

@@ -62,6 +62,10 @@ public actor FakeActuator: MenuBarActuator {
     public func setRefusals(_ r: [ItemKey: String]) { refusals = r }
     private var refusals: [ItemKey: String] = [:]
     public private(set) var lastBatchRefused: [ItemKey: String] = [:]
+    /// Keys the fake leaves alone as transiently unsettled (a stale member, gdu.76): reason by key; mutate to "settle" them.
+    public private(set) var unsettled: [ItemKey: String] = [:]
+    public func setUnsettled(_ u: [ItemKey: String]) { unsettled = u }
+    public private(set) var lastBatchUnsettled: [ItemKey: String] = [:]
 
     private func snapshot() -> MenuBarSnapshot { makeSnapshot(order, hidden) }
 
@@ -106,6 +110,9 @@ public actor FakeActuator: MenuBarActuator {
         lastBatchUnconfirmed = []
         var changes = changes
         lastBatchRefused = [:]
+        lastBatchUnsettled = [:]
+        for key in changes.keys where unsettled[key] != nil { lastBatchUnsettled[key] = unsettled[key]; changes[key] = nil }
+        if changes.isEmpty, let why = lastBatchUnsettled.values.sorted().first { return .failed(.memberStale(why), snapshot()) }
         for key in changes.keys where order.contains(key) || hidden.contains(key) {
             let cap = capabilities.capability(for: key)
             if let why = refusals[key] ?? (cap.canHide ? nil : (cap.reason ?? "cannot hide")) { lastBatchRefused[key] = why }

@@ -323,9 +323,10 @@ public actor LayoutEngine {
     /// Publishes `l` as the next layout revision, stamped with the passes started so far (one main-actor hop, so the stamp is exact).
     @discardableResult
     private func publishLayout(_ l: Layout, normalized: [ItemKey]? = nil) async -> LayoutRevision {
-        let s = state
+        let s = state, hu = rule   // gdu.76: the rule setLayout just refreshed is published with the layout, not at the next observation
         return await MainActor.run {
             s.layout = l
+            s.hideUnits = hu
             if let normalized { s.lastNormalization = normalized }
             s.layoutRevision += 1
             s.passesStartedAtRevision = s.passesStarted
@@ -1091,6 +1092,13 @@ public actor LayoutEngine {
                 log("engine: actuator refused \(refusedNow.count) unit(s) (skipped, not failures): " + refusedNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
                 if refusedNow.count == batch.count { err = nil }
             }
+            // gdu.76: units left alone because a member was stale are TRANSIENT: no actuatorRefused entry, no strike, they stay
+            // pending and the next pass plans them again (the planner requests the member once it is fresh).
+            let unsettledNow = (await actuator.lastBatchUnsettled).filter { batch[$0.key] != nil }
+            if !unsettledNow.isEmpty {
+                log("engine: actuator left \(unsettledNow.count) unit(s) pending (not failures, not refused): " + unsettledNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
+                if refusedNow.count + unsettledNow.count == batch.count { err = nil }
+            }
             for k in batch.keys { unconfirmed[k] = nil }
             if err == nil {
                 for k in await actuator.lastBatchUnconfirmed { if let hide = batch[k] { unconfirmed[k] = hide } }
@@ -1140,6 +1148,7 @@ public actor LayoutEngine {
                 for a in after.actions {
                     let k = Self.key(of: a)
                     guard let wasHide = batch[k] else { continue }
+                    if unsettledNow[k] != nil { continue }   // transient: neither a failure nor a strike
                     let nowHide: Bool
                     switch a { case .hide: nowHide = true; case .show: nowHide = false; case .move: continue }
                     if nowHide == wasHide, unconfirmed[k] != nil {

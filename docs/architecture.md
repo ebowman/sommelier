@@ -157,7 +157,14 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   `Config.trackedResolver` at every pass and layout adoption, uses it for the planner and normalization, and publishes it as
   `EngineState.hideUnits`, which Arrange, the overflow panel and drops use, so every consumer groups exactly like the planner.
   The actuator additionally never changes an item the batch did not request: a unit whose requested members differ, or whose flag
-  flip would also move an unrequested member, is refused whole ("hides together with <entry>: move the whole group"). A unit is hidden
+  flip would also move an unrequested member, is refused whole ("hides together with <entry>: move the whole group"). A STALE unrequested member also leaves the unit alone,
+  but TRANSIENTLY ("...: a member's state is unknown; retrying when the bar settles"): `ActuationError.memberStale`, reported through
+  `lastBatchUnsettled`, never `lastBatchRefused`; the engine records no `actuatorRefused` entry and no strike, keeps the unit pending, and
+  the next pass plans it again (unlike a capability refusal, which stays `.unsupported` until Retry/setLayout; a stale REQUESTED member is fine, a fresh unrequested member already in
+  the target state is allowed). The actuator reads the Control Center entries ONCE per batch (`ActuatorPlatform.beginTrackedSnapshot()` /
+  `endTrackedSnapshot()` around `applyHiddenBatchDetailed`; `LivePlatform` otherwise parses the plist per `trackedKey(for:)` call) and
+  names the entry by its running app's name (`HideUnitNames`, key as fallback), as does the Arrange unit tooltip (`ArrangeRow.unitApp`).
+  `setLayout` republishes `EngineState.hideUnits` with the layout; `mbprobe plan`/`reconcile` use the same resolver-based rule. A unit is hidden
   only if ALL its items are in `hidden`/`alwaysHidden` (a `hidden`+`alwaysHidden` split is fine). `Layout.normalizedHideUnits(units:)`
   moves the hidden-section keys of a unit that also has a `visible` key to `visible` (before the trailing system block, original
   order); `validated()` applies it after `dedup()`, `validatedReportingNormalization()` also returns the moved keys (no hidden state

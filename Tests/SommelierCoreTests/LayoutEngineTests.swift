@@ -902,4 +902,33 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let gone = await waitUntil { await !r.engine.isTransientlyRevealed(HideUnit(id: "com.x.B")) }
         #expect(gone)
     }
+
+    @Test func staleMemberRefusalIsTransientAndTheNextPassRetriesWithoutRetry() async {
+        // gdu.76: a unit left alone because a member is stale is neither refused (sticky) nor struck; once the member is fresh
+        // the NEXT pass hides it, with no Retry and no setLayout.
+        let a = k("A"), b = k("B")
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]))
+        await r.actuator.setUnsettled([a: "hides together with X: a member's state is unknown; retrying when the bar settles"])
+        for _ in 0..<5 {   // more passes than maxKeyFailures: a strike would stop retrying
+            let rep = await r.engine.reconcileOnce()
+            #expect(rep.outcome != .stopped)
+        }
+        #expect(await r.actuator.lastBatchRefused.isEmpty)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else if case .unsupported = $0 { false } else { true } })
+        #expect(await r.actuator.hidden.isEmpty)
+        await r.actuator.setUnsettled([:])   // the member is fresh again
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden == [a])
+    }
+
+    @Test func capabilityRefusalStaysStickyUntilRetry() async {
+        let a = k("A"), b = k("B")
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]))
+        await r.actuator.setRefusals([a: "cannot hide"])
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.lastBatchRefused[a] == "cannot hide")
+        await r.actuator.setRefusals([:])
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.hidden.isEmpty)   // sticky: the capability refusal is not retried by itself
+    }
 }
