@@ -478,3 +478,55 @@ private func sourceWithDisk(_ trees: [AgentHostedTree], istatExtras: [AXElementI
         #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
     }
 }
+
+// MARK: - gdu.81: slow-group hysteresis
+
+@Test func groupStaysCappedAcrossAResolvingReadWithinTheWindow() {
+    let cache = AXElementCache()
+    let g = AXUIElementCreateApplication(1), other = AXUIElementCreateApplication(2)
+    let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+    cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true, hysteresis: 60, now: t0)
+    cache.setSlow([])                                                            // t0+5: the read resolved it
+    #expect(cache.isCapped(g, at: t0.addingTimeInterval(10)))                    // (a) still capped
+    #expect(!cache.isCapped(other, at: t0.addingTimeInterval(10)))
+    #expect(!cache.isCapped(g, at: t0.addingTimeInterval(61)))                   // (b) uncapped after the window, no new timeout
+    // a new unresolved read inside the window extends it
+    cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true, hysteresis: 60, now: t0.addingTimeInterval(50))
+    cache.setSlow([])
+    #expect(cache.isCapped(g, at: t0.addingTimeInterval(100)))
+    #expect(!cache.isCapped(g, at: t0.addingTimeInterval(111)))
+    // an unattributed failure caps nobody, hysteresis included
+    cache.setSlow([g, other]); cache.noteUnresolvedAttribution(selfPositioning: false, hysteresis: 60, now: t0.addingTimeInterval(120))
+    #expect(!cache.isCapped(g, at: t0.addingTimeInterval(121)))
+}
+
+@Test func periodicProbeStillRunsWhileWithinTheWindow() {
+    let cache = AXElementCache()
+    let g = AXUIElementCreateApplication(1)
+    let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+    cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true, hysteresis: 60, now: t0)
+    for _ in 0..<3 { cache.setSlow([]) }                                         // 4 full reads so far, the 5th is the probe
+    #expect(cache.slowRefreshRead)                                               // (c) probe read uses the normal timeout
+    #expect(cache.isCapped(g, at: t0.addingTimeInterval(10)))                    // while the group is still inside the window
+}
+
+@Test func windowZeroKeepsThePreviousBehaviour() {
+    let cache = AXElementCache()
+    let g = AXUIElementCreateApplication(1)
+    let t0 = Date(timeIntervalSinceReferenceDate: 1000)
+    cache.setSlow([g]); cache.noteUnresolvedAttribution(selfPositioning: true, hysteresis: 0, now: t0)
+    #expect(cache.isCapped(g, at: t0))
+    cache.setSlow([])
+    #expect(!cache.isCapped(g, at: t0))                                          // (e) dropped on the first resolving read
+    #expect(LiveAccessibilitySource().slowGroupHysteresis == 60)
+}
+
+@Test func cappedTimeoutAfterAResolvingReadIsStillSelfPositioningStale() {
+    // (d) the cap only shortens the source's timeout; the scanner classifies by identity as before.
+    let s = source([full, streakScan, tree([dummyEl, otherEl]), streakScan])
+    let scanner = MenuBarScanner(source: s)
+    #expect(scanner.scan().completeness == .complete)
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    #expect(scanner.scan().completeness != .incomplete)                          // iStat answered
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)       // capped timeout: never .incomplete
+}

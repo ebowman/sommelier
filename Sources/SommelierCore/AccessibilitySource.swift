@@ -157,11 +157,24 @@ final class AXElementCache: @unchecked Sendable {
     /// The subset of `slow` the scanner attributed, by identity, to self-positioning owners. ONLY these get the short cap;
     /// every other group keeps the normal retry round (a healthy slow group must be able to finish).
     private var spSlow: Set<ElementKey> = []
-    func isCapped(_ e: AXUIElement) -> Bool { lock.lock(); defer { lock.unlock() }; return spSlow.contains(ElementKey(e: e)) }
+    /// Hysteresis (gdu.81): attributed groups stay capped until this time even across reads that resolve them, so an iStat
+    /// that alternates answering and stalling does not re-pay the whole retry budget on every first stale read.
+    private var capUntil: [ElementKey: Date] = [:]
+    func isCapped(_ e: AXUIElement, at now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let k = ElementKey(e: e)
+        return spSlow.contains(k) || (capUntil[k].map { $0 > now } ?? false)
+    }
     /// The scanner's verdict on the groups that did not finish in the last read: all attributed to self-positioning owners
     /// (they become capped) or not (nobody is capped).
-    func noteUnresolvedAttribution(selfPositioning: Bool) {
+    /// `hysteresis` > 0 (gdu.81) additionally keeps each attributed group capped until `now + hysteresis`, refreshed every time
+    /// a read leaves it unresolved; 0 is the pre-gdu.81 behaviour (the cap ends with the first read that resolves the group).
+    /// A read with any unattributed failure still caps nobody.
+    func noteUnresolvedAttribution(selfPositioning: Bool, hysteresis: TimeInterval = 0, now: Date = Date()) {
         lock.lock(); defer { lock.unlock() }
+        capUntil = capUntil.filter { $0.value > now }
+        if !selfPositioning { capUntil = [:] }
+        else if hysteresis > 0 { for k in slow { capUntil[k] = now.addingTimeInterval(hysteresis) } }
         // Identity persists in the scanner's record, so attribution (and with it the cap) holds for a whole streak; a read
         // with any unattributed failure caps nobody (gdu.51), and a group leaves the set when a read resolves it (`setSlow`).
         spSlow = selfPositioning ? slow : []
@@ -237,10 +250,13 @@ public struct LiveAccessibilitySource: AccessibilitySource {
     /// Timeout for an agent group that did not finish in the previous full read (gdu.51); such a group is not retried.
     /// 0 disables the cap.
     public var agentSlowGroupTimeout: Float = 0.3
+    /// gdu.81: seconds a self-positioning group stays capped after the last read that left it unresolved, across reads that
+    /// resolve it (the periodic normal-timeout probe still runs). 0 restores the pre-gdu.81 behaviour.
+    public var slowGroupHysteresis: TimeInterval = 60
     private let cache = AXElementCache()
     public init() {}
 
-    public func noteUnresolvedGroups(selfPositioning: Bool) { cache.noteUnresolvedAttribution(selfPositioning: selfPositioning) }
+    public func noteUnresolvedGroups(selfPositioning: Bool) { cache.noteUnresolvedAttribution(selfPositioning: selfPositioning, hysteresis: slowGroupHysteresis) }
 
     public var currentPID: pid_t { ProcessInfo.processInfo.processIdentifier }
 

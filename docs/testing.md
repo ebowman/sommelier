@@ -567,3 +567,22 @@ Live (dummy only, Bartender 7 quit, MBDummy `--count 2`, MenuBarAgent pid 21399 
 gdu.79 corrective (2026-11-05, review FAIL): the first rule only covered items with NO hosted element; a stale frame (x 781-818, the overflow pile) won ANOTHER item's hosted element in the frame-intersection join and came out on-bar (`frameAmbiguous`), so `init-from-current` wrote 1Password, BoltAI, Script Menu, Jump visible. Now flag-false candidates are excluded from the frame join pass (the element joins its real owner), a flag-false item with only a weak join is `controlCenterHidden`, an allowed item with only a weak join inside the overflow pile is `placementUnknown`, and `MenuBarScanner.trackedEntries` defaults to no entries unless the scanner runs on `LiveAccessibilitySource` (tests are hermetic). `AuthorityRuleTests` 17 tests; `make test`: 712. Live read-only, real bar, twice: all 34 non-Apple isAllowed=0 entries' items off the bar (controlCenterHidden: 1Password, Tailscale, TextSniper, RescueTime, DEVONsphere, Grammarly, Jump Desktop Connect; notHosted: BoltAI; assumedNotHosted: DEVONthink; parkedFrame: the rest), none visible; `init-from-current` exit 1 naming KeepingYouAwake (allowed, no hosted element).
 
 gdu.78: unsettled-unit delayed retry (back-off, bound, notice, reset, no seed/poll count) and the reveal skip count of actuator-refused parked units are unit-tested in `LayoutEngineTests` (FakeActuator `setUnsettled`/`scriptDrift(unapplied:)`) and `UserPassReuseTests`.
+
+### Slow-group hysteresis (gdu.81)
+
+Unit tests (`SelfPositioningCompletenessTests`, gdu.81 section): a group unresolved at t0 is capped at t0+10 s although a read at t0+5 s resolved it; uncapped after the 60 s window with no new timeout; a new unresolved read extends the window; the 5th-read probe (`slowRefreshRead`) still runs inside the window; an unattributed failure caps nobody; window 0 drops the cap on the first resolving read (old behaviour); completeness for a capped timeout stays `.completeExceptSelfPositioning`. `make test`: 755 tests (751 + 4).
+
+Measured with read-only `mbprobe list --timing --debug --repeat 3`, 6 runs ~10 s apart (hosted-tree read time of reads 1/2/3 in ms; the live reveal measurement is DEFERRED, live reveal tests being restricted):
+
+| run | read 1 | read 2 | read 3 | iStat groups |
+|---|---|---|---|---|
+| 1 | 568 | 48 | 53 | answered, 0 failed |
+| 2 | 1958 | 32 | 125 | answered, 0 failed |
+| 3 | 2159 | 44 | 35 | answered, 0 failed |
+| 4 | 2843 | 2732 | 1274 | 9 failed reads, reads 1-2 |
+| 5 | 2804 | 40 | 49 | 8 failed reads, read 1 |
+| 6 | 2852 | 2736 | 1574 | 9 failed reads, reads 1-2 |
+
+Consistent with gdu.77 (answered 0.43-0.95 s, stale ~2.5-2.8 s). The probe cannot show the cap: it is a one-shot process with no persisted self-positioning record, and the stale reads had 9 unnamed failed reads for 8 iStat groups (one non-iStat, e.g. Universal Control/DEVONthink Helper), so the scanner reported `incomplete: 9 unnamed timeouts ...`, attributed nobody, and (correctly, by the gdu.51 rule) capped nobody; read 2 of runs 4/6 still paid ~2.7 s. The hysteresis therefore applies only where attribution holds (the app with its persisted record, 8 failures all iStat); that needs the deferred live check.
+
+Live (human/reviewer, deferred): with the app running and an alternating iStat, 3 reveal cycles with the dummies (plists backed up), record observe/verify ms; a stale full scan after a resolving read within 60 s should take ~0.7-0.9 s instead of ~2.5 s (log: the agent tree read time), and completeness stays `completeExceptSelfPositioning`.
