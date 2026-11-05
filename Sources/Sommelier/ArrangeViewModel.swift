@@ -85,7 +85,7 @@ final class ArrangeViewModel {
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? state.newItemNotice ?? selfPositioningNote,
+                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.newItemNotice ?? selfPositioningNote,
                                    pollPausedNames: pollPausedNames)
     }
     /// gdu.67: shown after the engine rewrote a layout that straddled a self-positioning item (`lastNormalization` holds only those keys then).
