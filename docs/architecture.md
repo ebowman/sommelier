@@ -88,7 +88,8 @@ stage (validate every key first, back up the plist in memory), verification is p
 keys; `.heuristic(bundleID, fingerprint, ordinal)` is synthesized. `ownerKey` is the bundle id for installed apps and the executable name
 otherwise (findings-identity; the dev Sommelier build and MBDummy therefore key as their executable name).
 `KeyConfidence`: **exact** (store key + AXIdentifier corroboration), **inferred** (real store key, pairing by order or single candidate),
-**heuristic** (attribute fingerprint, not a store key). Rules for the UI:
+**corroborated** (gdu.28: a synthesized fingerprint key whose owner-to-hosted-frame pairing was independently corroborated), **heuristic**
+(attribute fingerprint, not a store key). Rules for the UI:
 
 * exact: full controls, "verified" claims allowed.
 * inferred: movement is allowed (drags use the live item's frame, not the key), but any claim about a persisted position is made only after a
@@ -96,6 +97,16 @@ otherwise (findings-identity; the dev Sommelier build and MBDummy therefore key 
   the wrong autosave name would silently move a different item.
 * heuristic: drag allowed (frame-based) with greyed "unverified identity" state; never written to the store; hide only if a tracked entry
   is known; never persisted as a user layout (session only).
+* corroborated (gdu.28): the key text is the same `heuristic:<bundle>::<fingerprint>#<ordinal>` string (so saved layouts and caches load
+  unchanged), but `MenuBarItem.joinEvidence` says how the scanner paired the owner's AX item with the MenuBarAgent hosted element that
+  supplies the frame: `identifier`, `description` (non-empty, unique among owner items and hosted elements), `frameUnique` (mutual and
+  exclusive overlap >= half the narrower width, widths within 2 pt) or `frameAmbiguous`/`none`. `ResolvedItem.frameTrusted` (= has an AX
+  identifier, or the join is corroborated) is what LiveActuator's frame-based post-restart drift check now requires, so identifier-less
+  items with a corroborated join (inferred `status:...::Item-0` keys as well as `.corroborated` heuristics) are covered by it; bare
+  heuristics, ambiguous joins and self-positioning owners are not. Verified-move claims (`ActuationVerifier.uncorroborated`) stay
+  stricter: a `frameUnique`-only item is still unverifiable. The key itself contains no frame, pid or AX handle, so it survives
+  MenuBarAgent respawns and the item's own moves; the only instability is twins (identical fingerprints of one owner), whose ordinals
+  follow left-to-right position (a drag past a twin swaps the two keys).
 * stale items: shown, greyed, no actions, never counted as verified.
 
 **Sections** (left to right on screen: visible | hidden | always-hidden is a UI model; the OS has only "on bar" and "parked"):

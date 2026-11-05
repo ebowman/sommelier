@@ -118,6 +118,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     // Identifier-less items (of7): the live hide is applied at write time (the agent takes ~25 ms) but the app-side frame of
     // an unnamed item stays on-bar ("ghost") unless the actuator recorded it as assumed-hidden.
     var unnamed: Set<String> = []
+    var corroborated: Set<String> = []       // gdu.28: identifier-less items whose owner/hosted pairing is corroborated
     var liveInstant = false
     var ghosts: Set<String> = []
     var hostedTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to hosted layouts read after the live write
@@ -189,6 +190,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
         var items = order.enumerated().filter { !(dropScans > 0 && $1 == dropName) }.map {
             item($1, x: 100 + CGFloat($0) * 40, onBar: !(flickerScans > 0 && $1 == flickerName), stale: staleScans > 0 && $1 == staleName,
                  ident: unnamed.contains($1) ? "" : nil) }
+        for n in corroborated { if let i = items.firstIndex(where: { $0.ownerName == n }) { items[i].joinEvidence = .frameUnique } }
         items += hidden.sorted().map { n in
             let g = ghosts.contains(n) && !assumedPIDs.contains(pidOf(n))
             var i = item(n, x: g ? 500 : 0, onBar: g, ident: unnamed.contains(n) ? "" : nil)
@@ -798,6 +800,39 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     let out = await act.applyHiddenBatchDetailed([key("B"): true])
     #expect(out.result.isVerified)
     #expect(w.restarts == 1)
+    #expect(await act.driftRepairs == 0)
+}
+
+// gdu.28: the frame-based drift check now covers identifier-less items whose owner/hosted pairing is corroborated.
+@Test func corroboratedIdentifierLessItemThatMovedIsDrift() async {
+    let w = World(["A", "B", "C", "D"])
+    w.unnamed = ["C"]; w.corroborated = ["C"]
+    w.restartReorder = [["C", "A", "D"]]            // store untouched; only C's frame moved
+    let act = actuator(w)
+    let out = await act.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified)
+    #expect(await act.driftRepairs == 1)
+    #expect(w.restarts == 2)
+}
+
+@Test func uncorroboratedIdentifierLessItemIsStillNotFrameChecked() async {
+    let w = World(["A", "B", "C", "D"])
+    w.unnamed = ["C"]                               // no join evidence: the frame may belong to a neighbour
+    w.restartReorder = [["C", "A", "D"]]
+    let act = actuator(w)
+    _ = await act.applyHiddenBatchDetailed([key("B"): true])
+    #expect(await act.driftRepairs == 0 && w.restarts == 1)
+}
+
+@Test func selfPositioningIdentifierLessItemIsNotDriftEvenWhenCorroborated() async {
+    let w = World(["A", "B", "C", "D"])
+    w.unnamed = ["C"]; w.corroborated = ["C"]
+    w.restartReorder = [["C", "A", "D"]]
+    var c = LiveActuator.Config()
+    c.selfPositioningOwners = ["app.C"]
+    let act = LiveActuator(platform: w, config: c)
+    let out = await act.applyHiddenBatchDetailed([key("B"): true])
+    #expect(out.result.isVerified && w.restarts == 1)
     #expect(await act.driftRepairs == 0)
 }
 

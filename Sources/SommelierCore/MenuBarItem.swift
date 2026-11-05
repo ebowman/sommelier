@@ -23,6 +23,27 @@ public enum HiddenReason: String, Codable, Sendable {
     case assumedNotHosted
 }
 
+/// How the owner's own AX item was paired with the MenuBarAgent hosted element that supplies its frame (gdu.28).
+/// Only the scanner sets this; everything but `.none` means the pairing was examined.
+public enum JoinEvidence: String, Codable, Sendable {
+    /// Not examined (app-side only item, hosted-only item, tests, older caches).
+    case none
+    /// Hosted and owner elements carry the same non-empty AXIdentifier.
+    case identifier
+    /// Same non-empty AXDescription, and that description is unique among the owner candidates and among the hosted elements.
+    case description
+    /// Frame join, but the pairing is MUTUAL and exclusive: the hosted element substantially overlaps (>= half of the narrower
+    /// width) exactly this owner item and no other, this owner item overlaps no other hosted element, and the widths agree
+    /// within 2 pt. An app-side frame that lags a move overlaps a neighbour as well, which breaks this.
+    case frameUnique
+    /// Frame join where more than one owner item or hosted element competes for the overlap (crowded or stacked bar,
+    /// lagging app-side frame). The label may belong to a neighbour (docs/findings-drag.md pitfall 2).
+    case frameAmbiguous
+
+    /// A pairing that does not rest on a bare, possibly mislabelled frame overlap.
+    public var corroborated: Bool { self == .identifier || self == .description || self == .frameUnique }
+}
+
 /// One menu bar item (status item / menu extra).
 public struct MenuBarItem: @unchecked Sendable {
     /// macOS's English name for the overflow chevron; also the stable `.module` key name for it under every locale.
@@ -60,6 +81,8 @@ public struct MenuBarItem: @unchecked Sendable {
     public var stale: Bool
     /// Consecutive scans this item has been carried forward (0 when fresh).
     public var staleCount: Int
+    /// How the owner item and its hosted frame were paired (gdu.28). Not part of the item's identity.
+    public var joinEvidence: JoinEvidence
 
     public init(
         ownerPID: pid_t, ownerBundleID: String?, ownerName: String,
@@ -67,8 +90,9 @@ public struct MenuBarItem: @unchecked Sendable {
         frame: CGRect, source: MenuBarItemSource, isOnMenuBar: Bool,
         axElement: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0,
         notHostedByAgent: Bool = false, isOverflowChevron: Bool = false, systemOverflow: Bool = false,
-        assumedNotHosted: Bool = false
+        assumedNotHosted: Bool = false, joinEvidence: JoinEvidence = .none
     ) {
+        self.joinEvidence = joinEvidence
         self.assumedNotHosted = assumedNotHosted
         self.isOverflowChevron = isOverflowChevron
         self.systemOverflow = systemOverflow
@@ -91,7 +115,7 @@ public struct MenuBarItem: @unchecked Sendable {
 extension MenuBarItem: Codable {
     private enum CodingKeys: String, CodingKey {
         case ownerPID, ownerBundleID, ownerName, title, axDescription, axIdentifier
-        case frame, source, isOnMenuBar, stale, staleCount, hidden, systemOverflow, overflowChevron
+        case frame, source, isOnMenuBar, stale, staleCount, hidden, systemOverflow, overflowChevron, joinEvidence
     }
 
     public init(from decoder: Decoder) throws {
@@ -113,7 +137,8 @@ extension MenuBarItem: Codable {
             notHostedByAgent: reason == .notHosted || reason == .assumedNotHosted,
             isOverflowChevron: try c.decodeIfPresent(Bool.self, forKey: .overflowChevron) ?? false,
             systemOverflow: try c.decodeIfPresent(Bool.self, forKey: .systemOverflow) ?? false,
-            assumedNotHosted: reason == .assumedNotHosted)
+            assumedNotHosted: reason == .assumedNotHosted,
+            joinEvidence: try c.decodeIfPresent(JoinEvidence.self, forKey: .joinEvidence) ?? .none)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -132,6 +157,7 @@ extension MenuBarItem: Codable {
         try c.encodeIfPresent(hiddenReason, forKey: .hidden)
         try c.encode(systemOverflow, forKey: .systemOverflow)
         if isOverflowChevron { try c.encode(true, forKey: .overflowChevron) }
+        if joinEvidence != .none { try c.encode(joinEvidence, forKey: .joinEvidence) }
     }
 }
 

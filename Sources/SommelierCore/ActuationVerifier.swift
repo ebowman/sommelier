@@ -44,7 +44,12 @@ public enum ActuationVerifier {
 
     /// A heuristic key is a fingerprint, not a store key: it cannot support a verified claim unless a non-frame
     /// attribute (AXIdentifier) corroborates the item.
-    static func uncorroborated(_ r: ResolvedItem) -> Bool { r.confidence == .heuristic && r.item.axIdentifier.isEmpty }
+    static func uncorroborated(_ r: ResolvedItem) -> Bool {
+        // gdu.28: `.corroborated` keys rest on a description match or a mutual-exclusive frame pairing, which is good
+        // enough for the order check but not for a verified-move claim: only non-frame corroboration lifts the restriction.
+        guard r.item.axIdentifier.isEmpty else { return false }
+        return r.confidence == .heuristic || (r.confidence == .corroborated && r.item.joinEvidence == .frameUnique)
+    }
 
     static func name(_ r: ResolvedItem) -> String { r.key.description }
 

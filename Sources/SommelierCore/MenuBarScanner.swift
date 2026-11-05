@@ -561,21 +561,49 @@ public struct MenuBarScanner {
         var matchedCandidates: [Int: AXElementInfo] = [:]
         var matchedHosted = Set<Int>()
         var hostedOwner: [Int: pid_t] = [:]
-        func pass(_ matches: (AXElementInfo, AXElementInfo) -> Bool) {
+        // Which pass paired each candidate, and with which hosted element (gdu.28 `JoinEvidence`).
+        var matchedBy: [Int: (pass: JoinEvidence, hosted: Int)] = [:]
+        func pass(_ kind: JoinEvidence, _ matches: (AXElementInfo, AXElementInfo) -> Bool) {
             for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) {
                 if let ci = candidates.indices.first(where: {
                     matchedCandidates[$0] == nil && !assumedIdx.contains($0) && matches(h, candidates[$0].info)
                 }) {
                     matchedHosted.insert(hi); matchedCandidates[ci] = h; hostedOwner[hi] = candidates[ci].app.pid
+                    matchedBy[ci] = (kind, hi)
                 }
             }
         }
-        pass { !$0.identifier.isEmpty && $0.identifier == $1.identifier }
-        pass { !$0.axDescription.isEmpty && $0.axDescription == $1.axDescription }
-        pass { h, c in
+        pass(.identifier) { !$0.identifier.isEmpty && $0.identifier == $1.identifier }
+        pass(.description) { !$0.axDescription.isEmpty && $0.axDescription == $1.axDescription }
+        pass(.frameAmbiguous) { h, c in
             guard h.frame.width > 0, c.frame.width > 0 else { return false }
             let i = h.frame.intersection(c.frame)
             return !i.isNull && i.width > 0 && i.height > 0
+        }
+
+        /// gdu.28: how trustworthy the pairing of candidate `ci` with its hosted element is (see `JoinEvidence`).
+        func joinEvidence(_ ci: Int) -> JoinEvidence {
+            guard let m = matchedBy[ci] else { return .none }
+            let h = hosted[m.hosted]
+            switch m.pass {
+            case .identifier: return .identifier
+            case .description:
+                let d = h.axDescription
+                let owners = candidates.filter { $0.info.axDescription == d }.count
+                let hostedWith = hosted.enumerated().filter { !Self.isOwnHostedElement($0.element) && $0.element.axDescription == d }.count
+                return owners == 1 && hostedWith == 1 ? .description : .frameAmbiguous
+            default:
+                func substantial(_ a: CGRect, _ b: CGRect) -> Bool {
+                    guard a.width > 0, b.width > 0 else { return false }
+                    let i = a.intersection(b)
+                    return !i.isNull && i.height > 0 && i.width >= 0.5 * min(a.width, b.width)
+                }
+                let c = candidates[ci].info
+                guard substantial(h.frame, c.frame), abs(h.frame.width - c.frame.width) <= 2 else { return .frameAmbiguous }
+                let hostedHits = hosted.indices.filter { !Self.isOwnHostedElement(hosted[$0]) && substantial(hosted[$0].frame, c.frame) }
+                let ownerHits = candidates.indices.filter { substantial(candidates[$0].info.frame, h.frame) }
+                return hostedHits == [m.hosted] && ownerHits == [ci] ? .frameUnique : .frameAmbiguous
+            }
         }
 
         let activeAssumed = assumedIdx.filter { state.assumedHidden[candidates[$0].app.pid] != nil }
@@ -681,7 +709,8 @@ public struct MenuBarScanner {
                 source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted, axElement: c.info.element,
                 stale: h == nil ? (c.stale || carriedCount > 0) : h!.stale,
                 staleCount: h?.staleCount ?? carriedCount,
-                notHostedByAgent: reportNotHosted, assumedNotHosted: assumed))
+                notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
+                joinEvidence: h == nil ? .none : joinEvidence(ci)))
         }
         for (hi, owner) in attributed {
             let h = hosted[hi]
