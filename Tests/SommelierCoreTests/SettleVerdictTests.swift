@@ -55,13 +55,12 @@ private final class Fake: SnapshotScanning, @unchecked Sendable {
     #expect(out.settled && out.fullScans == 1 && f.fastCalls == 2 && out.trace.isEmpty)
 }
 
-@Test func incompleteFastObservationNeedsTwoAgreeingFullScans() async {
-    let f = Fake(fast: [snap(["A", "B"], incomplete: true)], full: [snap(["B", "A"]), snap(["B", "A"])])
+@Test func incompleteFastObservationIsComparedNormallyWithOneFullScan() async {
+    let f = Fake(fast: [snap(["A", "B"], incomplete: true)], full: [snap(["A", "B"])])
     let out = await f.detector().settled()
-    #expect(out.settled && out.fullScans == 2)
-    #expect(out.trace.contains("fast observation incomplete"))
-    let g = Fake(fast: [snap(["A", "B"], incomplete: true)], full: [snap(["B", "A"]), snap(["A", "B"]), snap(["B", "A"])])
-    #expect(!(await g.detector().settled()).settled)
+    #expect(out.settled && out.fullScans == 1 && out.trace.isEmpty)
+    let g = Fake(fast: [snap(["A", "B"], incomplete: true)], full: [snap(["B", "A"])])
+    #expect(!(await g.detector().settled(maxWait: 30)).settled)
 }
 
 @Test func verdictAgreementIgnoresStaleNoiseAndSelfPositioning() {

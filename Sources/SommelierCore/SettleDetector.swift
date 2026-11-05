@@ -29,7 +29,7 @@ public struct SettleOutcome: Sendable {
 ///    frames within 1 pt, at least `stableFor` apart) or `maxWait` passes.
 /// 2. Take a full `scan()` as the verdict snapshot. If phase 1 agreed and the verdict agrees with the last fast observation
 ///    (`verdictAgrees`), that is the answer; if it disagrees, poll again (new fast pair, new verdict) until `maxWait` /
-///    `maxFullScans`, then report not settled. If phase 1 did not agree (or the fast read was incomplete; e.g. the fast
+///    `maxFullScans`, then report not settled. If phase 1 did not agree (e.g. the fast
 ///    path mislabels identifier-less items right after a move), require two consecutive full scans to agree.
 /// A snapshot in which a subject item is stale never counts as settled (a stale frame is a cached value).
 public struct SettleDetector: Sendable {
@@ -38,7 +38,7 @@ public struct SettleDetector: Sendable {
     public var sleep: @Sendable (TimeInterval) async -> Void
     /// Items the action is about; if one of them is stale in an observation, that observation cannot settle.
     public var isSubject: @Sendable (MenuBarItem) -> Bool
-    /// Bounds the total number of full scans (verdicts and fallback re-reads), so a persistently disagreeing source cannot loop.
+    /// Bounds the total number of full scans (verdicts and fallback re-reads; the up-to-2 retries of an empty scan are not counted), so a persistently disagreeing source cannot loop.
     public var maxFullScans: Int
     public static let frameTolerance: CGFloat = 1
 
@@ -74,6 +74,7 @@ public struct SettleDetector: Sendable {
     /// self-positioning owners' items (their slots move on their own; `SelfPositioning.defaultOwners`). Frames are not
     /// compared (only the order). Parked/hidden set: required only when the fast scan reports parked items (every such key,
     /// same exclusions, must be parked in the verdict too); a fast scan that reports none says nothing about hiding.
+    /// An `.incomplete` fast read is compared like any other (it is common during self-positioning streaks).
     /// Our own status item is never in scanner output (`includeSelf` is false), so there is nothing to exclude.
     public static func verdictAgrees(fast: MenuBarSnapshot, verdict: MenuBarSnapshot) -> Bool {
         let owners = SelfPositioning.defaultOwners
@@ -113,10 +114,6 @@ public struct SettleDetector: Sendable {
                 }
                 if t.timeIntervalSince(start) >= maxWait { break }
                 await sleep(stableFor)
-            }
-            if fastAgreed, lastFast?.completeness == .incomplete {
-                fastAgreed = false
-                trace.append("fast observation incomplete; requiring two agreeing full scans")
             }
             var verdict = await scanner.scan()
             fulls += 1
