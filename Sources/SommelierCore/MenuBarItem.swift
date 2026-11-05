@@ -201,6 +201,78 @@ public enum SystemOverflowRule {
     }
 }
 
+/// gdu.80: one complete read of the bar as the churn rule needs it (frames and the chevron, nothing else).
+public struct ChurnRead: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable {
+        public var key: ItemKey
+        public var frame: CGRect
+        public var isChevron: Bool
+        public var stale: Bool
+        public init(key: ItemKey, frame: CGRect, isChevron: Bool = false, stale: Bool = false) {
+            self.key = key; self.frame = frame; self.isChevron = isChevron; self.stale = stale
+        }
+    }
+    /// A fresh chevron was on the bar (the bar is full).
+    public var hasChevron: Bool
+    /// Keys macOS had in its pile in this read (`SystemOverflowRule`).
+    public var overflow: Set<ItemKey>
+    /// Pile keys plus the drawn items within one item-width of the first drawn item right of the chevron.
+    public var zone: Set<ItemKey>
+
+    /// `extraOverflow`: further keys the caller knows are piled (the actuator's coincident-frame guard).
+    public init(entries: [Entry], extraOverflow: Set<ItemKey> = []) {
+        let bar = entries.enumerated().filter { $0.element.frame.width > 1 }
+            .sorted { ($0.element.frame.minX, $0.offset) < ($1.element.frame.minX, $1.offset) }.map(\.element)
+        guard let c = bar.first(where: { $0.isChevron && !$0.stale }) else {
+            hasChevron = false; overflow = []; zone = []; return
+        }
+        hasChevron = true
+        let ovfIdx = SystemOverflow.indices(order: bar.map { SystemOverflow.Entry(frame: $0.frame, stale: $0.stale, isChevron: $0.isChevron) })
+        var ovf = Set(ovfIdx.map { bar[$0].key }).union(extraOverflow)
+        ovf.remove(c.key)
+        overflow = ovf
+        let fresh = bar.filter { !$0.stale && !$0.isChevron }
+        var z = ovf
+        let drawn = fresh.filter { !ovf.contains($0.key) && $0.frame.minX >= c.frame.minX }
+        if let first = drawn.first {
+            let w = fresh.map(\.frame.width).max() ?? SystemOverflowRule.fallbackItemWidth
+            for e in drawn where e.frame.maxX >= first.frame.minX - w && e.frame.minX <= first.frame.minX + w { z.insert(e.key) }
+        }
+        zone = z
+    }
+
+    public init(resolved: [ResolvedItem]) {
+        let on = resolved.filter { $0.item.isOnMenuBar && $0.item.frame.width > 0 }
+        self.init(entries: on.map { Entry(key: $0.key, frame: $0.item.frame, isChevron: $0.item.isOverflowChevron, stale: $0.item.stale) },
+                  extraOverflow: ActuationVerifier.overflowed(resolved))
+    }
+}
+
+extension SystemOverflowRule {
+    /// Item width used for the churn zone when a read has no hosted width at all.
+    public static let fallbackItemWidth: CGFloat = 40
+
+    /// Why a churn-zone item is not planned or dragged (gdu.80). Same family as `Reconciler.overflowSkipReason`.
+    public static let churnSkipReason = "bar is full; macOS decides what fits"
+    /// Text carried by the actuator's refusal of a churn-zone subject or anchor. Contains the overflow refusal marker so the
+    /// engine treats it like any other overflow refusal (a skip, never a strike).
+    public static let churnRefusalMarker = "\(ActuationError.overflowRefusalMarker) (bar is full; macOS decides what fits)"
+
+    /// gdu.80 churn zone: keys that were in the pile, or within one item-width of the first drawn item right of the chevron, in
+    /// EITHER of the given (last two complete) reads. When the bar's membership changes on a full bar the pile changes with it,
+    /// so these are the items a plan could otherwise drag although macOS is about to move them. Empty without a chevron.
+    public static func churnZone(_ reads: [ChurnRead]) -> Set<ItemKey> {
+        reads.suffix(2).reduce(into: Set<ItemKey>()) { $0.formUnion($1.zone) }
+    }
+
+    /// The overflow set is settled when the last two complete reads agree on it (and on the bar being full) -- gdu.80.
+    public static func overflowSettled(_ reads: [ChurnRead]) -> Bool {
+        let r = reads.suffix(2)
+        guard r.count == 2, let a = r.first, let b = r.last else { return false }
+        return a.hasChevron == b.hasChevron && a.overflow == b.overflow
+    }
+}
+
 /// One element of MenuBarAgent's hosted tree on the strip (non-stale, width > 1), as read by one scan (of7).
 public struct HostedEntry: Equatable, Sendable {
     /// Identifier, else description, else "" (identifier-less items).

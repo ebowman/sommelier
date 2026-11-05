@@ -231,6 +231,9 @@ public actor LiveActuator: MenuBarActuator {
         return Observation(snapshot: out.snapshot, resolved: resolved, settled: out.settled, verdict: v)
     }
 
+    private var churnZone: Set<ItemKey> = []
+    public func setChurnZone(_ keys: Set<ItemKey>) async { churnZone = keys }
+
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         await acquire(); defer { release() }
         return await performMove(key, relation: relation)
@@ -268,13 +271,16 @@ public actor LiveActuator: MenuBarActuator {
         var dragBlocked: String?
         if !config.forceFallback {
             let ovf = ActuationVerifier.overflowed(plan.resolved)
+            let churn = churnZone.union(ChurnRead(resolved: plan.resolved).zone).subtracting(ovf)
             var involved = [plan.subject.key]
             if let t = plan.target { involved.append(t.key) }
             if let x = Self.dropX(relation, plan: plan) {
                 involved += ActuationVerifier.barOrder(plan.resolved).filter { $0.item.frame.minX <= x && x <= $0.item.frame.maxX }.map(\.key)
             }
-            if let hit = involved.first(where: { ovf.contains($0) }) {
-                dragBlocked = "\(hit) \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
+            if let hit = involved.first(where: { ovf.contains($0) || churn.contains($0) }) {
+                dragBlocked = ovf.contains(hit)
+                    ? "\(hit) \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
+                    : "\(hit) \(SystemOverflowRule.churnRefusalMarker); a drag cannot be trusted there"
                 note("drag skipped: \(dragBlocked!)")
                 lastError = .mechanismFailed(dragBlocked!)
             }

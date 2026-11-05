@@ -156,6 +156,7 @@ public actor LayoutEngine {
     private var lastAdoptedPolled = false
     private func noteAdopted(_ items: [ResolvedItem], _ completeness: ReadCompleteness, serialBefore: Int) {
         lastAdopted = (items, completeness, .now)
+        noteChurn(items, completeness)
         lastAdoptedSerial = pollSignatureSerial != serialBefore ? pollSignatureSerial : nil
         lastAdoptedPolled = false
     }
@@ -180,6 +181,15 @@ public actor LayoutEngine {
     /// gdu.69: keys whose move the actuator refused in THIS pass because the subject or anchor is in macOS's overflow area
     /// (belt and braces: the planner already skips flagged items). Never struck; their moves are dropped from the plan.
     private var overflowRefused: [ItemKey: String] = [:]
+    /// gdu.80: the last two COMPLETE reads' churn data (pile + first-drawn neighbourhood). The churn zone is their union; the
+    /// overflow set is settled when both agree. A pass that changed membership on a full bar never orders; the order phase waits
+    /// for two agreeing complete reads.
+    private var recentReads: [ChurnRead] = []
+    private func noteChurn(_ items: [ResolvedItem], _ completeness: ReadCompleteness) {
+        guard completeness == .complete else { return }
+        recentReads.append(ChurnRead(resolved: items))
+        if recentReads.count > 2 { recentReads.removeFirst(recentReads.count - 2) }
+    }
     /// gdu.72: units the actuator refused to write (key -> reason; not tracked, Apple app...). Kept across passes so they are not
     /// retried every pass, never struck, shown `.unsupported`; cleared by `clearFailures` (layout change, Retry).
     private var actuatorRefused: [ItemKey: String] = [:]
@@ -530,7 +540,8 @@ public actor LayoutEngine {
         let refusedParked = planObs.parked.filter { actuatorRefused[$0] != nil }
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
-                                         selfPositioningOwners: config.selfPositioningOwners, units: rule)
+                                         selfPositioningOwners: config.selfPositioningOwners, units: rule,
+                                         churn: obs.overflowChevron == nil ? [] : SystemOverflowRule.churnZone(recentReads))
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -993,6 +1004,7 @@ public actor LayoutEngine {
         if generation != layoutGeneration { return await endSuperseded(PassReport(outcome: .superseded)) }   // the layout changed during observation
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
         pruneFailures(obs)
+        await publish { if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil } }
 
         // (c) plan
         var plan = makePlan(obs)
@@ -1054,6 +1066,9 @@ public actor LayoutEngine {
             return await finish(r, converged: false)
         }
 
+        // (f2) gdu.80: on a full bar (a chevron) the order phase needs a settled overflow set; a reveal never orders.
+        if plan.phase == .order, let r = await fullBarOrderGate(obs: obs, wroteMembership: false, actionCount: actionCount, phase: phaseReached) { return r }
+
         // (g) membership phase
         if plan.phase == .membership {
             let caps = effectiveCaps()
@@ -1069,6 +1084,7 @@ public actor LayoutEngine {
                 }
             }
             guard let first = order.first else { return await abort(.incomplete) }
+            let fullBefore = obs.overflowChevron != nil
             if conflicted { return await pausedMidPass(report(.paused)) }
             let firstAction: PlannedAction = batch[first] == true ? .hide(first) : .show(first)
             await publish { s in for k in order { s.perItem[k] = .pending }; s.inFlight = firstAction }
@@ -1177,6 +1193,10 @@ public actor LayoutEngine {
                 // Still membership work (agent moved things): let the next pass handle it after it settles.
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
             }
+            // gdu.80: the membership batch changed what fits: on a full bar the overflow pile just changed, so nothing is dragged
+            // in this pass. A follow-up pass orders once two complete reads agree on the pile.
+            if fullBefore || obs.overflowChevron != nil,
+               let r = await fullBarOrderGate(obs: obs, wroteMembership: true, actionCount: actionCount, phase: phaseReached) { return r }
         }
 
         // (h) order phase
@@ -1223,6 +1243,7 @@ public actor LayoutEngine {
             }
             lastAction = action
             await setStatus(key, .moving, inFlight: action)
+            await actuator.setChurnZone(obs.overflowChevron == nil ? [] : SystemOverflowRule.churnZone(recentReads))
             let result = await actuator.move(key, relation: rel)
             actionCount += 1
             switch result {
@@ -1261,6 +1282,37 @@ public actor LayoutEngine {
         }
         return await abort(.incomplete)
     }
+
+    /// gdu.80: decides whether an ORDER plan may be acted on a full bar. Returns the pass report when the pass must end here:
+    ///  - reveal pass (showHidden/showAlways): membership only, never a drag; the differing order is surfaced as a notice
+    ///  - membership was written this pass: order deferred; a follow-up pass orders after the bar has settled
+    ///  - the last two complete reads disagree on the overflow set: order deferred until they agree
+    /// nil: proceed (no chevron, or the pile is settled and nothing was written).
+    private func fullBarOrderGate(obs: ObservedOrder, wroteMembership: Bool, actionCount: Int, phase: PlanPhase) async -> PassReport? {
+        guard obs.overflowChevron != nil || (wroteMembership && recentReads.last?.hasChevron == true) else { return nil }
+        func end(_ o: PassReport.Outcome, converged: Bool, retry: Bool) async -> PassReport {
+            let r = PassReport(outcome: o, phase: phase, actionCount: actionCount)
+            if retry, draining, !stopped, chained < config.maxChainedPasses { chained += 1; pending = true }
+            await publish { $0.inFlight = nil }
+            return await finish(r, converged: converged)
+        }
+        if showHidden || showAlways {
+            log("order not applied: bar is full (reveal pass: membership only, nothing is dragged)")
+            let text = Self.orderNotAppliedText
+            await publish { $0.orderNotAppliedNotice = text }
+            return await end(.converged, converged: failures.isEmpty, retry: false)
+        }
+        if wroteMembership {
+            log("order deferred: membership changed this pass")
+            return await end(.incomplete, converged: false, retry: true)
+        }
+        if !SystemOverflowRule.overflowSettled(recentReads) {
+            log("order deferred: overflow set unsettled")
+            return await end(.unsettled, converged: false, retry: true)
+        }
+        return nil
+    }
+    static let orderNotAppliedText = "Order not applied: bar is full"
 
     /// gdu.67: a persisted layout that straddles a self-positioning item ([B, iStat, A] while the bar is [A, iStat, B]) is not
     /// reachable: the planner keeps iStat as an anchor and ends [B, A, iStat]. Once a pass has converged on a complete read, the

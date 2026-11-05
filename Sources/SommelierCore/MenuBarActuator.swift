@@ -69,9 +69,13 @@ public protocol MenuBarActuator: Sendable {
     /// Units of the last batch left alone because a member's state was unknown (`ActuationError.memberStale`, gdu.76), with the
     /// reason. Transient: the engine keeps them pending, records no refusal and no strike, and the next pass tries again.
     var lastBatchUnsettled: [ItemKey: String] { get async }
+    /// gdu.80: the churn zone (`SystemOverflowRule.churnZone`) the engine computed from its last two complete reads. A move whose
+    /// subject or relation anchor is in it is refused before any drag (an overflow refusal: a skip, never a strike).
+    func setChurnZone(_ keys: Set<ItemKey>) async
 }
 
 public extension MenuBarActuator {
+    func setChurnZone(_ keys: Set<ItemKey>) async {}
     /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.
     var lastBatchRespawned: Bool { get async { false } }
     var lastBatchUnconfirmed: Set<ItemKey> { get async { [] } }

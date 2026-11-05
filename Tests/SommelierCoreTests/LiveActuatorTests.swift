@@ -1506,3 +1506,21 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
     _ = await a.applyHiddenBatchDetailed([key("C"): false])
     #expect(await !a.trace.contains { $0.contains("opposite of a write made") })
 }
+
+// MARK: - churn zone guard (gdu.80)
+
+@Test func moveWhoseAnchorOrSubjectIsInTheChurnZoneIsRefusedBeforeAnyDrag() async {
+    for (subject, rel) in [("D", Relation.before(key("C"))), ("C", Relation.after(key("D")))] {
+        let w = World(["A", "B", "C", "D"])
+        let a = await actuator(w, fallback: false)
+        await a.setChurnZone([key("C")])
+        let r = await a.move(key(subject), relation: rel)
+        guard case .failed(let e, _) = r else { Issue.record("expected a refusal for \(subject), got \(r)"); return }
+        #expect(e.isOverflowRefusal)
+        #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)
+    }
+    // without the zone the same move is attempted
+    let w = World(["A", "B", "C", "D"])
+    _ = await actuator(w, fallback: false).move(key("D"), relation: .before(key("C")))
+    #expect(!w.dragCalls.isEmpty)
+}

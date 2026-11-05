@@ -79,6 +79,9 @@ public final class EngineState {
     public var passesStartedAtRevision: Int = 0
     /// Transient "New item: X placed in Visible" text for the Arrange window status line (cleared by the engine after a few seconds).
     public var newItemNotice: String?
+    /// gdu.80: set by a reveal pass on a full bar whose layout order differs from the bar: membership was applied, the order was
+    /// not (macOS decides what fits). Cleared at the start of every pass.
+    public var orderNotAppliedNotice: String?
     /// Keys the engine moved to `visible` when it adopted the last layout (`start`, `setLayout`) because their app also had a
     /// visible item: hide units are all-or-nothing (gdu.44). Empty when nothing was moved. Replaced by every adoption, so the
     /// Arrange status line can show "N items moved to Visible with their app" for the latest layout only.

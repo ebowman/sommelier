@@ -87,7 +87,7 @@ public struct Reconciler: Sendable {
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
                      selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners,
-                     units rule: HideUnitRule = .ownerKeys) -> Plan {
+                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = []) -> Plan {
         // Self-positioning owners (iStat Menus) move between slots on their own, so they are ANCHORS: never dragged,
         // never targeted by a relation that needs them to move, and their slot is authoritative (gdu.33). Hide/show
         // capability is untouched. The actuator's drift exemption uses the same set (`SelfPositioning.defaultOwners`).
@@ -208,7 +208,10 @@ public struct Reconciler: Sendable {
         // Items in macOS's own overflow are not drawn and cannot be dragged, and the chevron is the hard left boundary of
         // the drawn bar: the order is planned on the drawn items right of it only, so no move has an overflowed item or the
         // chevron as subject or relation target, and none lands left of the chevron (`.leftmost` is rewritten, see `moves`).
-        let ovf = observed.systemOverflow.intersection(onBarSet)
+        // gdu.80: churn-zone keys (in the pile, or beside the first drawn item, in either of the last two complete reads) are
+        // treated exactly like overflowed keys: never a move subject or anchor. Only meaningful with a chevron on the bar.
+        let churnKeys = observed.overflowChevron == nil ? [] : churn.intersection(onBarSet).subtracting(observed.systemOverflow)
+        let ovf = observed.systemOverflow.intersection(onBarSet).union(churnKeys)
         let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }
         let ovfKept = onBar.filter { ovf.contains($0) && wantOnBar.contains($0) && !hideSet.contains($0) }
         // macOS decides what overflows (total width); a layout's order across the overflow boundary is not a request we can
@@ -230,7 +233,7 @@ public struct Reconciler: Sendable {
             }
             let listed = Set(layout.visible + layout.hidden + layout.alwaysHidden)
             for k in ovfKept where listed.contains(k) && want.contains(k) && drawnBefore(k, want) != drawnBefore(k, have) {
-                skipped.append(SkippedAction(k, Reconciler.overflowSkipReason))
+                skipped.append(SkippedAction(k, churnKeys.contains(k) ? SystemOverflowRule.churnSkipReason : Reconciler.overflowSkipReason))
             }
         }
         desired = desired.filter { !ovf.contains($0) && $0 != chevron && !isSP($0) }

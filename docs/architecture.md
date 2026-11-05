@@ -457,6 +457,20 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   `.before(first drawn item)`); `overflowViolations` asserts this. Membership is unchanged (an overflowed item may still be
   hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as
   unsupported. To bring one into view, hide something else or use the future "hide what does not fit" action.
+- Pass structure on a full bar and the churn zone (gdu.80). Incident (gdu.77 live run): revealing two items on a naturally full bar
+  moved items between the drawn bar and the pile, the SAME pass re-planned 8 order moves and dragged real items. Rules:
+  (1) a pass that wrote membership (hide/show, reveal or re-hide) on a bar with a chevron NEVER runs the order phase in that pass
+  (`LayoutEngine.fullBarOrderGate`; log "order deferred: membership changed this pass"; the pass ends `incomplete`, not converged,
+  and a follow-up pass is scheduled). (2) An order pass on a full bar runs only when the overflow set is SETTLED: the last two
+  complete reads (`recentReads`, fed by every adopted complete observation) agree on the pile (`SystemOverflowRule.overflowSettled`);
+  otherwise "order deferred: overflow set unsettled" (bounded by `maxChainedPasses`). (3) Reveal passes (showHidden/showAlways) on a
+  full bar plan membership only: when the layout order then differs, no drag, the pass converges and `EngineState.orderNotAppliedNotice`
+  ("Order not applied: bar is full") reaches the Arrange status line below the withdraw and reveal-skip notices. (4) Churn zone
+  (`SystemOverflowRule.churnZone`, MenuBarItem.swift, built from `ChurnRead`): keys in the pile, or within one item-width (widest
+  hosted item, 40 pt fallback) of the first drawn item right of the chevron, in EITHER of the last two complete reads. The planner
+  treats them like overflowed keys (`Reconciler.plan(churn:)`: never move subject or anchor; skip "bar is full; macOS decides what
+  fits") and `LiveActuator.setChurnZone` makes the actuator refuse a move whose subject or anchor is in it (an overflow refusal:
+  skip, no strike). Bars without a chevron are unchanged: membership and order still run in one pass.
 - Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
   warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. The Arrange window's
   "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls
