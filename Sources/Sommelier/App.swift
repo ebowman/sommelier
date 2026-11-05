@@ -35,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let right = spec.hasSuffix("|right")
             let keyText = right ? String(spec.dropLast("|right".count)) : spec
             Task { @MainActor [model] in
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: .seconds(Double(env["SOMMELIER_ACTIVATE_DELAY"] ?? "") ?? 3))   // delay: measure in steady state
                 guard let key = ItemKey(storeKey: keyText) else { NSLog("[Sommelier] activate: bad key %@", keyText); return }
                 for _ in 0..<40 where model.engine == nil { try? await Task.sleep(for: .milliseconds(250)) }
                 let t0 = Date()

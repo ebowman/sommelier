@@ -456,6 +456,14 @@ Clicking an entry in the overflow panel opens the REAL item's menu or popover. M
    frame alone (a live-hidden item keeps a stale on-bar frame); it is the app-side frame on the strip AND MenuBarAgent hosting one more item
    than before the write (`hostedBarCount`); without a usable complete baseline (`baselineAttempts` tries) the activator does not reveal at all and presses in place (left) / refuses (right). A cancellation during that baseline read returns `.cancelled` (nothing was written; the hold is released).
    The reveal is per unit (app): siblings appear too while the menu is open.
+   **Locate strategy (d5c)**, cheapest first: (1) `locateCached`: the element handle from the newest full scan this process ran
+   (`LivePlatform.lastFullScan`, at most 120 s old); one element read re-checks owner pid, identifier (else description), frame and that the cached
+   on-bar state still agrees with the live frame (ms); (2) `locateByOwner`: re-read only the owner's `AXExtrasMenuBar` and take the single
+   element with that identity (tens of ms); (3) the full `scan()` (0.6-1.8 s), the only source of `.notFound` / `.notRunning`, so failure feedback is
+   unchanged. Any identity or consistency miss falls to the next source. "Drawn" no longer needs the slow full hosted read: a PARKED target lands on its
+   settled frame alone; a live-hidden target (stale on-bar frame) lands when the agent's top-level group count (`hostedGroupCount`, one shallow read) rises
+   above its pre-write value, plus the settled frame. The pre-write full hosted baseline (re-hide evidence only) is time-boxed to `baselineBudget`
+   (300 ms); when it is skipped the reveal proceeds and the engine hides the unit on its next pass. Timings: docs/testing.md "Reveal latency before/after".
 2. **`axPressParked` (fallback, left click only)**: `AXUIElementPerformAction(kAXPressAction)` on the app-side element while it stays parked.
    Used when live hide/show is unavailable (no app-group entitlement), the item has no Control Center entry, the live write throws, or the
    reveal does not land within 1.5 s. CAVEAT: the menu/popover appears at an unrelated place (the item's frame is the parked frame at

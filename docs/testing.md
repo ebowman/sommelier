@@ -257,6 +257,17 @@ to the item being drawn; click->menu = click posted to a menu/popover child bein
 
 Click->menu is 22-130 ms, far inside the 700 ms target. The reveal part is dominated by the `LivePlatform.scan()` that locates the item
 (0.6-1.8 s, a follow-up bead covers caching it) plus a hosted-tree read that is sometimes incomplete; the live show itself lands in ~60-300 ms.
+**Reveal latency before/after (sommelier-d5c, 2026-11-05, Bartender 7 quit, MBDummy Dummy-A live-hidden, headless via `SOMMELIER_ACTIVATE` through the app's `ItemActivator`; MBDummy items have no menu, so click -> menu was NOT re-measured: the earlier 22-130 ms stands).**
+Phases are in the activator log as `phase locate|baseline|show-write|drawn|click|menu-open` with `t=<ms>` since entry. Entry -> drawn, 5 runs each:
+
+| | locate | baseline hosted read | show-write | drawn after write | entry -> drawn |
+|---|---|---|---|---|---|
+| before (full scan) | 954 / 594 / 1799 / 592 / 1468 | 28 ms x5 (earlier runs: 0.9-7.3 s) | 1-2 | 71 / 1975 / 71 / 68 / 68 | 1063 / 2607 / 1914 / 698 / 1572 |
+| after (cached element, group-count proof, 300 ms baseline budget) | 27 / 28 / 12 / 31 / 20 | skipped at 300 ms x4, 237 ms x1 | 2-4 | 57 / 57 / 57 / 55 / 57 | 420 / 397 / 378 / 396 / 319 |
+
+Entry -> click posted is now 0.42-0.53 s. The remaining time is the 300 ms baseline budget: under load the full hosted read takes 0.5-3 s,
+and a reveal no longer waits for it (no re-hide evidence for that run; the engine hides the unit on its next pass as usual).
+Re-run: `SOMMELIER_ACTIVATE_DELAY=<s>` delays the headless activation (default 3 s) to measure in steady state.
 The AXPress fallback (`--ax-press` or reveal timeout) opened Yoink's menu at the screen-left strip (-5, 34), as recorded in
 docs/findings-visibility.md; its AX press returned 0 here.
 Right click (`--right`): Moom opens its menu under the item (same as left); Yoink received the right click and showed no menu under the

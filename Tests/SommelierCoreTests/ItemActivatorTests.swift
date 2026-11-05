@@ -46,7 +46,14 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
 
     var liveHideShowAvailable: Bool { live }
     func pressedMouseButtons() -> Int { mousePressed }
-    func locate(_ k: ItemKey) async -> ActivationLocate { locateResult }
+    var cachedTarget: ActivationTarget?
+    var ownerTarget: ActivationTarget?
+    var locateCalls = 0, cachedCalls = 0, ownerCalls = 0
+    func locate(_ k: ItemKey) async -> ActivationLocate { locateCalls += 1; return locateResult }
+    func locateCached(_ k: ItemKey) async -> ActivationTarget? { cachedCalls += 1; return cachedTarget }
+    func locateByOwner(_ k: ItemKey) async -> ActivationTarget? { ownerCalls += 1; return ownerTarget }
+    /// The hosted count stays at its baseline after the reveal (a slow / lagging count read): only the frame can prove the landing.
+    var countNeverRises = false
     func setAllowedLive(_ c: [String: Bool]) throws {
         lock.lock(); defer { lock.unlock() }
         if c.values.contains(true) { if failShow { throw PreferenceWriterError.writeFailed("show") }; shownAt = clock.now() }
@@ -73,7 +80,7 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
     var staleFrame = false
     func hostedBarCount() async -> Int? {
         guard countKnown else { return nil }
-        if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return 11 }
+        if let s = shownAt, let l = landsAfter, !countNeverRises, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return 11 }
         if writes.last?.values.contains(false) == true, let c = countAfterHide { return c }
         return 10
     }
@@ -83,7 +90,10 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
     func tree(_ n: Int, shifted: Bool = false) -> [HostedEntry] {
         (0..<n).map { HostedEntry(sig: $0 == 5 && n == 11 ? "" : "e\($0)", minX: CGFloat($0 * 30) + (shifted ? 1 : 0), width: 24) }
     }
+    /// A hosted read that hangs (real seconds), as under load.
+    var hostedReadHangs = false
     func hostedLayout() async -> [HostedEntry]? {
+        if hostedReadHangs { try? await Task.sleep(for: .seconds(5)); return nil }
         guard layoutKnown, countKnown else { return nil }
         if let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true { return tree(11) }
         if writes.last?.values.contains(false) == true, let t = treeAfterHide { return t }
@@ -124,7 +134,81 @@ private actor FakeHold: TransientRevealing {
 
 @Suite struct ItemActivatorTests {
     private func make(_ p: FakeActivation, _ h: FakeHold = FakeHold()) -> ItemActivator {
-        ItemActivator(platform: p, hold: h)
+        var c = ItemActivator.Config(); c.baselineBudget = 0   // the fake clock does not advance in real time; see slowBaseline...
+        return ItemActivator(platform: p, hold: h, config: c)
+    }
+
+    private func parkedTarget(pid: pid_t = 42) -> ActivationTarget {
+        ActivationTarget(key: key, ownerPID: pid, trackedKey: "com.x.tool", frame: parkedFrame, isOnBar: false, systemOverflow: false)
+    }
+
+    @Test func validCachedElementIsUsedAndNoScanRuns() async {
+        let p = FakeActivation()
+        p.cachedTarget = parkedTarget(pid: 7)
+        let r = await make(p).activate(key: key, button: .left)
+        guard case .opened(let o) = r else { Issue.record("\(r)"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(p.cachedCalls == 1 && p.ownerCalls == 0 && p.locateCalls == 0)
+        #expect(p.writes.first == ["com.x.tool": true])
+    }
+
+    @Test func staleCachedElementFallsToTheOwnerReadWithoutAScan() async {
+        let p = FakeActivation()
+        p.cachedTarget = nil                 // frame read failed / identity mismatch / on-bar state changed
+        p.ownerTarget = parkedTarget(pid: 8)
+        let r = await make(p).activate(key: key, button: .left)
+        guard case .opened = r else { Issue.record("\(r)"); return }
+        #expect(p.cachedCalls == 1 && p.ownerCalls == 1 && p.locateCalls == 0)
+    }
+
+    @Test func noFastSourceFallsToTheFullScan() async {
+        let p = FakeActivation()
+        let r = await make(p).activate(key: key, button: .left)
+        guard case .opened = r else { Issue.record("\(r)"); return }
+        #expect(p.cachedCalls == 1 && p.ownerCalls == 1 && p.locateCalls == 1)
+    }
+
+    @Test func notFoundStillComesFromTheFullScanOnly() async {
+        let p = FakeActivation()
+        p.locateResult = .notFound
+        let r = await make(p).activate(key: key, button: .left)
+        #expect(r == .failed(.notFound))
+        #expect(p.locateCalls == 1 && p.writes.isEmpty && p.clicks.isEmpty)
+    }
+
+    @Test func notRunningStillComesFromTheFullScanOnly() async {
+        let p = FakeActivation()
+        p.locateResult = .notRunning
+        #expect(await make(p).activate(key: key, button: .left) == .failed(.notRunning))
+    }
+
+    @Test func parkedFrameLandingNeedsNoHostedCountRise() async {
+        let p = FakeActivation()
+        p.countNeverRises = true
+        let r = await make(p).activate(key: key, button: .left)
+        guard case .opened(let o) = r else { Issue.record("\(r)"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(p.clicks.count == 1 && p.clicks[0].0 == CGPoint(x: barFrame.midX, y: barFrame.midY))
+    }
+
+    @Test func staleOnBarFrameStillNeedsTheCountRise() async {
+        let p = FakeActivation()
+        p.countNeverRises = true
+        p.locateResult = .found(ActivationTarget(key: key, ownerPID: 42, trackedKey: "com.x.tool", frame: barFrame, isOnBar: true,
+                                                 systemOverflow: false, hiddenInControlCenter: true))
+        let r = await make(p).activate(key: key, button: .left)
+        guard case .opened(let o) = r else { Issue.record("\(r)"); return }
+        #expect(o.mechanism == .axPressParked)   // reveal timed out, nothing was clicked on a stale frame
+        #expect(p.clicks.isEmpty)
+    }
+
+    @Test func slowBaselineIsNotWaitedForWhenTheTargetIsParked() async {
+        let p = FakeActivation(); p.hostedReadHangs = true
+        let r = await ItemActivator(platform: p, hold: FakeHold()).activate(key: key, button: .left)   // default budget
+        guard case .opened(let o) = r else { Issue.record("\(r)"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(p.clicks.count == 1)
+        #expect(p.recorded.isEmpty)   // no baseline layout: no assumed-hidden evidence, the engine hides it on its next pass
     }
 
     @Test func revealThenClickThenRehide() async {
@@ -159,11 +243,14 @@ private actor FakeHold: TransientRevealing {
     }
 
     @Test func staleOnBarFrameDoesNotCountAsRevealedUntilTheAgentHostsTheItem() async {
-        let p = FakeActivation(); p.staleFrame = true; p.landsAfter = 0.5
+        // The locate itself saw the stale on-bar frame (a live-hidden item): only the count proves the landing.
+        let stale = ActivationTarget(key: key, ownerPID: 42, trackedKey: "com.x.tool", frame: barFrame, isOnBar: true, systemOverflow: false,
+                                     hiddenInControlCenter: true)
+        let p = FakeActivation(); p.staleFrame = true; p.landsAfter = 0.5; p.locateResult = .found(stale)
         guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
         #expect(o.mechanism == .revealClick)
         #expect(o.revealMS! >= 500)   // not at once, although the frame already looked on-bar
-        let q = FakeActivation(); q.staleFrame = true; q.landsAfter = nil
+        let q = FakeActivation(); q.staleFrame = true; q.landsAfter = nil; q.locateResult = .found(stale)
         guard case .opened(let o2) = await make(q).activate(key: key, button: .left) else { Issue.record("no2"); return }
         #expect(o2.mechanism == .axPressParked && q.clicks.isEmpty)
     }

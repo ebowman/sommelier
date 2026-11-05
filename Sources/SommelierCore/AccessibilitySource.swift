@@ -277,6 +277,22 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         return nil
     }
 
+    /// Number of per-item groups under the MenuBarAgent's windows: a top-level read only (no descent into the owners), so it
+    /// answers in milliseconds where the full hosted read takes 0.03-7 s. nil when any level could not be read in `timeout`.
+    /// Hidden items have no group at all (docs/findings-live-trigger.md); a revealed one gets one.
+    public func hostedGroupCount(agentPID: pid_t, timeout: Float = 0.3) -> Int? {
+        let ax = cache.app(agentPID)
+        AXUIElementSetMessagingTimeout(ax, timeout)
+        guard let windows = children(ax, attempts: 1) else { return nil }
+        var n = 0
+        for w in windows {
+            AXUIElementSetMessagingTimeout(w, timeout)
+            guard let kids = children(w, attempts: 1) else { return nil }
+            n += kids.count
+        }
+        return n
+    }
+
     private struct ReadResult { var info: AXElementInfo; var role: String; var subrole: String; var ok: Bool; var err: Int32 = 0
         /// Worth retrying: a timeout. Other errors (e.g. apiDisabled -25211) are permanent for that element.
         var transient: Bool { !ok && err == AXError.cannotComplete.rawValue }

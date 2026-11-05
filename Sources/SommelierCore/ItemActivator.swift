@@ -112,6 +112,17 @@ public struct ActivationTarget: @unchecked Sendable {
     }
 }
 
+/// Result slot for the time-boxed baseline read.
+final class BaselineBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    private var count: Int?
+    private var layout: [HostedEntry]?
+    func set(_ c: Int?, _ l: [HostedEntry]?) { lock.withLock { count = c; layout = l; done = true } }
+    var isDone: Bool { lock.withLock { done } }
+    var value: (Int?, [HostedEntry]?) { lock.withLock { (count, layout) } }
+}
+
 public enum ActivationLocate: Sendable {
     case found(ActivationTarget)
     case notRunning
@@ -128,7 +139,13 @@ public struct ActivationMenuState: Equatable, Sendable {
 public protocol ActivationPlatform: Sendable {
     var liveHideShowAvailable: Bool { get }
     func pressedMouseButtons() -> Int
+    /// Full scan: authoritative, slow (0.6-1.8 s). The only source of `.notFound` / `.notRunning`.
     func locate(_ key: ItemKey) async -> ActivationLocate
+    /// Fast locate from the last full scan's cached AX element: one element read, identity re-checked (owner pid + identifier /
+    /// description). nil = cannot vouch for it (no cache, stale, identity or on-bar state changed): try the next source.
+    func locateCached(_ key: ItemKey) async -> ActivationTarget?
+    /// Fast locate by re-reading only the owner's `AXExtrasMenuBar`. nil = no unique identity match: do the full scan.
+    func locateByOwner(_ key: ItemKey) async -> ActivationTarget?
     func setAllowedLive(_ changes: [String: Bool]) throws
     /// Current app-side frame of the item (fast, single attribute read); nil when unreadable.
     func frame(of target: ActivationTarget) -> CGRect?
@@ -139,6 +156,9 @@ public protocol ActivationPlatform: Sendable {
     /// incomplete. A live-hidden item keeps its stale on-bar app-side frame (docs/findings-live-trigger.md), so the
     /// frame alone cannot say that a reveal has landed: the count rising above its pre-reveal value does.
     func hostedBarCount() async -> Int?
+    /// Quick top-level group count of the agent's hosted tree (ms, no descent into the owners); nil when unsupported/unreadable.
+    /// A reveal adds a group; a live-hidden item has none, whatever its stale app-side frame says.
+    func hostedGroupCount() -> Int?
     /// The hosted tree right now (complete read only), left to right; nil when incomplete or unsupported (of7).
     func hostedLayout() async -> [HostedEntry]?
     /// Of7: records the owner as assumed live-hidden (our own re-hide write, confirmed by a hosted-count drop) / forgets it.
@@ -154,7 +174,10 @@ public protocol ActivationPlatform: Sendable {
 }
 
 extension ActivationPlatform {
+    public func locateCached(_ key: ItemKey) async -> ActivationTarget? { nil }
+    public func locateByOwner(_ key: ItemKey) async -> ActivationTarget? { nil }
     public func hostedLayout() async -> [HostedEntry]? { nil }
+    public func hostedGroupCount() -> Int? { nil }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) {}
     public func clearAssumedHidden(pids: Set<pid_t>) {}
     public func postEscape() {}
@@ -182,6 +205,10 @@ public actor ItemActivator {
         public var capEscapeGrace: TimeInterval = 2
         /// A reveal needs a complete hosted read as baseline; this many tries before falling back to AXPress.
         public var baselineAttempts = 2
+        /// A PARKED target lands on its own frame, so the pre-reveal hosted read only feeds the re-hide evidence. Under load it
+        /// takes 0.5-7 s: wait at most this long (seconds) for it, then reveal without it (the engine hides the unit on its next
+        /// pass as usual). 0 = always wait for it (the original behaviour).
+        public var baselineBudget: TimeInterval = 0.3
         public init() {}
     }
 
@@ -191,7 +218,7 @@ public actor ItemActivator {
     private let log: @Sendable (String) -> Void
     private var inFlight = false
     /// Of7: set while a unit is revealed: owner, complete hosted count before the reveal, items the reveal added.
-    private var reveal: (pid: pid_t, bundleID: String?, before: Int, items: Int, layout: [HostedEntry]?)?
+    private var reveal: (pid: pid_t, bundleID: String?, before: Int, items: Int, itemsKnown: Bool, layout: [HostedEntry]?)?
 
     public init(platform: any ActivationPlatform, hold: any TransientRevealing, config: Config = Config(),
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -209,15 +236,22 @@ public actor ItemActivator {
         defer { inFlight = false }
         let t0 = platform.now()
         func ms(_ d: Date = Date()) -> Int { Int(platform.now().timeIntervalSince(t0) * 1000) }
-        func say(_ s: String) { log("activate \(key): \(s)"); progress?("t=\(ms())ms \(s)") }
+        func say(_ s: String) { log("activate \(key): t=\(ms())ms \(s)"); progress?("t=\(ms())ms \(s)") }
 
+        // Locate, cheapest first: the cached element (ms), the owner's own extras (tens of ms), the full scan (0.6-1.8 s).
         let target: ActivationTarget
-        switch await platform.locate(key) {
-        case .found(let t): target = t
-        case .notRunning: return .failed(.notRunning)
-        case .notFound: return .failed(.notFound)
+        var how = "cached element"
+        if let t = await platform.locateCached(key) { target = t }
+        else if let t = await platform.locateByOwner(key) { target = t; how = "owner read" }
+        else {
+            how = "full scan"
+            switch await platform.locate(key) {
+            case .found(let t): target = t
+            case .notRunning: return .failed(.notRunning)
+            case .notFound: return .failed(.notFound)
+            }
         }
-        say("located (pid \(target.ownerPID), onBar=\(target.isOnBar), overflow=\(target.systemOverflow), frame=\(target.frame))")
+        say("phase locate: \(how) done (pid \(target.ownerPID), onBar=\(target.isOnBar), overflow=\(target.systemOverflow), frame=\(target.frame))")
 
         // Items macOS overflowed: on the bar per the agent but not drawn; nothing to reveal.
         if target.systemOverflow {
@@ -243,9 +277,25 @@ public actor ItemActivator {
         guard await hold.beginTransientReveal(unit, timeout: .seconds(Int(config.hardCap) + 5)) else { return .failed(.engineBusy) }
         // The pre-reveal hosted count, read right before the show write (after the hold). Without a complete baseline a
         // landed reveal cannot be told from a stale on-bar frame: do not reveal, press in place instead.
+        let baselineStart = platform.now()
         var hostedBefore: Int?
         var layoutBefore: [HostedEntry]?
-        for _ in 0..<config.baselineAttempts {
+        var baselineSkipped = false
+        // A quick group count proves a reveal even for a live-hidden item whose app-side frame is stale.
+        let groupBefore = platform.hostedGroupCount()
+        if (!Self.isSettledOnBar(target.frame) || groupBefore != nil), config.baselineBudget > 0 {
+            let box = BaselineBox()
+            let platform = self.platform
+            let read = Task {
+                if let l = await platform.hostedLayout() { box.set(l.count, l) } else { box.set(await platform.hostedBarCount(), nil) }
+            }
+            while !box.isDone, platform.now().timeIntervalSince(baselineStart) < config.baselineBudget, !Task.isCancelled {
+                await platform.sleep(0.01)
+            }
+            if box.isDone { (hostedBefore, layoutBefore) = box.value }
+            else if !Task.isCancelled { read.cancel(); baselineSkipped = true; hostedBefore = 0 }
+        }
+        for _ in 0..<(hostedBefore == nil ? config.baselineAttempts : 0) {
             if let l = await platform.hostedLayout() { layoutBefore = l; hostedBefore = l.count }
             else { hostedBefore = await platform.hostedBarCount() }
             if hostedBefore != nil || Task.isCancelled { break }
@@ -261,8 +311,11 @@ public actor ItemActivator {
             guard button == .left else { return .failed(.unavailable("the menu bar could not be read completely; a right click needs the reveal")) }
             return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: false, say: say)
         }
+        if baselineSkipped { say("phase baseline: skipped after \(Int(config.baselineBudget * 1000)) ms (slow hosted read); revealing on the frame alone, no re-hide evidence") }
+        else { say("phase baseline: hosted count \(hostedBefore) read in \(Int(platform.now().timeIntervalSince(baselineStart) * 1000)) ms") }
         platform.clearAssumedHidden(pids: [target.ownerPID])   // we are showing it: any assumed-hidden state is void
-        reveal = (target.ownerPID, target.bundleID, hostedBefore, 1, layoutBefore)
+        reveal = (target.ownerPID, target.bundleID, hostedBefore, 1, false, layoutBefore)
+        let shownWriteStart = platform.now()
         do { try platform.setAllowedLive([tracked: true]) }
         catch {
             await hold.endTransientReveal(unit)
@@ -271,10 +324,14 @@ public actor ItemActivator {
             return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: false, say: say)
         }
         let shownAt = platform.now()
-        say("unit shown (write done)")
+        say("phase show-write: unit shown (write done) in \(Int(platform.now().timeIntervalSince(shownWriteStart) * 1000)) ms")
 
         // Wait for the item to be drawn AND settled: the agent hosts one more item than before, and the app-side frame is on
         // the strip (y 0...5) and identical (+-1 pt) on two consecutive polls (a frame still sliding in is not clicked).
+        // A target whose pre-reveal frame was PARKED lands unambiguously when its single element's frame reaches the strip and
+        // holds (one cheap AX read per poll). A frame that already looked on the bar was stale (live-hidden item): only the
+        // hosted count rising proves the reveal there. (sommelier-d5c: the count read is slow and often incomplete.)
+        let frameIsProof = !Self.isSettledOnBar(target.frame)
         var landed: CGRect?
         var previous: CGRect?
         var cancelled = false
@@ -282,8 +339,13 @@ public actor ItemActivator {
             if Task.isCancelled { cancelled = true; break }
             if let f = platform.frame(of: target), Self.isSettledOnBar(f) {
                 if let p = previous, Self.sameFrame(p, f) {
+                    if frameIsProof { landed = f; break }
+                    if let gb = groupBefore {
+                        if let g = platform.hostedGroupCount(), g > gb { landed = f; say("phase drawn: agent groups \(gb) -> \(g)"); break }
+                        // else: not proven yet; keep polling (cheap) until the reveal timeout
+                    } else
                     if let now = await platform.hostedBarCount(), now > hostedBefore {
-                        landed = f; reveal?.items = now - hostedBefore; break
+                        landed = f; reveal?.items = now - hostedBefore; reveal?.itemsKnown = true; break
                     }
                 } else { previous = f }
             } else { previous = nil }
@@ -304,7 +366,7 @@ public actor ItemActivator {
             return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: true, say: say, tracked: tracked)
         }
         let revealMS = ms()
-        say("item on the bar at \(landedFrame)")
+        say("phase drawn: item on the bar at \(landedFrame), \(Int(platform.now().timeIntervalSince(shownAt) * 1000)) ms after the show write")
         var moved = target
         moved.frame = landedFrame
         return await clickAndWait(moved, button: button, mechanism: .revealClick, t0: t0, revealMS: revealMS, revealed: true, say: say, tracked: tracked)
@@ -336,7 +398,7 @@ public actor ItemActivator {
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             return .failed(.unavailable("could not post the click event"))
         }
-        say("click posted at \(Int(centre.x)),\(Int(centre.y)) (\(button))")
+        say("phase click: posted at \(Int(centre.x)),\(Int(centre.y)) (\(button))")
         return await finish(t, mechanism: mechanism, clickMS: clickMS, revealMS: revealMS, baseline: baseline, revealed: revealed,
                             tracked: tracked, say: say, pressError: 0, requireMenu: false)
     }
@@ -370,7 +432,7 @@ public actor ItemActivator {
             if since(postedAt) > config.menuAppearTimeout || Task.isCancelled { break }
             await platform.sleep(config.revealPoll)
         }
-        if let m = menuAppear { say("menu observed \(m) ms after the click at \(menuFrame.map { "\($0)" } ?? "?")") }
+        if let m = menuAppear { say("phase menu-open: menu observed \(m) ms after the click at \(menuFrame.map { "\($0)" } ?? "?")") }
         else { say("no menu observed through Accessibility") }
 
         if menuAppear == nil {
@@ -436,8 +498,12 @@ public actor ItemActivator {
     /// Writes the re-hide and releases the hold either way. Returns the failure text, nil on success.
     private func rehide(tracked: String, unit: HideUnit, say: (String) -> Void) async -> String? {
         var note: String?
-        let info = reveal
+        var info = reveal
         reveal = nil
+        // Reveals that landed on the frame alone did not count what came back; count it now (menu closed, not latency-bound).
+        if let i = info, !i.itemsKnown, i.layout != nil, let now = await platform.hostedBarCount(), now > i.before {
+            info?.items = now - i.before
+        }
         do {
             try platform.setAllowedLive([tracked: false]); say("unit hidden again (write done)")
             // Of7: identifier-less items keep a stale on-bar frame after this live hide. If the hosted tree is again exactly
@@ -490,14 +556,79 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
             return Self.ownerRunning(key) ? .notFound : .notRunning
         }
         if NSRunningApplication(processIdentifier: r.item.ownerPID)?.isTerminated ?? true { return .notRunning }
+        return .found(makeTarget(key: key, r.item, element: r.item.axElement, frame: r.item.frame, resolved: r))
+    }
+
+    private func makeTarget(key: ItemKey, _ item: MenuBarItem, element: AXUIElement?, frame: CGRect, resolved r: ResolvedItem) -> ActivationTarget {
         let tracked = platform.trackedKey(for: r)
         // Through CFPreferences when usable: the plist file lags a live (cfprefsd-notified) write by seconds.
         let allowed = tracked.flatMap { t in
             (platform.liveHideShowAvailable ? (try? ControlCenterTrackedAppsStore.allowedLive([t])) : (try? platform.readAllowed([t])))?[t]
         }
-        return .found(ActivationTarget(key: key, ownerPID: r.item.ownerPID, trackedKey: tracked,
-                                       frame: r.item.frame, isOnBar: r.item.isOnMenuBar, systemOverflow: r.item.systemOverflow,
-                                       element: r.item.axElement, hiddenInControlCenter: allowed == false, bundleID: r.item.ownerBundleID))
+        return ActivationTarget(key: key, ownerPID: item.ownerPID, trackedKey: tracked,
+                                frame: frame, isOnBar: item.isOnMenuBar, systemOverflow: item.systemOverflow,
+                                element: element, hiddenInControlCenter: allowed == false, bundleID: item.ownerBundleID)
+    }
+
+    /// A cached scan older than this is not trusted for locating (`isOnBar` / `systemOverflow` come from it).
+    static let cacheMaxAge: TimeInterval = 120
+
+    /// The cached item for `key` from the newest full scan, when usable for a fast locate: fresh, owner alive, a real app extra
+    /// with a non-empty identifier or description (the identity the re-check compares).
+    private func cachedResolved(_ key: ItemKey) -> ResolvedItem? {
+        guard let (snap, at) = platform.lastFullScan(), Date().timeIntervalSince(at) <= Self.cacheMaxAge else { return nil }
+        guard let r = drop(platform.resolve(snap)).first(where: { $0.key == key }) else { return nil }
+        let it = r.item
+        guard it.source == .appExtras, !it.stale, !it.axIdentifier.isEmpty || !it.axDescription.isEmpty else { return nil }
+        guard let app = NSRunningApplication(processIdentifier: it.ownerPID), !app.isTerminated else { return nil }
+        return r
+    }
+
+    /// Does the item as read now (frame, identifier, description) still describe the cached one? Identifier decides when the
+    /// cached item had one, else the description (titles are volatile readouts).
+    static func sameIdentity(_ item: MenuBarItem, identifier: String, description: String) -> Bool {
+        if !item.axIdentifier.isEmpty { return identifier == item.axIdentifier }
+        if !item.axDescription.isEmpty { return description == item.axDescription }
+        return false
+    }
+
+    /// The on-bar state of the cached item must still agree with the live frame; otherwise the cache is out of date.
+    /// (A live-hidden item keeps a stale on-bar frame, so a Control Center "hidden" flag excuses an on-strip frame.)
+    private func consistent(_ r: ResolvedItem, liveFrame f: CGRect, target t: ActivationTarget) -> Bool {
+        if r.item.isOnMenuBar && !ItemActivator.isOnBarStrip(f) { return false }
+        if !r.item.isOnMenuBar && !t.hiddenInControlCenter && ItemActivator.isSettledOnBar(f) { return false }
+        return true
+    }
+
+    public func locateCached(_ key: ItemKey) async -> ActivationTarget? {
+        guard let r = cachedResolved(key), let el = r.item.axElement,
+              let live = Self.readIdentity(el), live.pid == r.item.ownerPID,
+              Self.sameIdentity(r.item, identifier: live.identifier, description: live.description) else { return nil }
+        let t = makeTarget(key: key, r.item, element: el, frame: live.frame, resolved: r)
+        return consistent(r, liveFrame: live.frame, target: t) ? t : nil
+    }
+
+    public func locateByOwner(_ key: ItemKey) async -> ActivationTarget? {
+        guard let r = cachedResolved(key) else { return nil }
+        let item = r.item
+        guard let infos = platform.readOwnerExtras(pid: item.ownerPID, bundleID: item.ownerBundleID, name: item.ownerName) else { return nil }
+        // Exactly one element may carry the identity; two same-fingerprint items need the full scan's ordinal logic.
+        let hits = infos.filter { !$0.stale && Self.sameIdentity(item, identifier: $0.identifier, description: $0.axDescription) }
+        guard hits.count == 1, let el = hits[0].element else { return nil }
+        let t = makeTarget(key: key, item, element: el, frame: hits[0].frame, resolved: r)
+        return consistent(r, liveFrame: hits[0].frame, target: t) ? t : nil
+    }
+
+    /// One element's pid, identifier, description and frame (five attribute reads, a few ms); nil when any is unreadable.
+    static func readIdentity(_ el: AXUIElement) -> (pid: pid_t, identifier: String, description: String, frame: CGRect)? {
+        AXUIElementSetMessagingTimeout(el, 0.3)
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(el, &pid) == .success, pid > 0, let f = frame(el) else { return nil }
+        func str(_ attr: String) -> String {
+            var v: CFTypeRef?
+            return AXUIElementCopyAttributeValue(el, attr as CFString, &v) == .success ? (v as? String ?? "") : ""
+        }
+        return (pid, str(kAXIdentifierAttribute as String), str(kAXDescriptionAttribute as String), f)
     }
 
     static func ownerRunning(_ key: ItemKey) -> Bool {
@@ -509,6 +640,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     }
 
     public func hostedBarCount() async -> Int? { await platform.hostedBarCount() }
+    public func hostedGroupCount() -> Int? { platform.hostedGroupCount() }
     public func hostedLayout() async -> [HostedEntry]? { await platform.hostedLayout() }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { platform.recordAssumedHidden(owners, hostedAfter: hostedAfter) }
     public func clearAssumedHidden(pids: Set<pid_t>) { platform.clearAssumedHidden(pids: pids) }
@@ -586,7 +718,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
         return (count, frame)
     }
 
-    private static func frame(_ e: AXUIElement) -> CGRect? {
+    static func frame(_ e: AXUIElement) -> CGRect? {
         var p: CFTypeRef?, s: CFTypeRef?
         guard AXUIElementCopyAttributeValue(e, kAXPositionAttribute as CFString, &p) == .success,
               AXUIElementCopyAttributeValue(e, kAXSizeAttribute as CFString, &s) == .success,

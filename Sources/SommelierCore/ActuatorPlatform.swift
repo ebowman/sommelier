@@ -124,7 +124,25 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
 
     public func scan() async -> MenuBarSnapshot {
         let s = ScannerBox(scanner)
-        return await onWork { s.v.scan() }
+        let snap = await onWork { s.v.scan() }
+        if !snap.items.isEmpty { lastFullLock.withLock { lastFull = (snap, Date()) } }
+        return snap
+    }
+
+    private let lastFullLock = NSLock()
+    private var lastFull: (snapshot: MenuBarSnapshot, at: Date)?
+
+    /// The newest non-empty full scan this platform ran (the engine's adopted scans and the activator's own), with its time.
+    /// Its `axElement` handles let the activator locate an item without scanning (sommelier-d5c).
+    public func lastFullScan() -> (snapshot: MenuBarSnapshot, at: Date)? {
+        lastFullLock.withLock { lastFull }
+    }
+
+    /// One app's `AXExtrasMenuBar` children (a single-owner read, tens of ms); nil when the read failed or timed out.
+    public func readOwnerExtras(pid: pid_t, bundleID: String?, name: String) -> [AXElementInfo]? {
+        guard case .items(let infos) = scanner.source.readExtras(for: RunningAppInfo(pid: pid, bundleID: bundleID, name: name), timeout: 0.5)
+        else { return nil }
+        return infos
     }
 
     public func accessibilityTrusted() -> Bool { AXIsProcessTrusted() }
@@ -292,6 +310,13 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     }
 
     public func hostedBarCount() async -> Int? { await hostedTreeRead()?.count }
+
+    /// Quick top-level group count of the agent's hosted tree (see `LiveAccessibilitySource.hostedGroupCount`); nil if unreadable.
+    public func hostedGroupCount() -> Int? {
+        guard let live = scanner.source as? LiveAccessibilitySource,
+              let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first else { return nil }
+        return live.hostedGroupCount(agentPID: agent.processIdentifier)
+    }
 
     public func hostedLayout() async -> [HostedEntry]? {
         await hostedTreeRead()?.map { HostedEntry(sig: $0.identifier.isEmpty ? $0.axDescription : $0.identifier, minX: $0.frame.minX, width: $0.frame.width) }
