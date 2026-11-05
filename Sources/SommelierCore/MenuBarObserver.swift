@@ -49,6 +49,30 @@ public extension MenuBarObserver {
     }
 }
 
+/// Which keys moved between two orderings of the same kind of key (gdu.30).
+public enum OrderDiff {
+    /// Keys present in both sequences that are not part of their longest common subsequence: the minimal set that moved
+    /// (inserting one key early reports only that key's absence elsewhere, not every later key). O(n*m); ties resolve
+    /// deterministically (prefers keeping the earlier element of `a`).
+    public static func changedKeys(_ a: [String], _ b: [String]) -> [String] {
+        let n = a.count, m = b.count
+        var t = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            for j in stride(from: m - 1, through: 0, by: -1) {
+                t[i][j] = a[i] == b[j] ? t[i + 1][j + 1] + 1 : max(t[i + 1][j], t[i][j + 1])
+            }
+        }
+        var kept = Set<String>()
+        var i = 0, j = 0
+        while i < n, j < m {
+            if a[i] == b[j] { kept.insert(a[i]); i += 1; j += 1 }
+            else if t[i + 1][j] >= t[i][j + 1] { i += 1 } else { j += 1 }
+        }
+        let inB = Set(b)
+        return a.filter { inB.contains($0) && !kept.contains($0) }.sorted()
+    }
+}
+
 /// Why the last two scans did not agree (gdu.30): the keys that were stale on the bar in the last scan, and, when both scans
 /// were usable, the keys whose presence/placement differed between them.
 public struct ScanDisagreement: Equatable, Sendable {
@@ -68,13 +92,19 @@ public struct ScanDisagreement: Equatable, Sendable {
         let blocked = Set(rule.blockingStale(last).map(\.key)).union(previous.map { rule.blockingStale($0).map(\.key) } ?? [])
         func usable(_ x: [ResolvedItem]) -> [ResolvedItem] { x.filter { !blocked.contains($0.key) } }
         if let previous, let a = rule.value(usable(previous)), let b = rule.value(usable(last)) {
-            func set(_ v: BarSignature.Value) -> Set<String> { Set(v.order).union(v.presence).union(v.parked).union(v.staleParked) }
-            var diff = set(a).symmetricDifference(set(b))
-            // Same members, different order: the keys whose position among the ordered keys moved.
-            if a.order != b.order {
-                for (i, k) in b.order.enumerated() where a.order.firstIndex(of: k) != i { diff.insert(k) }
-                for (i, k) in a.order.enumerated() where b.order.firstIndex(of: k) != i { diff.insert(k) }
+            // Membership class per key: a key whose class (on the bar / parked / absent) changed is reported; among the keys
+            // on the bar in both, the ones that left the longest common order (OrderDiff).
+            func classes(_ v: BarSignature.Value) -> [String: Int] {
+                var m: [String: Int] = [:]
+                for k in v.presence { m[k] = 1 }
+                for k in v.parked + v.staleParked { m[k] = 2 }
+                return m
             }
+            let ca = classes(a), cb = classes(b)
+            var diff = Set<String>()
+            for k in Set(ca.keys).union(cb.keys) where ca[k] != cb[k] { diff.insert(k) }
+            let bothOrdered = Set(a.order).intersection(b.order)
+            diff.formUnion(OrderDiff.changedKeys(a.order.filter(bothOrdered.contains), b.order.filter(bothOrdered.contains)))
             changed = diff.sorted()
         }
         return ScanDisagreement(scans: scans, staleKeys: stale, changedKeys: changed)
@@ -298,7 +328,7 @@ public struct BarSignature: Sendable {
         return false
     }
 
-    private func isSelfPositioning(_ r: ResolvedItem) -> Bool {
+    public func isSelfPositioning(_ r: ResolvedItem) -> Bool {
         if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return true }
         return SelfPositioning.matches(r.item, owners: selfPositioningOwners)
     }
@@ -313,6 +343,24 @@ public struct BarSignature: Sendable {
     public func blockingStale(_ all: [ResolvedItem]) -> [ResolvedItem] {
         all.filter { !LayoutBuilder.isNonItem($0) && !volatileKeys.contains($0.key) && !Self.isAgentNoise($0.key) }
             .filter { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }
+    }
+
+    /// What a stale item in an AGREED scan means for writing a layout (`mbprobe layout init-from-current`, gdu.30). Non-items
+    /// and our own hosted item are ignored (the layout never contains them). Stale items of self-positioning owners are
+    /// normal and written (they are visible anchors); any other stale item is refused. An on-bar one cannot occur in an agreed
+    /// scan (`value` is nil for it), but a stale PARKED one can, so the refusal is a live guard, not dead code.
+    public enum StaleVerdict: Equatable, Sendable {
+        case clean
+        case selfPositioningOnly([String])
+        case refuse([String])
+    }
+
+    public func staleVerdict(_ all: [ResolvedItem]) -> StaleVerdict {
+        let stale = all.filter { $0.item.stale && !LayoutBuilder.isNonItem($0) && !EngineFactory.isOwnHosted($0) }
+        let other = stale.filter { !isSelfPositioning($0) }.map { $0.key.description }
+        if !other.isEmpty { return .refuse(Set(other).sorted()) }
+        let own = stale.map { $0.key.description }
+        return own.isEmpty ? .clean : .selfPositioningOnly(Set(own).sorted())
     }
 
     /// nil = this scan cannot be used (a stale item of a non-self-positioning owner is on the bar).

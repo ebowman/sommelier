@@ -763,6 +763,13 @@ func runLayout(_ a: [String]) async {
             if let d = r.disagreement { fail(d.message) }
             (res, scans) = (r.items, r.scans)
         } catch { fail("\(error); not writing") }
+        switch BarSignature().staleVerdict(res) {
+        case .clean: break
+        case .refuse(let keys): fail("stale items in the agreed scan, not writing: " + keys.joined(separator: ", "))
+        case .selfPositioningOnly(let keys):
+            FileHandle.standardError.write(Data(("note: \(keys.count) self-positioning items were stale in the agreed scan ("
+                + keys.joined(separator: ", ") + "); written as they were observed\n").utf8))
+        }
         let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res)
         guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
         if !normalized.isEmpty {
