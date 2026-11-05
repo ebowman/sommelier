@@ -227,6 +227,17 @@ final class ArrangeViewModel {
         return false
     }
 
+    /// The order-mode switch reads the engine's published layout (no local copy), so Arrange and Settings stay in sync.
+    var orderMode: OrderMode { state.layout.orderMode }
+    var ordersPlacedItems: Bool { orderMode == .placedOnly }
+
+    func setOrdersPlacedItems(_ on: Bool) { model.ordersPlacedItems = on }
+
+    /// "Stop managing order" / "Forget placement": drop the key (and its unit mates) from `placed`.
+    func unplace(_ key: ItemKey) {
+        _ = submit(ArrangeDrop.unplace(layout: layout, key: key, units: units), key: key, dropID: nextDropID())
+    }
+
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
         _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
                                     observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units), key: key, dropID: nextDropID())
