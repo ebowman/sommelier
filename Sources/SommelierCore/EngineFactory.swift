@@ -21,10 +21,15 @@ public struct RecordingObserver: MenuBarObserver {
     }
     public func observe() async throws -> [ResolvedItem] { let r = transform(try await inner.observe()); ids.record(r); return r }
     public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
+        try await observeDetailed(progress: progress, seed: nil)
+    }
+    public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed?) async throws -> BarObservation {
         let t = transform
         var wrapped: (@Sendable ([ResolvedItem]) -> Void)?
         if let progress { wrapped = { @Sendable items in progress(t(items)) } }
-        var o = try await inner.observeDetailed(progress: wrapped)
+        var innerSeed = seed
+        innerSeed?.normalize = t   // the seed is in the engine's (filtered) space; the inner observer compares fresh scans through the same filter
+        var o = try await inner.observeDetailed(progress: wrapped, seed: innerSeed)
         o.items = t(o.items); ids.record(o.items)
         return o
     }

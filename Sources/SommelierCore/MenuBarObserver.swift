@@ -34,6 +34,20 @@ public struct BarObservation: Sendable {
     }
 }
 
+/// A recent, already adopted observation offered to an observer as the first of its two agreeing scans (gdu.71): only ONE
+/// fresh scan must then agree with it. The observer compares it with the fresh scan by the normal agreement rule; a fresh scan
+/// that disagrees makes the observer fall back to its normal two-fresh-scan path.
+public struct ObservationSeed: Sendable {
+    public var items: [ResolvedItem]
+    public var completeness: ReadCompleteness
+    /// Maps a fresh (raw) scan into the same space as `items` (a wrapper that filters the engine's view, e.g. drops our own
+    /// status item, supplies it). Applied to the fresh scan only for the comparison with the seed.
+    public var normalize: @Sendable ([ResolvedItem]) -> [ResolvedItem]
+    public init(items: [ResolvedItem], completeness: ReadCompleteness, normalize: @escaping @Sendable ([ResolvedItem]) -> [ResolvedItem] = { $0 }) {
+        self.items = items; self.completeness = completeness; self.normalize = normalize
+    }
+}
+
 /// Produces the observed, resolved menu bar. Implementations must only return data they trust (no stale items) from `observe()`.
 public protocol MenuBarObserver: Sendable {
     /// Strict: returns only a settled observation, throws otherwise.
@@ -41,11 +55,17 @@ public protocol MenuBarObserver: Sendable {
     /// Lenient: may return an unsettled observation instead of throwing `noAgreement`. `progress` is called once, with the
     /// first complete scan, so a caller can show something before agreement is reached.
     func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation
+    /// Like `observeDetailed(progress:)`, with an optional adopted observation to count as the first agreeing scan (gdu.71).
+    /// The result's `scans` counts FRESH scans only. Observers that cannot use a seed ignore it.
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed?) async throws -> BarObservation
 }
 
 public extension MenuBarObserver {
     func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
         BarObservation(items: try await observe(), settled: true)
+    }
+    func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed?) async throws -> BarObservation {
+        try await observeDetailed(progress: progress)
     }
 }
 
@@ -199,19 +219,23 @@ public struct AgreedScanObserver: MenuBarObserver {
     }
 
     public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> BarObservation {
-        let r = try await scanLoop(progress: progress)
+        try await observeDetailed(progress: progress, seed: nil)
+    }
+
+    public func observeDetailed(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed?) async throws -> BarObservation {
+        let r = try await scanLoop(progress: progress, seed: seed)
         if let o = r.observation { return o }
         throw ObserveError.noAgreement(scans: r.disagreement.scans)
     }
 
     /// Strict like `observeCounting`, but a failure to agree reports WHY (stale / differing keys of the last scans).
     public func observeDiagnosed() async throws -> (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?) {
-        let r = try await scanLoop(progress: nil)
+        let r = try await scanLoop(progress: nil, seed: nil)
         guard let o = r.observation, o.settled else { return ([], r.disagreement.scans, r.disagreement) }
         return (o.items, o.scans, nil)
     }
 
-    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement) {
+    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed? = nil) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement) {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
         let limit = Date().addingTimeInterval(deadline)
         var scans = 0
@@ -225,13 +249,20 @@ public struct AgreedScanObserver: MenuBarObserver {
         var bestClean = false
         var bestLevel = ReadCompleteness.complete
         var prevLevel = ReadCompleteness.complete
+        // gdu.71: an adopted observation (which already passed the agreement rule) stands in for the first scan; the first FRESH
+        // scan must agree with it. If it does not, the loop simply continues as if that fresh scan were the first.
+        var seedItems: [ResolvedItem]?
+        if let seed, seed.completeness.membershipUsable {
+            let d = Self.dedupe(seed.items).items
+            prevSig = signature(d); prevRes = d; seedItems = d; prevLevel = seed.completeness
+        }
         while scans < maxScans, Date() < limit {
             if Task.isCancelled { throw ObserveError.superseded }
             let snap = await scanner.scan()
             scans += 1
             let raw = resolve(snap)
             let (res, dups) = Self.dedupe(raw)
-            prevRes = scans == 1 ? nil : lastRes
+            prevRes = scans == 1 ? seedItems : lastRes
             lastRes = res
             if !dups.isEmpty {
                 // Which copies existed (so the cause is visible in the log): x, size, stale flag, source, identifier.
@@ -245,9 +276,11 @@ public struct AgreedScanObserver: MenuBarObserver {
             let empty = snap.onBarLeftToRight.isEmpty
             if !empty { sawNonEmpty = true }
             let sig = signature(res)
+            // The first fresh scan meets the seed in the seed's own space (the wrapper's filter); every other comparison is raw.
+            let compareSig = (scans == 1 && seed != nil && seedItems != nil) ? signature(Self.dedupe(seed!.normalize(res)).items) : sig
             let onBarStale = res.filter { $0.item.stale && $0.item.isOnMenuBar }.map { $0.key.description }
             let level = snap.completeness
-            log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") level=\(level.rawValue) items=\(res.count) onBarStale=\(onBarStale.count) agree=\(sig != nil && sig == prevSig)")
+            log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") level=\(level.rawValue) items=\(res.count) onBarStale=\(onBarStale.count) agree=\(compareSig != nil && compareSig == prevSig)\(scans == 1 && seedItems != nil ? " (against the adopted observation)" : "")")
             if ProcessInfo.processInfo.environment["SOMMELIER_DEBUG_OBSERVE"] != nil {
                 FileHandle.standardError.write(Data("observe scan \(scans): blocked=\(sig == nil) agree=\(sig != nil && sig == prevSig) \(sig?.joined.count ?? 0)\n".utf8))
             }
@@ -258,7 +291,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             if !empty, level.membershipUsable {
                 if sig != nil || !bestClean { best = res; bestClean = sig != nil; bestLevel = level }
             }
-            if !empty, let sig, sig == prevSig {
+            if !empty, let compareSig, compareSig == prevSig {
                 return (BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel)),
                         ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []))
             }

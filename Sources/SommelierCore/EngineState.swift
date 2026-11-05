@@ -59,6 +59,9 @@ public final class EngineState {
     public var lastError: EngineError?
     public var isConverged: Bool
     public var lastPassAt: Date?
+    /// gdu.71: how long the latest pass's pre-write observation took (ms) and whether it reused the adopted observation as its first scan.
+    public var lastObserveMillis: Int?
+    public var lastObserveReused = false
     public var passCount: Int
     /// Passes started / finished, monotonically increasing; passes run one at a time, so the pass that started right after
     /// a UI action has finished exactly when `passSequence > passesStarted-at-that-moment` (the Arrange window judges a drop
