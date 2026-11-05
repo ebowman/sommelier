@@ -621,7 +621,7 @@ public enum ArrangeDrop {
     /// parked items, except that keys the current layout keeps in Always hidden stay there. Layout keys that are not
     /// observed (apps not running) keep their section, appended at the end. The new item policy is preserved.
     public static func adopt(observed: ObservedOrder, current: Layout, units: HideUnitRule = .ownerKeys) -> Layout {
-        var l = Layout(newItemPolicy: current.newItemPolicy)
+        var l = Layout(newItemPolicy: current.newItemPolicy, orderMode: current.orderMode)
         var seen = Set<ItemKey>()
         for k in observed.onBar where seen.insert(k).inserted { l.visible.append(k) }
         let always = Set(current.alwaysHidden)

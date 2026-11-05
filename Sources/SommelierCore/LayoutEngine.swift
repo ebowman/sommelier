@@ -403,6 +403,7 @@ public actor LayoutEngine {
         // a user placement (a layout built from a scan) can neither add nor clear obligations. Either way only visible keys can hold one.
         new.placed = userPlacement ? requested.placed : layout.placed
         new = new.pruningPlaced()
+        new.orderMode = userPlacement ? requested.orderMode : layout.orderMode   // a scan-built layout never changes who owns the order (8z5.1)
         // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
         let wasVisible = Set(layout.visible)
         userPlacedVisible = userPlacedVisible.intersection(new.visible)

@@ -194,6 +194,11 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   (`setLayout(userPlacement: false)` keeps the engine's current `placed`), "Adopt current order" (clears it), "Hide what does not fit",
   new-item appends and `normalizedAroundSelfPositioning` never add to it. A satisfied placement stays an obligation (if macOS later moves the key, it is moved back)
   until Adopt or the key leaves Visible/the layout.
+- Order mode (sommelier-8z5.1): `orderMode` (`OrderMode`: `macOSOwns` | `placedOnly`), always written. Absent on disk decodes to `macOSOwns`, so every
+  existing layout file migrates to macOS-owned order with its `placed` entries kept untouched but inert; an unknown value is a decode error
+  (the file is treated as corrupt). `Layout.empty` and the memberwise `init` default to `macOSOwns`; `enforcesOrder` is `orderMode == .placedOnly`;
+  `withOrderMode(_:)` copies. Helpers that copy a layout keep the mode (`ArrangeDrop.adopt` keeps the current one; `setLayout` keeps the engine's
+  mode for a non-user-placement call). Behaviour of the modes is enforced in sommelier-8z5.2.
 - Schema: `schemaVersion` (currently 1). Lenient decode (missing fields default; duplicates dropped with warnings via
   `Layout.decode`). Lower versions migrate in memory on load (no rewrite); higher throws `unsupportedSchema`.
 - Writes are atomic: temp file `layout.json.tmp-<uuid>` in the same directory, then `rename(2)`.

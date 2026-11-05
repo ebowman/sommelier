@@ -34,10 +34,22 @@ public struct Layout: Codable, Equatable, Sendable {
     public var placed: [ItemKey]
     /// The planner's view of `placed`.
     public var placedSet: Set<ItemKey> { Set(placed) }
+    /// Who owns the bar's order (sommelier-8z5). Absent on disk = `.macOSOwns`; always written. `placed` is inert unless `.placedOnly`.
+    public var orderMode: OrderMode
+    /// True when the engine may plan order moves (only `.placedOnly`; enforced in sommelier-8z5.2).
+    public var enforcesOrder: Bool { orderMode == .placedOnly }
+
+    /// A copy with `orderMode` replaced (everything else, `placed` included, untouched).
+    public func withOrderMode(_ m: OrderMode) -> Layout {
+        var out = self
+        out.orderMode = m
+        return out
+    }
 
     public init(schemaVersion: Int = Layout.currentSchemaVersion, visible: [ItemKey] = [], hidden: [ItemKey] = [],
-                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, placed: [ItemKey] = []) {
+                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, placed: [ItemKey] = [], orderMode: OrderMode = .macOSOwns) {
         self.placed = placed
+        self.orderMode = orderMode
         self.schemaVersion = schemaVersion
         self.visible = visible
         self.hidden = hidden
@@ -223,7 +235,7 @@ public struct Layout: Codable, Equatable, Sendable {
 
     // MARK: Codable (keys are stored as their string form)
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, placed }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, placed, orderMode }
 
     private static func parse(_ s: String) throws -> ItemKey {
         guard let k = ItemKey(storeKey: s) else { throw LayoutError.badKey(s) }
@@ -238,7 +250,8 @@ public struct Layout: Codable, Equatable, Sendable {
             hidden: try (c.decodeIfPresent([String].self, forKey: .hidden) ?? []).map(Self.parse),
             alwaysHidden: try (c.decodeIfPresent([String].self, forKey: .alwaysHidden) ?? []).map(Self.parse),
             newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd,
-            placed: try (c.decodeIfPresent([String].self, forKey: .placed) ?? []).map(Self.parse))
+            placed: try (c.decodeIfPresent([String].self, forKey: .placed) ?? []).map(Self.parse),
+            orderMode: try c.decodeIfPresent(OrderMode.self, forKey: .orderMode) ?? .macOSOwns)
         self = raw.dedup().layout
     }
 
@@ -249,6 +262,7 @@ public struct Layout: Codable, Equatable, Sendable {
         try c.encode(hidden.map(\.description), forKey: .hidden)
         try c.encode(alwaysHidden.map(\.description), forKey: .alwaysHidden)
         try c.encode(newItemPolicy, forKey: .newItemPolicy)
+        try c.encode(orderMode, forKey: .orderMode)
         if !placed.isEmpty { try c.encode(placed.map(\.description), forKey: .placed) }   // absent = empty: files without obligations keep their old shape
     }
 
@@ -261,6 +275,7 @@ public struct Layout: Codable, Equatable, Sendable {
             var alwaysHidden: [String]?
             var newItemPolicy: NewItemPolicy?
             var placed: [String]?
+            var orderMode: OrderMode?
         }
         let r = try JSONDecoder().decode(Raw.self, from: data)
         let raw = Layout(
@@ -269,7 +284,8 @@ public struct Layout: Codable, Equatable, Sendable {
             hidden: try (r.hidden ?? []).map(parse),
             alwaysHidden: try (r.alwaysHidden ?? []).map(parse),
             newItemPolicy: r.newItemPolicy ?? .visibleAtEnd,
-            placed: try (r.placed ?? []).map(parse))
+            placed: try (r.placed ?? []).map(parse),
+            orderMode: r.orderMode ?? .macOSOwns)
         let d = raw.dedup()
         let n = d.layout.normalizedHideUnits()
         var warnings = d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
