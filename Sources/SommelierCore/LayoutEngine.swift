@@ -196,6 +196,20 @@ public actor LayoutEngine {
         if unsettledNoticeShown { unsettledNoticeShown = false; await publish { $0.unsettledNotice = nil } }
     }
 
+    /// gdu.78: a unit that left the bar is no longer waiting (so the notice never counts a gone unit).
+    private func pruneUnsettled(_ obs: ObservedOrder) {
+        guard !unsettledKeys.isEmpty else { return }
+        let present = Set(obs.onBar + obs.parked)
+        let kept = unsettledKeys.intersection(present)
+        guard kept.count != unsettledKeys.count else { return }
+        unsettledKeys = kept
+        if kept.isEmpty { resetUnsettledBackoff(); return }
+        if unsettledNoticeShown {
+            let n = kept.count
+            Task { await self.publish { $0.unsettledNotice = n == 1 ? "1 item waiting for the bar to settle" : "\(n) items waiting for the bar to settle" } }
+        }
+    }
+
     private func resetUnsettledBackoff() {
         unsettledAttempts = 0; unsettledSince = nil; unsettledDelay = nil
         delayed[Self.unsettledReason]?.cancel(); delayed[Self.unsettledReason] = nil
@@ -454,7 +468,7 @@ public actor LayoutEngine {
         guard loaded else { Task { await self.noteLayoutNotLoaded() }; return }
         guard !stopped, !sleeping, !conflicted else { return }
         if supersede { noteUserAction() }
-        if reason != Self.unsettledReason { resetUnsettledBackoff() }   // gdu.78: a real trigger / user action restarts the back-off
+        if reason != Self.unsettledReason, reason != "poll" { resetUnsettledBackoff() }   // gdu.78: a non-poll trigger / user action restarts the back-off
         if requestedAt == nil || supersede { requestedAt = .now; requestReason = reason; requestedDuringPass = inPass; requestUserInitiated = userInitiated }
         else if userInitiated { requestUserInitiated = true }
         pending = true
@@ -608,6 +622,7 @@ public actor LayoutEngine {
     private func makePlan(_ obs: ObservedOrder) -> Plan {
         refreshHideUnits()
         reevaluateRefused(obs)
+        pruneUnsettled(obs)
         var planObs = withoutTransient(obs)
         userPlacedVisible.subtract(planObs.onBar)   // a user placement that came true is spent: a later hide by someone else stands
         // gdu.79: parked keys the planner must not show. (1) placement unknown: nothing proves they are hidden, so there is nothing to
@@ -643,7 +658,10 @@ public actor LayoutEngine {
             p.skipped.removeAll { $0.key == k }
             // gdu.78: during a reveal the refusal is a "cannot be shown" skip, so `revealSkipNotice` counts it.
             let why = actuatorRefused[k] ?? "cannot be shown"
-            p.skipped.append(SkippedAction(k, (showHidden || showAlways) && !why.hasPrefix("cannot be shown") ? "cannot be shown: " + why : why))
+            // Only a unit in a REVEALED section (the set `finish` judges the reveal by) is a "cannot be shown" skip.
+            let sec = layout.section(of: k)
+            let wanted = (showHidden && sec == .hidden) || (showAlways && sec == .alwaysHidden)
+            p.skipped.append(SkippedAction(k, wanted && !why.hasPrefix("cannot be shown") ? "cannot be shown: " + why : why))
         }
         if !overflowRefused.isEmpty {
             func refused(_ a: PlannedAction) -> ItemKey? {
@@ -706,7 +724,7 @@ public actor LayoutEngine {
 
     /// What the poll (`EngineTriggers`) needs to decide whether it may run now (e7t).
     public func pollGate() -> PollGate {
-        PollGate(busy: inPass || pending || requestedAt != nil || !delayed.isEmpty || sleeping || !loaded,
+        PollGate(busy: inPass || pending || requestedAt != nil || delayed.keys.contains { $0 != Self.unsettledReason } || sleeping || !loaded,
                  holdActive: !transientReveals.isEmpty, userActions: userActions,
                  secondsSinceUserAction: userActionAt.map { Double($0.duration(to: .now).components.seconds) + Double($0.duration(to: .now).components.attoseconds) / 1e18 }, engineSignature: pollSignature, engineSignatureSerial: pollSignatureSerial)
     }

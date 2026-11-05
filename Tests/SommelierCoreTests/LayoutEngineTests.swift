@@ -966,9 +966,11 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let passes = r.state.passesStarted
         try? await Task.sleep(for: .milliseconds(150))
         #expect(r.state.passesStarted == passes)   // nothing scheduled any more
+        await r.actuator.setUnsettled([:])   // the member settled meanwhile
         await r.engine.requestReconcile(reason: "app launch/quit")   // a real trigger
         #expect(await waitUntil { await MainActor.run { r.state.passesStarted > passes } })
-        #expect(r.state.perItem[a] == .pending)
+        #expect(await waitUntil { await r.actuator.hidden == [a] })
+        #expect(await waitUntil { await MainActor.run { r.state.unsettledNotice == nil } })   // applied: the notice clears
     }
 
     @Test func aRealTriggerResetsTheBackoff() async {
@@ -980,6 +982,47 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await waitUntil { await r.engine.unsettledRetryInfo.attempts >= 1 })
         await r.engine.requestReconcile(reason: "app launch/quit")
         #expect(await r.engine.unsettledRetryInfo.attempts == 0)
+    }
+
+    @Test func aPendingRetryDoesNotMakeThePollGateBusyAndAPollRequestKeepsTheBackoff() async {
+        // gdu.78 corrective: the retry is not "busy" for the poll; only user actions / non-poll triggers reset the back-off
+        let a = k("A"), b = k("B")
+        var c = Self.retryConfig(base: .milliseconds(200)); c.userPassReuseWindow = .zero; c.layoutCoalesce = .zero
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: c)
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.engine.unsettledRetryInfo.scheduledDelay != nil)
+        #expect(await waitUntil { await !r.engine.pollGate().busy })   // only the retry is pending (the chained pass may still run)
+        #expect(await waitUntil { await r.engine.unsettledRetryInfo.attempts >= 1 })
+        await r.engine.requestReconcile(reason: "poll")
+        #expect(await r.engine.unsettledRetryInfo.attempts >= 1)   // a poll request does not reset
+        await r.engine.setLayout(Layout(visible: [b], hidden: [a]))
+        #expect(await r.engine.unsettledRetryInfo.attempts == 0)   // a user action does
+    }
+
+    @Test func aVanishedUnsettledUnitIsPrunedFromTheWaitingCount() async {
+        let a = k("A"), b = k("B")
+        var c = Self.retryConfig(base: .seconds(30)); c.unsettledRetryCap = .seconds(60)
+        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: c)
+        await r.actuator.setUnsettled([a: Self.staleWhy])
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.engine.unsettledRetryInfo.waiting == 1)
+        await r.actuator.removeItem(a)
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.engine.unsettledRetryInfo.waiting == 0)
+        #expect(await r.engine.unsettledRetryInfo.scheduledDelay == nil)
+    }
+
+    @Test func onlyRefusedParkedUnitsInARevealedSectionAreCountedAsCannotBeShown() async {
+        let a = k("A"), b = k("B"), c = k("C")
+        let r = await rig(order: [c], hidden: [a, b], layout: Layout(visible: [c], hidden: [a], alwaysHidden: [b]))
+        await r.actuator.setRefusals([a: "no entry", b: "no entry"])
+        await r.engine.setReveal(hidden: true, alwaysHidden: false)
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.reconcileOnce()
+        #expect(ArrangeSections.revealSkipNotice(state: r.state) == "1 item could not be shown")   // a (Hidden) only, not b (Always-Hidden)
+        if case .unsupported(let why)? = r.state.perItem[a] { #expect(why.hasPrefix("cannot be shown: ")) } else { Issue.record("a should be a skip") }
+        if case .unsupported(let why)? = r.state.perItem[b] { #expect(!why.hasPrefix("cannot be shown")) }
     }
 
     @Test func mixedBatchKeepsTheWriteErrorForTheWrittenUnit() async {
