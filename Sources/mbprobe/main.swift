@@ -14,6 +14,7 @@ func usage() -> Never {
            mbprobe list [--json] [--include-self] [--timing] [--debug] [--fast] [--repeat N]
            mbprobe set-position <bundleID> <autosaveName> <number> [--host] [--store legacy|agent]
            mbprobe watch [--seconds N]
+           mbprobe pixelwatch --seconds N --out PATH [--fps 15] [--interval-ms 500]      (read-only measurement: menu bar strip pixels vs scanner frames; needs Screen Recording; see docs/testing.md)
            mbprobe agent-restart
            mbprobe set-visible <bundleID> <autosaveName> <0|1> [--host]
            mbprobe cc-allowed list
@@ -916,6 +917,7 @@ case "cc-allowed": runCCAllowed(Array(args.dropFirst()))
 case "spacing": runSpacing(Array(args.dropFirst()))
 case "press": runPress(Array(args.dropFirst()))
 case "set-position": runSetPosition(Array(args.dropFirst()))
+case "pixelwatch": await runPixelWatch(Array(args.dropFirst()))
 case "watch": runWatch(Array(args.dropFirst()))
 case "agent-restart": runAgentRestart()
 case "keys": runKeys(Array(args.dropFirst()))

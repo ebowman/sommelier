@@ -753,3 +753,25 @@ arrange: drop#7 done: status:maestro/item verified in place 3.4s after the drop 
 ```
 
 Before gdu.101 the same drop logged `intent ... between` neighbours eight items away from the dropped slot (the strip omitted the 9 stale items), which is exactly the mismatch these lines expose: compare the `intent` neighbours with the `observed around` neighbours and with the `final:` neighbours. A drop that fails ends in `drop#7 done: ... FAILED ...; final: between ...` instead.
+
+## pixelwatch: measuring Accessibility vs pixels (gdu.104)
+
+A bounded, read-only measurement, not a product feature. Question: over an hour on the real bar, how often and for how long do the frames `MenuBarScanner` resolves (app-side AX plus MenuBarAgent hosted frames) disagree with what is actually drawn?
+
+Run it by hand, with the user present (it is never run by implementers or CI):
+
+```
+swift build
+"$(swift build --show-bin-path)/mbprobe" pixelwatch --seconds 3600 --out /path/pixelwatch.jsonl
+# options: --fps 15 (capture rate, 1..60)   --interval-ms 500 (scan + compare period, >= 50)
+```
+
+- **Screen Recording prompt.** The first capture triggers the macOS Screen Recording prompt for the terminal (or the app that launched mbprobe). Grant it in System Settings > Privacy & Security > Screen Recording and rerun. Without permission the command prints that remedy and exits 2. Only the menu bar strip of the main display is captured (ScreenCaptureKit `sourceRect`), never the full screen, and no frame is kept: each frame is reduced to blob rectangles immediately.
+- **Read-only.** No drags, no preference or layout writes. It uses a live `MenuBarScanner` (not `SOMMELIER_PROBE_CACHE`), so it works while Sommelier.app or Bartender runs. Ctrl-C stops early and still prints the summary. A progress line goes to stderr every 30 s.
+- **Output.** `--out` gets one JSON line per sample (`t` seconds since start, `blobs`, `axOnBar`, `matched`, `itemsWithoutBlob` keys, `blobsWithoutItem`, `staleWithBlob` keys, `moving`) and a last `{"summary": ...}` line; the summary text also goes to stdout. Items counted: on bar per the scanner, non-empty frame, not system-overflow, not the overflow chevron.
+- **Reading the summary.**
+  - *samples with any disagreement*: share of samples where an item had no blob under it, or a blob had no item. Item-without-blob means the engine believes something is on the bar that is not drawn there (a stale or wrong frame); blob-without-item means something is drawn that the scanner does not know.
+  - *top offending keys*: the keys most often without a blob, each with its longest consecutive run (samples and seconds).
+  - *moving frames not followed by a scanner change within 1 s*: frames where the blob set shifted by more than 2 pt, with no scan in the next second whose on-bar key/x/width signature differed from the previous scan. This is the "the bar moved and the engine did not notice" count.
+  - Caveats: menu extras that draw a gap of 4+ px inside themselves split into two blobs; adjacent items closer than 4 px merge; the clock and animated items cause `moving`. Treat the numbers as a rate, not exact truth.
+- **Decision rule (follow-up, not this bead).** If disagreement is frequent or long (for example more than a few percent of samples, or any key with runs of many seconds, or repeated unnoticed moves), file pixel tracking as a safety net for the opt-in order mode (epic sommelier-8z5). If rare and short, close the question.
