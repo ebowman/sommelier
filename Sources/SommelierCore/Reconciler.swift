@@ -137,9 +137,9 @@ public struct Reconciler: Sendable {
             // gdu.15: a unit pulled onto the bar only by a reveal is dropped (whole unit, units stay whole) when one of its parked
             // keys cannot be shown (no Control Center entry: the same predicate LiveActuator refuses a batch on). The reveal
             // then shows the applicable units instead of one untracked key refusing the whole batch. A key that failed earlier
-            // is not skipped here (existing retry/strike handling).
+            // is skipped like any other (gdu.73): the struck-out key keeps its own `.failed` status, the rest of the reveal shows.
             if wants, allHidden, revealed,
-               let bad = ks.first(where: { parkedSet.contains($0) && !capabilities($0).canHide && capabilities($0).reason != "failed earlier" }) {
+               let bad = ks.first(where: { parkedSet.contains($0) && !capabilities($0).canHide }) {
                 // gdu.73: the reason comes from the capability itself (Apple app vs not tracked vs a refusal's own reason).
                 let why = "cannot be shown: " + (capabilities(bad).reason ?? "not tracked by Control Center")
                 for k in ks where parkedSet.contains(k) { skipped.append(SkippedAction(k, k == bad ? why : "\(why) (\(bad) in the same app)")) }

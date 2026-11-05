@@ -222,3 +222,36 @@ private struct UntrackedCaps: CapabilityProvider {
 }
 
 private final class RevealClock: @unchecked Sendable { var t = ContinuousClock.now }
+
+@Suite("Reveal skip notice (gdu.73)")
+struct RevealSkipNoticeTests {
+    let a = k("a"), b = k("b"), c = k("c")
+    func skipped(_ n: Int) -> [ItemKey: ItemStatus] {
+        var d: [ItemKey: ItemStatus] = [c: .inPlace]
+        for key in [a, b].prefix(n) { d[key] = .unsupported("cannot be shown: not tracked by Control Center") }
+        return d
+    }
+    @Test func pluralSingularAndNone() {
+        #expect(ArrangeSections.revealSkipNotice(perItem: skipped(2), showHiddenSection: true, showAlwaysHidden: false) == "2 items could not be shown")
+        #expect(ArrangeSections.revealSkipNotice(perItem: skipped(1), showHiddenSection: false, showAlwaysHidden: true) == "1 item could not be shown")
+        #expect(ArrangeSections.revealSkipNotice(perItem: skipped(2), showHiddenSection: false, showAlwaysHidden: false) == nil)
+        #expect(ArrangeSections.revealSkipNotice(perItem: skipped(0), showHiddenSection: true, showAlwaysHidden: false) == nil)
+        // Other unsupported reasons (capability skips) are not counted.
+        #expect(ArrangeSections.revealSkipNotice(perItem: [a: .unsupported("positions itself")], showHiddenSection: true, showAlwaysHidden: false) == nil)
+    }
+    @MainActor @Test func stateOverload() {
+        let s = EngineState(observed: ObservedOrder(onBar: [c], parked: [a, b]), layout: Layout(visible: [c], hidden: [a, b]), showHiddenSection: true)
+        s.perItem = skipped(2)
+        #expect(ArrangeSections.revealSkipNotice(state: s) == "2 items could not be shown")
+        s.showHiddenSection = false
+        #expect(ArrangeSections.revealSkipNotice(state: s) == nil)
+    }
+    @Test func failedEarlierKeyIsSkippedAndTheOthersShow() {
+        let caps: (ItemKey) -> Capability = { $0 == b ? Capability(canMove: false, canHide: false, reason: "failed earlier") : Capability(canMove: true, canHide: true) }
+        let l = Layout(visible: [c], hidden: [a, b])
+        let p = Reconciler().plan(observed: obs(on: [c], parked: [a, b]), layout: l, capabilities: caps, showHiddenSection: true)
+        #expect(p.actions.compactMap { if case .show(let x) = $0 { x } else { nil } } == [a])
+        #expect(p.skipped.map(\.key) == [b])
+        #expect(p.skipped.first?.reason == "cannot be shown: failed earlier")
+    }
+}

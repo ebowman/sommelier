@@ -291,6 +291,18 @@ public enum ArrangeSections {
         "Poll paused 5 min: \(names.isEmpty ? "an item" : names.joined(separator: ", ")) flapping"
     }
 
+    /// gdu.73: status-line note during a PARTIAL reveal: how many items the planner skipped as "cannot be shown: ..." (gdu.15/gdu.74)
+    /// while the reveal converges for the rest. nil when no reveal is active or nothing was skipped.
+    public static func revealSkipNotice(perItem: [ItemKey: ItemStatus], showHiddenSection: Bool, showAlwaysHidden: Bool) -> String? {
+        guard showHiddenSection || showAlwaysHidden else { return nil }
+        let n = perItem.values.filter { if case .unsupported(let r) = $0 { return r.hasPrefix("cannot be shown") } else { return false } }.count
+        guard n > 0 else { return nil }
+        return n == 1 ? "1 item could not be shown" : "\(n) items could not be shown"
+    }
+    @MainActor public static func revealSkipNotice(state: EngineState) -> String? {
+        revealSkipNotice(perItem: state.perItem, showHiddenSection: state.showHiddenSection, showAlwaysHidden: state.showAlwaysHidden)
+    }
+
     /// Bottom line: errors and counts first, "Converged" only when nothing is pending or failed.
     public static func statusLine(perItem: [ItemKey: ItemStatus], lastError: EngineError?, isConverged: Bool, inFlight: Bool,
                                   pendingAwaiting: Int = 0, observationSettled: Bool = true,
