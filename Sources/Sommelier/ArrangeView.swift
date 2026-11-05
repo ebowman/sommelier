@@ -319,6 +319,7 @@ struct BadgeView: View {
         case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.system(size: 11)).help(badge.tooltip)
         case .cannotChange: Image(systemName: "nosign").foregroundStyle(.secondary).font(.system(size: 11)).help(badge.tooltip)
         case .notFitting: Image(systemName: "chevron.left.2").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
+        case .waitingForPosition: Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
         case .stale: Text("~").foregroundStyle(.orange).font(.system(size: 11, weight: .bold)).help(badge.tooltip)
         }
     }

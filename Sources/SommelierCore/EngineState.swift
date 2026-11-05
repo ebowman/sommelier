@@ -14,6 +14,9 @@ public enum ItemStatus: Equatable, Sendable {
     case moving
     case failed(ActuationError)
     case unsupported(String)
+    /// gdu.105: the planner refused the move because the subject's on-bar position was not corroborated by this scan (gdu.94);
+    /// transient: the engine re-plans soon and the Arrange tracker keeps waiting. Never struck, never a failure.
+    case waitingForPosition(String)
     /// macOS moved it into its own overflow (behind the chevron): reported on the bar but not drawn, so it cannot be
     /// dragged. Otherwise in place (gdu.45).
     case notFitting

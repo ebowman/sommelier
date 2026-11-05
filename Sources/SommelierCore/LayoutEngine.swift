@@ -75,6 +75,11 @@ public actor LayoutEngine {
         /// while the condition persists (the bar signature cannot change when a grant arrives, so nothing else would notice).
         public var storeRetryBase: Duration = .seconds(5)
         public var storeRetryCap: Duration = .seconds(60)
+        /// gdu.105: while an order move is skipped because its subject's position is not corroborated (gdu.94), re-plan after this
+        /// delay, doubling up to the cap; after `positionWaitTimeout` of continuous waiting the key becomes `.unsupported`.
+        public var positionRetryBase: Duration = .seconds(2)
+        public var positionRetryCap: Duration = .seconds(15)
+        public var positionWaitTimeout: Duration = .seconds(60)
         public var unsettledRetryBase: Duration = .seconds(3)
         public var unsettledRetryCap: Duration = .seconds(60)
         public var unsettledRetryMaxAttempts = 10
@@ -149,6 +154,13 @@ public actor LayoutEngine {
     private var draining = false
     private var storeRetryAttempts = 0
     static let storeRetryReason = "store unreadable retry"
+    static let positionRetryReason = "position retry"
+    /// gdu.105: keys currently skipped for an uncorroborated position, with when the continuous wait began; keys that timed out.
+    private var positionWaitSince: [ItemKey: ContinuousClock.Instant] = [:]
+    private var positionTimedOut: Set<ItemKey> = []
+    private var positionRetryAttempts = 0
+    /// Test/diagnostic view: keys waiting for a trustworthy position, retries scheduled so far in this wait.
+    public var positionWaitInfo: (waiting: Int, timedOut: Int, attempts: Int) { (positionWaitSince.count - positionTimedOut.count, positionTimedOut.count, positionRetryAttempts) }
     private var inPass = false
     /// When the last explicit (superseding) request arrived: `setLayout`, show/hide section, hold release, agent restart.
     private var userActionAt: ContinuousClock.Instant?
@@ -464,6 +476,8 @@ public actor LayoutEngine {
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
         failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
+        positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
+        delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
         unconfirmed = [:]
         stopped = !loaded   // a layout that never loaded stays stopped until `start()` succeeds or `setLayout`
         chained = 0
@@ -811,12 +825,44 @@ public actor LayoutEngine {
         for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
         for k in obs.onBar + obs.parked where transientReveals[rule.unit(of: k)] != nil { out[k] = .pending }
+        var waiting = Set<ItemKey>()
+        let now = ContinuousClock.now
         for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting {
-            out[s.key] = .unsupported(s.reason)
+            if s.reason == Reconciler.uncorroboratedSkipReason {   // gdu.105: transient, see positionWaitTimeout
+                let since = positionWaitSince[s.key] ?? now
+                positionWaitSince[s.key] = since
+                waiting.insert(s.key)
+                if since.duration(to: now) > config.positionWaitTimeout {
+                    if positionTimedOut.insert(s.key).inserted { log("\(s.key): position not corroborated for \(config.positionWaitTimeout); marked unsupported until the layout changes or Retry") }
+                    out[s.key] = .unsupported("could not corroborate its position on the bar for \(Self.seconds(config.positionWaitTimeout)) s: " + s.reason)
+                } else {
+                    out[s.key] = .waitingForPosition(s.reason)
+                }
+            } else {
+                out[s.key] = .unsupported(s.reason)
+            }
+        }
+        for k in Array(positionWaitSince.keys) where !waiting.contains(k) { positionWaitSince[k] = nil; positionTimedOut.remove(k) }
+        if positionWaitSince.count > positionTimedOut.count {
+            if delayed[Self.positionRetryReason] == nil {
+                let delay = Self.positionRetryDelay(attempt: positionRetryAttempts, config: config)
+                positionRetryAttempts += 1
+                log("position of \(positionWaitSince.count - positionTimedOut.count) item(s) not corroborated; re-planning in \(delay)")
+                scheduleReconcile(after: delay, reason: Self.positionRetryReason)
+            }
+        } else {
+            positionRetryAttempts = 0
+            delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
         }
         for (k, e) in failures where out[k] != nil { out[k] = .failed(e) }
         return out
     }
+
+    static func positionRetryDelay(attempt: Int, config: Config) -> Duration {
+        min(config.positionRetryBase * (1 << min(attempt, 12)), config.positionRetryCap)
+    }
+
+    private static func seconds(_ d: Duration) -> Int { Int(d.components.seconds) }
 
     static func describe(_ plan: Plan) -> String {
         func d(_ a: PlannedAction) -> String {
@@ -865,7 +911,7 @@ public actor LayoutEngine {
             if judge {
                 let onBar = Set(s.observed.onBar)
                 let usable: (ItemKey) -> Bool = { k in
-                    switch s.perItem[k] { case .failed?, .unsupported?: return false; default: return true }
+                    switch s.perItem[k] { case .failed?, .unsupported?, .waitingForPosition?: return false; default: return true }
                 }
                 let anyShown: Bool
                 if wantHidden || wantAlways {

@@ -20,6 +20,8 @@ public enum ArrangeBadge: Equatable, Sendable {
     case notFitting
     /// gdu.101: on the bar but its position was not refreshed (the app has not answered a position read); shown at the last-known slot.
     case stale
+    /// gdu.105: the move is waiting for a scan that corroborates the item's position (transient; the engine re-plans).
+    case waitingForPosition
 
     public var glyph: String {
         switch self {
@@ -31,6 +33,7 @@ public enum ArrangeBadge: Equatable, Sendable {
         case .cannotChange: return "⊘"
         case .notFitting: return "⇠"
         case .stale: return "~"
+        case .waitingForPosition: return "⟳"
         }
     }
 
@@ -43,6 +46,7 @@ public enum ArrangeBadge: Equatable, Sendable {
         case .failed(let e): return "Failed: \(e)"
         case .cannotChange(let r): return r
         case .notFitting: return "Does not fit: macOS moved it into its overflow behind the chevron"
+        case .waitingForPosition: return "Waiting for a trustworthy read of its position (the last scan could not corroborate where it is)"
         case .stale: return "Position not refreshed yet (the app has not answered a position read); it is on the bar, here as of the last read"
         }
     }
@@ -138,6 +142,7 @@ public enum ArrangeSections {
         switch status {
         case .failed(let e)?: return .failed(describe(e))
         case .unsupported(let r)?: return .cannotChange(r)
+        case .waitingForPosition?: return .waitingForPosition
         case .notFitting?: return .notFitting
         case .pending?, .moving?: return .moving
         case .inPlace?, nil: break
@@ -331,6 +336,7 @@ public enum ArrangeSections {
                                   notice: String? = nil, pollPausedNames: [String]? = nil) -> String {
         let pending = perItem.values.filter { if case .pending = $0 { return true }; if case .moving = $0 { return true }; return false }.count
         let failed = perItem.values.filter { if case .failed = $0 { return true }; return false }.count
+        let waitingPos = perItem.values.filter { if case .waitingForPosition = $0 { return true }; return false }.count
         let base = StatusLine.text(lastError: lastError, isConverged: isConverged, inFlight: inFlight, trusted: true, conflicting: nil,
                                   observationSettled: observationSettled)
         var parts: [String] = []
@@ -338,6 +344,7 @@ public enum ArrangeSections {
         let n = max(pending, pendingAwaiting)
         if n > 0 { parts.append("\(n) pending") }
         if failed > 0 { parts.append("\(failed) failed") }
+        if waitingPos > 0 { parts.append("Waiting for a trustworthy read of \(waitingPos) item\(waitingPos == 1 ? "" : "s")") }
         if parts.isEmpty {
             var line = notice.map { "\($0) · \(base)" } ?? base
             if let n = pollPausedNames { line += " · " + pollPausedText(n) }
