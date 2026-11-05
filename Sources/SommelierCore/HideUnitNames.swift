@@ -17,7 +17,7 @@ public enum HideUnitNames {
     public static func groupRefusal(entry: String) -> String { "hides together with \(entry): move the whole group" }
 
     public static func staleMemberRefusal(entry: String) -> String {
-        "hides together with \(entry): a member's state is unknown; retry when the bar settles"
+        "hides together with \(entry): a member's state is unknown; retrying when the bar settles"
     }
 
     /// The Arrange tooltip of a unit row: "Hides together with <mates>", naming the governing app when it is known and not

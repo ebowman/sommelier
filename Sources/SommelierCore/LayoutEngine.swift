@@ -1036,6 +1036,13 @@ public actor LayoutEngine {
                 log("engine: actuator refused \(refusedNow.count) unit(s) (skipped, not failures): " + refusedNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
                 if refusedNow.count == batch.count { err = nil }
             }
+            // gdu.76: units left alone because a member was stale are TRANSIENT: no actuatorRefused entry, no strike, they stay
+            // pending and the next pass plans them again (the planner requests the member once it is fresh).
+            let unsettledNow = (await actuator.lastBatchUnsettled).filter { batch[$0.key] != nil }
+            if !unsettledNow.isEmpty {
+                log("engine: actuator left \(unsettledNow.count) unit(s) pending (not failures, not refused): " + unsettledNow.sorted { $0.key.description < $1.key.description }.map { "\($0.key): \($0.value)" }.joined(separator: "; "))
+                if refusedNow.count + unsettledNow.count == batch.count { err = nil }
+            }
             for k in batch.keys { unconfirmed[k] = nil }
             if err == nil {
                 for k in await actuator.lastBatchUnconfirmed { if let hide = batch[k] { unconfirmed[k] = hide } }
@@ -1085,6 +1092,7 @@ public actor LayoutEngine {
                 for a in after.actions {
                     let k = Self.key(of: a)
                     guard let wasHide = batch[k] else { continue }
+                    if unsettledNow[k] != nil { continue }   // transient: neither a failure nor a strike
                     let nowHide: Bool
                     switch a { case .hide: nowHide = true; case .show: nowHide = false; case .move: continue }
                     if nowHide == wasHide, unconfirmed[k] != nil {

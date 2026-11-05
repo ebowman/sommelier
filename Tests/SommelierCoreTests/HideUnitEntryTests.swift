@@ -174,7 +174,7 @@ private struct EntryActuatorObserver: MenuBarObserver {
     #expect(HideUnitNames.display(trackedKey: "com.noodlesoft.Hazel") { _ in nil } == "com.noodlesoft.Hazel")
     #expect(HideUnitNames.display(trackedKey: "com.noodlesoft.Hazel") { _ in "  " } == "com.noodlesoft.Hazel")
     #expect(HideUnitNames.groupRefusal(entry: "Hazel") == "hides together with Hazel: move the whole group")
-    #expect(HideUnitNames.staleMemberRefusal(entry: "Hazel") == "hides together with Hazel: a member's state is unknown; retry when the bar settles")
+    #expect(HideUnitNames.staleMemberRefusal(entry: "Hazel") == "hides together with Hazel: a member's state is unknown; retrying when the bar settles")
 }
 
 @Test func arrangeRowCarriesTheGoverningAppName() {

@@ -115,6 +115,7 @@ public enum ArrangeSections {
         case .mechanismFailed(let m): return m
         case .conflictingManager(let m): return m
         case .liveWriteFailed(let m): return "hide/show write failed: \(m)"
+        case .memberStale(let r): return r
         }
     }
 

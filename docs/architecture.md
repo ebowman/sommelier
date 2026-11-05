@@ -157,8 +157,10 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   `Config.trackedResolver` at every pass and layout adoption, uses it for the planner and normalization, and publishes it as
   `EngineState.hideUnits`, which Arrange, the overflow panel and drops use, so every consumer groups exactly like the planner.
   The actuator additionally never changes an item the batch did not request: a unit whose requested members differ, or whose flag
-  flip would also move an unrequested member, is refused whole ("hides together with <entry>: move the whole group"). A STALE unrequested member also refuses the unit
-  ("...: a member's state is unknown; retry when the bar settles"; a stale REQUESTED member is fine, a fresh unrequested member already in
+  flip would also move an unrequested member, is refused whole ("hides together with <entry>: move the whole group"). A STALE unrequested member also leaves the unit alone,
+  but TRANSIENTLY ("...: a member's state is unknown; retrying when the bar settles"): `ActuationError.memberStale`, reported through
+  `lastBatchUnsettled`, never `lastBatchRefused`; the engine records no `actuatorRefused` entry and no strike, keeps the unit pending, and
+  the next pass plans it again (unlike a capability refusal, which stays `.unsupported` until Retry/setLayout; a stale REQUESTED member is fine, a fresh unrequested member already in
   the target state is allowed). The actuator reads the Control Center entries ONCE per batch (`ActuatorPlatform.beginTrackedSnapshot()` /
   `endTrackedSnapshot()` around `applyHiddenBatchDetailed`; `LivePlatform` otherwise parses the plist per `trackedKey(for:)` call) and
   names the entry by its running app's name (`HideUnitNames`, key as fallback), as does the Arrange unit tooltip (`ArrangeRow.unitApp`).

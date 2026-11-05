@@ -670,9 +670,13 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     w.staleName = "Parent"; w.staleScans = 1_000_000
     let act = actuator(w)
     let out = await act.applyHiddenBatchDetailed([key("Helper"): true])
-    let why = "hides together with tracked.Parent: a member's state is unknown; retry when the bar settles"
-    if case .failed(.unsupportedItem(let r), _) = out.result { #expect(r == why) } else { Issue.record("got \(out.result)") }
+    let why = "hides together with tracked.Parent: a member's state is unknown; retrying when the bar settles"
+    if case .failed(.memberStale(let r), _) = out.result { #expect(r == why) } else { Issue.record("got \(out.result)") }
     #expect(w.allowedWrites.isEmpty && w.restarts == 0)
+    // Transient: not a capability refusal.
+    #expect(await act.lastBatchRefused.isEmpty)
+    #expect(await act.lastBatchUnsettled[key("Helper")] == why)
+    if case .failed(.memberStale, _)? = out.perKey[key("Helper")] {} else { Issue.record("perKey: \(String(describing: out.perKey[key("Helper")]))") }
     // The stale member REQUESTED too: unchanged behaviour (not refused for staleness).
     let act2 = actuator(w)
     let both = await act2.applyHiddenBatchDetailed([key("Helper"): true, key("Parent"): true])
