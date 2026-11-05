@@ -1,0 +1,32 @@
+import Foundation
+
+/// The decision behind `mbprobe layout init-from-current` (gdu.82), pure over an observer so it is testable with a scripted source.
+/// A layout is built only from an agreed result that rests on a complete read and in which NO considered scan marked an item
+/// `placementUnknown` (an item flipping between unknown and "placed" across scans must not be written either way).
+public enum LayoutInit {
+    public enum Outcome {
+        case refuse(String)
+        case build(items: [ResolvedItem], scans: Int, notes: [String])
+    }
+
+    public static let incompleteMessage = "layout init needs a complete read; retry when the bar settles"
+
+    public static func evaluate(observer: AgreedScanObserver) async -> Outcome {
+        let r: (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?, completeness: ReadCompleteness, unknownSeen: [ItemKey])
+        do { r = try await observer.observeDiagnosed() } catch { return .refuse("\(error); not writing") }
+        if let d = r.disagreement { return .refuse(d.message) }
+        if r.completeness == .incomplete { return .refuse(incompleteMessage) }
+        var notes: [String] = []
+        switch BarSignature().staleVerdict(r.items) {
+        case .clean: break
+        case .refuse(let keys): return .refuse("stale items in the agreed scan, not writing: " + keys.joined(separator: ", "))
+        case .selfPositioningOnly(let keys):
+            notes.append("note: \(keys.count) self-positioning items were stale in the agreed scan (" + keys.joined(separator: ", ") + "); written as they were observed")
+        }
+        // The union over every scan the agreement loop considered, plus the final result.
+        var unknown = r.unknownSeen
+        for k in LayoutBuilder.unknownPlacement(in: r.items) where !unknown.contains(k) { unknown.append(k) }
+        if !unknown.isEmpty { return .refuse(LayoutBuilder.unknownPlacementMessage(unknown) + "; not writing") }
+        return .build(items: r.items, scans: r.scans, notes: notes)
+    }
+}

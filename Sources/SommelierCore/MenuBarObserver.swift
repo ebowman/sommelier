@@ -229,13 +229,16 @@ public struct AgreedScanObserver: MenuBarObserver {
     }
 
     /// Strict like `observeCounting`, but a failure to agree reports WHY (stale / differing keys of the last scans).
-    public func observeDiagnosed() async throws -> (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?) {
+    /// Also returns the read level the agreed result rests on and the union of keys ANY considered scan marked
+    /// `placementUnknown` (gdu.82; observation only, the agreement rule is unchanged).
+    public func observeDiagnosed() async throws -> (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?,
+                                                    completeness: ReadCompleteness, unknownSeen: [ItemKey]) {
         let r = try await scanLoop(progress: nil, seed: nil)
-        guard let o = r.observation, o.settled else { return ([], r.disagreement.scans, r.disagreement) }
-        return (o.items, o.scans, nil)
+        guard let o = r.observation, o.settled else { return ([], r.disagreement.scans, r.disagreement, .incomplete, r.unknownSeen) }
+        return (o.items, o.scans, nil, o.completeness, r.unknownSeen)
     }
 
-    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed? = nil) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement) {
+    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed? = nil) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement, unknownSeen: [ItemKey]) {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
         let limit = Date().addingTimeInterval(deadline)
         var scans = 0
@@ -244,6 +247,7 @@ public struct AgreedScanObserver: MenuBarObserver {
         var lastRes: [ResolvedItem] = []
         var sawNonEmpty = false
         var sentProgress = false
+        var unknownSeen: [ItemKey] = []
         // Latest complete read; a read without a stale item on the bar is preferred over one with.
         var best: [ResolvedItem]?
         var bestClean = false
@@ -264,6 +268,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             let (res, dups) = Self.dedupe(raw)
             prevRes = scans == 1 ? seedItems : lastRes
             lastRes = res
+            for k in LayoutBuilder.unknownPlacement(in: res) where !unknownSeen.contains(k) { unknownSeen.append(k) }
             if !dups.isEmpty {
                 // Which copies existed (so the cause is visible in the log): x, size, stale flag, source, identifier.
                 let detail = dups.map { k in
@@ -293,7 +298,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             }
             if !empty, let compareSig, compareSig == prevSig {
                 return (BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel)),
-                        ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []))
+                        ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []), unknownSeen)
             }
             prevSig = sig
             prevLevel = level
@@ -304,9 +309,9 @@ public struct AgreedScanObserver: MenuBarObserver {
         let disagreement = ScanDisagreement.make(scans: scans, previous: prevRes, last: lastRes, rule: rule)
         if let best {
             log("scans did not agree after \(scans) attempts; returning the latest complete read, unsettled")
-            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel), disagreement)
+            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel), disagreement, unknownSeen)
         }
-        return (nil, disagreement)
+        return (nil, disagreement, unknownSeen)
     }
 }
 

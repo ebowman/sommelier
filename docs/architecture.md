@@ -190,7 +190,7 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
 - Writes are atomic: temp file `layout.json.tmp-<uuid>` in the same directory, then `rename(2)`.
 - A corrupt file (bad JSON or unparsable key) is copied to `layout.json.bak` and `load()` throws `LayoutError.corrupt`;
   a missing file loads as `Layout.empty`.
-- Dev tool: `mbprobe layout show|init-from-current|move|remove [--file PATH]`. `init-from-current` writes stale self-positioning items (`SelfPositioning.defaultOwners`, `BarSignature.staleVerdict`) of an agreed scan with a stderr note and refuses (exit 1, keys named) on any other stale item; on no-agreement it names the last scan's stale keys and the keys that moved/changed class between the last two scans (`ScanDisagreement`, `OrderDiff`). `observeDetailed` still throws a bare `noAgreement` (the explanation is only on `observeDiagnosed`).
+- Dev tool: `mbprobe layout show|init-from-current|move|remove [--file PATH]`. `init-from-current` writes stale self-positioning items (`SelfPositioning.defaultOwners`, `BarSignature.staleVerdict`) of an agreed scan with a stderr note and refuses (exit 1, keys named) on any other stale item; on no-agreement it names the last scan's stale keys and the keys that moved/changed class between the last two scans (`ScanDisagreement`, `OrderDiff`). It also refuses when any scan of the agreement loop (`observeDiagnosed().unknownSeen`, not only the final result) marked an item `placementUnknown`, or when the agreed read is `.incomplete` (`LayoutInit.evaluate`, gdu.82). `observeDetailed` still throws a bare `noAgreement` (the explanation is only on `observeDiagnosed`).
 
 ### Reconciler
 
