@@ -42,7 +42,7 @@ private func source() -> Src {
 
 private func scan(_ entries: [ControlCenterTrackedAppsStore.Entry]?) -> MenuBarSnapshot {
     var sc = MenuBarScanner(source: source())
-    sc.trackedEntries = { entries }
+    sc.trackedEntries = { entries.map { .entries($0) } ?? .notConfigured }
     return sc.scan()
 }
 private func item(_ s: MenuBarSnapshot, _ name: String) -> MenuBarItem { s.items.first { $0.ownerName == name }! }
@@ -208,7 +208,7 @@ private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenu
 
 @Suite struct AuthorityRuleWeakJoinTests {
     private func run(_ s: Src, _ entries: [ControlCenterTrackedAppsStore.Entry]?) -> MenuBarSnapshot {
-        var sc = MenuBarScanner(source: s); sc.trackedEntries = { entries }; return sc.scan()
+        var sc = MenuBarScanner(source: s); sc.trackedEntries = { entries.map { .entries($0) } ?? .notConfigured }; return sc.scan()
     }
 
     @Test func aFlagFalseItemCannotStealAnotherItemsHostedElement() {
@@ -259,7 +259,7 @@ private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenu
     }
 
     @Test func aScannerOnAFixtureSourceNeverReadsTheRealStore() {
-        #expect(MenuBarScanner(source: Src()).trackedEntries() == nil)
+        #expect(MenuBarScanner(source: Src()).trackedEntries() == .notConfigured)
     }
 }
 
@@ -283,7 +283,7 @@ private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenu
     }
     private func run(_ s: Src, allowed: [String: Bool]) -> MenuBarSnapshot {
         var sc = MenuBarScanner(source: s)
-        sc.trackedEntries = { allowed.map { entry($0.key, $0.value) } }
+        sc.trackedEntries = { .entries(allowed.map { entry($0.key, $0.value) }) }
         return sc.scan()
     }
 
@@ -339,7 +339,7 @@ private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenu
             AXElementInfo(frame: bar(798, w: 27)), AXElementInfo(frame: bar(795, w: 30)), AXElementInfo(frame: bar(799, w: 22)),
             AXElementInfo(axDescription: MenuBarItem.overflowChevronName, frame: bar(795, w: 17)),
         ])
-        var sc = MenuBarScanner(source: s); sc.trackedEntries = { [entry("ie.test.a", true)] }
+        var sc = MenuBarScanner(source: s); sc.trackedEntries = { .entries([entry("ie.test.a", true)]) }
         let i = sc.scan().items.first { $0.ownerName == "A" }!
         #expect(i.joinEvidence == .frameUnique && i.isOnMenuBar && i.systemOverflow)
     }

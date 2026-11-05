@@ -8,9 +8,12 @@ public struct LivePrefsAccess {
     public var write: (Data) -> Bool
     /// Fallback blob source when CFPreferences returns nil (the on-disk file).
     public var fileBlob: () -> Data?
+    /// What the on-disk store file is like when neither CFPreferences nor the file gave a blob (gdu.87).
+    public var fileStatus: () -> StoreFileStatus
 
-    public init(read: @escaping () -> Data?, write: @escaping (Data) -> Bool, fileBlob: @escaping () -> Data?) {
-        self.read = read; self.write = write; self.fileBlob = fileBlob
+    public init(read: @escaping () -> Data?, write: @escaping (Data) -> Bool, fileBlob: @escaping () -> Data?,
+                fileStatus: @escaping () -> StoreFileStatus = { .missing }) {
+        self.read = read; self.write = write; self.fileBlob = fileBlob; self.fileStatus = fileStatus
     }
 
     /// Real CFPreferences: domain group.com.apple.controlcenter, current user, any host.
@@ -31,8 +34,28 @@ public struct LivePrefsAccess {
                       let obj = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil),
                       let root = obj as? [String: Any] else { return nil }
                 return root[ControlCenterTrackedAppsStore.blobKey] as? Data
-            })
+            },
+            fileStatus: { ControlCenterTrackedAppsStore.fileStatus(at: fileURL) })
     }
+}
+
+/// State of the store file on disk. Verified 2026-11-05 in a Developer-ID app denied by macOS App Data privacy: `fileExists` is true,
+/// `stat` works, `isReadableFile`/`access(R_OK)` fail with EPERM and `open` fails; so a denied file is never reported "missing".
+public enum StoreFileStatus: Sendable, Equatable {
+    case missing
+    /// Exists but cannot be read (the reason names the path and says access was denied).
+    case unreadable(String)
+    /// Exists and can be read, but gave no `trackedApplications` blob (nothing is tracked yet).
+    case readableWithoutBlob
+}
+
+/// What a read of Control Center's tracked-applications store gave (gdu.87). `.unreadable` is an OBSERVATION PROBLEM: without the store
+/// nothing can tell a Control-Center-hidden item from a visible one, so the scanner reports placement unknown and the engine does not act.
+/// `.notConfigured` is the hermetic/test scanner (no store consulted): the frame rule applies as before.
+public enum TrackedStoreRead: Sendable, Equatable {
+    case entries([ControlCenterTrackedAppsStore.Entry])
+    case unreadable(String)
+    case notConfigured
 }
 
 extension ControlCenterTrackedAppsStore {
@@ -49,16 +72,48 @@ extension ControlCenterTrackedAppsStore {
     }
 
     /// Every tracked entry with its `isAllowed` as CFPreferences reports it now (the file when CFPreferences has nothing), for the
-    /// scanner's authority rule (gdu.79). nil = unreadable.
-    public static func entriesLive(access: LivePrefsAccess = .system()) -> [Entry]? {
-        guard let blob = access.read() ?? access.fileBlob(), let list = try? parseBlob(blob).list else { return nil }
+    /// scanner's authority rule (gdu.79). A failed CFPreferences read AND a failed/denied file fallback is `.unreadable(reason)` (gdu.87).
+    public static func readLive(access: LivePrefsAccess = .system()) -> TrackedStoreRead {
+        guard let blob = access.read() ?? access.fileBlob() else {
+            switch access.fileStatus() {
+            case .missing: return .notConfigured                     // Control Center has not written its store: nothing to read
+            case .unreadable(let why): return .unreadable(why)
+            case .readableWithoutBlob: return .entries([])           // a readable store without the key: no app is tracked
+            }
+        }
+        guard let list = try? parseBlob(blob).list else { return .unreadable("\(blobKey) is not a valid tracked-applications list") }
         var out: [Entry] = []
         for i in stride(from: 0, to: list.count, by: 2) {
             guard let k = locationKey(list[i]), let v = list[i + 1] as? [String: Any] else { continue }
             let items = (v["menuItemLocations"] as? [Any] ?? []).compactMap { locationKey($0) }
             out.append(Entry(key: k, isAllowed: (v["isAllowed"] as? Bool) ?? true, menuItemKeys: items))
         }
-        return out
+        return .entries(out)
+    }
+
+    /// Classifies the store file without prompting beyond a read attempt: only an existing file that cannot be read is `.unreadable`.
+    static func fileStatus(at url: URL) -> StoreFileStatus {
+        let path = url.path
+        guard FileManager.default.fileExists(atPath: path) else { return .missing }
+        do { _ = try Data(contentsOf: url) }
+        catch { return .unreadable("access denied reading \(path) (\((error as NSError).localizedDescription))") }
+        return .readableWithoutBlob
+    }
+
+    /// Background probe (polled; gdu.87): can this process read the store file? Uses `stat`/`access(R_OK)` only, which never go through
+    /// TCC's prompt path, and no CFPreferences call. `.unknown` = the file does not exist.
+    public static func probeAccess(fileURL: URL = defaultURL) -> PermissionState {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return .unknown }
+        return FileManager.default.isReadableFile(atPath: fileURL.path) ? .granted : .denied
+    }
+
+    /// User action ONLY: a direct main-thread read of both group-container plists from this process, so macOS can show its consent
+    /// dialog if it ever does. Returns the state afterwards.
+    @discardableResult
+    public static func requestAccess(fileURL: URL = defaultURL, orderURL: URL = MenuBarOrderStore.defaultURL) -> PermissionState {
+        _ = try? Data(contentsOf: orderURL)
+        _ = try? Data(contentsOf: fileURL)
+        return probeAccess(fileURL: fileURL)
     }
 
     static func parseBlob(_ blob: Data) throws -> (list: [Any], fmt: PropertyListSerialization.PropertyListFormat) {

@@ -34,6 +34,10 @@ final class AppModel {
             guard let engine = self?.engine else { return }
             Task { await engine.setReveal(hidden: hidden, alwaysHidden: always) }
         }, now: { ContinuousClock.now }, log: { NSLog("[Sommelier] reveal: %@", $0) })
+        permissions.onControlCenterDataGranted = { [weak self] in
+            NSLog("[Sommelier] Control Center data readable; re-checking")
+            Task { @MainActor in await self?.engine?.requestReconcile(reason: "control center data granted") }
+        }
         permissions.onAccessibilityGranted = { [weak self] in
             NSLog("[Sommelier] accessibility granted")
             Task { @MainActor in

@@ -633,3 +633,39 @@ Live (read-only `mbprobe list --timing --debug --repeat 3` against a cache copy,
 | after | run 2: 659 / 650 ms; run 6: 657 / 667 ms; both runs end `exceptSelfPositioning` | 4 of 4 |
 
 Caveat: the first stalled read of a cold process is still `incomplete` when no complete read in that process recorded the groups (run 4 after: `persisted self-positioning groups absent: 8`, the gdu.83 limitation), and the first stalled read of a streak always pays the uncapped ~2.7 s.
+
+### Control Center store denied to a Finder-launched build (gdu.87, 2026-11-05)
+
+**Incident.** The notarized Developer ID build launched from Finder/`open` is denied `file-read-data` on
+`~/Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist` (and on
+`com.apple.MenuBar`'s plist): kernel `System Policy ... deny(1) file-read-data`, cfprefsd `rejecting read of ... Domain:
+group.com.apple.controlcenter`, tccd `kTCCServiceSystemPolicyAppDataDetailed` with `promptType: 1` and no dialog. A binary started as a child
+of a terminal inherits the terminal's grant, so every dev run and `mbprobe` worked. Before the fix the scanner then applied the frame rule
+to every Control-Center-hidden item and the UI listed them as Visible.
+
+**Behaviour now.** `ControlCenterTrackedAppsStore.readLive` returns `TrackedStoreRead` (`.entries` / `.unreadable(reason)` / `.notConfigured`).
+`.unreadable` (CFPreferences AND the file failed; the reason names the path and says "access denied" when the file exists but cannot be read)
+makes the scanner report every store-governed item with no corroborated hosted element as NOT on the bar (`placementUnknown`), sets
+`MenuBarSnapshot.trackedStoreProblem` and a distinct `completenessReason` ("Control Center's hidden-item list is unreadable: ...", also in
+`mbprobe list` text and JSON). `AgreedScanObserver` throws `ObserveError.trackedStoreUnreadable`, so the engine sets
+`EngineError.observe("Cannot read Control Center's hidden-item list: ... will not act.")`, plans nothing, adopts nothing, saves nothing, and
+`LayoutInit` refuses with the same text. The next readable scan clears the error with no relaunch.
+
+**Prompt research (throwaway Developer ID app `ie.boboco.tcctest`, launched with `open`, 2026-11-05).** A direct `Data(contentsOf:)` of the
+group-container plist from `applicationDidFinishLaunching` (then again 1.5 s after activating a visible window, app frontmost) failed with
+EPERM ("Operation not permitted", NSCocoaErrorDomain 257) both times; tccd logged `Handling access request to
+kTCCServiceSystemPolicyAppDataDetailed` as a "Background Session" and `ReqResult(Auth Right: Denied (Service Policy), promptType: 1)`. No
+consent request was recorded (we cannot see the screen; no dialog was reported). So the dialog could NOT be provoked by a direct read from a
+`open`-launched Developer ID app. The Privacy & Security extension has no App Data pane (`TCCServiceList.plist` knows `Privacy_AppBundles` =
+App Management only; `Privacy_AppData` does not exist), so "Open System Settings" opens the Privacy & Security root. What works:
+1. grant it in Privacy & Security if Sommelier is listed (Full Disk Access also covers App Data; untested here), otherwise
+2. quit Sommelier, `tccutil reset SystemPolicyAppData ie.boboco.sommelier`, relaunch (re-signed builds need this too).
+The onboarding "Control Center data" row says exactly this and never claims the app works while the row is not "Readable".
+
+**Corrective pass (gdu.87).** Verified with the throwaway app in a denied process: `fileExists` is true, `stat` works, `isReadableFile`/`access(R_OK)`
+fail (EPERM) and `open` fails, CFPreferences returns nil. So a denial is never "file missing": a missing file is `.notConfigured`, a readable file
+without `trackedApplications` is `.entries([])`, only an existing unreadable file or an unparseable blob is `.unreadable`. The background
+permission probe uses `fileExists` + `isReadableFile` only (no read, no CFPreferences, never prompts) and slows to 30 s once granted; the direct
+`Data(contentsOf:)` reads happen only in the explicit "Request…" action. Recovery: after a pass fails with the unreadable-store error the engine
+reschedules itself (5 s doubling to 60 s, forever), the poll requests a pass while that error is set even if the bar is unchanged, and
+`PermissionsModel.onControlCenterDataGranted` requests a reconcile.

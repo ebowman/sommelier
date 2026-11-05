@@ -27,9 +27,9 @@ public struct MenuBarScanner {
     public var slowOwnerExtrasTimeout: Float = 0.3
     /// Control Center `isAllowed` readback for a tracked key (nil = unreadable); injectable for tests.
     public var allowedReadback: @Sendable (String) -> Bool? = { k in (try? ControlCenterTrackedAppsStore.allowedLive([k]))?[k] }
-    /// The Control Center tracked entries with their live `isAllowed` (nil = unreadable); injectable for tests. Consulted lazily, at most
-    /// once per scan, and only when an app-side-only item needs the authority rule (gdu.79).
-    public var trackedEntries: @Sendable () -> [ControlCenterTrackedAppsStore.Entry]? = { nil }
+    /// The Control Center tracked entries with their live `isAllowed`; injectable for tests. Consulted at most once per scan (gdu.79).
+    /// `.unreadable` (live scanner, store denied) is an observation problem, never a frame rule (gdu.87); `.notConfigured` = hermetic.
+    public var trackedEntries: @Sendable () -> TrackedStoreRead = { .notConfigured }
     private let state: ScanState
 
     /// - Parameter cacheURL: when set, the scan cache is loaded from / saved to this file, so a new process starts warm.
@@ -49,7 +49,7 @@ public struct MenuBarScanner {
         self.includeSelf = includeSelf
         self.fallbackStrip = fallbackStrip
         self.state = ScanState(url: cacheURL)
-        if source is LiveAccessibilitySource { trackedEntries = { ControlCenterTrackedAppsStore.entriesLive() } }   // hermetic otherwise (tests)
+        if source is LiveAccessibilitySource { trackedEntries = { ControlCenterTrackedAppsStore.readLive() } }   // hermetic otherwise (tests)
     }
 
     public static var defaultCacheURL: URL { ScanState.defaultURL }
@@ -601,10 +601,19 @@ public struct MenuBarScanner {
         var matchedBy: [Int: (pass: JoinEvidence, hosted: Int)] = [:]
         var trackedResolver: TrackedEntryResolver?
         var trackedLoaded = false
+        var trackedProblem: String?   // gdu.87: the live store could not be read
         func tracked() -> TrackedEntryResolver? {
-            if !trackedLoaded { trackedLoaded = true; trackedResolver = trackedEntries().map { TrackedEntryResolver(entries: $0) } }
+            if !trackedLoaded {
+                trackedLoaded = true
+                switch trackedEntries() {
+                case .entries(let e): trackedResolver = TrackedEntryResolver(entries: e)
+                case .unreadable(let why): trackedProblem = why
+                case .notConfigured: break
+                }
+            }
             return trackedResolver
         }
+        if agent != nil { _ = tracked() }
         // gdu.79 corrective: a candidate whose tracked entry says isAllowed == false keeps a stale app-side frame in the same region as the
         // overflow pile, so the frame-intersection join would hand it ANOTHER item's hosted element and put it on the bar. Such candidates
         // are excluded from the frame pass (the element then joins its real owner); only an identifier / description join can place one.
@@ -783,6 +792,7 @@ public struct MenuBarScanner {
             var ccHidden = false, unknown = false
             var ccAllowed: Bool?
             var why = "no hosted element"
+            var why2: String?
             if agent != nil, c.info.frame.width > 1, onBar(c.info.frame), !reportNotHosted, let r = tracked(), let tk = r.trackedKey(candidates: [c.app.bundleID].compactMap { $0 }),
                let e = r.entries.first(where: { $0.key == tk }) {
                 // THE rule (gdu.79): only a CORROBORATED join (identifier / unique description / unique frame) lets a hosted element place an
@@ -811,6 +821,14 @@ public struct MenuBarScanner {
                     if state.authorityLogged.insert("\(c.app.pid)|\(c.info.identityKey)|\(line)").inserted { log(line) }
                 }
             }
+            // gdu.87: with the store unreadable no item can be told hidden from visible, so an item that has no corroborated hosted
+            // element is NOT on the bar (placement unknown) rather than being believed on its stale app-side frame. Apple's own
+            // extras are not governed by the store.
+            if let why = trackedProblem, !ccHidden, !unknown, agent != nil, c.info.frame.width > 1, onBar(c.info.frame), !reportNotHosted,
+               !(c.app.bundleID ?? "").hasPrefix("com.apple."), h == nil || !ev.corroborated {
+                unknown = true; h = nil
+                why2 = "Control Center's hidden-item list is unreadable (\(why))"
+            }
             let frame = h?.frame ?? c.info.frame
             var built = MenuBarItem(
                 ownerPID: c.app.pid, ownerBundleID: c.app.bundleID, ownerName: c.app.name,
@@ -822,7 +840,7 @@ public struct MenuBarScanner {
                 notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
                 joinEvidence: h == nil ? .none : ev,
                 hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed)
-            if unknown { built.placementReason = why + "; make room in the bar so the item is drawn, or hide it in Control Center" }
+            if unknown { built.placementReason = why2 ?? (why + "; make room in the bar so the item is drawn, or hide it in Control Center") }
             items.append(built)
         }
         for (hi, owner) in attributed {
@@ -879,6 +897,13 @@ public struct MenuBarScanner {
         var snapshot = MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
                                        incompleteOnlyForSelfPositioning: spOnly)
         snapshot.completenessReason = hostedComplete || spOnly ? nil : reason
+        if let why = trackedProblem {
+            // gdu.87: a distinct condition (never merged with the numeric gdu.85 reasons); the read is not usable as membership evidence.
+            snapshot.trackedStoreProblem = why
+            snapshot.hostedReadComplete = false
+            snapshot.incompleteOnlyForSelfPositioning = false
+            snapshot.completenessReason = "Control Center's hidden-item list is unreadable: " + why
+        }
         // One line per incomplete full scan that has a stale self-positioning item (identical consecutive reasons: once per 10 s).
         if let r = snapshot.completenessReason, marked.contains(where: { $0.stale && SelfPositioning.matches($0, owners: spOwners) }) {
             let line = "incomplete: " + r

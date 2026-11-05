@@ -8,6 +8,13 @@ public enum ObserveError: Error, Equatable, Sendable, CustomStringConvertible {
     case empty
     /// The observation was abandoned because a newer request (a layout change) needs a pass now.
     case superseded
+    /// gdu.87: Control Center's hidden-item list could not be read (App Data privacy denied): hidden and visible items cannot be told apart.
+    case trackedStoreUnreadable(String)
+
+    public static let trackedStorePrefix = "Cannot read Control Center's hidden-item list"
+    public static func trackedStoreMessage(_ reason: String) -> String {
+        "\(trackedStorePrefix): \(reason). Sommelier cannot tell hidden items from visible ones, so it will not act."
+    }
 
     public var description: String {
         switch self {
@@ -15,6 +22,7 @@ public enum ObserveError: Error, Equatable, Sendable, CustomStringConvertible {
         case .noAgreement(let n): return "scans did not agree after \(n) attempts"
         case .empty: return "the menu bar scan returned no items"
         case .superseded: return "observation superseded by a newer request"
+        case .trackedStoreUnreadable(let why): return Self.trackedStoreMessage(why)
         }
     }
 }
@@ -277,6 +285,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             if Task.isCancelled { throw ObserveError.superseded }
             let snap = await scanner.scan()
             scans += 1
+            if let why = snap.trackedStoreProblem { throw ObserveError.trackedStoreUnreadable(why) }
             let raw = resolve(snap)
             let (res, dups) = Self.dedupe(raw)
             prevRes = scans == 1 ? seedItems : lastRes

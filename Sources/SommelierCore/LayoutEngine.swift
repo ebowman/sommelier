@@ -71,6 +71,10 @@ public actor LayoutEngine {
         /// gdu.78: delayed retry of units a batch left unsettled (stale member): first delay, doubling per attempt up to the cap; after
         /// `unsettledRetryMaxAttempts` attempts or `unsettledRetryMaxWait` since the first unsettled batch the engine stops scheduling
         /// and the status line reports the units (they stay pending, never struck) until a real trigger or user action.
+        /// gdu.87: retry of a pass that failed because Control Center's store is unreadable: first delay, doubling up to the cap, forever
+        /// while the condition persists (the bar signature cannot change when a grant arrives, so nothing else would notice).
+        public var storeRetryBase: Duration = .seconds(5)
+        public var storeRetryCap: Duration = .seconds(60)
         public var unsettledRetryBase: Duration = .seconds(3)
         public var unsettledRetryCap: Duration = .seconds(60)
         public var unsettledRetryMaxAttempts = 10
@@ -143,6 +147,8 @@ public actor LayoutEngine {
     /// When the first `setLayout` of the open coalescing burst arrived.
     private var burstStart: ContinuousClock.Instant?
     private var draining = false
+    private var storeRetryAttempts = 0
+    static let storeRetryReason = "store unreadable retry"
     private var inPass = false
     /// When the last explicit (superseding) request arrived: `setLayout`, show/hide section, hold release, agent restart.
     private var userActionAt: ContinuousClock.Instant?
@@ -495,6 +501,15 @@ public actor LayoutEngine {
     }
 
     // MARK: Robustness events (gdu.21)
+
+    /// gdu.87: schedules the next bounded-back-off retry after a pass failed with `ObserveError.trackedStoreUnreadable`.
+    private func scheduleStoreRetry() {
+        let factor = 1 << min(storeRetryAttempts, 12)
+        let delay = min(config.storeRetryBase * factor, config.storeRetryCap)
+        storeRetryAttempts += 1
+        log("Control Center's store is unreadable; retrying in \(delay)")
+        scheduleReconcile(after: delay, reason: Self.storeRetryReason)
+    }
 
     /// Requests a reconcile after `delay`. A later call with the same `reason` replaces the pending one (a burst of display
     /// notifications or app launches yields ONE pass).
@@ -917,6 +932,12 @@ public actor LayoutEngine {
     /// Updates `obs` from an actuation result; false when no trustworthy observation could be obtained.
     private func adopt(_ snap: MenuBarSnapshot?, into obs: inout ObservedOrder) async -> Bool {
         if await foreignAgentChange() { return false }
+        if let why = snap?.trackedStoreProblem {   // gdu.87: a read without the store proves nothing about hidden/visible
+            let m = ObserveError.trackedStoreMessage(why)
+            await publish { $0.lastError = .observe(m) }
+            scheduleStoreRetry()
+            return false
+        }
         if let snap {
             let resolved = resolveSnapshot(snap)
             let o = ObservedOrder(resolved: resolved)
@@ -993,6 +1014,7 @@ public actor LayoutEngine {
             }
             let msg = e.description
             await publish { $0.lastError = .observe(msg) }
+            if case .trackedStoreUnreadable = e { scheduleStoreRetry() }
             _ = await finish(PassReport(outcome: .observeFailed), converged: false)
             return .end(PassReport(outcome: .observeFailed))
         }
@@ -1120,6 +1142,8 @@ public actor LayoutEngine {
 
         if generation != layoutGeneration { return await endSuperseded(PassReport(outcome: .superseded)) }   // the layout changed during observation
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
+        storeRetryAttempts = 0
+        delayed[Self.storeRetryReason]?.cancel(); delayed[Self.storeRetryReason] = nil
         pruneFailures(obs)
 
         // (c) plan

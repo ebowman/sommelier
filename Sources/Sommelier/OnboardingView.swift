@@ -14,7 +14,7 @@ struct OnboardingView: View {
                     .padding(.horizontal, 20).padding(.top, 16)
                 form
             }
-            .frame(width: 540, height: 396)
+            .frame(width: 540, height: 560)
         } else {
             form.frame(minWidth: 460)
         }
@@ -28,6 +28,7 @@ struct OnboardingView: View {
             row(title: "Screen Recording (optional)", state: model.screenRecording, optional: true,
                 text: "Optional: enables live images in the overflow panel.",
                 request: { model.requestScreenRecording() }, pane: .screenRecording)
+            controlCenterRow
             Section {
             } footer: {
                 Text("Rebuilding from source changes the app's signature, so macOS asks for Accessibility again; the notarized release keeps its grant across updates signed with the same Developer ID.")
@@ -35,6 +36,40 @@ struct OnboardingView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// gdu.87: macOS can deny this app Control Center's hidden-item list ("access data from other apps"). Without it Sommelier cannot tell
+    /// hidden items from visible ones and does not act. Never claims the app is working.
+    private var controlCenterRow: some View {
+        let s = model.controlCenterData
+        return Section {
+            LabeledContent("Control Center data (required)") {
+                HStack(spacing: 6) {
+                    Circle().fill(s == .granted ? Color.green : (s == .denied ? Color.red : Color.gray)).frame(width: 10, height: 10)
+                    Text(s == .granted ? "Readable" : (s == .denied ? "Access denied" : "Unknown"))
+                }
+            }
+            Text(Self.controlCenterText(s)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Request…") { model.requestControlCenterData() }
+                Button("Open System Settings") { model.openSettings(.controlCenterData) }
+            }
+        }
+    }
+
+    static func controlCenterText(_ s: PermissionState) -> String {
+        switch s {
+        case .granted:
+            return "Sommelier can read which menu bar items Control Center hides."
+        case .unknown:
+            return "Control Center has not written its hidden-item list yet; there is nothing to grant. This status updates by itself."
+        case .denied:
+            return "macOS is denying Sommelier access to Control Center's hidden-item list, so Sommelier cannot tell hidden items from visible ones and will not move or hide anything. "
+                + "\"Request…\" asks macOS to show its \"access data from other apps\" prompt, but macOS often does not show it. If Sommelier is listed under Privacy & Security, "
+                + "allow it there (Full Disk Access also covers it). Otherwise quit Sommelier, run `tccutil reset SystemPolicyAppData ie.boboco.sommelier` in Terminal and relaunch it. "
+                + "This status updates by itself once access works."
+        }
     }
 
     @ViewBuilder

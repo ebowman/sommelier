@@ -126,6 +126,9 @@ final class StatusItemController: NSObject {
         login.state = LoginItem.isEnabled ? .on : .off
         m.addItem(login)
         m.addItem(.separator())
+        if model.permissions.controlCenterData == .denied {
+            m.addItem(item("Grant Control Center data access…", #selector(openPermissions)))
+        }
         m.addItem(item("Permissions…", #selector(openPermissions)))
         m.addItem(item("Quit", #selector(quit), key: "q"))
         return m

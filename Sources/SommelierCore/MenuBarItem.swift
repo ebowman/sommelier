@@ -380,6 +380,9 @@ public struct MenuBarSnapshot: Codable, Sendable {
     public var incompleteOnlyForSelfPositioning = false
     /// Why a full scan is not `.complete` (nil when complete or unknown); for logs, `mbprobe list` and the live-verify trace.
     public var completenessReason: String?
+    /// gdu.87: why Control Center's tracked-applications store could not be read (nil = readable or not consulted). Not serialized.
+    /// While set, no item's hidden/visible state is known: the engine refuses to act and says so.
+    public var trackedStoreProblem: String?
 
     /// `hostedReadComplete` stays true only for `.complete` (compatibility); membership consumers use this level.
     public var completeness: ReadCompleteness {

@@ -247,6 +247,13 @@ public final class EngineTriggers {
         polls += 1
         let g = await gate()
         if let why = skipReason(g) { log("poll skipped: \(why)"); return }
+        // gdu.87: while the last pass failed because Control Center's store is unreadable, the bar signature cannot change when access is
+        // granted (hidden items are off the bar before and after), so the "unchanged" short-circuit does not apply: ask for a pass.
+        if case .observe(let m)? = state.lastError, m.hasPrefix(ObserveError.trackedStorePrefix) {
+            log("poll: Control Center's store was unreadable; requesting a pass to re-check")
+            await trigger()
+            return
+        }
         guard let sig = await scanSignature() else { return }
         if let l = lastSeen, l != sig { priorDifferent = l; priorHeld = now().timeIntervalSince(seenSince); seenSince = now() }
         else if lastSeen == nil { seenSince = now() }

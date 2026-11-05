@@ -45,6 +45,15 @@ struct ArrangeView: View {
             if vm.isPaused {
                 banner("Bartender is running; Sommelier is paused and will not touch the menu bar.")
             }
+            if vm.controlCenterDataDenied {
+                HStack {
+                    Text("macOS denies Sommelier access to Control Center's hidden-item list; it cannot tell hidden items from visible ones and will not act.")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Button("Fix…") { vm.showPermissions() }
+                }
+                .padding(8).background(Color.orange.opacity(0.18))
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     StripView(vm: vm, strip: content.visible, placeholder: content.visiblePlaceholder, title: "Visible", subtitle: "The real menu bar, left to right")

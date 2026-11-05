@@ -69,6 +69,9 @@ final class ArrangeViewModel {
 
     var observationProblem: String? { ArrangeSections.observationProblem(lastError: state.lastError) }
     /// False while the bar has no trustworthy observation (none yet, or the last one failed/disagreed).
+    /// gdu.87: macOS denies the Control Center store read (App Data privacy): the Arrange window links to the permissions pane.
+    var controlCenterDataDenied: Bool { model.permissions.controlCenterData == .denied }
+    func showPermissions() { model.showOnboarding() }
     var observationAvailable: Bool { !state.observed.onBar.isEmpty && observationProblem == nil }
 
     var content: ArrangeContent {
