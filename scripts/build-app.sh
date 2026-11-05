@@ -32,6 +32,9 @@ if ! [[ "${VERSION}" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
     exit 1
 fi
 BUILD_NUMBER="$(git -C "${REPO_ROOT}" rev-list --count HEAD 2>/dev/null || echo 1)"
+# Exact provenance for scripts/publish-release.sh: the commit and whether tracked files were modified.
+GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=no 2>/dev/null)" ]; then GIT_DIRTY=1; else GIT_DIRTY=0; fi
 
 # shellcheck source=lib/resolve-codesign-identity.sh
 source "${SCRIPT_DIR}/lib/resolve-codesign-identity.sh"
@@ -64,6 +67,8 @@ cp "${BIN}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
   -c 'Add :CFBundlePackageType string APPL' \
   -c "Add :CFBundleVersion string ${BUILD_NUMBER}" \
   -c "Add :CFBundleShortVersionString string ${VERSION}" \
+  -c "Add :SommelierGitCommit string ${GIT_COMMIT}" \
+  -c "Add :SommelierGitDirty string ${GIT_DIRTY}" \
   -c 'Add :LSUIElement bool true' \
   -c 'Add :LSMinimumSystemVersion string 26.0' \
   -c 'Add :NSHumanReadableCopyright string Copyright 2026 Eric Bowman. MIT License.' \
