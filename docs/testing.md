@@ -779,3 +779,24 @@ swift build
   - *moving frames not followed by a scanner change within 1 s*: frames where the blob set shifted by more than 2 pt, with no scan in the next second whose on-bar key/x/width signature differed from the previous scan. This is the "the bar moved and the engine did not notice" count.
   - Caveats: menu extras that draw a gap of 4+ px inside themselves split into two blobs; adjacent items closer than 4 px merge; the clock and animated items cause `moving`. Treat the numbers as a rate, not exact truth.
 - **Decision rule (follow-up, not this bead).** If disagreement is frequent or long (for example more than a few percent of samples, or any key with runs of many seconds, or repeated unnoticed moves), file pixel tracking as a safety net for the opt-in order mode (epic sommelier-8z5). If rare and short, close the question.
+
+## Live checklist: order mode switch (sommelier-8z5.7)
+
+For the orchestrator, never an implementer. Bartender quit, the user's full bar, a scratch layout (`SOMMELIER_LAYOUT_FILE=<scratch>/layout.json`, so the real layout is never touched), `make dummy ARGS="--count 2"`, Sommelier run directly (`make app-run`).
+
+Before anything, back up all three plists and note their checksums (restore and compare at the end):
+
+    cp ~/Library/Group\ Containers/com.apple.MenuBar/Library/Preferences/com.apple.MenuBar.plist <scratch>/MenuBar.plist.bak      # order store
+    cp ~/Library/Preferences/com.apple.controlcenter.plist <scratch>/controlcenter.plist.bak
+    cp ~/Library/Group\ Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist <scratch>/group.controlcenter.plist.bak
+
+Use a scratch layout that already has `placed` entries but no `orderMode` (an older layout), so migration is exercised. Steps:
+
+1. [ ] **macOSOwns, 10 passes.** Start with the toggle off. The log shows `order mode: macOS owns the order (N remembered placements, not enforced)`. Run 10 passes (menu bar changes, Retry, launch/quit the dummy): `grep -c 'plan: phase=order' ~/Library/Logs/Sommelier/sommelier.log` and `grep -c 'order: moving'` over the run both stay 0 (compare counts before and after, the log is cumulative).
+2. [ ] **Hidden -> Visible show of a dummy.** Hide a dummy, drop it into Visible in Arrange: it spins only until it appears on the bar, then is verified wherever macOS put it (no order ghost, no timeout on order). Hide it again from Arrange and confirm it leaves the bar.
+3. [ ] **Reorder refused.** Drop a Visible capsule at another Visible position: the message line reads exactly "Order follows macOS here. Command-drag the item in the menu bar to move it, or turn on \"Let Sommelier keep an order for items I place\"." The layout file is unchanged and nothing moves. Placed rows show the crossed-out pin ("Placement remembered, not enforced (order follows macOS)"); there is no Move left/right in the context menu.
+4. [ ] **Switch to placedOnly.** Turn on "Let Sommelier keep an order for items I place". The log shows `order mode: placed items only (N placed)`. The remembered placements are now obligations: `plan: phase=order` may appear, and only for placed keys. A drop of a dummy at a Visible position is moved with the real mouse (floating notice shown), verified, and Move left/right appear. Hide/show of the dummy still works.
+5. [ ] **Switch back.** Turn the toggle off. The order notices clear, no further `plan: phase=order` or `order: moving` lines appear, placements are remembered (crossed-out pin), and hide/show of the dummy still works.
+6. [ ] Quit, restore the three plists from the backups and diff them against the live files; `trackedApplications` equal to the backup; real `layout.json` absent or untouched.
+
+**Abort rules** (stop at once, restore the plists, report): any `plan: phase=order` or `order: moving` while in macOSOwns; in placedOnly, any drag of a key that is not in `placed`; any move dispatched while the toggle reads off; a layout write that changes `placed` while in macOSOwns.
