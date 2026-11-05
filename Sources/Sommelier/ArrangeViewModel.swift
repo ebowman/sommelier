@@ -64,6 +64,9 @@ final class ArrangeViewModel {
     /// The layout further drops build on: the engine's, or the pending copy rebased onto it (the engine's additions survive).
     var layout: ArrangeLayout { pending.effective(over: state.layout) }
 
+    /// The engine's hide-unit rule (gdu.75): drops and the unit note group exactly like the planner.
+    private var units: HideUnitRule { state.hideUnits }
+
     var observationProblem: String? { ArrangeSections.observationProblem(lastError: state.lastError) }
     /// False while the bar has no trustworthy observation (none yet, or the last one failed/disagreed).
     var observationAvailable: Bool { !state.observed.onBar.isEmpty && observationProblem == nil }
@@ -74,7 +77,7 @@ final class ArrangeViewModel {
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
                              suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
                              pendingConfirmation: state.pendingConfirmation,
-                             observationProblem: observationProblem, filter: filter)
+                             observationProblem: observationProblem, filter: filter, units: units)
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -165,14 +168,14 @@ final class ArrangeViewModel {
         let rows = content.strip(section).rows
         let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,
                                        observationAvailable: observationAvailable,
-                                       bar: state.observed.onBar, displayName: displayName)
+                                       bar: state.observed.onBar, displayName: displayName, units: units)
         NSLog("[Sommelier] arrange: drop %@ -> %@ slot %d", "\(key)", section.rawValue, slot)
         return submit(outcome, key: key)
     }
 
     func move(_ key: ItemKey, to section: LayoutSection) {
         _ = submit(ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
-                                       observationAvailable: observationAvailable), key: key)
+                                       observationAvailable: observationAvailable, units: units), key: key)
     }
 
     /// Item name for refusal texts: the engine's `ItemInfo` when known, else the key.
@@ -183,18 +186,18 @@ final class ArrangeViewModel {
     func canMove(_ key: ItemKey, to section: LayoutSection) -> Bool {
         guard layout.section(of: key) != section else { return false }   // already there (menu item stays disabled)
         if case .move = ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
-                                            observationAvailable: observationAvailable) { return true }
+                                            observationAvailable: observationAvailable, units: units) { return true }
         return false
     }
 
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
         _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
-                                    observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName), key: key)
+                                    observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units), key: key)
     }
 
     func canStep(_ key: ItemKey, _ dir: ArrangeDrop.Direction) -> Bool {
         if case .move = ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
-                                         observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName) { return true }
+                                         observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units) { return true }
         return false
     }
 
@@ -224,7 +227,7 @@ final class ArrangeViewModel {
                 // Same clamp as a UI drop; the index is 0-based among movable items (modules do not count).
                 let outcome = ArrangeDrop.drop(layout: self.layout, key: key, section: section, movableIndex: index,
                                                capabilities: self.cap, observationAvailable: self.observationAvailable,
-                                               bar: self.state.observed.onBar, displayName: self.displayName)
+                                               bar: self.state.observed.onBar, displayName: self.displayName, units: self.units)
                 _ = self.submit(outcome, key: key)
                 if interval > 0 { try? await Task.sleep(for: .seconds(interval)) }
             }
@@ -292,10 +295,10 @@ final class ArrangeViewModel {
         Task { await engine.clearFailures(); await engine.requestReconcile() }
     }
 
-    func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout), base: state.layoutRevision) }
+    func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout, units: units), base: state.layoutRevision) }
 
     func askHideNotFitting() {
-        let r = ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap)
+        let r = ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap, units: units)
         let c = content
         func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
         confirm = .hideNotFitting(r.layout, titles: r.moved.map(t), blocked: r.blocked.map(t), base: state.layoutRevision)

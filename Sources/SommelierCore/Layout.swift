@@ -98,9 +98,9 @@ public struct Layout: Codable, Equatable, Sendable {
     /// `.module` keys (see `trailingSystemBlock`), because anything right of it is unreachable and the engine would
     /// otherwise try to drag real items to realize it. With no such run it appends. An explicit index is taken literally.
     @discardableResult
-    public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil) -> [ItemKey] {
-        let unit = key.hideUnit
-        let siblings = allKeys.filter { $0 != key && $0.hideUnit == unit }
+    public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil, units: HideUnitRule = .ownerKeys) -> [ItemKey] {
+        let unit = units.unit(of: key)
+        let siblings = allKeys.filter { $0 != key && units.unit(of: $0) == unit }
         let group = [key] + siblings
         for k in group { remove(k) }
         insert(group, into: section, at: index)
@@ -111,11 +111,11 @@ public struct Layout: Codable, Equatable, Sendable {
     /// hide-unit siblings, to the end of `hidden`, in the order given. Keys not in the layout or already hidden/always
     /// hidden are ignored. Returns every key that actually moved (siblings included), in the order moved.
     @discardableResult
-    public mutating func hideNotFitting(_ keys: [ItemKey]) -> [ItemKey] {
+    public mutating func hideNotFitting(_ keys: [ItemKey], units: HideUnitRule = .ownerKeys) -> [ItemKey] {
         var moved: [ItemKey] = []
         for k in keys {
             guard let s = section(of: k), s == .visible else { continue }
-            for m in move(k, to: .hidden) where !moved.contains(m) { moved.append(m) }
+            for m in move(k, to: .hidden, units: units) where !moved.contains(m) { moved.append(m) }
         }
         return moved
     }
@@ -155,13 +155,13 @@ public struct Layout: Codable, Equatable, Sendable {
     /// De-duplicates keeping the first occurrence in visible -> hidden -> alwaysHidden order, then normalizes hide
     /// units (see `normalizedHideUnits`). Silent; use `validatedReportingNormalization()` where the user should hear
     /// about moved keys.
-    public func validated() -> Layout { validatedReportingNormalization().0 }
+    public func validated(units: HideUnitRule = .ownerKeys) -> Layout { validatedReportingNormalization(units: units).0 }
 
     /// Like `validated()` but also returns the keys that normalization moved to `visible`. This is a return value, not
     /// a stored property, so `Layout` stays a pure value with no hidden state; the load path (store/engine) and
     /// `mbprobe` print or log the list once when a layout is loaded.
-    public func validatedReportingNormalization() -> (Layout, moved: [ItemKey]) {
-        let n = dedup().layout.normalizedHideUnits()
+    public func validatedReportingNormalization(units: HideUnitRule = .ownerKeys) -> (Layout, moved: [ItemKey]) {
+        let n = dedup().layout.normalizedHideUnits(units: units)
         return (n.layout, n.moved)
     }
 
@@ -169,9 +169,9 @@ public struct Layout: Codable, Equatable, Sendable {
     /// can never converge, so its hidden-section keys move to `visible`, inserted before the trailing system block
     /// (the default `move` rule) in their original relative order (`hidden` first, then `alwaysHidden`). A unit split
     /// only between `hidden` and `alwaysHidden` is untouched (both are hidden). `moved` lists the keys moved.
-    public func normalizedHideUnits() -> (layout: Layout, moved: [ItemKey]) {
-        let visibleUnits = Set(visible.map(\.hideUnit))
-        let moved = (hidden + alwaysHidden).filter { visibleUnits.contains($0.hideUnit) }
+    public func normalizedHideUnits(units: HideUnitRule = .ownerKeys) -> (layout: Layout, moved: [ItemKey]) {
+        let visibleUnits = Set(visible.map { units.unit(of: $0) })
+        let moved = (hidden + alwaysHidden).filter { visibleUnits.contains(units.unit(of: $0)) }
         guard !moved.isEmpty else { return (self, []) }
         let movedSet = Set(moved)
         var out = self
@@ -245,7 +245,7 @@ public struct Layout: Codable, Equatable, Sendable {
         var warnings = d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {
             warnings.append("hide units normalized: " + n.moved.map(\.description).joined(separator: ", ")
-                + " moved to visible (all items of an app hide or show at once)")
+                + " moved to visible (all items governed by one Control Center entry hide or show at once)")
         }
         return (n.layout, warnings)
     }

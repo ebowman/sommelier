@@ -47,10 +47,11 @@ public enum ItemKey: Hashable, Codable, Sendable, CustomStringConvertible {
     }
 }
 
-/// The granularity at which Control Center hides: `trackedApplications[...].isAllowed` applies to a whole app, so
-/// hiding one status item of an app parks all of its items (docs/findings-visibility.md). Layout, Reconciler and the
-/// UI therefore treat every item of a unit as one thing. `id` is the owner key for status items, `module:<Name>` for
-/// each Control Center module (modules hide independently), and the bundle id for heuristic keys.
+/// The granularity at which Control Center hides: `trackedApplications[...].isAllowed` applies to a whole ENTRY, so
+/// hiding one status item parks every item the entry governs (docs/findings-visibility.md). Layout, Reconciler and the
+/// UI therefore treat every item of a unit as one thing. The unit of a key is decided by `HideUnitRule` (gdu.75): the
+/// tracked entry key when the key resolves to one (a helper shares its parent's unit), else `id` = the owner key for
+/// status items, `module:<Name>` for each Control Center module (modules hide independently), the bundle id for heuristic keys.
 public struct HideUnit: Hashable, Sendable, CustomStringConvertible {
     public let id: String
     public init(id: String) { self.id = id }
@@ -58,6 +59,8 @@ public struct HideUnit: Hashable, Sendable, CustomStringConvertible {
 }
 
 extension ItemKey {
+    /// The OWNER-KEY unit: the fallback for a key with no tracked entry. Code that groups keys must go through a
+    /// `HideUnitRule` instead (the planner and the actuator share one, gdu.75).
     public var hideUnit: HideUnit {
         switch self {
         case .status(let owner, _): return HideUnit(id: owner)
@@ -67,13 +70,39 @@ extension ItemKey {
     }
 }
 
+/// THE hide-unit rule (gdu.75), shared by planner, Layout, Arrange, activator and engine: keys that resolve to the same
+/// Control Center tracked entry (`TrackedEntryResolver`, the same lookup the actuator uses) form ONE unit whose id is the
+/// entry key, so a helper (Hazel Helper) and its parent app (com.noodlesoft.Hazel) hide, show and move together. Keys with
+/// no entry keep the owner-key unit (`ItemKey.hideUnit`). A snapshot value: build it once per pass/render, not per key.
+public struct HideUnitRule: Sendable {
+    /// No Control Center knowledge: every key is its own owner-key unit (the pre-gdu.75 rule; also the default in tests).
+    public static let ownerKeys = HideUnitRule(resolver: nil, bundleIDs: [:])
+    public let resolver: TrackedEntryResolver?
+    /// Owning process bundle ids by key (candidates for the entry lookup, as the actuator does).
+    public let bundleIDs: [ItemKey: String]
+    public init(resolver: TrackedEntryResolver?, bundleIDs: [ItemKey: String] = [:]) {
+        self.resolver = resolver; self.bundleIDs = bundleIDs
+    }
+    public init(resolver: TrackedEntryResolver?, items: [ItemKey: ItemInfo]) {
+        self.init(resolver: resolver, bundleIDs: items.compactMapValues(\.ownerBundleID))
+    }
+
+    /// The tracked entry key governing `key`, nil when none (no resolver, module, untracked).
+    public func trackedKey(of key: ItemKey) -> String? { resolver?.trackedKey(for: key, bundleID: bundleIDs[key]) }
+
+    public func unit(of key: ItemKey) -> HideUnit {
+        if let t = trackedKey(of: key) { return HideUnit(id: t) }
+        return key.hideUnit
+    }
+}
+
 /// Groups keys by hide unit. An array, not a dictionary: units appear in first-seen order and so do the keys within a
 /// unit. Duplicate keys are kept as given (callers dedupe).
-public func hideUnits(_ keys: some Sequence<ItemKey>) -> [(unit: HideUnit, keys: [ItemKey])] {
+public func hideUnits(_ keys: some Sequence<ItemKey>, rule: HideUnitRule = .ownerKeys) -> [(unit: HideUnit, keys: [ItemKey])] {
     var index: [HideUnit: Int] = [:]
     var out: [(unit: HideUnit, keys: [ItemKey])] = []
     for k in keys {
-        let u = k.hideUnit
+        let u = rule.unit(of: k)
         if let i = index[u] { out[i].keys.append(k) } else { index[u] = out.count; out.append((u, [k])) }
     }
     return out

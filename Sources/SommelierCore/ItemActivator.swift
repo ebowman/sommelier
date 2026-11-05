@@ -105,6 +105,8 @@ public struct ActivationTarget: @unchecked Sendable {
     /// the bar (live-hidden items keep a stale app-side frame), so this, not `isOnBar`, decides whether it is drawn.
     public var hiddenInControlCenter: Bool
     public var bundleID: String?
+    /// The hide unit the reveal holds (gdu.75): the tracked entry (`HideUnitRule` uses the same id), the owner-key unit when none.
+    public var hideUnit: HideUnit { trackedKey.map { HideUnit(id: $0) } ?? key.hideUnit }
     public init(key: ItemKey, ownerPID: pid_t, trackedKey: String?, frame: CGRect, isOnBar: Bool, systemOverflow: Bool,
                 element: AXUIElement? = nil, hiddenInControlCenter: Bool = false, bundleID: String? = nil) {
         self.bundleID = bundleID
@@ -283,7 +285,7 @@ public actor ItemActivator {
             return await pressAndWait(target, mechanism: .axPressParked, t0: t0, revealMS: nil, revealed: false, say: say)
         }
         guard let tracked = target.trackedKey else { return .failed(.unavailable("no Control Center entry")) }
-        let unit = key.hideUnit
+        let unit = target.hideUnit
         guard await hold.beginTransientReveal(unit, timeout: .seconds(Int(config.hardCap) + 5)) else { return .failed(.engineBusy) }
         // The pre-reveal hosted count, read right before the show write (after the hold). Without a complete baseline a
         // landed reveal cannot be told from a stale on-bar frame: do not reveal, press in place instead.
@@ -395,7 +397,7 @@ public actor ItemActivator {
     /// the strip after the menu closed. (b) If the strip never shows the item: collapse again and fail with the cause.
     private func openThroughSystemOverflow(_ t: ActivationTarget, stacked: CGRect, chevron: CGRect, button: ClickButton, t0: Date,
                                            revealMS: Int, say: (String) -> Void, tracked: String) async -> ActivationResult {
-        let unit = t.key.hideUnit
+        let unit = t.hideUnit
         func fail(_ e: ActivationError) async -> ActivationResult {
             _ = await rehide(tracked: tracked, unit: unit, say: say)
             return .failed(e)
@@ -465,7 +467,7 @@ public actor ItemActivator {
     private func clickAndWait(_ t: ActivationTarget, button: ClickButton, mechanism: ActivationMechanism, t0: Date, revealMS: Int?,
                               revealed: Bool, say: (String) -> Void, tracked: String? = nil,
                               afterClose: () async -> String? = { nil }) async -> ActivationResult {
-        let unit = t.key.hideUnit
+        let unit = t.hideUnit
         if platform.pressedMouseButtons() != 0 {
             if let n = await afterClose() { say("note: \(n)") }
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
@@ -489,7 +491,7 @@ public actor ItemActivator {
 
     private func pressAndWait(_ t: ActivationTarget, mechanism: ActivationMechanism, t0: Date, revealMS: Int?, revealed: Bool,
                               say: (String) -> Void, tracked: String? = nil) async -> ActivationResult {
-        let unit = t.key.hideUnit
+        let unit = t.hideUnit
         let baseline = platform.menuBaseline(t)
         platform.closeMonitor?.start()
         let err = platform.axPress(t)
@@ -505,7 +507,7 @@ public actor ItemActivator {
     private func finish(_ t: ActivationTarget, mechanism: ActivationMechanism, clickMS: Int, revealMS: Int?, baseline: Int, revealed: Bool,
                         tracked: String?, say: (String) -> Void, pressError: Int32, requireMenu: Bool,
                         afterClose: () async -> String? = { nil }) async -> ActivationResult {
-        let unit = t.key.hideUnit
+        let unit = t.hideUnit
         let postedAt = platform.now()
         func since(_ d: Date) -> TimeInterval { platform.now().timeIntervalSince(d) }
         // 1. Wait for the menu to appear (up to menuAppearTimeout).

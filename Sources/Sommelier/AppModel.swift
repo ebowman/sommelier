@@ -155,7 +155,7 @@ final class AppModel {
                     throw ObserveError.noAgreement(scans: reading.scans)
                 }
                 let resolved = reading.items
-                let (layout, excluded) = LayoutBuilder.build(from: resolved)
+                let (layout, excluded) = LayoutBuilder.build(from: resolved, resolver: EngineFactory.currentTrackedResolver())
                 await engine.setLayout(layout)
                 NSLog("[Sommelier] initialized layout from current order (\(layout.keys(in: .visible).count + layout.keys(in: .hidden).count) keys; excluded \(excluded.count))")
                 let selfKeys = (layout.keys(in: .visible) + layout.keys(in: .hidden)).filter { "\($0)".lowercased().contains("sommelier") }

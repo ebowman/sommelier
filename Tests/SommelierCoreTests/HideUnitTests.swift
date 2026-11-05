@@ -94,7 +94,7 @@ struct HideUnitTests {
         let p = rec.plan(observed: obs([a1, a2]), layout: Layout(visible: [a1], hidden: [a2]), capabilities: free)
         #expect(p.actions.isEmpty); #expect(p.phase == .converged)
         #expect(p.skipped.map(\.key) == [a2])
-        #expect(p.skipped[0].reason == "hidden together with com.a: all items of an app hide or show at once")
+        #expect(p.skipped[0].reason == "hidden together with com.a: all items governed by one Control Center entry hide or show at once")
         #expect(p.desiredOnBar == [a1, a2])
     }
 

@@ -41,6 +41,8 @@ public final class EngineState {
     public var layout: Layout
     /// Display metadata for currently known items (parked or on bar), refreshed with every adopted scan.
     public var items: [ItemKey: ItemInfo] = [:]
+    /// The engine's hide-unit rule (gdu.75) for the items above: Arrange and the overflow panel group with it, as the planner does.
+    public var hideUnits: HideUnitRule = .ownerKeys
     public var showHiddenSection: Bool
     /// Requested reveal of the always-hidden section too (option-click). Request only, like `showHiddenSection`.
     public var showAlwaysHidden: Bool = false

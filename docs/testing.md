@@ -162,7 +162,7 @@ window shows, `arrange:` lines give drop -> verified timings). Act on MBDummy it
 
 Manual checklist (every step: the capsule shows "⟳" until `mbprobe list` agrees, then "✓"):
 1. Visible -> Hidden: drag Dummy A into the Hidden strip (or right-click > Move to Hidden). Dummy A AND Dummy B (same app = one hide
-   unit) show "⟳", leave the bar (agent pid unchanged), appear in Hidden with "✓".
+   unit; in general one Control Center entry, so a helper hides with its parent app, gdu.75 `HideUnitEntryTests`) show "⟳", leave the bar (agent pid unchanged), appear in Hidden with "✓".
 2. Hidden -> Visible at the first movable slot (index 0 among movable items; with Wi-Fi leftmost that is right after it): drag Dummy A to
    the left edge of the Visible strip. Both return to the bar; `mbprobe list` shows them at that position; "✓" only after that.
 3. Reorder within Visible: drag Dummy A two capsules right (real Cmd+drag, 5-15 s). Ghosts at the target while it runs; on a failure the

@@ -158,7 +158,7 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
 
     public func trackedKey(for item: ResolvedItem) -> String? {
         guard let resolver = TrackedEntryResolver.current() else { return nil }
-        return resolver.trackedKey(candidates: [item.item.ownerBundleID, item.ownerKey].compactMap { $0 })
+        return resolver.trackedKey(for: item.key, bundleID: item.item.ownerBundleID)
     }
 
     public func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {

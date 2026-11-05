@@ -19,13 +19,13 @@ public enum LayoutBuilder {
     /// The result is hide-unit normalized (gdu.44): an app with one item on the bar and a sibling parked would otherwise be a
     /// split unit that can never converge. `build(from:)` normalizes silently; use `buildReportingNormalization` to learn
     /// which parked keys were moved to `visible`.
-    public static func build(from resolved: [ResolvedItem]) -> (layout: Layout, excluded: [String]) {
-        let r = buildReportingNormalization(from: resolved)
+    public static func build(from resolved: [ResolvedItem], resolver: TrackedEntryResolver? = nil) -> (layout: Layout, excluded: [String]) {
+        let r = buildReportingNormalization(from: resolved, resolver: resolver)
         return (r.layout, r.excluded)
     }
 
     /// Like `build(from:)`, also returning the keys normalization moved from `hidden` to `visible` (empty when none).
-    public static func buildReportingNormalization(from resolved: [ResolvedItem]) -> (layout: Layout, excluded: [String], normalized: [ItemKey]) {
+    public static func buildReportingNormalization(from resolved: [ResolvedItem], resolver: TrackedEntryResolver? = nil) -> (layout: Layout, excluded: [String], normalized: [ItemKey]) {
         var layout = Layout()
         var excluded: [String] = []
         var seen = Set<ItemKey>()
@@ -38,7 +38,9 @@ public enum LayoutBuilder {
             if !seen.insert(r.key).inserted { continue }
             if r.item.isOnMenuBar { layout.visible.append(r.key) } else { layout.hidden.append(r.key) }
         }
-        let n = layout.normalizedHideUnits()
+        var ids: [ItemKey: String] = [:]
+        for r in resolved { if let b = r.item.ownerBundleID, ids[r.key] == nil { ids[r.key] = b } }
+        let n = layout.normalizedHideUnits(units: HideUnitRule(resolver: resolver, bundleIDs: ids))
         return (n.layout, excluded, n.moved)
     }
 }

@@ -770,10 +770,10 @@ func runLayout(_ a: [String]) async {
             FileHandle.standardError.write(Data(("note: \(keys.count) self-positioning items were stale in the agreed scan ("
                 + keys.joined(separator: ", ") + "); written as they were observed\n").utf8))
         }
-        let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res)
+        let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res, resolver: EngineFactory.currentTrackedResolver())
         guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
         if !normalized.isEmpty {
-            FileHandle.standardError.write(Data(("warning: all items of an app hide or show at once; moved to visible: "
+            FileHandle.standardError.write(Data(("warning: all items governed by one Control Center entry hide or show at once; moved to visible: "
                 + normalized.map(\.description).joined(separator: ", ") + "\n").utf8))
         }
         for e in excluded { FileHandle.standardError.write(Data(("ignored non-item: " + e + "\n").utf8)) }
@@ -793,7 +793,7 @@ func runLayout(_ a: [String]) async {
         var idx: Int? = nil
         if a.count == 4 { guard let n = Int(a[3]) else { usage() }; idx = n - 1 }
         var l = load()
-        let movedKeys = l.move(key, to: section, index: idx)
+        let movedKeys = l.move(key, to: section, index: idx, units: HideUnitRule(resolver: EngineFactory.currentTrackedResolver()))
         if movedKeys.count > 1 { print("also moved: " + movedKeys.dropFirst().map(\.description).joined(separator: ", ")) }
         do { try store.save(l) } catch { fail("save failed: \(error)") }
         printLayout(l, only: section)

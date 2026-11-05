@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// One hidden item in the overflow panel. `unit`/`unitSize` expose the hide unit (all items of an app hide or show
+/// One hidden item in the overflow panel. `unit`/`unitSize` expose the hide unit (all items of one Control Center entry hide or show
 /// together): the panel draws a divider between units and a badge when `unitSize > 1`. The future Arrange window
 /// (gdu.19) should group by the same `unit` field.
 public struct OverflowEntry: Equatable, Sendable {
@@ -37,7 +37,7 @@ public enum OverflowEntries {
     public static let maxNameLength = 24
     public static let minWidth: CGFloat = 28
 
-    public static func make(layout: Layout, items: [ItemKey: ItemInfo], includeAlwaysHidden: Bool = false) -> [OverflowEntry] {
+    public static func make(layout: Layout, items: [ItemKey: ItemInfo], includeAlwaysHidden: Bool = false, units: HideUnitRule = .ownerKeys) -> [OverflowEntry] {
         let keys = layout.hidden + (includeAlwaysHidden ? layout.alwaysHidden : [])
         var seen = Set<ItemKey>()
         var out: [OverflowEntry] = []
@@ -46,8 +46,8 @@ public enum OverflowEntries {
             out.append(OverflowEntry(key: k, displayName: displayName(i), ownerBundleID: i.ownerBundleID,
                                      ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar))
         }
-        let pinnedUnits = Set(layout.alwaysHidden.map(\.hideUnit))
-        out = out.map { var e = $0; e.pinnedHidden = layout.hidden.contains(e.key) && pinnedUnits.contains(e.key.hideUnit); return e }
+        let pinnedUnits = Set(layout.alwaysHidden.map { units.unit(of: $0) })
+        out = out.map { var e = $0; e.pinnedHidden = layout.hidden.contains(e.key) && pinnedUnits.contains(units.unit(of: e.key)); return e }
         // Items macOS pushed into its own overflow are "the rest" too: after the ones we hid, in bar (layout) order.
         let hiddenKeys = Set(out.map(\.key))
         var rest: [OverflowEntry] = []
@@ -56,13 +56,13 @@ public enum OverflowEntries {
             rest.append(OverflowEntry(key: k, displayName: displayName(i), ownerBundleID: i.ownerBundleID,
                                       ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar, kind: .notFitting))
         }
-        return grouped(out) + grouped(rest)
+        return grouped(out, units) + grouped(rest, units)
     }
 
     /// Keeps the keys of a unit adjacent, stable by first appearance, and records the unit size.
-    private static func grouped(_ entries: [OverflowEntry]) -> [OverflowEntry] {
+    private static func grouped(_ entries: [OverflowEntry], _ units: HideUnitRule) -> [OverflowEntry] {
         var grouped: [OverflowEntry] = []
-        for g in hideUnits(entries.map(\.key)) {
+        for g in hideUnits(entries.map(\.key), rule: units) {
             for k in g.keys {
                 guard var e = entries.first(where: { $0.key == k }) else { continue }
                 e.unit = g.unit; e.unitSize = g.keys.count

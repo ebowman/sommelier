@@ -620,10 +620,10 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
 }
 
 @Test func batchSiblingsOfTheSameAppAreVerifiedToo() async {
-    // B and C belong to one app (one isAllowed flag): hiding B also hides C, and C is verified and reported.
+    // B and C belong to one app (one isAllowed flag): the batch asks for both (gdu.75: never as collateral), one write, both verified.
     let w = World(["A", "B", "C"])
     w.shared = ["B": "tracked.BC", "C": "tracked.BC"]
-    let out = await actuator(w).applyHiddenBatchDetailed([key("B"): true])
+    let out = await actuator(w).applyHiddenBatchDetailed([key("B"): true, key("C"): true])
     #expect(out.result.isVerified)
     #expect(Set(out.perKey.keys) == [key("B"), key("C")])
     #expect(w.allowedWrites == [["tracked.BC": false]])
@@ -632,20 +632,40 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
 
 // gdu.68: a helper resolved to its parent entry shares the parent's flag.
 @Test func helperAndParentSiblingsHideThroughOneFlag() async {
-    // Actuator side: a helper and its parent's own item share one tracked key: one write, both verified.
+    // Actuator side: a helper and its parent's own item share one tracked key: the unit hides together ON REQUEST
+    // (gdu.75: both asked for), one write, both verified. Hiding the helper alone is refused (next test).
     let w = World(["A", "Helper", "Parent"])
     w.shared = ["Helper": "tracked.Parent", "Parent": "tracked.Parent"]
-    let out = await actuator(w).applyHiddenBatchDetailed([key("Helper"): true])
+    let out = await actuator(w).applyHiddenBatchDetailed([key("Helper"): true, key("Parent"): true])
     #expect(out.result.isVerified)
     #expect(Set(out.perKey.keys) == [key("Helper"), key("Parent")])
     #expect(w.allowedWrites == [["tracked.Parent": false]])
+}
+
+// gdu.75: the actuator never changes an item the batch did not request.
+@Test func hidingOnlyAHelperRefusesTheUnitInsteadOfHidingTheParentToo() async {
+    let w = World(["A", "Helper", "Parent"])
+    w.shared = ["Helper": "tracked.Parent", "Parent": "tracked.Parent"]
+    let act = actuator(w)
+    let out = await act.applyHiddenBatchDetailed([key("Helper"): true])
+    if case .failed(.unsupportedItem(let why), _) = out.result { #expect(why == "hides together with tracked.Parent: move the whole group") } else { Issue.record("got \(out.result)") }
+    #expect(w.allowedWrites.isEmpty && w.restarts == 0)
+    #expect(w.order == ["A", "Helper", "Parent"])   // nothing hidden
+    #expect(await act.lastBatchRefused[key("Helper")] == "hides together with tracked.Parent: move the whole group")
+    // Mixed batch: A is applied, the helper-only unit is refused, the parent stays on the bar.
+    let mixed = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("Helper"): true])
+    #expect(mixed.perKey[key("A")]?.isVerified == true)
+    #expect(mixed.perKey[key("Parent")] == nil)
+    #expect(w.allowedWrites.count == 1 && w.allowedWrites[0].keys.contains("tracked.Parent") == false)
+    #expect(w.order.contains("Parent") && w.order.contains("Helper"))
 }
 
 @Test func batchRejectsConflictingRequestsForOneApp() async {
     let w = World(["A", "B"])
     w.shared = ["A": "tracked.AB", "B": "tracked.AB"]
     let out = await actuator(w).applyHiddenBatchDetailed([key("A"): true, key("B"): false])
-    if case .failed(.mechanismFailed, _) = out.result {} else { Issue.record("got \(out.result)") }
+    // gdu.75: refused per unit with the group reason (no write), not a whole-batch mechanism failure.
+    if case .failed(.unsupportedItem(let why), _) = out.result { #expect(why == "hides together with tracked.AB: move the whole group") } else { Issue.record("got \(out.result)") }
     #expect(w.allowedWrites.isEmpty && w.restarts == 0)
     let empty = await actuator(w).applyHiddenBatchDetailed([:])
     #expect(empty.result.isVerified && empty.perKey.isEmpty)
@@ -967,7 +987,7 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
 @Test func liveSiblingsOfTheSameAppAreVerifiedToo() async {
     let w = World(["A", "B", "C"])
     w.liveAvailable = true; w.shared = ["B": "tracked.BC", "C": "tracked.BC"]
-    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true])
+    let out = await liveActuator(w).applyHiddenBatchDetailed([key("B"): true, key("C"): true])
     #expect(out.result.isVerified && out.mechanism == .live)
     #expect(Set(out.perKey.keys) == [key("B"), key("C")])
     #expect(w.liveWrites == [["tracked.BC": false]] && w.order == ["A"] && w.restarts == 0)

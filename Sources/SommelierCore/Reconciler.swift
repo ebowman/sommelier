@@ -86,7 +86,8 @@ public struct Reconciler: Sendable {
 
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
-                     selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners) -> Plan {
+                     selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners,
+                     units rule: HideUnitRule = .ownerKeys) -> Plan {
         // Self-positioning owners (iStat Menus) move between slots on their own, so they are ANCHORS: never dragged,
         // never targeted by a relation that needs them to move, and their slot is authoritative (gdu.33). Hide/show
         // capability is untouched. The actuator's drift exemption uses the same set (`SelfPositioning.defaultOwners`).
@@ -104,7 +105,7 @@ public struct Reconciler: Sendable {
         let parkedSet = Set(parked)
         let observedAll = Set(onBar + parked)
 
-        // Classify. Hide granularity is the app (HideUnit): decide per unit, then apply the decision to every observed
+        // Classify. Hide granularity is the Control Center entry (HideUnit, gdu.75): decide per unit, then apply the decision to every observed
         // key of the unit, so the plan never hides one item of an app and leaves a sibling on the bar.
         // A unit is hidden only if ALL its layout-listed observed keys are in hidden/alwaysHidden (and the hidden
         // section is not being revealed); otherwise it is shown. A unit the layout does not list at all follows the
@@ -115,8 +116,8 @@ public struct Reconciler: Sendable {
         // ABSENT from this observation (gdu.44): it joins its unit's section instead of following `newItemPolicy`.
         var unitJoinSection: [HideUnit: LayoutSection] = [:]
         var listedByUnit: [HideUnit: [LayoutSection]] = [:]
-        for s in LayoutSection.allCases { for k in layout.keys(in: s) { listedByUnit[k.hideUnit, default: []].append(s) } }
-        for (unit, ks) in hideUnits(onBar + parked) {
+        for s in LayoutSection.allCases { for k in layout.keys(in: s) { listedByUnit[rule.unit(of: k), default: []].append(s) } }
+        for (unit, ks) in hideUnits(onBar + parked, rule: rule) {
             var secs = ks.compactMap { layout.section(of: $0) }
             if secs.isEmpty, let listed = listedByUnit[unit] {
                 secs = listed
@@ -158,7 +159,7 @@ public struct Reconciler: Sendable {
                 for k in ks {
                     let s = layout.section(of: k)
                     if (s == .alwaysHidden && !showAlwaysHidden) || (s == .hidden && !showHiddenSection) {
-                        skipped.append(SkippedAction(k, "hidden together with \(anchor.hideUnit.id): all items of an app hide or show at once"))
+                        skipped.append(SkippedAction(k, "hidden together with \(rule.unit(of: anchor).id): all items governed by one Control Center entry hide or show at once"))
                     }
                 }
             }
@@ -167,11 +168,11 @@ public struct Reconciler: Sendable {
         var wantOnBar = Set<ItemKey>()
         var unknownVisible: [ItemKey] = []
         for k in onBar + parked {
-            let wants = unitWantsBar[k.hideUnit] ?? false
+            let wants = unitWantsBar[rule.unit(of: k)] ?? false
             if wants { wantOnBar.insert(k) }
             if layout.section(of: k) == nil {
                 if wants { unknownVisible.append(k) }
-                newItems.append(NewItem(k, unitJoinSection[k.hideUnit] ?? (wants ? .visible : .hidden)))
+                newItems.append(NewItem(k, unitJoinSection[rule.unit(of: k)] ?? (wants ? .visible : .hidden)))
             }
         }
         let absent = layout.allKeys.filter { !observedAll.contains($0) }
@@ -181,10 +182,10 @@ public struct Reconciler: Sendable {
         var unhideable = Set<ItemKey>()
         var blocker: [HideUnit: ItemKey] = [:]
         for k in onBar where !wantOnBar.contains(k) && !capabilities(k).canHide {
-            if blocker[k.hideUnit] == nil { blocker[k.hideUnit] = k }
+            if blocker[rule.unit(of: k)] == nil { blocker[rule.unit(of: k)] = k }
         }
         for k in onBar where !wantOnBar.contains(k) {
-            if let b = blocker[k.hideUnit] {
+            if let b = blocker[rule.unit(of: k)] {
                 unhideable.insert(k)
                 skipped.append(SkippedAction(k, k == b ? (capabilities(k).reason ?? "cannot be hidden")
                                                        : "cannot be hidden: \(b) in the same app cannot be hidden"))

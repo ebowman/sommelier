@@ -94,6 +94,8 @@ public enum EngineFactory {
         var lc = LiveActuator.Config()
         lc.allowFallback = false
         lc.allowAgentRestartProvider = allowAgentRestart   // the Settings toggle (gdu.55); nil result = automatic
+        var config = config
+        config.trackedResolver = { currentTrackedResolver() }   // hide units follow the tracked entries, as the actuator does (gdu.75)
         let actuator = LiveActuator(platform: platform, config: lc, log: { log("actuator: " + $0) })
         return LayoutEngine(observer: RecordingObserver(inner: makeObserver(platform: platform, log: { log("observer: " + $0) }), ids: ids, transform: filter), actuator: actuator,
                             store: store, capabilities: rules, state: state,

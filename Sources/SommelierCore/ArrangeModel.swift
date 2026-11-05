@@ -191,14 +191,14 @@ public enum ArrangeSections {
                             capabilities: (ItemKey) -> Capability, showHiddenSection: Bool = false,
                             awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
                             pendingConfirmation: Set<ItemKey> = [],
-                            observationProblem: String? = nil, filter: String = "") -> ArrangeContent {
+                            observationProblem: String? = nil, filter: String = "", units: HideUnitRule = .ownerKeys) -> ArrangeContent {
         // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
         let parked = Set(observed.parked)
 
         func title(_ k: ItemKey) -> String { items[k].map(OverflowEntries.displayName) ?? fallbackTitle(k) }
-        func mates(_ k: ItemKey) -> [String] { layout.allKeys.filter { $0 != k && $0.hideUnit == k.hideUnit }.map(title) }
+        func mates(_ k: ItemKey) -> [String] { layout.allKeys.filter { $0 != k && units.unit(of: $0) == units.unit(of: k) }.map(title) }
 
         func row(_ k: ItemKey, ghost: Bool, running: Bool) -> ArrangeRow {
             let cap = capabilities(k)
@@ -212,7 +212,7 @@ public enum ArrangeSections {
             return ArrangeRow(key: k, title: title(k), ownerName: info?.ownerName ?? "", ownerBundleID: info?.ownerBundleID ?? ownerBundleID(k),
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,
                               isGhost: ghost, isBoundary: observed.overflowChevron == k,
-                              notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: k.hideUnit,
+                              notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
                               unitMates: mates(k), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
         }
 
@@ -399,7 +399,8 @@ public enum ArrangeDrop {
     /// (`Layout.move` semantics); nil appends (Visible: before the trailing system block).
     public static func outcome(layout: Layout, key: ItemKey, to section: LayoutSection, index: Int?,
                                capabilities: (ItemKey) -> Capability, willNotFit: Bool = false, observationAvailable: Bool = true,
-                               bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
+                               bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
+                               units: HideUnitRule = .ownerKeys) -> Outcome {
         // Only moves that stay inside our own data (Hidden <-> Always hidden) may proceed without an observation.
         if !observationAvailable, section == .visible || layout.section(of: key) == .visible || layout.section(of: key) == nil {
             return .rejected(noObservation)
@@ -413,7 +414,7 @@ public enum ArrangeDrop {
             return .rejected(positionsItself)
         }
         var l = layout
-        let moved = l.move(key, to: section, index: index)
+        let moved = l.move(key, to: section, index: index, units: units)
         if l == layout { return .noop }
         // gdu.67: a planner anchor keeps its observed slot, so an order-only move that puts a movable row on the far side of a
         // self-positioning row (relative to the OBSERVED bar) is never reached: the next pass re-plans around the anchor. Refuse it.
@@ -446,9 +447,9 @@ public enum ArrangeDrop {
     /// at or after the slot that is in the target section (rows of the moved unit and rows that are not in that section
     /// are skipped). nil = after everything (hidden: append; Visible: before the trailing system block). In Visible the
     /// index never exceeds the start of the trailing system block: dropping right of it clamps to before it.
-    public static func index(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection) -> Int? {
-        let unit = key.hideUnit
-        let lifted = layout.keys(in: section).filter { $0.hideUnit != unit }
+    public static func index(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection, units: HideUnitRule = .ownerKeys) -> Int? {
+        let unit = units.unit(of: key)
+        let lifted = layout.keys(in: section).filter { units.unit(of: $0) != unit }
         var idx: Int?
         var s = max(0, slot)
         while s < rows.count {
@@ -475,9 +476,9 @@ public enum ArrangeDrop {
     /// Layout index for "the n-th MOVABLE position" (0-based; modules do not count): just before movable item n of the
     /// section (unit lifted out), nil when n is past the last one. Index 0 is the first movable slot, after any leading
     /// anchors. Used by the `SOMMELIER_ARRANGE_MOVE` hook so it goes through the same clamp as a UI drop.
-    public static func index(layout: Layout, movableIndex n: Int, key: ItemKey, section: LayoutSection) -> Int? {
-        let unit = key.hideUnit
-        let lifted = layout.keys(in: section).filter { $0.hideUnit != unit }
+    public static func index(layout: Layout, movableIndex n: Int, key: ItemKey, section: LayoutSection, units: HideUnitRule = .ownerKeys) -> Int? {
+        let unit = units.unit(of: key)
+        let lifted = layout.keys(in: section).filter { units.unit(of: $0) != unit }
         let movable = lifted.indices.filter { if case .module = lifted[$0] { return false } else { return true } }
         guard n >= 0, n < movable.count else { return nil }
         return clamp(movable[n], in: lifted, section: section)
@@ -486,39 +487,42 @@ public enum ArrangeDrop {
     /// The same drop as the UI, addressed by movable index (see above).
     public static func drop(layout: Layout, key: ItemKey, section: LayoutSection, movableIndex: Int?,
                             capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
-                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
-        let idx = movableIndex.flatMap { index(layout: layout, movableIndex: $0, key: key, section: section) }
+                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
+                            units: HideUnitRule = .ownerKeys) -> Outcome {
+        let idx = movableIndex.flatMap { index(layout: layout, movableIndex: $0, key: key, section: section, units: units) }
         return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, observationAvailable: observationAvailable,
-                       bar: bar, displayName: displayName)
+                       bar: bar, displayName: displayName, units: units)
     }
 
     /// Full drop: slot in the displayed strip -> outcome.
     public static func drop(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection,
                             capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
-                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
-        let idx = index(layout: layout, rows: rows, slot: slot, key: key, section: section)
+                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
+                            units: HideUnitRule = .ownerKeys) -> Outcome {
+        let idx = index(layout: layout, rows: rows, slot: slot, key: key, section: section, units: units)
         let boundary = rows.firstIndex { $0.isBoundary }
         let notFit = boundary.map { slot <= $0 } ?? false
         return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, willNotFit: notFit,
-                       observationAvailable: observationAvailable, bar: bar, displayName: displayName)
+                       observationAvailable: observationAvailable, bar: bar, displayName: displayName, units: units)
     }
 
     /// "Move left/right" inside Visible: past the next movable capsule (anchors, the boundary and ghosts are skipped; the
     /// trailing system block is therefore never crossed).
     public static func step(layout: Layout, rows: [ArrangeRow], key: ItemKey, _ dir: Direction,
                             capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
-                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" }) -> Outcome {
+                            bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
+                            units: HideUnitRule = .ownerKeys) -> Outcome {
         guard observationAvailable else { return .rejected(noObservation) }
         guard let r = rows.firstIndex(where: { $0.key == key && !$0.isGhost }), layout.visible.contains(key) else { return .noop }
-        let unit = key.hideUnit
-        let lifted = layout.visible.filter { $0.hideUnit != unit }
+        let unit = units.unit(of: key)
+        let lifted = layout.visible.filter { units.unit(of: $0) != unit }
         let seq: [Int] = dir == .left ? Array(stride(from: r - 1, through: 0, by: -1)) : Array(((r + 1)..<max(r + 1, rows.count)))
         for j in seq {
             let c = rows[j]
-            guard !c.isAnchor, !c.isBoundary, !c.isGhost, c.key.hideUnit != unit, let p = lifted.firstIndex(of: c.key) else { continue }
+            guard !c.isAnchor, !c.isBoundary, !c.isGhost, units.unit(of: c.key) != unit, let p = lifted.firstIndex(of: c.key) else { continue }
             let notFit = c.notFitting && dir == .left
             return outcome(layout: layout, key: key, to: .visible, index: dir == .left ? p : p + 1, capabilities: capabilities, willNotFit: notFit,
-                           bar: bar, displayName: displayName)
+                           bar: bar, displayName: displayName, units: units)
         }
         return .noop
     }
@@ -526,19 +530,20 @@ public enum ArrangeDrop {
     /// "Hide what does not fit": the overflowed visible keys (with their hide-unit siblings) move to the end of Hidden.
     /// `blocked` lists overflowed keys that cannot be hidden (Apple apps, untracked apps); they stay.
     public static func hideNotFitting(layout: Layout, observed: ObservedOrder,
-                                      capabilities: (ItemKey) -> Capability) -> (layout: Layout, moved: [ItemKey], blocked: [ItemKey]) {
+                                      capabilities: (ItemKey) -> Capability,
+                                      units: HideUnitRule = .ownerKeys) -> (layout: Layout, moved: [ItemKey], blocked: [ItemKey]) {
         let keys = layout.visible.filter { observed.systemOverflow.contains($0) && $0 != observed.overflowChevron }
         let ok = keys.filter { capabilities($0).canHide && capabilities($0).canMove }
         let blocked = keys.filter { k in !ok.contains(k) }
         var l = layout
-        let moved = l.hideNotFitting(ok)
+        let moved = l.hideNotFitting(ok, units: units)
         return (l, moved, blocked)
     }
 
     /// "Adopt current order": Visible = the observed bar verbatim (modules included, as `LayoutBuilder` does), Hidden = the
     /// parked items, except that keys the current layout keeps in Always hidden stay there. Layout keys that are not
     /// observed (apps not running) keep their section, appended at the end. The new item policy is preserved.
-    public static func adopt(observed: ObservedOrder, current: Layout) -> Layout {
+    public static func adopt(observed: ObservedOrder, current: Layout, units: HideUnitRule = .ownerKeys) -> Layout {
         var l = Layout(newItemPolicy: current.newItemPolicy)
         var seen = Set<ItemKey>()
         for k in observed.onBar where seen.insert(k).inserted { l.visible.append(k) }
@@ -558,7 +563,7 @@ public enum ArrangeDrop {
                 }
             }
         }
-        return l.normalizedHideUnits().layout
+        return l.normalizedHideUnits(units: units).layout
     }
 }
 

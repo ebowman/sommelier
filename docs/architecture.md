@@ -147,9 +147,18 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   (`LayoutBuilder.buildReportingNormalization` returns the moved keys; `mbprobe layout init-from-current` prints them as a warning).
   `LayoutEngine.setLayout` normalizes too (logs the moved keys and publishes them as `EngineState.lastNormalization`, replaced by
   every `start`/`setLayout`, for the Arrange status line; `start()` fills it from the load).
-- Hide unit (`HideUnit`, `ItemKey.hideUnit`, `hideUnits(_:)` in `ItemKey.swift`): Control Center hides per app, so the unit is the
-  `ownerKey` for status items, `module:<Name>` for each module (independent), the bundle id for heuristic keys. A unit is hidden
-  only if ALL its items are in `hidden`/`alwaysHidden` (a `hidden`+`alwaysHidden` split is fine). `Layout.normalizedHideUnits()`
+- Hide unit (`HideUnit`, `HideUnitRule`, `hideUnits(_:rule:)` in `ItemKey.swift`; gdu.75): Control Center's `isAllowed` flag is per
+  tracked ENTRY, so the unit is the entry: keys that resolve (`TrackedEntryResolver.trackedKey(for:bundleID:)`, the one lookup the
+  actuator's `trackedKey(for:)` also uses) to the same entry form ONE unit whose id is the entry key. A helper listed in a parent's
+  `menuItemLocations` (Hazel Helper under com.noodlesoft.Hazel) is therefore in the unit of the parent's own item and they hide, show
+  and move together. Fallback for a key with no entry: the owner-key unit (`ItemKey.hideUnit`: the `ownerKey` for status items,
+  `module:<Name>` for each module, the bundle id for heuristic keys), i.e. an ordinary app's items are one unit as before.
+  `HideUnitRule` is a snapshot value (resolver + bundle ids); `.ownerKeys` is the no-knowledge default. The engine builds it from
+  `Config.trackedResolver` at every pass and layout adoption, uses it for the planner and normalization, and publishes it as
+  `EngineState.hideUnits`, which Arrange, the overflow panel and drops use, so every consumer groups exactly like the planner.
+  The actuator additionally never changes an item the batch did not request: a unit whose requested members differ, or whose flag
+  flip would also move an unrequested member, is refused whole ("hides together with <entry>: move the whole group"). A unit is hidden
+  only if ALL its items are in `hidden`/`alwaysHidden` (a `hidden`+`alwaysHidden` split is fine). `Layout.normalizedHideUnits(units:)`
   moves the hidden-section keys of a unit that also has a `visible` key to `visible` (before the trailing system block, original
   order); `validated()` applies it after `dedup()`, `validatedReportingNormalization()` also returns the moved keys (no hidden state
   on `Layout`), and `Layout.decode` adds a warning, so the load path reports it once (mbprobe prints it, the engine `NSLog`s it).

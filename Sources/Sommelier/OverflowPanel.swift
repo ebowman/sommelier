@@ -85,7 +85,7 @@ final class OverflowPanelController {
     var isVisible: Bool { panel?.isVisible ?? false }
     var frame: CGRect? { panel?.frame }
 
-    var entries: [OverflowEntry] { feedback.model.rendered(OverflowEntries.make(layout: state.layout, items: state.items)) }
+    var entries: [OverflowEntry] { feedback.model.rendered(OverflowEntries.make(layout: state.layout, items: state.items, units: state.hideUnits)) }
 
     func toggle(anchoredTo itemFrame: CGRect, on screen: NSScreen) {
         if isVisible { hide() } else { show(anchoredTo: itemFrame, on: screen) }
@@ -270,7 +270,7 @@ struct OverflowBarView: View {
     @AppStorage("overflowShowNames") private var showNames = true
 
     var body: some View {
-        let base = OverflowEntries.make(layout: state.layout, items: state.items)
+        let base = OverflowEntries.make(layout: state.layout, items: state.items, units: state.hideUnits)
         let entries = feedback?.model.rendered(base) ?? base
         Group {
             if entries.isEmpty {

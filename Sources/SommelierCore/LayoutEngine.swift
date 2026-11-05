@@ -58,6 +58,9 @@ public actor LayoutEngine {
         public var layoutCoalesce: Duration = .milliseconds(300)
         /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
         public var layoutCoalesceMax: Duration = .seconds(1)
+        /// The Control Center tracked entries as stored now (nil = unreadable or not wired: owner-key hide units). Read at the start of
+        /// every pass and when a layout is adopted; it decides the hide units (`HideUnitRule`, gdu.75), the same lookup the actuator uses.
+        public var trackedResolver: @Sendable () -> TrackedEntryResolver? = { nil }
         public init() {}
     }
 
@@ -67,7 +70,15 @@ public actor LayoutEngine {
     private let capabilities: any CapabilityProvider
     private let state: EngineState
     private let busy: @Sendable () -> Bool
-    private var itemInfo: [ItemKey: ItemInfo] = [:]
+    private var itemInfo: [ItemKey: ItemInfo] = [:] { didSet { rule = HideUnitRule(resolver: resolverSnapshot, items: itemInfo) } }
+    /// The tracked entries the current `rule` was built from (refreshed by `refreshHideUnits`).
+    private var resolverSnapshot: TrackedEntryResolver?
+    /// THE hide-unit rule of this engine (gdu.75): published in `EngineState.hideUnits` so Arrange and the panel group like the planner.
+    private var rule = HideUnitRule.ownerKeys
+    private func refreshHideUnits() {
+        resolverSnapshot = config.trackedResolver()
+        rule = HideUnitRule(resolver: resolverSnapshot, items: itemInfo)
+    }
     /// Read level of the latest observation (gdu.51).
     private var observedCompleteness = ReadCompleteness.complete
     /// Keys applied by a `.liveUnverified` batch and not yet confirmed by a settled complete read; value = hidden (gdu.55).
@@ -170,12 +181,13 @@ public actor LayoutEngine {
     /// Does not start a pass; call `requestReconcile()`.
     public func start() async {
         var movedAtLoad: [ItemKey] = []
+        refreshHideUnits()
         do {
-            let (l0, moved) = try store.load().validatedReportingNormalization()
+            let (l0, moved) = try store.load().validatedReportingNormalization(units: rule)
             layout = l0
             movedAtLoad = moved
             if !moved.isEmpty {
-                NSLog("[Sommelier] layout: all items of an app hide or show at once; moved to visible: %@",
+                NSLog("[Sommelier] layout: all items governed by one Control Center entry hide or show at once; moved to visible: %@",
                       moved.map(\.description).joined(separator: ", "))
             }
             loaded = true
@@ -201,7 +213,7 @@ public actor LayoutEngine {
         var n = 0
         for a in engineAdditions where a.revision > revision && l.section(of: a.key) == nil {
             // A sibling of the same hide unit already in `l` decides the section (units stay whole).
-            let sibling = l.allKeys.first { $0 != a.key && $0.hideUnit == a.key.hideUnit }
+            let sibling = l.allKeys.first { $0 != a.key && rule.unit(of: $0) == rule.unit(of: a.key) }
             let sec = sibling.flatMap { l.section(of: $0) } ?? a.section
             l.reorder(a.key, in: sec, toIndex: a.index)
             n += 1
@@ -223,9 +235,10 @@ public actor LayoutEngine {
             if n > 0 { log("setLayout merged \(n) engine-added key(s) composed on revision \(revision)") }
         }
         // Hide units are all-or-nothing: a split unit can never converge, so it is normalized (and reported) here too (gdu.44).
-        let (new, moved) = requested.normalizedHideUnits()
+        refreshHideUnits()
+        let (new, moved) = requested.normalizedHideUnits(units: rule)
         if !moved.isEmpty {
-            log("layout: all items of an app hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
+            log("layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
         }
         layout = new
         loaded = true
@@ -361,7 +374,7 @@ public actor LayoutEngine {
         transientReveals = [:]
         if !units.isEmpty {
             log("agent restarted: dropping \(units.count) transient reveal hold(s)")
-            let keys = itemInfo.keys.filter { units.contains($0.hideUnit) }
+            let keys = itemInfo.keys.filter { units.contains(rule.unit(of: $0)) }
             await publish { s in for k in keys where s.perItem[k] == .pending { s.perItem[k] = .inPlace } }
         }
         scheduleReconcile(after: settle, reason: "agent restarted", supersede: true)
@@ -444,13 +457,14 @@ public actor LayoutEngine {
     }
 
     private func makePlan(_ obs: ObservedOrder) -> Plan {
+        refreshHideUnits()
         var planObs = withoutTransient(obs)
         // gdu.72: parked units the actuator refused to show are invisible to the planner (it cannot show them); they stay
         // skipped with the actuator's reason. On-bar ones are handled by `effectiveCaps` (cannot hide -> skipped).
         let refusedParked = planObs.parked.filter { actuatorRefused[$0] != nil }
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
-                                         selfPositioningOwners: config.selfPositioningOwners)
+                                         selfPositioningOwners: config.selfPositioningOwners, units: rule)
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -479,8 +493,8 @@ public actor LayoutEngine {
     func withoutTransient(_ obs: ObservedOrder) -> ObservedOrder {
         guard !transientReveals.isEmpty else { return obs }
         var o = obs
-        o.onBar = obs.onBar.filter { transientReveals[$0.hideUnit] == nil }
-        o.parked = obs.parked.filter { transientReveals[$0.hideUnit] == nil }
+        o.onBar = obs.onBar.filter { transientReveals[rule.unit(of: $0)] == nil }
+        o.parked = obs.parked.filter { transientReveals[rule.unit(of: $0)] == nil }
         return o
     }
 
@@ -495,7 +509,7 @@ public actor LayoutEngine {
         let token = nextHoldToken
         transientReveals[unit] = token
         log("hold: \(unit) revealed from the overflow panel (timeout \(timeout))")
-        let keys = itemInfo.keys.filter { $0.hideUnit == unit }
+        let keys = itemInfo.keys.filter { rule.unit(of: $0) == unit }
         await publish { s in for k in keys { s.perItem[k] = .pending } }
         Task { [weak self] in
             try? await Task.sleep(for: timeout)   // wall clock on purpose: the injected `sleep` is a test seam for pacing
@@ -507,7 +521,7 @@ public actor LayoutEngine {
     public func endTransientReveal(_ unit: HideUnit) async {
         guard transientReveals.removeValue(forKey: unit) != nil else { return }
         log("hold: \(unit) released; reconciling")
-        let keys = itemInfo.keys.filter { $0.hideUnit == unit }
+        let keys = itemInfo.keys.filter { rule.unit(of: $0) == unit }
         await publish { s in for k in keys where s.perItem[k] == .pending { s.perItem[k] = .inPlace } }
         requestReconcile(supersede: true, reason: "transient reveal ended")
     }
@@ -564,7 +578,7 @@ public actor LayoutEngine {
     /// a wrong earlier verdict, or something else fixed it (gdu.48). A failure recorded in THIS pass stays until a later pass. `.unsupported` is derived afresh every pass anyway.
     private func clearFailuresInPlace(_ obs: ObservedOrder, _ plan: Plan) {
         let acting = Set(plan.actions.map(Self.key(of:)))
-        for k in Array(failures.keys) where !acting.contains(k) && !failedThisPass.contains(k) && transientReveals[k.hideUnit] == nil
+        for k in Array(failures.keys) where !acting.contains(k) && !failedThisPass.contains(k) && transientReveals[rule.unit(of: k)] == nil
             && (obs.onBar.contains(k) || obs.parked.contains(k))
             && ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden, showAlwaysHidden: showAlways) {
             failures[k] = nil; strikes[k] = nil
@@ -577,7 +591,7 @@ public actor LayoutEngine {
         var out: [ItemKey: ItemStatus] = [:]
         for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
-        for k in obs.onBar + obs.parked where transientReveals[k.hideUnit] != nil { out[k] = .pending }
+        for k in obs.onBar + obs.parked where transientReveals[rule.unit(of: k)] != nil { out[k] = .pending }
         for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting {
             out[s.key] = .unsupported(s.reason)
         }
@@ -614,7 +628,8 @@ public actor LayoutEngine {
         let info = itemInfo
         hasObservation = true
         let pc = Set(unconfirmed.keys)
-        await publish { s in s.observed = obs; s.items = info; s.observationSettled = true; s.pendingConfirmation = pc; if let st { s.perItem = st } }
+        let hu = rule
+        await publish { s in s.observed = obs; s.items = info; s.hideUnits = hu; s.observationSettled = true; s.pendingConfirmation = pc; if let st { s.perItem = st } }
     }
 
     private func setStatus(_ k: ItemKey, _ st: ItemStatus, inFlight: PlannedAction?) async {
@@ -696,7 +711,8 @@ public actor LayoutEngine {
         itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: items), retaining: ItemInfo.staleOnlyKeys(from: items))
         let info = itemInfo
         log("first observation published (provisional, unsettled)")
-        await publish { s in s.observed = o; s.items = info; s.observationSettled = false }
+        let hu = rule
+        await publish { s in s.observed = o; s.items = info; s.hideUnits = hu; s.observationSettled = false }
     }
 
     /// Updates `obs` from an actuation result; false when no trustworthy observation could be obtained.
@@ -737,8 +753,9 @@ public actor LayoutEngine {
             hasObservation = true
             let info = itemInfo
             log("observation unsettled; not actuating (\(took) ms)")
+            let hu = rule
             await publish { s in
-                s.observed = o; s.items = info; s.observationSettled = false
+                s.observed = o; s.items = info; s.hideUnits = hu; s.observationSettled = false
                 if case .observe? = s.lastError { s.lastError = nil }
             }
             if draining { pending = true }

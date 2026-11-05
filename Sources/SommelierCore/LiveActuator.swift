@@ -451,8 +451,7 @@ public actor LiveActuator: MenuBarActuator {
         // split off with its own reason (gdu.72); the applicable units still go out in ONE write. Missing keys and conflicting
         // requests stay whole-batch failures.
         var refused: [ItemKey: String] = [:]
-        var trackedOf: [ItemKey: String] = [:]
-        var wantByApp: [String: Bool] = [:]   // tracked key -> hidden
+        var requestedBy: [String: [(key: ItemKey, hide: Bool)]] = [:]   // tracked key -> requested items
         for (key, hide) in changes.sorted(by: { $0.key.description < $1.key.description }) {
             guard let r = resolved.first(where: { $0.key == key }) else { return uniform(changes.keys, .failed(.notFound, snap)) }
             let tracked = platform.trackedKey(for: r)
@@ -462,11 +461,24 @@ public actor LiveActuator: MenuBarActuator {
                 refused[key] = cap.reason ?? "cannot hide"
                 continue
             }
-            if let existing = wantByApp[tracked], existing != hide {
-                return uniform(changes.keys, .failed(.mechanismFailed("conflicting requests: items of \(tracked) are hidden or shown together"), snap))
+            requestedBy[tracked, default: []].append((key, hide))
+        }
+        // gdu.75: the flag is per tracked ENTRY, so every item it governs changes with it. The actuator never changes an item the
+        // batch did not request: a unit whose members are asked to differ, or whose flip would also move an unrequested member
+        // (the planner groups by the same entry, so this is a belt-and-braces refusal), is refused whole instead.
+        var wantByApp: [String: Bool] = [:]   // tracked key -> hidden
+        for (tracked, reqs) in requestedBy.sorted(by: { $0.key < $1.key }) {
+            let why = "hides together with \(tracked): move the whole group"
+            let hide = reqs[0].hide
+            var bad = reqs.contains { $0.hide != hide }
+            if !bad {
+                let asked = Set(reqs.map(\.key))
+                bad = resolved.contains { r in
+                    !asked.contains(r.key) && !r.item.stale && platform.trackedKey(for: r) == tracked
+                        && (hide ? ActuationVerifier.onBar(r) : !ActuationVerifier.onBar(r))
+                }
             }
-            trackedOf[key] = tracked
-            wantByApp[tracked] = hide
+            if bad { for q in reqs { refused[q.key] = why } } else { wantByApp[tracked] = hide }
         }
         batchRefused.merge(refused) { a, _ in a }   // merge: the gdu.26 recheck recurses with the filtered batch and must not wipe earlier refusals
         if !refused.isEmpty {
