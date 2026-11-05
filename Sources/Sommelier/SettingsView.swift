@@ -6,6 +6,7 @@ import SommelierCore
 struct SettingsView: View {
     @Bindable var model: AppModel
     @AppStorage("autoRehideSeconds") private var autoRehide = 10
+    @AppStorage("showMouseControlNotice") private var showMouseNotice = true
     @AppStorage("revealMode") private var revealMode = "panel"
     @AppStorage("overflowShowNames") private var showNames = true
     /// Last-resort MenuBarAgent restart (gdu.55): ON by default only when the app has no live hide/show entitlement.
@@ -39,6 +40,8 @@ struct SettingsView: View {
                         Text("Show hidden items in the menu bar").tag("inline")
                     }
                     Toggle("Show names in panel", isOn: $showNames)
+                    Toggle("Show a notice while Sommelier moves the mouse", isOn: $showMouseNotice)
+                        .help("Reordering menu bar items drags the real pointer for a few seconds; this floating notice says so. Hiding and showing items does not move the mouse.")
                     Stepper("Auto re-hide after \(autoRehide == 0 ? "never" : "\(autoRehide) s")", value: $autoRehide, in: 0...60)
                 }
                 Section {

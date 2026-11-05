@@ -7,6 +7,7 @@ final class AppModel {
     let permissions: PermissionsModel
     let state: EngineState
     @ObservationIgnored private(set) var engine: LayoutEngine?
+    @ObservationIgnored private var mouseNotice: MouseControlNoticeDriver?
     @ObservationIgnored private(set) var triggers: EngineTriggers?
     @ObservationIgnored private(set) var agentWatcher: MenuBarAgentWatcher?
     /// Called on every display configuration change (the status item controller repositions an open overflow panel).
@@ -144,6 +145,8 @@ final class AppModel {
             })
         }
         guard let engine, let triggers else { return }
+        if mouseNotice == nil { mouseNotice = MouseControlNoticeDriver(state: state) }
+        mouseNotice?.start()
         await engine.start()
         let fileExists = FileManager.default.fileExists(atPath: store.url.path)
         if state.layout == .empty && !fileExists && state.lastError == nil {
