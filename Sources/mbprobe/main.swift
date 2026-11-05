@@ -760,20 +760,12 @@ func runLayout(_ a: [String]) async {
         }
         let res: [ResolvedItem]
         let scans: Int
-        do {
-            let r = try await makeObserver().observeDiagnosed()
-            if let d = r.disagreement { fail(d.message) }
-            (res, scans) = (r.items, r.scans)
-        } catch { fail("\(error); not writing") }
-        switch BarSignature().staleVerdict(res) {
-        case .clean: break
-        case .refuse(let keys): fail("stale items in the agreed scan, not writing: " + keys.joined(separator: ", "))
-        case .selfPositioningOnly(let keys):
-            FileHandle.standardError.write(Data(("note: \(keys.count) self-positioning items were stale in the agreed scan ("
-                + keys.joined(separator: ", ") + "); written as they were observed\n").utf8))
+        switch await LayoutInit.evaluate(observer: makeObserver()) {
+        case .refuse(let m): fail(m)
+        case .build(let items, let n, let notes):
+            (res, scans) = (items, n)
+            for note in notes { FileHandle.standardError.write(Data((note + "\n").utf8)) }
         }
-        let unknown = LayoutBuilder.unknownPlacement(in: res)
-        if !unknown.isEmpty { fail(LayoutBuilder.unknownPlacementMessage(unknown) + "; not writing") }
         let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res, resolver: EngineFactory.currentTrackedResolver())
         guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
         if !normalized.isEmpty {
