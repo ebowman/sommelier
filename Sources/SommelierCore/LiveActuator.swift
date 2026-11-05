@@ -70,7 +70,7 @@ public actor LiveActuator: MenuBarActuator {
         /// `agent-restart`s moved iStat's Time item to three different slots (docs/findings-restart-collateral.md). Their
         /// relative order is not evidence of drift caused by us and cannot be repaired through the store, so the drift
         /// check ignores them (their on/off-bar state is still covered by the collateral check).
-        public var selfPositioningOwners: Set<String> = ["com.bjango.istatmenus.status", "iStat Menus Menubar"]
+        public var selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners
         public init() {}
     }
 
@@ -801,8 +801,7 @@ public actor LiveActuator: MenuBarActuator {
     }
 
     private func selfPositioning(_ k: ItemKey) -> Bool {
-        if case .status(let owner, _) = k { return config.selfPositioningOwners.contains(owner) }
-        return false
+        SelfPositioning.isSelfPositioning(k, owners: config.selfPositioningOwners)
     }
 
     /// Number of batches whose post-restart drift check triggered a repair (diagnostics for the soak).

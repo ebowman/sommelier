@@ -49,7 +49,7 @@ public actor LayoutEngine {
         /// Consecutive passes in which every action failed (each ended by `maxConsecutiveFailures`) before the engine reports `stoppedAfterFailures`.
         public var maxAllFailedPasses = 3
         /// Owners whose stale items do not block a pass but whose ORDER is only actuated on a COMPLETE read (gdu.51).
-        public var selfPositioningOwners: Set<String> = LiveActuator.Config().selfPositioningOwners
+        public var selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners
         /// `setLayout` calls closer together than this are one request: only the last layout is planned (gdu.47). Zero = no window.
         public var layoutCoalesce: Duration = .milliseconds(300)
         /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
@@ -415,7 +415,8 @@ public actor LayoutEngine {
     }
 
     private func makePlan(_ obs: ObservedOrder) -> Plan {
-        var p = Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden)
+        var p = Reconciler().plan(observed: withoutTransient(obs), layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden,
+                                         selfPositioningOwners: config.selfPositioningOwners)
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.

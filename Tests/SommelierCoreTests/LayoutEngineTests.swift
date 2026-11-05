@@ -179,17 +179,19 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(ArrangeSections.describe(.liveWriteFailed("readback")).contains("readback"))
     }
 
-    @Test func orderInvolvingSelfPositioningOwnerWaitsForACompleteRead() async {
+    // gdu.33: self-positioning owners are planner anchors, so a layout that lists them "elsewhere" no longer makes the
+    // order depend on a complete read (formerly orderInvolvingSelfPositioningOwnerWaitsForACompleteRead): the iStat item
+    // is never moved, the others are ordered around it.
+    @Test func layoutOrderOfSelfPositioningOwnerIsIgnoredNotWaitedFor() async {
         let order = [istat, k("A"), k("B")]
         let layout = Layout(visible: [k("B"), k("A"), istat])
         let box = ActuatorBox()
         let r = await rig(order: order, layout: layout, observer: LevelObserver(box: box, level: .completeExceptSelfPositioning))
         box.actuator = r.actuator
-        let rep = await r.engine.reconcileOnce()
-        #expect(rep.outcome == .unsettled)
-        #expect(await r.actuator.order == order)
-        let r2 = await rig(order: order, layout: layout)
-        #expect(await r2.engine.reconcileOnce().outcome == .converged)
+        _ = await r.engine.reconcileOnce()
+        let final = await r.actuator.order
+        #expect(final.first == istat)
+        #expect(final == [istat, k("B"), k("A")])
     }
 
     @Test func orderAmongOthersProceedsOnAnExceptSelfPositioningRead() async {
