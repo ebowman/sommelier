@@ -272,7 +272,7 @@ final class ArrangeViewModel {
                 track.append(k)
             }
             AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
-            apply(l, tracking: track, basedOn: state.layoutRevision)
+            apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved))
             return true
         }
     }
@@ -281,13 +281,13 @@ final class ArrangeViewModel {
     /// engine stamps on `l` (the stamp arrives with `setLayout`'s return).
     /// `basedOn`: the layout revision `l` was composed on (gdu.52); the engine re-adds items it appended after it. A drop composes
     /// and submits in the same main-actor turn, so it passes the current revision; a confirm dialog passes the revision from when it opened.
-    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int) {
+    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = []) {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
         let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true)
         pending.submit(l)
         ensureTimer()
         Task { [weak self] in   // never block the main actor on the engine
-            let stamp = await engine.setLayout(l, basedOn: base)
+            let stamp = await engine.setLayout(l, basedOn: base, moved: moved)
             self?.published(stamp, ticket: ticket)
         }
     }

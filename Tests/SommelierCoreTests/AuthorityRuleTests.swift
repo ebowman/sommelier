@@ -179,6 +179,34 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
         #expect(await act.calls.isEmpty)
     }
 
+    // gdu.95: a drop of a key the layout already lists visible (parked, isAllowed=false) is a user placement.
+    @Test func aDropOfAnAlreadyListedVisibleKeyIsAPlacementOnlyWhenMoved() async {
+        let (e, act, _, lines) = await guardRig(layout: Layout(visible: [k("A"), k("B")]))
+        _ = await e.reconcileOnce()
+        #expect(await act.hidden == [k("A")])                       // (a) guard holds without a placement
+        await e.setLayout(Layout(visible: [k("A"), k("B")]), userPlacement: true)
+        _ = await e.reconcileOnce()
+        #expect(await act.hidden == [k("A")])                       // (c) no `moved`: still guarded
+        #expect(!lines.all.contains { $0.contains("membership write: show") })
+        await e.setLayout(Layout(visible: [k("A"), k("B")]), userPlacement: true, moved: [k("A")])
+        let ok = await waitUntil { await act.hidden.isEmpty }       // (b)
+        #expect(ok)
+        #expect(lines.all.contains { $0.contains("membership write: show") && $0.contains("userPlaced=true") })
+    }
+
+    @Test func aMovedKeyOutsideVisibleIsIgnoredAndAShownPlacementIsSpent() async {
+        let (e, act, _, _) = await guardRig(layout: Layout(visible: [k("A"), k("B")]))
+        await e.setLayout(Layout(visible: [k("B")], hidden: [k("A")]), userPlacement: true, moved: [k("A")])
+        _ = await e.reconcileOnce()
+        #expect(await act.hidden == [k("A")])                       // moved into Hidden: nothing to show
+        await e.setLayout(Layout(visible: [k("A"), k("B")]), userPlacement: true, moved: [k("A")])
+        #expect(await waitUntil { await act.hidden.isEmpty })
+        _ = await e.reconcileOnce()                                 // A observed on the bar: placement spent
+        _ = await act.setHidden(k("A"), true)                       // someone else hides it again
+        _ = await e.reconcileOnce()
+        #expect(await act.hidden == [k("A")])                       // (d) not re-shown
+    }
+
     @Test func aFlagTrueKeyListedVisibleIsStillShown() async {
         let (e, act, _, _) = await guardRig(layout: Layout(visible: [k("A"), k("B")]), flagFalse: [])
         _ = await e.reconcileOnce()

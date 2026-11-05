@@ -374,7 +374,7 @@ public actor LayoutEngine {
     /// (log `setLayout merged ...`); a key `requested` already places keeps the user's placement. `nil` (mbprobe, `apply`):
     /// `requested` replaces the layout wholesale.
     @discardableResult
-    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil, userPlacement: Bool = true) async -> LayoutRevision {
+    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil, userPlacement: Bool = true, moved movedKeys: Set<ItemKey> = []) async -> LayoutRevision {
         noteUserAction()
         var requested = requested
         if let revision {
@@ -394,7 +394,11 @@ public actor LayoutEngine {
         // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
         let wasVisible = Set(layout.visible)
         userPlacedVisible = userPlacedVisible.intersection(new.visible)
-        if userPlacement { userPlacedVisible.formUnion(new.visible.filter { !wasVisible.contains($0) }) }
+        if userPlacement {
+            userPlacedVisible.formUnion(new.visible.filter { !wasVisible.contains($0) })
+            // gdu.95: a key the user dropped counts as placed even when the layout already listed it visible (hidden in Control Center).
+            userPlacedVisible.formUnion(movedKeys.intersection(Set(new.visible)))
+        }
         layout = new
         loaded = true
         noteSupersede("setLayout")
