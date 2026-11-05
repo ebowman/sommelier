@@ -462,6 +462,18 @@ Human checklist (Settings > Spacing):
 4. "Reset to system default": both keys are removed (`defaults ... read` says the key does not exist) and the labels show "default".
 5. Confirm no menu bar flash happens at any point.
 
+## App shell follow-ups (gdu.35)
+Unit tests: `DropSelfTests` (own module name / bundle id / owner key / AX identifier dropped; "SommelierX", look-alike bundle ids and names kept; empty input) and `ConflictDuringPassTests` (`RobustnessTests.swift`: `FakeActuator.setAfterCall` flips `engine.setConflict("Bartender 7")` after the first of four moves: exactly one actuator call, outcome `.paused`, no `.failed` status, no `lastError`; after `setConflict(nil)` the next pass converges).
+
+### Right-click menu (live verification PENDING; needs the running app, run by a live task or a human)
+1. Quit Bartender. Start Sommelier with `SOMMELIER_DEBUG_MENU=1`; expect one log line `[Sommelier] menu titles: ... | ... ` listing the menu entries (status line, section toggles, Arrange..., Settings..., Quit; `[x]` marks checked items).
+2. `swift scripts/check-rightclick-menu.swift` (read-only AX plus one CGEvent right-click and one Escape; do not touch the mouse meanwhile). Expect `menu titles:` matching the log line, a menu frame next to the status item, `PASS`. It exits 2 if the item is hidden or in the system overflow.
+3. By hand: right-click the item: the menu appears at the item; Escape closes it; then LEFT-click the item: the overflow panel still toggles (the menu assignment is cleared after each right-click, `StatusItemController.showMenu`).
+Checklist: [ ] log line seen  [ ] script PASS  [ ] left click toggles the panel after the menu closed.
+
+### Bartender launches mid-pass
+Unit-tested only (above). Live: start a long reorder (`make dummy ARGS="--count 8"`, scramble the layout in Arrange), launch Bartender 7 during the pass; expect `conflicting manager running (...); pass ends before the next actuator call` in the log and no further `drag` lines; quitting Bartender resumes passes. Pending a live run.
+
 ## Main-menu entries dropped (gdu.29)
 Unit tests (`MenuBarScannerTests`): main-menu elements dropped, genuine parked (x 2, y 1204, w 24) and a zero-width genuine hosted item unchanged; timed-out main-menu group not a failure; old cache records ignored on load.
 Live `mbprobe list` (read-only), count of Apple/File/Edit/.../`_NS:` entries and total `x=` rows: Finder front 0 (50 rows), TextEdit front 0 (48), Safari front 0 (50); the only `heuristic:com.apple.MenuBarAgent` row is the unnamed "System item" button (x=774). "Before" was also 0 live: the running agent did not mirror the main menu during this session (see docs/findings-identity.md, gdu.29); the 7-8 entries were recorded in docs/evidence/ax-b-drag-unrelated.txt.
