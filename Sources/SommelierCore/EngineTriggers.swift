@@ -27,6 +27,42 @@ public struct PollConfig: Sendable {
     public var worstCaseDetection: TimeInterval { interval + confirmDelay }
 }
 
+/// One running process as the launch/quit path sees it (gdu.56).
+public struct RunningApp: Sendable, Equatable {
+    public var pid: Int32
+    public var bundleID: String?
+    public var policy: NSApplication.ActivationPolicy
+    public init(pid: Int32, bundleID: String?, policy: NSApplication.ActivationPolicy) {
+        self.pid = pid; self.bundleID = bundleID; self.policy = policy
+    }
+}
+
+/// Source of the running-apps list (gdu.56). `LiveRunningApps` observes `NSWorkspace.runningApplications` with KVO, which (unlike
+/// `didLaunchApplicationNotification`, which AppKit does not post for agent/background apps) covers every activation policy.
+/// Tests inject a fake and push changes.
+@MainActor
+public protocol RunningAppsSource: AnyObject {
+    func current() -> [RunningApp]
+    /// Calls `onChange` (main actor) whenever the list may have changed; replaces any earlier handler.
+    func startObserving(_ onChange: @escaping @MainActor () -> Void)
+    func stopObserving()
+}
+
+@MainActor
+public final class LiveRunningApps: NSObject, RunningAppsSource {
+    private var observation: NSKeyValueObservation?
+    public override init() { super.init() }
+    public func current() -> [RunningApp] {
+        NSWorkspace.shared.runningApplications.map { RunningApp(pid: $0.processIdentifier, bundleID: $0.bundleIdentifier, policy: $0.activationPolicy) }
+    }
+    public func startObserving(_ onChange: @escaping @MainActor () -> Void) {
+        observation = NSWorkspace.shared.observe(\.runningApplications, options: [.new]) { _, _ in
+            Task { @MainActor in onChange() }
+        }
+    }
+    public func stopObserving() { observation?.invalidate(); observation = nil }
+}
+
 @MainActor
 public final class EngineTriggers {
     private let engine: LayoutEngine
@@ -41,6 +77,11 @@ public final class EngineTriggers {
     private let sleep: (Duration) async -> Void
     private let now: @Sendable () -> Date
     private let report: (PollSuppression?) async -> Void
+    private let apps: any RunningAppsSource
+    private let ownerPIDs: () -> Set<Int32>?
+    private let launchQuitTrigger: () async -> Void
+    /// pid -> app as of the last diff: the single dedupe point for the notification and the KVO path (one launch = one event).
+    private var known: [Int32: RunningApp] = [:]
     private var tokens: [any NSObjectProtocol] = []
     private var timer: Timer?
     // Poll state.
@@ -65,8 +106,16 @@ public final class EngineTriggers {
                 signature: BarSignature = BarSignature(), log: @escaping @Sendable (String) -> Void = { _ in },
                 gate: (() async -> PollGate)? = nil, trigger: (() async -> Void)? = nil,
                 sleep: ((Duration) async -> Void)? = nil, now: @escaping @Sendable () -> Date = { Date() },
-                reportSuppression: ((PollSuppression?) async -> Void)? = nil) {
+                reportSuppression: ((PollSuppression?) async -> Void)? = nil,
+                apps: (any RunningAppsSource)? = nil, ownerPIDs: @escaping () -> Set<Int32>? = { nil },
+                launchQuitTrigger: (() async -> Void)? = nil) {
         self.now = now
+        self.apps = apps ?? LiveRunningApps()
+        self.ownerPIDs = ownerPIDs
+        self.launchQuitTrigger = launchQuitTrigger ?? { [engine] in
+            // Trailing 1 s window per burst: the engine replaces a pending request with the same reason.
+            await engine.scheduleReconcile(after: .seconds(1), reason: "app launch/quit")
+        }
         self.engine = engine; self.state = state; self.scanner = scanner; self.resolve = resolve
         self.config = config; self.signature = signature; self.log = log
         self.gate = gate ?? { [engine, state] in
@@ -85,10 +134,22 @@ public final class EngineTriggers {
         let engine = engine
         Task { await engine.resumeFromSleep() }   // a wake missed while stopped must not leave the engine asleep
         let nc = NSWorkspace.shared.notificationCenter
+        known = Dictionary(apps.current().map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+        // Notification path: logged for diagnosis, then the same pid diff as KVO (so both for one pid make ONE event). AppKit does
+        // not reliably post these for agent (LSUIElement) apps; the KVO path below covers them (gdu.56).
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.scheduleDebounced() }
+            tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
+                let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let what = app.map { "\(n.name.rawValue): pid \($0.processIdentifier) bundle \($0.bundleIdentifier ?? "-") policy \($0.activationPolicy.rawValue)" }
+                Task { @MainActor in
+                    guard let self else { return }
+                    if let what { self.log("notification \(what)") }
+                    await self.syncApps()
+                }
             })
+        }
+        apps.startObserving { [weak self] in
+            Task { @MainActor in await self?.syncApps() }
         }
         tokens.append(nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             guard let engine = self?.engine else { return }
@@ -105,6 +166,7 @@ public final class EngineTriggers {
         let nc = NSWorkspace.shared.notificationCenter
         for t in tokens { nc.removeObserver(t) }
         tokens = []
+        apps.stopObserving()
         timer?.invalidate(); timer = nil
     }
 
@@ -119,10 +181,24 @@ public final class EngineTriggers {
         }
     }
 
-    /// Trailing 1 s window per burst: the engine replaces a pending request with the same reason.
-    private func scheduleDebounced() {
-        let engine = engine
-        Task { await engine.scheduleReconcile(after: .seconds(1), reason: "app launch/quit") }
+    /// Diffs the running apps against `known`; ONE launch/quit request per call that found a relevant change (a burst of helpers is
+    /// further coalesced by the engine's trailing 1 s window). Launch: policy .accessory or .regular (menu-bar-only utilities are
+    /// .accessory; .prohibited background apps own no items). Quit: an app that was .accessory/.regular and, when the owner set is
+    /// known, owned an item in the latest scan; with ownership unknown (`ownerPIDs()` nil) any such app counts.
+    func syncApps() async {
+        let now = Dictionary(apps.current().map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+        let launched = now.values.filter { known[$0.pid] == nil }
+        let quit = known.values.filter { now[$0.pid] == nil }
+        known = now
+        guard !launched.isEmpty || !quit.isEmpty else { return }
+        func visible(_ a: RunningApp) -> Bool { a.policy == .accessory || a.policy == .regular }
+        let owners = ownerPIDs()
+        let l = launched.filter(visible)
+        let q = quit.filter { visible($0) && (owners?.contains($0.pid) ?? true) }
+        for a in launched { log("launch pid \(a.pid) bundle \(a.bundleID ?? "-") policy \(a.policy.rawValue)\(visible(a) ? "" : " (ignored)")") }
+        for a in quit { log("quit pid \(a.pid) bundle \(a.bundleID ?? "-") policy \(a.policy.rawValue)\(q.contains(a) ? "" : " (ignored)")") }
+        guard !l.isEmpty || !q.isEmpty else { return }
+        await launchQuitTrigger()
     }
 
     /// Signature of a fresh fast scan; nil when unusable (empty bar, or a non-self-positioning stale item on the bar).
