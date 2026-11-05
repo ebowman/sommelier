@@ -243,7 +243,24 @@ public struct MenuBarScanner {
         func legitimatelyGone(_ e: AXElementInfo) -> Bool {
             vanishing.contains(e.identityKey) || hiddenOwnerKeys.contains(e.identityKey) || ownerGone(e, running: running)
         }
-        let miss = missing(tree).filter { !isNoise($0) && !legitimatelyGone($0) }
+        let missAll = missing(tree).filter { !isNoise($0) && !legitimatelyGone($0) }
+        // Volatile / pile items (gdu.86): a volatile Control Center module (Wi-Fi, Focus) or an item whose last known frame lay in the
+        // system-overflow pile blinks in and out of the hosted tree between reads (macOS re-lays the pile out). Missing is not evidence
+        // of a failed read for them: they never make a read unattributable (they stay in `missAll` for carrying). Ordinary drawn
+        // items and self-positioning elements are never relaxed.
+        let chevronFrame = tree.elements.first(where: \.isOverflowChevron)?.frame ?? previous.first(where: \.isOverflowChevron)?.frame
+        let previousFrames = previous.map(\.frame)
+        func volatileOrPile(_ e: AXElementInfo) -> Bool {
+            if isSP(e) || e.isOverflowChevron { return false }
+            if VolatileModules.matches(identifier: e.identifier, description: e.axDescription) { return true }
+            guard let c = chevronFrame else { return false }
+            return SystemOverflowRule.isOverflowed(e.frame, chevron: c, hosted: previousFrames)
+        }
+        let volatileMiss = missAll.filter(volatileOrPile)
+        let miss = missAll.filter { !volatileOrPile($0) }
+        if !volatileMiss.isEmpty, tree.failedReads > 0 {
+            log("volatile/pile items missing: \(volatileMiss.map(\.identityKey).prefix(6).joined(separator: ", ")) (not counted against attribution)")
+        }
         let spMiss = miss.filter(isSP)
         // Persisted group identity (gdu.53): the self-positioning groups last seen for a running owner survive the 3-scan
         // carry-over, so a long streak stays attributable. Unnamed timeouts are covered when their count does not exceed the
@@ -351,7 +368,7 @@ public struct MenuBarScanner {
             else { tree.incompleteReason = "failed reads not attributable to self-positioning owners" }
         }
         if retry { source.noteUnresolvedGroups(selfPositioning: attributable) }
-        if tree.unnamedTimeouts > 0 { candidatesToCarry += attributable ? spMiss : miss }
+        if tree.unnamedTimeouts > 0 { candidatesToCarry += attributable ? spMiss : missAll }
         for t in candidatesToCarry where !freshKeys.contains(t.identityKey) && seen.insert(t.identityKey).inserted {
             let prior = state.lastHosted.first { $0.identityKey == t.identityKey }
             let count = (prior?.staleCount ?? 0) + 1

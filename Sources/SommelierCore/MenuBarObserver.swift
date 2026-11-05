@@ -167,8 +167,7 @@ public struct AgreedScanObserver: MenuBarObserver {
     public var volatileKeys: Set<ItemKey>
     public var log: @Sendable (String) -> Void
 
-    public static let defaultVolatileKeys: Set<ItemKey> = [.module(name: "WiFi"), .module(name: "com.apple.menuextra.focusmode"),
-                                                               .module(name: "Show Hidden Menu Bar Items")]
+    public static let defaultVolatileKeys: Set<ItemKey> = VolatileModules.keys
 
     public init(scanner: any SnapshotScanning,
                 resolve: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],

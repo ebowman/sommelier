@@ -438,3 +438,23 @@ public enum SystemOverflow {
         return out
     }
 }
+
+/// The Control Center modules whose hosted elements blink in and out of the agent's tree (gdu.86): Wi-Fi and Focus. ONE definition
+/// shared by the poll signature (`AgreedScanObserver.defaultVolatileKeys`, e7t) and the scanner's missing-element rule
+/// (`MenuBarScanner.readHosted`): a volatile module missing between two reads is not an incomplete read.
+public enum VolatileModules {
+    /// Store/module names of the volatile Control Center modules.
+    public static let moduleNames: Set<String> = ["WiFi", "com.apple.menuextra.focusmode"]
+    /// The signature's volatile keys: the modules plus the overflow chevron (its presence follows the bar's fill).
+    public static let keys: Set<ItemKey> = Set(moduleNames.map { ItemKey.module(name: $0) }).union([.module(name: MenuBarItem.overflowChevronName)])
+    /// Does a hosted element (identifier, else description) belong to a volatile module? Same normalisation as the resolver's
+    /// module match (last identifier component, case/punctuation-insensitive).
+    public static func matches(identifier: String, description: String) -> Bool {
+        func norm(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+        var probes: [String] = []
+        if !identifier.isEmpty { probes.append(norm(identifier.split(separator: ".").last.map(String.init) ?? identifier)) }
+        if !description.isEmpty { probes.append(norm(description)) }
+        let names = moduleNames.map { norm($0.split(separator: ".").last.map(String.init) ?? $0) }
+        return probes.contains { !$0.isEmpty && names.contains($0) }
+    }
+}

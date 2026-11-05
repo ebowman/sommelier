@@ -620,3 +620,16 @@ Limitation (honest): not every stalled read is attributed. Flapping non-iStat it
 
 Corrective (gdu.83 review): the marker is subtracted from the absent count not only when the app group's entry was read but also when it TIMED OUT as a named entry (warm app: contents cached, `droppingMainMenu` removes them, so no unnamed timeout), and the titles of both reads (confirm re-read) are unioned. Test: warm app, iStat's 8 groups plus the app group timing out as named entries plus one unknown new group is `.incomplete` and uncapped.
 
+
+### Volatile modules and pile items between reads (gdu.86)
+
+Unit tests (`SelfPositioningCompletenessTests`, gdu.86 section): Wi-Fi missing in a stalled read, Wi-Fi and Focus both missing, and a pile item (KeepingYouAwake shape 795/w30 stacked behind chevron 786) missing are all `.completeExceptSelfPositioning` with the caps kept (`noteUnresolvedGroups(true)`); the pile case logs "volatile/pile items missing"; a DRAWN item (right of the chevron) missing stays `.incomplete` and clears the caps; a 3rd unknown failing group stays `.incomplete`; `VolatileModules` matching and the observer's default volatile keys are one shared set. `make test`: 784 tests (778 + 6).
+
+Live (read-only `mbprobe list --timing --debug --repeat 3` against a cache copy, 6 runs each):
+
+| | stalled reads after the first of a streak | attributed (`exceptSelfPositioning`) and < 1 s |
+|---|---|---|
+| before | run 4: 2, both `incomplete` (`frame:799,4,22` / `frame:795,3,30` missing), 2.7 s each; run 6: 1, `incomplete` (`id:com.apple.menuextra.wifi` missing) | 0 of 3 |
+| after | run 2: 659 / 650 ms; run 6: 657 / 667 ms; both runs end `exceptSelfPositioning` | 4 of 4 |
+
+Caveat: the first stalled read of a cold process is still `incomplete` when no complete read in that process recorded the groups (run 4 after: `persisted self-positioning groups absent: 8`, the gdu.83 limitation), and the first stalled read of a streak always pays the uncapped ~2.7 s.

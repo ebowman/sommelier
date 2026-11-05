@@ -612,3 +612,66 @@ private let fullWithAppGroup = tree([dummyEl, otherEl, cpu, mem, fileMenuEntry, 
     #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
     #expect(s.notes.v.last == true)
 }
+
+// MARK: - gdu.86: volatile modules and pile items missing between reads never spoil attribution
+
+private let chev = AXElementInfo(axDescription: MenuBarItem.overflowChevronName, frame: CGRect(x: 786, y: 3, width: 17, height: 24))
+private let wifi = AXElementInfo(axDescription: "Wi-Fi", identifier: "com.apple.menuextra.wifi", frame: bar(826))
+private let focus = AXElementInfo(axDescription: "Focus", identifier: "com.apple.menuextra.focusmode", frame: bar(922))
+private let kya = AXElementInfo(frame: CGRect(x: 795, y: 3, width: 30, height: 24))        // KeepingYouAwake shape: identifier-less, in the pile
+private let pile2 = AXElementInfo(frame: CGRect(x: 798, y: 3, width: 24, height: 24))      // stacked partner (centres within 2 pt)
+private let drawn = AXElementInfo(axDescription: "Drawn", identifier: "drawn-1", frame: bar(1000))   // right of the chevron: drawn, not piled
+private let barFull = tree([dummyEl, otherEl, cpu, mem, chev, wifi, focus, kya, pile2, drawn])
+
+private func stall(_ elements: [AXElementInfo], unnamed: Int = 2) -> AgentHostedTree { tree(elements, failed: unnamed, unnamed: unnamed) }
+
+@Test func wifiMissingInAStalledReadStaysAttributedAndKeepsTheCaps() {
+    let s = source([barFull, stall([dummyEl, otherEl, chev, focus, kya, pile2, drawn])])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .completeExceptSelfPositioning)
+    #expect(s.notes.v.last == true)     // the caps are kept (attributed), not cleared
+}
+
+@Test func focusAndWifiBothMissingAreStillAttributed() {
+    let s = source([barFull, stall([dummyEl, otherEl, chev, kya, pile2, drawn])])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    #expect(s.notes.v.last == true)
+}
+
+@Test func pileItemMissingInAStalledReadStaysAttributedAndKeepsTheCaps() {
+    let lines = Lines()
+    let s = source([barFull, stall([dummyEl, otherEl, chev, wifi, focus, pile2, drawn])])
+    let scanner = MenuBarScanner(source: s, log: { lines.add($0) })
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    #expect(s.notes.v.last == true)
+    #expect(lines.v.contains { $0.hasPrefix("volatile/pile items missing: ") && $0.contains(kya.identityKey) })
+}
+
+@Test func drawnNonPileItemMissingInAStalledReadIsStillIncompleteAndClearsTheCaps() {
+    let s = source([barFull, stall([dummyEl, otherEl, chev, wifi, focus, kya, pile2])])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    #expect(s.notes.v.last == false)
+}
+
+@Test func unknownExtraFailingGroupIsStillIncompleteEvenWithVolatileItemsMissing() {
+    let s = source([barFull, stall([dummyEl, otherEl, chev, focus, kya, pile2, drawn], unnamed: 3)])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .incomplete)
+    #expect(s.notes.v.last == false)
+}
+
+@Test func volatileModuleMatchingIsTheSharedSetAndLocaleIndependent() {
+    #expect(VolatileModules.matches(identifier: "com.apple.menuextra.wifi", description: "Wi-Fi, connected"))
+    #expect(VolatileModules.matches(identifier: "com.apple.menuextra.focusmode", description: ""))
+    #expect(!VolatileModules.matches(identifier: "com.apple.menuextra.clock", description: "Clock"))
+    #expect(AgreedScanObserver.defaultVolatileKeys == VolatileModules.keys)
+}
