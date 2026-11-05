@@ -406,7 +406,7 @@ Live (scratch layout, Bartender quit, converged 5 min): 0 poll passes (was ~28);
 
 gdu.58 cap: `PollTriggerTests` +6 (fake clock): an F1/F2 two-state flapper -> 2 poll passes in the first minute, the suppression log exactly once with both keys, 0 passes through the 5 min window, resumption afterwards; a genuine change during suppression is not triggered by the poll; steady bar and one-change-per-minute are unaffected (no suppression, nothing reported); status line text; flapping keys. `steadyDisagreementWithOneRealChangeCostsExactlyOneExtraPass` now raises the cap (its fake clock never advances). 537 tests (baseline 531).
 
-gdu.56 launch/quit for agent apps: `LaunchQuitTriggerTests` (4, injected `RunningAppsSource`): .accessory launch and quit each request one pass; notification + KVO for the same pid = one; .prohibited and unowned quits ignored; a burst = one request.
+gdu.56 launch/quit for agent apps: `LaunchQuitTriggerTests` (6, injected `RunningAppsSource`): .accessory launch and quit each request one pass; notification + KVO within the debounce = one pass, a late notification re-arms a second; .prohibited and non-owner quits ignored, an owner's quit fires; a burst = one request. Live 2026-11-05 (4 samples): pass started 1.18-1.29 s after `make dummy` / `make dummy-stop`, one pass each, KVO path only (no didLaunch/didTerminate posted for the dummy); idle churn 2 passes in 2 min.
 - [ ] `make dummy` -> "app launch/quit" pass within 3 s (log shows `launch pid ... policy 1`); `make dummy-stop` -> quit pass within 3 s. **Live check pending (gdu.56 live verification, not run by the implementer).**
 
 ### Record pruning, record age, noise scoping (gdu.54) reviewer steps
