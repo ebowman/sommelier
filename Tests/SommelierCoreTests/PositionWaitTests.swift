@@ -37,7 +37,7 @@ private func prig(badScans: Int?, config: LayoutEngine.Config = .init()) async -
     let act = FakeActuator(order: [a, b, c], hidden: [], capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let obs = JoinObserver(actuator: act, subject: c, badScans: badScans)
     let state = EngineState()
-    let engine = LayoutEngine(observer: obs, actuator: act, store: InMemoryLayoutStore(Layout(visible: [c, a, b], placed: [c])),
+    let engine = LayoutEngine(observer: obs, actuator: act, store: InMemoryLayoutStore(Layout(visible: [c, a, b], placed: [c], orderMode: .placedOnly)),
                               capabilities: OpenCaps(), state: state, busy: { false },
                               resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: config)
     await engine.start()
@@ -111,7 +111,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func trackerKeepsWaitingOnWaitingForPositionAndFinishesOnTheRealOutcome() {
         let a = k("a"), c = k("c")
-        let layout = Layout(visible: [c, a], placed: [c])
+        let layout = Layout(visible: [c, a], placed: [c], orderMode: .placedOnly)
         let wrong = ObservedOrder(resolved: FakeMenuBar.resolved(onBar: [a, c]))
         let right = ObservedOrder(resolved: FakeMenuBar.resolved(onBar: [c, a]))
         var t = ArrangeTracker()

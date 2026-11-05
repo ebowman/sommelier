@@ -6,6 +6,6 @@ extension Layout {
     /// enforced; they build their layouts with this, which marks every visible key as user-placed (today's full-order behaviour).
     static func placedAll(visible: [ItemKey] = [], hidden: [ItemKey] = [], alwaysHidden: [ItemKey] = [],
                           newItemPolicy: NewItemPolicy = .visibleAtEnd) -> Layout {
-        Layout(visible: visible, hidden: hidden, alwaysHidden: alwaysHidden, newItemPolicy: newItemPolicy, placed: visible)
+        Layout(visible: visible, hidden: hidden, alwaysHidden: alwaysHidden, newItemPolicy: newItemPolicy, placed: visible, orderMode: .placedOnly)
     }
 }

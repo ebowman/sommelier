@@ -341,7 +341,8 @@ public actor LayoutEngine {
         do {
             let (l0, moved) = try store.load().validatedReportingNormalization(units: rule)
             layout = l0
-            if l0.placed.isEmpty {
+            if !l0.enforcesOrder || !l0.placed.isEmpty { logOrderMode(l0) }
+            if l0.enforcesOrder && l0.placed.isEmpty {
                 // gdu.89: every layout written before the `placed` field. The engine never infers an order obligation from a saved order.
                 log("layout loaded: no order obligations exist (no item was placed by you in Arrange); the engine will plan no moves, items keep the order macOS gives them")
             }
@@ -433,6 +434,34 @@ public actor LayoutEngine {
         } else {
             requestReconcile(supersede: true, reason: "setLayout", userInitiated: true)
         }
+        return stamp
+    }
+
+    private func logOrderMode(_ l: Layout) {
+        if l.enforcesOrder { log("order mode: placed items only (\(l.placed.count) placed)") }
+        else { log("order mode: macOS owns the order (\(l.placed.count) remembered placements, not enforced)") }
+    }
+
+    /// 8z5.2: switches who owns the order. Unchanged: returns the current revision, no write. Otherwise persists, bumps the revision,
+    /// publishes and requests a pass. `placed` is untouched (macOSOwns keeps the keys recorded; placedOnly re-arms them).
+    @discardableResult
+    public func setOrderMode(_ mode: OrderMode) async -> LayoutRevision {
+        let current: LayoutRevision = await MainActor.run { [state] in LayoutRevision(revision: state.layoutRevision, passesStarted: state.passesStarted) }
+        guard loaded else {   // never overwrite a layout file that failed to load with a default layout
+            log("order mode: ignored, layout not loaded")
+            return current
+        }
+        if layout.orderMode == mode { return current }
+        noteUserAction()
+        let new = layout.withOrderMode(mode)
+        layout = new
+        noteSupersede("setOrderMode")
+        do { try store.save(new) } catch { log("cannot save layout: \(error)") }
+        logOrderMode(new)
+        let stamp = await publishLayout(new)
+        await clearFailures()   // also ends any position wait
+        if !new.enforcesOrder { await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] } }
+        requestReconcile(supersede: true, reason: "setOrderMode", userInitiated: true)
         return stamp
     }
 
@@ -686,7 +715,7 @@ public actor LayoutEngine {
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          selfPositioningOwners: config.selfPositioningOwners, units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads), placed: layout.placedSet)
+                                         churn: SystemOverflowRule.churnZone(recentReads), placed: layout.enforcesOrder ? layout.placedSet : [])   // 8z5.2: macOS owns the order -> nothing is placed, nothing may move
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -1428,6 +1457,11 @@ public actor LayoutEngine {
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
             }
             guard let action = plan.actions.first, case .move(let key, let rel) = action else { break }
+            if !layout.enforcesOrder {   // 8z5.2: deterministic, never reached (the planner got an empty placed set)
+                log("engine: refusing move of \(key): macOS owns the order")
+                plan.actions = []; plan.phase = .converged
+                break
+            }
             if !effectiveCaps()(key).canMove {
                 log("engine: refusing move of \(key): capability forbids")
                 failures[key] = .unsupportedItem(reason: "capability forbids")

@@ -586,8 +586,9 @@ func runPlan(_ a: [String]) async {
     let rules = makeCapabilityRules()
     // The same hide-unit rule as the engine (EngineFactory.makeLive): the tracked entries as stored now, bundle ids from the observation.
     let unitRule = HideUnitRule(resolver: EngineFactory.currentTrackedResolver(), bundleIDs: Dictionary(res.map { ($0.key, $0.item.ownerBundleID) }.compactMap { k, b in b.map { (k, $0) } }, uniquingKeysWith: { a, _ in a }))
+    print(layout.enforcesOrder ? "order mode: placed items only (\(layout.placed.count) placed)" : "order mode: macOS owns the order (\(layout.placed.count) remembered placements, not enforced)")
     let plan = Reconciler().plan(observed: observed, layout: layout, capabilities: { rules.capability(for: $0) },
-                                 showHiddenSection: showHidden, units: unitRule, placed: layout.placedSet)
+                                 showHiddenSection: showHidden, units: unitRule, placed: layout.enforcesOrder ? layout.placedSet : [])
     func act(_ x: PlannedAction) -> String {
         switch x {
         case .hide(let k): return "hide \(k)"
@@ -685,8 +686,9 @@ func runApply(_ a: [String]) async {
     if let e = state.lastError { fail("\(e)") }
     let t0 = Date()
     let report = await engine.reconcileOnce()
+    print(state.layout.enforcesOrder ? "order mode: placed items only (\(state.layout.placed.count) placed)" : "order mode: macOS owns the order (\(state.layout.placed.count) remembered placements, not enforced)")
     let view = Reconciler().plan(observed: state.observed, layout: state.layout, capabilities: { rules.capability(for: $0) },
-                                 showHiddenSection: showHidden, units: state.hideUnits, placed: state.layout.placedSet)
+                                 showHiddenSection: showHidden, units: state.hideUnits, placed: state.layout.enforcesOrder ? state.layout.placedSet : [])
     var shown = Set<ItemKey>()
     for k in view.desiredOnBar + state.observed.onBar + state.observed.parked where shown.insert(k).inserted {
         switch state.perItem[k] ?? .inPlace {

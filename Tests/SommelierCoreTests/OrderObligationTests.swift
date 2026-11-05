@@ -246,7 +246,7 @@ struct OrderObligationEngineTests {
     // (g)
     @Test func aLayoutFromDiskWithoutPlacedProducesZeroOrderActions() async {
         let sink = LogSink()
-        let r = await engineRig(order: ["A", "B", "C", "D"], layout: Layout(visible: ["D", "C", "B", "A"].map(k)), sink: sink)
+        let r = await engineRig(order: ["A", "B", "C", "D"], layout: Layout(visible: ["D", "C", "B", "A"].map(k), orderMode: .placedOnly), sink: sink)
         #expect(sink.lines.contains { $0.contains("no order obligations exist") })
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
@@ -258,7 +258,7 @@ struct OrderObligationEngineTests {
 
     @Test func aPlacedKeyIsTheOnlyThingTheEngineMovesAndSaysWhy() async {
         let sink = LogSink()
-        let layout = Layout(visible: ["A", "C", "B", "D"].map(k), placed: [k("C")])
+        let layout = Layout(visible: ["A", "C", "B", "D"].map(k), placed: [k("C")], orderMode: .placedOnly)
         let r = await engineRig(order: ["A", "B", "C", "D"], layout: layout, sink: sink)
         #expect(!sink.lines.contains { $0.contains("no order obligations exist") })
         let rep = await r.engine.reconcileOnce()
@@ -285,7 +285,7 @@ struct OrderObligationEngineTests {
 
     @Test func aUserDropPersistsItsPlacement() async {
         let sink = LogSink()
-        let r = await engineRig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "B", "C"].map(k)), sink: sink)
+        let r = await engineRig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "B", "C"].map(k), orderMode: .placedOnly), sink: sink)
         guard case .move(let l, _, _) = ArrangeDrop.outcome(layout: r.state.layout, key: k("C"), to: .visible, index: 0, capabilities: free) else { Issue.record("no move"); return }
         await r.engine.setLayout(l)
         #expect(r.state.layout.placed == [k("C")])

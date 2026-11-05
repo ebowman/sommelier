@@ -186,14 +186,14 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   unit's section (`alwaysHidden` if any sibling is, else `hidden` if all are hidden, else `visible`).
 - Keys of apps that are not running stay in the file untouched (absent is not unknown).
 - `placed` (gdu.89): optional array of the keys the USER placed in Visible; the only source of an order obligation. Absent = empty
-  (every layout written before gdu.89 plans no moves; the engine logs "no order obligations exist" once at load). `isValid` requires
+  (every layout written before gdu.89 has none; such files also lack `orderMode`, so they decode to `macOSOwns` and the engine logs "order mode: macOS owns the order (0 remembered placements, not enforced)" at load; the "no order obligations exist" line appears only for `placedOnly` with zero placed keys). `isValid` requires
   `placed` to be a subset of the three sections; decoding drops entries not in Visible (`pruningPlaced`), and `remove`/`move` out of Visible drop
   the key. Written only when non-empty. A key enters only through `markPlaced`, called by `ArrangeDrop.outcome` for the `moved` keys
   (hide-unit siblings included) of a drop INTO Visible, from Visible or from Hidden/Always hidden; an order-only drop inside Hidden or
   Always hidden marks nothing (those strips are our own data). `LayoutBuilder`, `mbprobe layout init-from-current`, first launch
   (`setLayout(userPlacement: false)` keeps the engine's current `placed`), "Adopt current order" (clears it), "Hide what does not fit",
-  new-item appends and `normalizedAroundSelfPositioning` never add to it. A satisfied placement stays an obligation (if macOS later moves the key, it is moved back)
-  until Adopt or the key leaves Visible/the layout.
+  new-item appends and `normalizedAroundSelfPositioning` never add to it. In `placedOnly` a satisfied placement stays an obligation (if macOS later moves the key, it is moved back)
+  until Adopt or the key leaves Visible/the layout; in `macOSOwns` placements are remembered but never enforced (sommelier-8z5.2).
 - Order mode (sommelier-8z5.1): `orderMode` (`OrderMode`: `macOSOwns` | `placedOnly`), always written. Absent on disk decodes to `macOSOwns`, so every
   existing layout file migrates to macOS-owned order with its `placed` entries kept untouched but inert; an unknown value is a decode error
   (the file is treated as corrupt). `Layout.empty` and the memberwise `init` default to `macOSOwns`; `enforcesOrder` is `orderMode == .placedOnly`;
@@ -208,7 +208,7 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
 
 ### Reconciler
 
-**Only placed keys are ordered (gdu.89).** `plan(..., placed:)` takes `Layout.placed` (the engine and `mbprobe` always pass it; `nil` is the legacy
+**Only placed keys are ordered (gdu.89).** `plan(..., placed:)` takes `Layout.placed` (the engine and `mbprobe` pass `layout.placedSet` only when `enforcesOrder`, else an empty set, see the Order mode paragraph below; `nil` is the legacy
 full-order rule, equivalent to `placed == Set(layout.visible)` for a bar without immovable items, kept for the planner tests). The order
 target is the OBSERVED drawn order (`base`) with every placed, movable key lifted out and re-inserted next to its neighbour in `Layout.visible`
 (`Reconciler.placedTarget`): after the nearest left neighbour that is drawn, not in macOS's overflow, not the chevron and not self-positioning;
@@ -220,6 +220,8 @@ two-scan rule are unchanged. A placed key dropped from Hidden is shown first (me
 Each planned move is announced before it runs: `EngineState.orderMoveNotice` / `orderMoveReasons` ("Moving K: you placed it after L"; Arrange status line
 chain position after `orderNotAppliedNotice`, row `.moving` tooltip via `ArrangeRow.moveReason`) and the log line `order: moving K after L (user placement)`.
 A placed key is only dragged when its on-bar position is corroborated by a hosted element (`ObservedOrder.uncorroborated`: join evidence corroborated, Control Center does not list it hidden or not allowed, gdu.94); otherwise the planner keeps its observed slot, reports a skip, and membership (show) comes first. `LiveActuator` refuses the same subjects (and any whose frame overlaps a fresh item) before dragging.
+
+**Order mode (sommelier-8z5.2).** `Layout.orderMode` decides whether `placed` is enforced. In `macOSOwns` (the default) the pass is membership-only: `makePlan` passes `placed: layout.enforcesOrder ? layout.placedSet : []`, and an empty placed set means no key may move, so the planner never returns `phase=order`, never reports the gdu.94 uncorroborated skip (a placed key that cannot move is simply not placed in this mode) and `.waitingForPosition` never arises. Belt and braces: if a `.move` ever reached the order loop with `!layout.enforcesOrder`, the engine logs `engine: refusing move of K: macOS owns the order` and ends the loop as converged (no failure, no strike); this is deterministic and unreachable in practice. `orderMoveNotice`/`orderMoveReasons` are therefore never set in `macOSOwns`. `LayoutEngine.setOrderMode(_:) -> LayoutRevision`: an unchanged mode returns the current revision with no write; otherwise it persists `layout.withOrderMode(mode)` (placed untouched, keys stay recorded), bumps the revision, publishes, runs `clearFailures` (which ends position waits), clears the order notices when switching to `macOSOwns`, and requests a pass (switching to `placedOnly` re-arms the recorded placed keys as obligations). `EngineState.orderMode` mirrors `layout.orderMode`. Logs at load and after `setOrderMode`: `order mode: macOS owns the order (N remembered placements, not enforced)` or `order mode: placed items only (N placed)`; the gdu.89 "no order obligations exist" line is kept only for `placedOnly` with no placed key. `mbprobe plan`/`apply` print the same `order mode:` line and plan with the same placed set.
 
 The skip is usually transient (the scanner's join evidence for an item varies scan to scan, so a key `frameAmbiguous` for one pass is `frameUnique` the next), so it is not an `.unsupported` (gdu.105). The engine reports it as `ItemStatus.waitingForPosition(reason)`: never struck, not a failure, cleared on layout change/Retry, replaced by the real outcome once the move is dispatched. While any key waits, the engine schedules ONE follow-up pass (reason `position retry`) with a doubling back-off (`Config.positionRetryBase` 2 s up to `positionRetryCap` 15 s; reset when nothing waits), the same mechanism as the gdu.87 store retry. After `Config.positionWaitTimeout` (60 s) of continuous waiting the status becomes `.unsupported("could not corroborate its position on the bar for 60 s: ...")`, logged once, terminal until a layout change or Retry (no more scheduled retries). The Arrange tracker keeps its spinner on `.waitingForPosition` (the `drop#n done` line appears only on verify/fail/unsupported/timeout); the badge tooltip reads "Waiting for a trustworthy read of its position ...", and the status line counts "Waiting for a trustworthy read of N item(s)".
 
