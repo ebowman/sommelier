@@ -26,6 +26,17 @@ public enum ActuationError: Error, Equatable, Sendable {
     case liveWriteFailed(String)
 }
 
+extension ActuationError {
+    /// Text carried by the actuator's refusal to drag an item (or anchor) that sits in macOS's overflow area (gdu.25, gdu.69).
+    public static let overflowRefusalMarker = "is in the menu bar overflow area"
+    /// The actuator refused BEFORE any drag because the subject or relation anchor is in macOS's overflow area. Not a failure
+    /// of the item: the engine treats it as a skip and never strikes the key.
+    public var isOverflowRefusal: Bool {
+        if case .mechanismFailed(let m) = self { return m.contains(Self.overflowRefusalMarker) }
+        return false
+    }
+}
+
 /// Outcome of an actuation. `.verified` is only returned after a settled full scan satisfied the predicate.
 public enum ActuationResult: Sendable {
     case verified(MenuBarSnapshot)

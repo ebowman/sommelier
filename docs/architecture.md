@@ -387,15 +387,27 @@ restore afterwards).
 ### System overflow (gdu.45)
 When the bar is full macOS (MenuBarAgent) hosts a chevron ("<<") and pushes the leftmost items behind it. They stay in the
 hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they are not drawn and a drag on them is a no-op.
-- The scanner sets `MenuBarItem.systemOverflow` (`SystemOverflow.mark`) for exactly one case: a fresh on-bar item whose frame
-  lies left of a FRESH chevron (`isOverflowChevron`, found structurally, see docs/findings-drag.md) in the same read. No
-  chevron, or a stale one, flags nothing (conservative). Stacked or identical frames never feed the flag. They are only a local
-  pre-drag guard in `ActuationVerifier.overflowed`, which also reads the flag. `ObservedOrder.systemOverflow` /
-  `overflowChevron`, `ItemInfo.systemOverflow` and `ItemStatus.notFitting` carry it to the planner and UI.
+- ONE rule (gdu.69), `SystemOverflowRule.isOverflowed(frame, chevron:, hosted:)` in MenuBarItem.swift, used by the scanner's
+  flag (`SystemOverflow.mark`/`indices`), `ActuationVerifier.overflowed` and `OverflowProbe.isStacked` (gdu.65). With a FRESH
+  chevron (`isOverflowChevron`, found structurally, see docs/findings-drag.md) in the same read, a fresh on-bar frame is
+  overflowed when it lies left of the chevron's minX, or its centre is on the chevron, or it is stacked on another hosted frame
+  (centres within 2 pt) AND starts left of the chevron's maxX (the clipped pile extends past the chevron's minX live). Identical
+  frames far right of the chevron are chance, not overflow (findings-drag incident). No chevron, or a stale one, flags nothing.
+  Before gdu.69 the scanner flagged only items ordered before the chevron while the verifier also named stacked pairs and the
+  probe flagged stacked frames anywhere; worse, the scan often had NO chevron item at all: the hosted-to-candidate frame join
+  (`MenuBarScanner` `pass(.frameAmbiguous)`) paired the chevron element with an app item whose frame overlapped it (Script
+  Menu), so nothing was flagged and the planner kept planning moves of overflowed items. Chevron elements are now never joined.
+  The verifier keeps its pair-local identical-frame pre-drag guard, which never feeds the flag. `ObservedOrder.systemOverflow` /
+  `overflowChevron`, `ItemInfo.systemOverflow` and `ItemStatus.notFitting` carry the flag to the planner and UI.
+- Engine (gdu.69): an actuator refusal whose error `isOverflowRefusal` (`mechanismFailed` containing "is in the menu bar
+  overflow area", raised before any drag) is a skip, not a failure: no strike (`markFailed`), no `consecutiveFailures`; the key is
+  remembered for the pass (`overflowRefused`) and its moves are dropped from the plan (skip `Reconciler.overflowSkipReason`).
+  Statuses: a key flagged `systemOverflow` stays `.notFitting` (never red, never overridden by the skip).
 - Rule: Sommelier orders the drawn bar; macOS decides what overflows (it depends on total width), so a layout's order across the
   overflow boundary is not a request Sommelier can act on. `Reconciler.plan` drops the overflowed keys and the chevron from
   `desired` and `base` before the order planning: no drawn key is ever anchored or reported because of them, whatever the layout
-  lists (unknown, pulled-in, normalized or churned), and the planner never emits a "does not fit" skip. No move has an
+  lists (unknown, pulled-in, normalized or churned). Only an overflowed key the layout places differently relative to the drawn
+  keys gets one skip "in the system overflow area; macOS decides what fits" (gdu.69; agreeing layouts stay silent). No move has an
   overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost` drop becomes
   `.before(first drawn item)`); `overflowViolations` asserts this. Membership is unchanged (an overflowed item may still be
   hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as

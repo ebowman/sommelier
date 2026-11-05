@@ -907,6 +907,12 @@ case "watch": runWatch(Array(args.dropFirst()))
 case "agent-restart": runAgentRestart()
 case "keys": runKeys(Array(args.dropFirst()))
 case "list": runList(Array(args.dropFirst()))
+case "overflow":
+    // Read-only: the agent's top-level overflow probe (chevron frame, expanded, hosted group frames), gdu.69.
+    guard let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first,
+          let p = LiveAccessibilitySource().overflowProbe(agentPID: agent.processIdentifier) else { print("overflow probe: unreadable"); exit(1) }
+    print("chevron=\(p.chevron.map { "\($0)" } ?? "none") expanded=\(p.expanded) hosted=\(p.hosted.count)")
+    for f in p.hosted.sorted(by: { $0.minX < $1.minX }) { print("  x=\(Int(f.minX)) w=\(Int(f.width)) stacked=\(p.isStacked(f))") }
 default: usage()
 }
 

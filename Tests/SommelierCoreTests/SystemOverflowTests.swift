@@ -172,7 +172,7 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
 @Test func aDrawnKeyPlacedLeftOfTheOverflowRunIsOrderedAmongDrawnKeysOnly() {
     let o = obs(["o1", "ch", "a", "b", "c"], ovf: ["o1"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["c", "o1", "ch", "a", "b"]), capabilities: anchorCh)
-    #expect(p.skipped.isEmpty)
+    #expect(p.skipped.map(\.key) == [k("o1")] && p.skipped.first?.reason == Reconciler.overflowSkipReason)   // gdu.69: o1 is wanted after c
     #expect(p.actions == [.move(k("c"), .before(k("a")))])              // never a slot left of the first drawn item
     #expect(Reconciler.overflowViolations(p.actions, forbidden: [k("o1"), k("ch")], boundary: true).isEmpty)
 }
@@ -220,14 +220,14 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), .status(ownerKey: "com.x.z", autosaveName: "z"), kk("b")], parked: [],
                           systemOverflow: [kk("o")], overflowChevron: k("ch"))
     let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
-    #expect(p.skipped.isEmpty && p.actions.isEmpty && p.phase == .converged)
+    #expect(p.skipped.map(\.key) == [kk("o")] && p.actions.isEmpty && p.phase == .converged)   // gdu.69: reported, not planned
 }
 
 @Test func churnInWhichItemsOverflowCausesNoSkipsAndNoActions() {
     // At init O was overflowed and 28 drawn; later O is drawn and 28 overflowed.
     let o = obs(["28", "ch", "O", "M", "N"], ovf: ["28"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["O", "28", "ch", "M", "N"]), capabilities: anchorCh)
-    #expect(p.phase == .converged && p.skipped.isEmpty && p.actions.isEmpty)
+    #expect(p.phase == .converged && p.skipped.map(\.key) == [k("28")] && p.actions.isEmpty)   // gdu.69: reported, not planned
 }
 
 @Test func aRealBarShapedFixtureWithTheLayoutEqualToTheObservedOrderIsConverged() {
@@ -247,4 +247,63 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
         #expect([k("b"), k("c")].contains(s))
         switch rel { case .before(let t), .after(let t): #expect(drawn.map(k).contains(t)); default: Issue.record("unexpected \(rel)") }
     } else { Issue.record("expected a move") }
+}
+
+
+// MARK: gdu.69 one shared overflow rule
+
+/// The rv65 snapshot of the user's naturally full bar: chevron at x 786..803 (live: 795), 1Password and others stacked at 781..799.
+private let chev = CGRect(x: 786, y: 1, width: 17.5, height: 26)
+private func fr(_ x: CGFloat, _ w: CGFloat) -> CGRect { CGRect(x: x, y: 3, width: w, height: 24) }
+
+@Test func sharedRuleFlagsStackedItemsLeftOfAndWithinReachOfTheChevronButNotCoincidenceFarRight() {
+    let onePassword = fr(781, 22), textSniper = fr(795, 30), tailscale = fr(798, 24), rescue = fr(798, 24)
+    let cpu = fr(1516, 44), cc = fr(1516, 44), battery = fr(822, 21)
+    let hosted = [onePassword, textSniper, tailscale, rescue, battery, cpu, cc]
+    #expect(SystemOverflowRule.isOverflowed(onePassword, chevron: chev, hosted: hosted))           // left of the chevron
+    #expect(SystemOverflowRule.isOverflowed(textSniper, chevron: chev, hosted: hosted))            // centre (810) on / right at it
+    #expect(SystemOverflowRule.isOverflowed(tailscale, chevron: chev, hosted: hosted))             // stacked, within reach
+    #expect(!SystemOverflowRule.isOverflowed(battery, chevron: chev, hosted: hosted))              // first drawn item
+    #expect(!SystemOverflowRule.isOverflowed(cpu, chevron: chev, hosted: hosted))                  // identical frames far right: chance
+    #expect(!SystemOverflowRule.isOverflowed(cc, chevron: chev, hosted: hosted))
+}
+
+@Test func scannerActuatorAndProbeAgreeOnARv65ShapedBar() {
+    var s = FixtureSource(apps: [agent])
+    let els: [(String, CGRect)] = [("1P", fr(781, 22)), ("TS", fr(798, 24)), ("RT", fr(798, 24)), ("BAT", fr(822, 21)), ("CPU", fr(1516, 44)), ("CC", fr(1516, 44))]
+    s.tree = AgentHostedTree(stripFrame: CGRect(x: 0, y: 0, width: 2000, height: 30),
+        elements: els.prefix(1).map { AXElementInfo(title: $0.0, axDescription: $0.0, identifier: $0.0, frame: $0.1) }
+            + [AXElementInfo(axDescription: "Show Hidden Menu Bar Items", frame: chev, directWindowChild: true)]
+            + els.dropFirst().map { AXElementInfo(title: $0.0, axDescription: $0.0, identifier: $0.0, frame: $0.1) })
+    let snap = MenuBarScanner(source: s).scan()
+    let flagged = Set(snap.items.filter(\.systemOverflow).map(\.axIdentifier))
+    #expect(flagged == ["1P", "TS", "RT"])
+    let resolved = IdentityResolver().resolve(snapshot: snap)
+    let ovf = ActuationVerifier.overflowed(resolved)
+    // the verifier names the flagged three plus its local identical-frame pair (CPU/CC); the scanner never flags the pair
+    #expect(Set(resolved.filter { ovf.contains($0.key) && $0.item.systemOverflow }.map(\.item.axIdentifier)) == flagged)
+    let probe = OverflowProbe(chevron: chev, hosted: els.map(\.1))
+    #expect(els.filter { probe.isStacked($0.1) }.map(\.0) == ["1P", "TS", "RT"])
+}
+
+@Test func theChevronIsNeverJoinedToAnAppCandidateByFrame() {
+    // gdu.69 root cause: a candidate whose own frame overlapped the chevron's absorbed the chevron element in the frame join,
+    // so no chevron item existed in the scan and nothing was flagged.
+    var s = FixtureSource(apps: [agent, RunningAppInfo(pid: 7, bundleID: "com.apple.ScriptMenuApp", name: "Script Menu")])
+    s.tree = AgentHostedTree(stripFrame: CGRect(x: 0, y: 0, width: 2000, height: 30), elements: [
+        AXElementInfo(title: "A", axDescription: "A", identifier: "A", frame: fr(700, 22)),
+        AXElementInfo(axDescription: "Show Hidden Menu Bar Items", frame: chev, directWindowChild: true),
+        AXElementInfo(title: "D", axDescription: "D", identifier: "D", frame: fr(900, 24)),
+    ])
+    s.extras[7] = [AXElementInfo(title: "", axDescription: "AppleScript scroll document, filled", identifier: "com.apple.scriptmenu", frame: chev)]
+    let snap = MenuBarScanner(source: s).scan()
+    #expect(snap.items.filter(\.isOverflowChevron).count == 1)
+    #expect(snap.items.first { $0.axIdentifier == "A" }?.systemOverflow == true)
+}
+
+@Test func plannerReportsAnOverflowedItemTheLayoutMovesAsOneSkipAndConverges() {
+    let o = obs(["o1", "o2", "ch", "a", "b"], ovf: ["o1", "o2"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "o1", "b", "o2"]), capabilities: anchorCh)
+    #expect(p.actions.isEmpty && p.phase == .converged)
+    #expect(Set(p.skipped.map(\.key)) == [k("o1"), k("o2")] && p.skipped.allSatisfy { $0.reason == "in the system overflow area; macOS decides what fits" })
 }

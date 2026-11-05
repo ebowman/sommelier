@@ -202,6 +202,22 @@ public struct Reconciler: Sendable {
         // churned). Membership (hiding an overflowed key) was decided above and is unchanged.
         // Self-positioning keys are not placed by the layout either: they keep their observed slot (like any unplaced anchor),
         // so their order never yields a move or an "out of order" finding.
+        // gdu.69: an overflowed key the layout places differently relative to the DRAWN keys than where it sits (a move of it, or
+        // around it, would have been planned) is reported as one skip with the honest reason. The order among overflowed keys
+        // carries no information, and a layout that agrees with the observed order stays silent (gdu.45).
+        do {
+            let all = Set(onBar)
+            let want = desired.filter { all.contains($0) && !hideSet.contains($0) && $0 != chevron }
+            let have = onBar.filter { wantOnBar.contains($0) && !hideSet.contains($0) && $0 != chevron }
+            func drawnBefore(_ k: ItemKey, _ list: [ItemKey]) -> Set<ItemKey>? {
+                guard let i = list.firstIndex(of: k) else { return nil }
+                return Set(list[..<i].filter { !ovf.contains($0) })
+            }
+            let listed = Set(layout.visible + layout.hidden + layout.alwaysHidden)
+            for k in ovfKept where listed.contains(k) && want.contains(k) && drawnBefore(k, want) != drawnBefore(k, have) {
+                skipped.append(SkippedAction(k, Reconciler.overflowSkipReason))
+            }
+        }
         desired = desired.filter { !ovf.contains($0) && $0 != chevron && !isSP($0) }
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
         let base = kept + shows
@@ -281,6 +297,9 @@ public struct Reconciler: Sendable {
         }
         return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target)
     }
+
+    /// Why an item in macOS's own overflow area is not planned (gdu.69).
+    public static let overflowSkipReason = "in the system overflow area; macOS decides what fits"
 
     /// Post-condition (gdu.45): a move whose subject or relation target is overflowed or the chevron, or (with a chevron)
     /// that drops at the far left of the bar, i.e. left of the chevron.

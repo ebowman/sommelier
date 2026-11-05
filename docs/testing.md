@@ -148,6 +148,9 @@ actions (1):  1. move status:MBDummy::Dummy-N after status:MBDummy::Dummy-M     
 ```
 No action names the chevron or an overflowed item. `apply` not run; the real layout.json was not touched.
 
+### Overflowed bar, idle (gdu.69)
+Live 2026-11-05 (Bartender quit, the user's naturally full bar, `mbprobe layout init-from-current` scratch layout via `SOMMELIER_LAYOUT_FILE`, `SOMMELIER_OPEN_ARRANGE=1`, Sommelier run directly, 5 min 22 s idle, no dummies). `mbprobe overflow` (new, read-only: chevron frame, expanded, hosted frames) shows the chevron; root cause found with it: the scan had NO chevron item because the hosted-to-app frame join paired the chevron element with Script Menu, so nothing was flagged. After the fix `mbprobe list` flags exactly the items left of or on the chevron plus the stacked pile within its reach (chevron x 786: iStat Network/Weather, SystemUIServer, KeepingYouAwake, TextInputMenuAgent, 1Password at 781, BoltAI, TextSniper, Tailscale, RescueTime, DEVONsphere, Grammarly = 12; first drawn item iStat Disks at 813 not flagged; before the fix 0). Log: 0 `failed N passes` / `marked failed` lines, 0 drag lines, every pass `plan: phase=converged actions=0`. Arrange window (`screencapture -l <window id>`): the 12 show the neutral orange `«` badge, no red anywhere, status line "Converged". End state: Sommelier stopped, Bartender 7 relaunched (pid 3338), `group.com.apple.controlcenter.plist` and `com.apple.controlcenter.plist` byte-equal to the backups, `com.apple.MenuBarAgent.plist` differs only in `MenuBarAnalytics.lastReportedTrailingItemCount` (22 -> 24, macOS's own counter), real `layout.json`/`slot-hints.json` sha unchanged. `swift test`: 614 tests.
+
 ## Arrange window
 
 Dev safety: always run with `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json` (README "Developing"). Quit Bartender first

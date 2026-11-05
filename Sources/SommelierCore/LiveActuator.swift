@@ -274,7 +274,7 @@ public actor LiveActuator: MenuBarActuator {
                 involved += ActuationVerifier.barOrder(plan.resolved).filter { $0.item.frame.minX <= x && x <= $0.item.frame.maxX }.map(\.key)
             }
             if let hit = involved.first(where: { ovf.contains($0) }) {
-                dragBlocked = "\(hit) is in the menu bar overflow area (hidden by macOS because the bar is full); a drag cannot reach it"
+                dragBlocked = "\(hit) \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
                 note("drag skipped: \(dragBlocked!)")
                 lastError = .mechanismFailed(dragBlocked!)
             }

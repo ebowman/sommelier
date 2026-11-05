@@ -574,6 +574,22 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.calls.count == 3)
     }
 
+    @Test func overflowRefusalsAreSkipsNotStrikes() async {
+        // gdu.69: the actuator refuses a drag whose subject or anchor sits in macOS's overflow area. Three such refusals in
+        // a row (three passes) must not mark any key failed, and the pass must not count them as failed actions.
+        let msg = "A \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
+        let names = ["A", "B", "C"]
+        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
+                          failOn: (1...12).map { ($0, ActuationError.mechanismFailed(msg)) })
+        for _ in 0..<4 {
+            let rep = await r.engine.reconcileOnce()
+            #expect(rep.outcome != .stopped)
+        }
+        #expect(r.state.lastError == nil)
+        #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else { true } })
+        #expect(r.state.perItem.values.contains { if case .unsupported(let t) = $0 { t == Reconciler.overflowSkipReason } else { false } })
+    }
+
     @Test func neverRunsWithoutALoadedLayout() async {
         final class CountingStore: LayoutStore, @unchecked Sendable {
             let lock = NSLock(); var saves = 0

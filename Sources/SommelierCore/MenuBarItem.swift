@@ -173,14 +173,30 @@ public struct OverflowProbe: Equatable, Sendable {
         self.chevron = chevron; self.expanded = expanded; self.hosted = hosted
     }
 
-    /// Is `frame` (a revealed item's settled frame) a system-overflow frame? The scanner's rule (SystemOverflow: left of the
-    /// chevron) plus the two ways the click goes wrong: the click point lies on the chevron, or another hosted group sits on
-    /// the same x (centres within 2 pt: items stacked on one another). Never true when the bar has no chevron or it is expanded.
+    /// Is `frame` (a revealed item's settled frame) a system-overflow frame? The shared `SystemOverflowRule` (gdu.69), against
+    /// this probe's chevron and hosted groups. Never true when the bar has no chevron or it is expanded.
     public func isStacked(_ frame: CGRect) -> Bool {
         guard let c = chevron, !expanded else { return false }
-        if frame.minX < c.minX - 2 { return true }
+        return SystemOverflowRule.isOverflowed(frame, chevron: c, hosted: hosted)
+    }
+}
+
+/// THE rule for "macOS put this item in its own overflow area" (gdu.69). One definition shared by the scanner's
+/// `systemOverflow` flag, `ActuationVerifier.overflowed` and `OverflowProbe.isStacked`, so the planner, the actuator and the
+/// activator can never disagree. With a chevron on the bar, a frame is overflowed when
+///  (a) it lies left of the chevron's minX, or
+///  (b) its centre lies on the chevron (within 2 pt), or
+///  (c) it is stacked on another hosted frame (centres within 2 pt) AND within the chevron's reach (starts left of the
+///      chevron's maxX): the clipped pile macOS draws behind the chevron extends past its minX (seen live: 1Password, Tailscale
+///      and others at x 783..799 with the chevron at 795..812).
+/// Bare frame coincidence right of the chevron is NOT overflow (two drawn items can coincide by chance; findings-drag
+/// "False-positive incident"). No chevron: nothing is overflowed (the caller decides).
+public enum SystemOverflowRule {
+    public static func isOverflowed(_ frame: CGRect, chevron c: CGRect, hosted: [CGRect]) -> Bool {
+        if frame.minX < c.minX { return true }
         if c.insetBy(dx: -2, dy: -2).contains(CGPoint(x: frame.midX, y: frame.midY)) { return true }
-        // The target's own group is in `hosted` too: a second one on this x means it is stacked.
+        guard frame.minX < c.maxX else { return false }
+        // The frame's own group is usually in `hosted` too: a second one on this x means it is stacked.
         return hosted.filter { abs($0.midX - frame.midX) <= 2 }.count >= 2
     }
 }
@@ -289,12 +305,16 @@ public enum SystemOverflow {
         public init(frame: CGRect, stale: Bool, isChevron: Bool) { self.frame = frame; self.stale = stale; self.isChevron = isChevron }
     }
 
-    /// Indices (into `order`, the on-bar items left to right) that macOS overflowed: the FRESH items ordered before a
-    /// FRESH chevron of the same read. Nothing else flags (gdu.45 corrective: coincidental identical frames on a normal bar
-    /// and a chevron missed by a partial read must not cascade); a stale or absent chevron flags nothing.
+    /// Indices (into `order`, the on-bar items left to right) that macOS overflowed: the FRESH items for which
+    /// `SystemOverflowRule` holds against a FRESH chevron of the same read (gdu.69: left of / on the chevron, or stacked within
+    /// its reach). Nothing else flags (gdu.45 corrective: coincidental identical frames on a normal bar and a chevron missed by
+    /// a partial read must not cascade); a stale or absent chevron flags nothing.
     public static func indices(order: [Entry]) -> Set<Int> {
         guard let c = order.firstIndex(where: { $0.isChevron && !$0.stale }) else { return [] }
-        return Set((0..<c).filter { !order[$0].stale })
+        let chevron = order[c].frame
+        let fresh = order.indices.filter { $0 != c && !order[$0].isChevron && !order[$0].stale }
+        let frames = fresh.map { order[$0].frame }
+        return Set(fresh.filter { SystemOverflowRule.isOverflowed(order[$0].frame, chevron: chevron, hosted: frames) })
     }
 
     /// Sets `systemOverflow` on a snapshot's items. Expects the on-bar items first and sorted left to right (the

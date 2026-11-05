@@ -564,7 +564,7 @@ public struct MenuBarScanner {
         // Which pass paired each candidate, and with which hosted element (gdu.28 `JoinEvidence`).
         var matchedBy: [Int: (pass: JoinEvidence, hosted: Int)] = [:]
         func pass(_ kind: JoinEvidence, _ matches: (AXElementInfo, AXElementInfo) -> Bool) {
-            for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) {
+            for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) && !h.isOverflowChevron {
                 if let ci = candidates.indices.first(where: {
                     matchedCandidates[$0] == nil && !assumedIdx.contains($0) && matches(h, candidates[$0].info)
                 }) {

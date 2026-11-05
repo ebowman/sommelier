@@ -674,9 +674,12 @@ extension FakeHold { fileprivate func setRefuse() { refuse = true } }
         // Left of the chevron (the scanner's rule) and click point on the chevron.
         #expect(OverflowProbe(chevron: c).isStacked(CGRect(x: 700, y: 3, width: 24, height: 24)))
         #expect(OverflowProbe(chevron: c).isStacked(stackedFrame))
-        // Coincides with another hosted group (centres within 2 pt) even right of the chevron's click zone.
+        // Coincides with another hosted group (centres within 2 pt) AND starts within the chevron's reach (gdu.69).
+        let reach = CGRect(x: 812, y: 3, width: 24, height: 24)
+        #expect(OverflowProbe(chevron: c, hosted: [reach, CGRect(x: 811, y: 0, width: 26, height: 29)]).isStacked(reach))
+        // The same coincidence far right of the chevron is chance, not overflow (findings-drag, false-positive incident).
         let drawn = CGRect(x: 900, y: 3, width: 24, height: 24)
-        #expect(OverflowProbe(chevron: c, hosted: [drawn, CGRect(x: 899, y: 0, width: 26, height: 29)]).isStacked(drawn))
+        #expect(!OverflowProbe(chevron: c, hosted: [drawn, CGRect(x: 899, y: 0, width: 26, height: 29)]).isStacked(drawn))
         // A normal drawn item right of the chevron, alone on its x: not stacked.
         #expect(!OverflowProbe(chevron: c, hosted: [drawn]).isStacked(drawn))
         #expect(!OverflowProbe(chevron: c, hosted: [drawn, CGRect(x: 950, y: 0, width: 26, height: 29)]).isStacked(drawn))

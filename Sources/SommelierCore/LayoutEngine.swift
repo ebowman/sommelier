@@ -119,6 +119,9 @@ public actor LayoutEngine {
     private var nextHoldToken = 0
     /// Consecutive passes in which the key failed (1...maxKeyFailures); a key at the limit is no longer retried.
     private var strikes: [ItemKey: Int] = [:]
+    /// gdu.69: keys whose move the actuator refused in THIS pass because the subject or anchor is in macOS's overflow area
+    /// (belt and braces: the planner already skips flagged items). Never struck; their moves are dropped from the plan.
+    private var overflowRefused: [ItemKey: String] = [:]
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -423,6 +426,22 @@ public actor LayoutEngine {
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
         if !transientReveals.isEmpty { p.actions = []; p.newItems = []; p.phase = .converged }
+        if !overflowRefused.isEmpty {
+            func refused(_ a: PlannedAction) -> ItemKey? {
+                guard case .move(let k, let rel) = a else { return nil }
+                if overflowRefused[k] != nil { return k }
+                switch rel {
+                case .before(let t), .after(let t): return overflowRefused[t] != nil ? k : nil
+                case .leftmost, .rightmost: return nil
+                }
+            }
+            let dropped = p.actions.compactMap(refused)
+            if !dropped.isEmpty {
+                p.actions.removeAll { refused($0) != nil }
+                for k in dropped where !p.skipped.contains(where: { $0.key == k }) { p.skipped.append(SkippedAction(k, Reconciler.overflowSkipReason)) }
+                if p.phase == .order, p.actions.isEmpty { p.phase = .converged }
+            }
+        }
         return p
     }
 
@@ -489,6 +508,7 @@ public actor LayoutEngine {
         strikes = strikes.filter { present.contains($0.key) }
         let previous = failedThisPass
         failedThisPass = []
+        overflowRefused = [:]
         cutThisPass = false
         let limit = config.maxKeyFailures
         for (k, n) in strikes where n < limit && !previous.contains(k) { strikes[k] = nil }
@@ -528,7 +548,7 @@ public actor LayoutEngine {
         for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
         for k in obs.onBar + obs.parked where transientReveals[k.hideUnit] != nil { out[k] = .pending }
-        for s in plan.skipped where failures[s.key] == nil {
+        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting {
             out[s.key] = .unsupported(s.reason)
         }
         for (k, e) in failures where out[k] != nil { out[k] = .failed(e) }
@@ -1026,7 +1046,12 @@ public actor LayoutEngine {
                     if draining { pending = true }
                     return await abort(.incomplete)
                 }
-                markFailed(key, e)
+                if e.isOverflowRefusal {
+                    // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
+                    consecutiveFailures -= 1
+                    if overflowRefused[key] == nil { log("\(key): move skipped, in the system overflow area (\(e)); not a failure") }
+                    overflowRefused[key] = Reconciler.overflowSkipReason
+                } else { markFailed(key, e) }
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
             }
             plan = makePlan(obs)
