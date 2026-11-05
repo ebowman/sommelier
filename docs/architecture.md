@@ -62,6 +62,7 @@ Every `MenuBarActuator` call follows: **precheck -> act -> settle -> verify -> t
      also confirmed by a non-frame attribute (AXIdentifier) in the full scan; otherwise `.notVerified`.
 5. **Result.** `.verified(snapshot)` or `.failed(error, lastSnapshot)`. Mismatch -> `.notVerified(expected:, observed:)`; no convergence ->
    `.timeout`; anything else (event creation failure, plist write error) -> `.mechanismFailed(String)`.
+   **`.verified` never comes from one full scan (gdu.26).** A move that already looks satisfied on `prepare()`'s single scan is re-observed through `SettleDetector` first (disagreement -> re-plan from the settled observation, or `.timeout` if it keeps flapping); a batch that looks satisfied on one full scan needs a second full scan that agrees (`SettleDetector.agree`) before `batch already satisfied`, and a contradiction restarts the batch once from the newer scan. Cost: one extra settle / full scan (~0.3-1 s) on the no-op paths only. The live-write confirm poll (first complete hosted read after a write; gdu.39/51/55) and the store-based `alreadyApplied` / `liveUnverified` results are different evidence by design (a state change observed after the write, resp. the Control Center store), not a settle claim.
 
 **Retry policy.** Drag: attempt 1 with standard drop point; on `.notVerified` retry once with the drop point shifted (+/-6 px more, or 20
 steps); second failure -> fallback (order store + restart, if allowed by the caller) else `.failed`. Never retry after `.userBusy`,

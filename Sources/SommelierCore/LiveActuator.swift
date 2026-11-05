@@ -245,8 +245,18 @@ public actor LiveActuator: MenuBarActuator {
         let cap = CapabilityRules(hasTrackedEntry: { _ in true }).capability(for: key)
         guard cap.canMove else { return .failed(.unsupportedItem(reason: cap.reason ?? "cannot move"), plan.snapshot) }
         if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
-            note("already satisfied")
-            return .verified(plan.snapshot)
+            // gdu.26: prepare() took ONE full scan; `.verified` needs the settle rule (two agreeing scans), so confirm first.
+            var obs = await observe(key, relation, subjectPID: plan.subject.item.ownerPID)
+            if !obs.settled { obs = await observe(key, relation, subjectPID: plan.subject.item.ownerPID) }
+            if obs.verified { note("already satisfied (settled)"); return .verified(obs.snapshot) }
+            if !obs.settled { return .failed(.timeout, obs.snapshot) }
+            note("looked satisfied on one scan but the settled observation disagrees; planning from it")
+            let (p, e) = await prepare(key, relation, from: obs.snapshot)
+            if let e { return e }
+            plan = p!
+            if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
+                return .failed(.timeout, plan.snapshot)   // flapping between scans: nothing is settled, claim nothing
+            }
         }
         var lastError: ActuationError = .timeout
         var lastSnapshot = plan.snapshot
@@ -313,7 +323,12 @@ public actor LiveActuator: MenuBarActuator {
                     if let e { return e }
                     plan = p!
                     if attempt == 1, ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok, obs.settled {
-                        return .verified(plan.snapshot)
+                        // gdu.26: the settled observation said "not in place" and one fresh scan says "in place": a
+                        // contradiction, not a verdict. Only a new settled observation may earn `.verified`.
+                        let again = await observe(key, relation, subjectPID: pid)
+                        lastSnapshot = again.snapshot
+                        if again.verified { return .verified(again.snapshot) }
+                        lastError = .timeout
                     }
                 }
             }
@@ -403,7 +418,7 @@ public actor LiveActuator: MenuBarActuator {
         return out
     }
 
-    private func performBatch(_ changes: [ItemKey: Bool]) async -> BatchOutcome {
+    private func performBatch(_ changes: [ItemKey: Bool], recheck: Int = 1) async -> BatchOutcome {
         trace = []
         if let f = globalPrecheck() { return uniform(changes.keys, f) }
         var snap = await scanNonEmpty()
@@ -460,7 +475,22 @@ public actor LiveActuator: MenuBarActuator {
         func verdicts(_ rs: [ResolvedItem]) -> [ItemKey: ActuationVerifier.Verdict] {
             Dictionary(uniqueKeysWithValues: expectations.map { ($0.key, ActuationVerifier.visibilityVerdict(key: $0.key, hidden: $0.value, resolved: rs)) })
         }
-        if verdicts(resolved).values.allSatisfy(\.ok) { note("batch already satisfied"); return finish(expectations, verdicts(resolved), snap, settled: true, collateral: []) }
+        if verdicts(resolved).values.allSatisfy(\.ok) {
+            // gdu.26: one full scan is not a verdict. Confirm with a second full scan that agrees (SettleDetector.agree, frames
+            // within 1 pt) before saying `.verified`; a contradiction restarts the batch once from the newer scan.
+            await platform.sleep(config.stableFor)
+            let again = await scanNonEmpty()
+            let againResolved = platform.resolve(again)
+            let subjectPIDs = Set(resolved.filter { expectations[$0.key] != nil }.map(\.item.ownerPID))
+            let stale = again.items.contains { subjectPIDs.contains($0.ownerPID) && $0.stale }
+            if SettleDetector.agree(snap, again), !stale, verdicts(againResolved).values.allSatisfy(\.ok) {
+                note("batch already satisfied (two agreeing full scans)")
+                return finish(expectations, verdicts(againResolved), again, settled: true, collateral: [])
+            }
+            note("batch looked satisfied on one scan but the confirming scan disagrees")
+            if recheck > 0 { return await performBatch(changes, recheck: recheck - 1) }
+            return uniform(changes.keys, .failed(.timeout, again))
+        }
 
         let respawnStart = platform.now()   // elapsed of a respawn result includes a failed live attempt
         if config.liveHideShow {

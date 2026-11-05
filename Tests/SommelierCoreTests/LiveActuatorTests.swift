@@ -121,6 +121,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     var liveInstant = false
     var ghosts: Set<String> = []
     var hostedTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to hosted layouts read after the live write
+    var scanScript: [(order: [String], hidden: Set<String>)] = []   // gdu.26: each full scan consumes one entry as its own view
     var preScansIncomplete = 0               // the first N full scans report an incomplete hosted read
     var spOnlyIncomplete = false             // incomplete reads are incomplete ONLY for self-positioning owners (gdu.51)
     var probeOnlyTamper: (@Sendable (inout [HostedEntry]) -> Void)?   // applied to raw probes only (poll scans stay right)
@@ -212,7 +213,11 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
             if liveScanCount <= liveIncompleteScans { incomplete = true }
             if let n = liveApplyAfterScans, liveScanCount >= n, !incomplete || spOnlyIncomplete { applyLive(p); livePending = nil }
         }
-        var s = snapshot()
+        var s: MenuBarSnapshot
+        if scanScript.isEmpty { s = snapshot() } else {
+            let keep = (order, hidden), v = scanScript.removeFirst()
+            order = v.order; hidden = v.hidden; s = snapshot(); (order, hidden) = keep
+        }
         var lay = layout(attributed: true)
         if !liveWrites.isEmpty { hostedTamper?(&lay) }
         s.hostedLayout = lay
@@ -361,6 +366,50 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     let r = await actuator(w).move(key("A"), relation: .before(key("B")))
     #expect(r.isVerified)
     #expect(w.dragCalls.isEmpty)     // already satisfied: no drag
+}
+
+// MARK: - gdu.26: `.verified` never comes from one full scan
+
+@Test func moveAlreadySatisfiedNeedsTwoAgreeingScans() async {
+    let w = World(["A", "B", "C"])
+    let r = await actuator(w).move(key("A"), relation: .before(key("B")))
+    #expect(r.isVerified)
+    #expect(w.fullScans >= 2)
+    #expect(w.dragCalls.isEmpty)
+}
+
+@Test func moveFirstScanDiffersFromSecondIsNotVerifiedUntilTwoScansAgree() async {
+    let w = World(["A", "B", "C"])
+    w.scanScript = [(["C", "A", "B"], [])]   // first full scan: A before B, but with other frames than every later scan
+    let r = await actuator(w).move(key("A"), relation: .before(key("B")))
+    #expect(r.isVerified)
+    #expect(w.fastScans >= 2 && w.fullScans >= 2)   // the first scan alone did not earn it; fresh agreeing polls + a full scan did
+    #expect(w.dragCalls.isEmpty)
+}
+
+@Test func moveInPlaceOnFirstScanButElsewhereOnSecondIsNotVerified() async {
+    let w = World(["B", "A", "C"])           // reality: A is NOT before B
+    w.scanScript = [(["A", "B", "C"], [])]   // the first full scan alone says it is
+    w.dragScript = [.noop, .noop]
+    let r = await actuator(w, fallback: false).move(key("A"), relation: .before(key("B")))
+    #expect(!r.isVerified)
+    #expect(w.dragCalls.count >= 1)          // it noticed and tried to move it instead of believing the first scan
+}
+
+@Test func batchAlreadySatisfiedNeedsTwoAgreeingScans() async {
+    let w = World(["A", "B"])
+    let r = await actuator(w).setHidden(key("A"), false)
+    #expect(r.isVerified)
+    #expect(w.fullScans >= 2)
+    #expect(w.allowedWrites.isEmpty && w.restarts == 0)
+}
+
+@Test func batchSatisfiedOnFirstScanOnlyIsNotVerifiedWithoutAWrite() async {
+    let w = World(["B"])
+    w.hidden = ["A"]                         // reality: A is hidden
+    w.scanScript = [(["A", "B"], [])]        // the first full scan alone shows A on the bar
+    let r = await actuator(w).setHidden(key("A"), false)
+    #expect(!w.allowedWrites.isEmpty || !w.liveWrites.isEmpty || !r.isVerified)   // never "satisfied, nothing to do"
 }
 
 @Test func moveUserBusyAfterWaitingTwoSeconds() async {
@@ -1187,13 +1236,15 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
     #expect(w.order.contains("B") && !w.hidden.contains("B"))
 }
 
-@Test func withoutTheSettleTheStalePreWriteScanLooksAlreadySatisfied() async {
+@Test func withoutTheWaitTheConfirmingScanStillCatchesTheStalePreWriteScan() async {
+    // gdu.26: with no settle wait the stale first scan looks satisfied, but one scan is never a verdict: the confirming
+    // scan shows B parked, the batch is restarted from it and writes (it no longer believes "already satisfied").
     let (w, _, _) = await laggingHideWorld()
-    var c = LiveActuator.Config(); c.recentWriteSettle = 0       // control: the same lag, no settle
+    var c = LiveActuator.Config(); c.recentWriteSettle = 0
     let a = LiveActuator(platform: w, config: c)
     let show = await a.applyHiddenBatchDetailed([key("B"): false])
-    #expect(show.result.isVerified && show.mechanism == nil)       // believed the stale scan: no write
-    #expect(w.liveWrites.count == 1)
+    #expect(show.result.isVerified && show.mechanism == .live)
+    #expect(w.liveWrites.count == 2 && w.liveWrites[1] == ["tracked.B": true])
 }
 
 @Test func aSameDirectionBatchSkipsTheWait() async {
