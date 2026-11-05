@@ -254,7 +254,7 @@ struct CapsuleView: View {
         HStack(spacing: 5) {
             ArrangeIcon(row: row).frame(width: 18, height: 18)
             Text(row.title).font(.system(size: 12)).lineLimit(1)
-            BadgeView(badge: row.badge)
+            BadgeView(badge: row.badge, movingHelp: row.moveReason)
             if let n = row.capabilityNote {
                 Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
             }
@@ -276,7 +276,7 @@ struct CapsuleView: View {
         if let u = row.unitTooltip { parts.append(u) }
         if row.isGhost { parts.append("Waiting for the menu bar: this is where it is going, not where it is.") }
         if row.notFitting { parts.append(ArrangeBadge.notFitting.tooltip) }
-        if row.badge != .none { parts.append(row.badge.tooltip) }
+        if row.badge != .none { parts.append(row.badgeTooltip) }
         if let n = row.capabilityNote { parts.append(n) }
         if row.notRunning { parts.append("The app is not running.") }
         return parts.joined(separator: "\n")
@@ -285,6 +285,7 @@ struct CapsuleView: View {
 
 struct BadgeView: View {
     let badge: ArrangeBadge
+    var movingHelp: String? = nil
     var body: some View {
         switch badge {
         case .none: EmptyView()
@@ -294,7 +295,7 @@ struct BadgeView: View {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green.opacity(0.55)).font(.system(size: 11))
                 Circle().fill(.orange).frame(width: 4, height: 4)
             }.help(badge.tooltip)
-        case .moving: Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
+        case .moving: Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange).font(.system(size: 11)).help(movingHelp ?? badge.tooltip)
         case .failed: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.system(size: 11)).help(badge.tooltip)
         case .cannotChange: Image(systemName: "nosign").foregroundStyle(.secondary).font(.system(size: 11)).help(badge.tooltip)
         case .notFitting: Image(systemName: "chevron.left.2").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)

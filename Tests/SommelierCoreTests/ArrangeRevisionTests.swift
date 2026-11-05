@@ -46,22 +46,22 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
     // MARK: 1. engine-stamped drops
 
     @Test func setLayoutReturnsAMonotonicRevisionStampedWithThePassesStarted() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         let r0 = r.state.layoutRevision
         #expect(r0 >= 1)   // start() published the loaded layout
-        let s1 = await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))
+        let s1 = await r.engine.setLayout(Layout.placedAll(visible: ["B", "A"].map(k)))
         #expect(s1.revision == r0 + 1 && r.state.layoutRevision == s1.revision)
         #expect(s1.passesStarted == r.state.passesStartedAtRevision)
         _ = await r.engine.reconcileOnce()
-        let s2 = await r.engine.setLayout(Layout(visible: ["A", "B"].map(k)))
+        let s2 = await r.engine.setLayout(Layout.placedAll(visible: ["A", "B"].map(k)))
         #expect(s2.revision == s1.revision + 1 && s2.passesStarted >= s1.passesStarted + 1)
     }
 
     @Test func aPassStartedRightAfterPublicationJudgesTheDropBeforeAnyUITick() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         _ = await r.engine.reconcileOnce()
         var t = ArrangeTracker()
-        let target = Layout(visible: ["B", "A"].map(k))
+        let target = Layout.placedAll(visible: ["B", "A"].map(k))
         let ticket = t.record([k("B")], passesStarted: r.state.passesStarted, now: t0, awaitingStamp: true)
         let stamp = await r.engine.setLayout(target)
         t.stamp(ticket: ticket, passesStartedAtRevision: stamp.passesStarted)
@@ -77,7 +77,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         let ticket = t.record([k("b")], passesStarted: 4, now: t0, awaitingStamp: true)
         // before the stamp arrives nothing is judged, however many passes finish
         #expect(t.suppressed(passSequence: 9) == [k("b")])
-        let layout = Layout(visible: [k("b")])
+        let layout = Layout.placedAll(visible: [k("b")])
         let obs = ObservedOrder(onBar: [k("b")], parked: [])
         #expect(t.update(observed: obs, layout: layout, perItem: [k("b"): .inPlace], passSequence: 9, showHiddenSection: false, now: t0 + 1).isEmpty)
         t.stamp(ticket: ticket, passesStartedAtRevision: 5)   // pass 5 was in flight when the layout was published
@@ -100,7 +100,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         var t = ArrangeTracker()
         let ticket = t.record([k("b")], passesStarted: 0, now: t0, awaitingStamp: true)
         t.stamp(ticket: ticket, passesStartedAtRevision: 1)
-        let layout = Layout(visible: [k("b")])
+        let layout = Layout.placedAll(visible: [k("b")])
         let obs = ObservedOrder(onBar: [k("b")], parked: [])
         #expect(t.update(observed: obs, layout: layout, perItem: [k("b"): .inPlace], passSequence: 2, showHiddenSection: false, now: t0 + 1,
                          observationSettled: false).isEmpty)
@@ -109,7 +109,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
     }
 
     @Test func engineAppendedItemsPublishANewRevisionStampedWithTheRunningPass() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")]))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")]))
         let before = r.state.layoutRevision
         _ = await r.engine.reconcileOnce()   // B is new: the pass appends it to the layout
         #expect(r.state.layout.allKeys.contains(k("B")))
@@ -121,7 +121,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func pendingResolvesByRevisionEvenWhenTheEngineAppendedAnItem() {
         var p = PendingLayout()
-        let submitted = Layout(visible: [k("A"), k("B")])
+        let submitted = Layout.placedAll(visible: [k("A"), k("B")])
         p.submit(submitted)
         let early = p.resolve(stateRevision: 5)                         // revision unknown yet
         #expect(p.isActive && !early)
@@ -135,8 +135,8 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func furtherDropsRebaseOntoTheEngineLayoutAndKeepItsAdditions() {
         var p = PendingLayout()
-        p.submit(Layout(visible: [k("B"), k("A")]))
-        let engineLayout = Layout(visible: [k("A"), k("B"), k("N")])   // the engine appended N meanwhile
+        p.submit(Layout.placedAll(visible: [k("B"), k("A")]))
+        let engineLayout = Layout.placedAll(visible: [k("A"), k("B"), k("N")])   // the engine appended N meanwhile
         let eff = p.effective(over: engineLayout)
         #expect(eff.visible == [k("B"), k("A"), k("N")])               // our order, plus the engine's addition
         p.submitted(revision: 3)
@@ -146,7 +146,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func concurrentSubmissionsResolveOnlyAfterTheLastRevision() {
         var p = PendingLayout()
-        p.submit(Layout(visible: [k("A")])); p.submit(Layout(visible: [k("B")]))
+        p.submit(Layout.placedAll(visible: [k("A")])); p.submit(Layout.placedAll(visible: [k("B")]))
         p.submitted(revision: 2)
         let early = p.resolve(stateRevision: 2)   // the second submission has not returned yet
         p.submitted(revision: 3)
@@ -157,9 +157,9 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func anItemAppendedBetweenDropAndPublicationSurvivesInTheNextDrop() async {
         // The engine's own layout (with N, revision r+1) races the user's drop; the next drop must be computed from the rebased copy.
-        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         var p = PendingLayout()
-        let drop1 = Layout(visible: ["B", "A"].map(k))
+        let drop1 = Layout.placedAll(visible: ["B", "A"].map(k))
         p.submit(drop1)
         _ = await r.engine.reconcileOnce()                       // appends N (new revision) before drop1 is published
         #expect(r.state.layout.allKeys.contains(k("N")))
@@ -176,7 +176,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func aFailedKeyWhoseSettledObservationMatchesTheLayoutBecomesInPlace() async {
         let logs = Logs()
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
                           failOn: (1...9).map { ($0, ActuationError.mechanismFailed("boom")) }, logs: logs)
         for _ in 0..<3 { _ = await r.engine.reconcileOnce() }   // struck out: failed until the layout changes or Retry
         let failed = r.state.perItem.filter { if case .failed = $0.value { return true }; return false }.keys
@@ -194,7 +194,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func aTimedOutKeyClearsWhenALaterPassFindsItInPlace() {
         var t = ArrangeTracker()
-        let layout = Layout(visible: [k("a"), k("b")])
+        let layout = Layout.placedAll(visible: [k("a"), k("b")])
         let wrong = ObservedOrder(onBar: [k("b"), k("a")], parked: [])
         let right = ObservedOrder(onBar: [k("a"), k("b")], parked: [])
         t.record([k("b")], passesStarted: 0, now: t0)
@@ -223,9 +223,9 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
 
     @Test func anItemTheEngineAppendedAfterComposeSurvivesTheSubmittedDrop() async {
         let logs = Logs()
-        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)), logs: logs)
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)), logs: logs)
         let base = r.state.layoutRevision                      // the drop is composed here
-        let drop = Layout(visible: ["B", "A"].map(k))
+        let drop = Layout.placedAll(visible: ["B", "A"].map(k))
         _ = await r.engine.reconcileOnce()                     // the engine appends N (new revision) before the drop arrives
         #expect(r.state.layoutRevision == base + 1)
         _ = await r.engine.setLayout(drop, basedOn: base)
@@ -239,33 +239,33 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
     }
 
     @Test func aKeyTheUserPlacedExplicitlyKeepsTheUsersPosition() async {
-        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         let base = r.state.layoutRevision
         _ = await r.engine.reconcileOnce()
-        _ = await r.engine.setLayout(Layout(visible: ["A"].map(k), hidden: ["N", "B"].map(k)), basedOn: base)
+        _ = await r.engine.setLayout(Layout.placedAll(visible: ["A"].map(k), hidden: ["N", "B"].map(k)), basedOn: base)
         #expect(r.state.layout.hidden == ["N", "B"].map(k) && r.state.layout.visible == [k("A")])
     }
 
     @Test func withoutABaseRevisionTheLayoutIsReplacedWholesale() async {
-        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         _ = await r.engine.reconcileOnce()
-        _ = await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))
+        _ = await r.engine.setLayout(Layout.placedAll(visible: ["B", "A"].map(k)))
         #expect(r.state.layout.visible == ["B", "A"].map(k))
     }
 
     @Test func aDropComposedOnTheCurrentRevisionAddsNothing() async {
         let logs = Logs()
-        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)), logs: logs)
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)), logs: logs)
         _ = await r.engine.reconcileOnce()
         let base = r.state.layoutRevision
-        _ = await r.engine.setLayout(Layout(visible: ["B", "A", "N"].map(k)), basedOn: base)
+        _ = await r.engine.setLayout(Layout.placedAll(visible: ["B", "A", "N"].map(k)), basedOn: base)
         #expect(!logs.all.contains { $0.contains("setLayout merged") })
     }
 
     @Test func aConfirmDialogsComposeRevisionSurvivesAnAppendWhileItIsOpen() async {
-        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B", "N"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         let composedAt = r.state.layoutRevision                  // dialog opens: layout composed here
-        let composed = Layout(visible: ["B", "A"].map(k))
+        let composed = Layout.placedAll(visible: ["B", "A"].map(k))
         _ = await r.engine.reconcileOnce()                       // N appended while the dialog is open
         #expect(r.state.layoutRevision == composedAt + 1)
         _ = await r.engine.setLayout(composed, basedOn: composedAt)   // confirm passes the revision from when it opened
@@ -273,7 +273,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
     }
 
     @Test func anUnsupportedStatusIsNotTouchedByFailureClearing() async {
-        let r = await rig(order: [.module(name: "clock"), k("A")], layout: Layout(visible: [k("A")], hidden: [.module(name: "clock")]))
+        let r = await rig(order: [.module(name: "clock"), k("A")], layout: Layout.placedAll(visible: [k("A")], hidden: [.module(name: "clock")]))
         for _ in 0..<2 { _ = await r.engine.reconcileOnce() }
         #expect(r.state.perItem[.module(name: "clock")] != nil)
         if case .unsupported? = r.state.perItem[.module(name: "clock")] {} else { Issue.record("expected .unsupported") }
@@ -283,7 +283,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         let logs = Logs()
         let act = FakeActuator(order: ["A", "B"].map(k), hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let liar = LyingMover(inner: act)                        // performs the move but reports failure
-        let store = InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k)))
+        let store = InMemoryLayoutStore(Layout.placedAll(visible: ["B", "A"].map(k)))
         let state = EngineState()
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: act), actuator: liar, store: store, capabilities: Caps(), state: state,
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })

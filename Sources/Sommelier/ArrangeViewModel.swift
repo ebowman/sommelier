@@ -81,7 +81,7 @@ final class ArrangeViewModel {
                              suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
                              pendingConfirmation: state.pendingConfirmation,
                              observationProblem: observationProblem, filter: filter, units: units,
-                             unitAppName: HideUnitNames.runningAppName)
+                             unitAppName: HideUnitNames.runningAppName, moveReasons: state.inFlight != nil ? state.orderMoveReasons : [:])
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -89,7 +89,7 @@ final class ArrangeViewModel {
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? state.newItemNotice ?? selfPositioningNote,
+                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice ?? selfPositioningNote,
                                    pollPausedNames: pollPausedNames)
     }
     /// gdu.67: shown after the engine rewrote a layout that straddled a self-positioning item (`lastNormalization` holds only those keys then).

@@ -93,7 +93,13 @@ public struct Reconciler: Sendable {
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
                      selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners,
-                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = []) -> Plan {
+                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = [], placed: Set<ItemKey>? = nil) -> Plan {
+        // gdu.89: `placed` = the keys whose position the user chose (`Layout.placed`). Only they create an order obligation: the order
+        // target is the OBSERVED order with each placed key moved next to its neighbour as the layout records it; every other key
+        // keeps the order the bar gives it and is never the subject of a move. `nil` keeps the legacy full-order enforcement
+        // (the whole of `Layout.visible`), which is what `placed == Set(layout.visible)` asks for; production callers (the engine,
+        // mbprobe) always pass `layout.placed`.
+        let userOrder = placed != nil
         // Self-positioning owners (iStat Menus) move between slots on their own, so they are ANCHORS: never dragged,
         // never targeted by a relation that needs them to move, and their slot is authoritative (gdu.33). Hide/show
         // capability is untouched. The actuator's drift exemption uses the same set (`SelfPositioning.defaultOwners`).
@@ -205,8 +211,8 @@ public struct Reconciler: Sendable {
         var desired: [ItemKey] = layout.visible.filter { wantOnBar.contains($0) }
         if showHiddenSection { desired += layout.hidden.filter { wantOnBar.contains($0) } }
         if showAlwaysHidden { desired += layout.alwaysHidden.filter { wantOnBar.contains($0) } }
-        let placed = Set(desired)
-        desired += (layout.hidden + layout.alwaysHidden).filter { wantOnBar.contains($0) && !placed.contains($0) }
+        let alreadyDesired = Set(desired)
+        desired += (layout.hidden + layout.alwaysHidden).filter { wantOnBar.contains($0) && !alreadyDesired.contains($0) }
         desired += unknownVisible
 
         // Base sequence the order is planned on: the bar after the hides, shown items appended.
@@ -238,7 +244,7 @@ public struct Reconciler: Sendable {
                 return Set(list[..<i].filter { !ovf.contains($0) })
             }
             let listed = Set(layout.visible + layout.hidden + layout.alwaysHidden)
-            for k in ovfKept where listed.contains(k) && want.contains(k) && drawnBefore(k, want) != drawnBefore(k, have) {
+            for k in ovfKept where listed.contains(k) && want.contains(k) && (placed?.contains(k) ?? true) && drawnBefore(k, want) != drawnBefore(k, have) {
                 skipped.append(SkippedAction(k, churnKeys.contains(k) ? SystemOverflowRule.churnSkipReason : Reconciler.overflowSkipReason))
             }
         }
@@ -246,7 +252,17 @@ public struct Reconciler: Sendable {
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
         let base = kept + shows
         let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
-        var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
+        // gdu.89: in user-order mode the planner's "anchors" for the order step are every key that is not a placed, movable one.
+        var placedMovable: [ItemKey] = []
+        var target: [ItemKey]
+        if let placed {
+            let baseSet = Set(base)
+            let desiredSet = Set(desired)
+            placedMovable = layout.visible.filter { placed.contains($0) && desiredSet.contains($0) && baseSet.contains($0) && !anchors.contains($0) }
+            target = Self.placedTarget(base: base, placed: placedMovable, anchors: anchors, visible: layout.visible, eligible: desiredSet)
+        } else {
+            target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
+        }
         // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
         // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.
         let anchorsInBase = base.filter { anchors.contains($0) }
@@ -295,6 +311,8 @@ public struct Reconciler: Sendable {
             let beyond: [ItemKey]
             if shows.isEmpty {
                 beyond = target.enumerated().filter { $0.offset >= limit && !anchors.contains($0.element) }.map(\.element)
+            } else if userOrder {
+                beyond = []   // shown keys that nobody placed land where macOS puts them; no layout order is claimed for them
             } else if let first = desired.firstIndex(where: { blockSet.contains($0) }) {
                 let inTarget = Set(target)
                 beyond = desired[(first + 1)...].filter { !anchors.contains($0) && inTarget.contains($0) }
@@ -312,7 +330,10 @@ public struct Reconciler: Sendable {
         if !actions.isEmpty {
             phase = .membership
         } else {
-            actions = Self.moves(from: base, to: target, anchors: anchors, boundary: chevron != nil)
+            // Non-placed keys are never moved: they act as fixed points of the minimal-move computation (their relative order
+            // in `target` is their observed one, so this is always consistent).
+            let fixed = userOrder ? Set(base).subtracting(placedMovable) : anchors
+            actions = Self.moves(from: base, to: target, anchors: fixed, boundary: chevron != nil)
             assert(Self.overflowViolations(actions, forbidden: ovf.union(chevron.map { [$0] } ?? []), boundary: chevron != nil).isEmpty,
                    "planned a move of or into macOS's overflow area")
             assert(Self.violations(actions, target: target, anchors: anchors, blockStart: blockStart).isEmpty,
@@ -361,6 +382,50 @@ public struct Reconciler: Sendable {
         let placed = Set(desired)
         var fill = desired.makeIterator()
         return base.map { (anchors.contains($0) && !placed.contains($0)) ? $0 : (fill.next() ?? $0) }
+    }
+
+    /// gdu.89: the observed order (`base`) with each placed key re-inserted next to its neighbour as `visible` records it.
+    /// `placed` is in layout order; `eligible` = keys that may serve as a neighbour (drawn, not overflowed, not the chevron, not
+    /// self-positioning). A placed key with a non-placed eligible neighbour anywhere in `visible` goes after its nearest left
+    /// neighbour in the sequence, else before the nearest right one. Placed keys whose only neighbours are other placed keys
+    /// (the user placed the whole region, or an "adopt"-free full order) have no observed key to hang on: they refill the slots
+    /// they vacated in layout order, as the full-order rule always did. A placed key with no eligible neighbour at all goes
+    /// leftmost (first in the layout) or rightmost (before the trailing anchor block, which nothing movable may pass).
+    static func placedTarget(base: [ItemKey], placed: [ItemKey], anchors: Set<ItemKey>, visible: [ItemKey], eligible: Set<ItemKey>) -> [ItemKey] {
+        guard !placed.isEmpty else { return base }
+        let baseSet = Set(base)
+        let lifted = Set(placed)
+        let usable = eligible.intersection(baseSet)
+        // Partition: hung on an observed (non-placed) key / refilling slots / alone.
+        var hung: [ItemKey] = [], refill: [ItemKey] = [], alone: [ItemKey] = []
+        for p in placed {
+            let others = visible.filter { $0 != p && usable.contains($0) }
+            if others.isEmpty { alone.append(p) }
+            else if others.contains(where: { !lifted.contains($0) }) { hung.append(p) }
+            else { refill.append(p) }
+        }
+        var fill = refill.makeIterator()
+        let refillSet = Set(refill)
+        var cur: [ItemKey] = []
+        for k in base {
+            if refillSet.contains(k) { if let n = fill.next() { cur.append(n) } }
+            else if !lifted.contains(k) { cur.append(k) }
+        }
+        let late = Set(hung + alone)
+        for p in placed where late.contains(p) {
+            guard let li = visible.firstIndex(of: p) else { continue }
+            let inCur = Set(cur)
+            if let l = visible[..<li].last(where: { inCur.contains($0) && usable.contains($0) }), let i = cur.firstIndex(of: l) {
+                cur.insert(p, at: i + 1)
+            } else if let r = visible[(li + 1)...].first(where: { inCur.contains($0) && usable.contains($0) }), let i = cur.firstIndex(of: r) {
+                cur.insert(p, at: i)
+            } else if li == 0 {
+                cur.insert(p, at: 0)
+            } else {
+                cur.insert(p, at: trailingBlockStart(base: cur, anchors: anchors))
+            }
+        }
+        return cur
     }
 
     /// Minimal moves turning `current` into `target` (same key set) with `anchors` never moved.

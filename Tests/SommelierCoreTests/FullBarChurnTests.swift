@@ -68,7 +68,7 @@ struct FullBarChurnRuleTests {
         let on = [k("P1"), k("P2"), k("P3"), chevKey, k("D1"), k("D2"), k("D3"), k("D4")]
         let observed = ObservedOrder(onBar: on, parked: [], systemOverflow: read.overflow, overflowChevron: chevKey)
         // The layout wants D1 last and D4 first: without the rule the plan drags D1 / anchors on it.
-        let layout = Layout(visible: [k("P1"), k("P2"), k("P3"), k("D4"), k("D2"), k("D3"), k("D1")])
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D4"), k("D2"), k("D3"), k("D1")])
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
         let without = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
         let with = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: churn)
@@ -86,7 +86,7 @@ struct FullBarChurnRuleTests {
     @Test func anEmptyChurnSetChangesNothing() {
         let on = [k("A"), k("B"), k("C")]
         let observed = ObservedOrder(onBar: on, parked: [])
-        let layout = Layout(visible: [k("C"), k("B"), k("A")])
+        let layout = Layout.placedAll(visible: [k("C"), k("B"), k("A")])
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
         let plain = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
         let withStale = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: [])
@@ -200,7 +200,7 @@ private func moves(_ calls: [FakeActuator.Call]) -> [FakeActuator.Call] {
 struct FullBarChurnEngineTests {
     static let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4"), k("D5")]
     /// Hides D5 (membership) and wants D4/D3 swapped (order): without the rule the SAME pass would drag.
-    static let layout = Layout(visible: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D4"), k("D3")], hidden: [k("D5")])
+    static let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D4"), k("D3")], hidden: [k("D5")])
 
     @Test func aMembershipPassOnAFullBarNeverMovesInTheSamePass() async {
         let r = await chevRig(order: Self.order, layout: Self.layout)
@@ -229,7 +229,7 @@ struct FullBarChurnEngineTests {
         let hidden = k("H1")
         let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
         // The layout order differs from the bar (D4 before D3); a reveal must not drag for it.
-        let layout = Layout(visible: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D4"), k("D3")], hidden: [hidden])
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D4"), k("D3")], hidden: [hidden])
         let r = await chevRig(order: order, hidden: [hidden], layout: layout, reveal: true)
         let rep = await r.engine.reconcileOnce()
         let calls = await r.actuator.calls
@@ -244,7 +244,7 @@ struct FullBarChurnEngineTests {
 
     @Test func anOrdinaryOrderPassOnABarWithoutAChevronIsUnchanged() async {
         let order = [k("A"), k("B"), k("C")]
-        let r = await chevRig(order: order, layout: Layout(visible: [k("C"), k("B"), k("A")]), chevron: false)
+        let r = await chevRig(order: order, layout: Layout.placedAll(visible: [k("C"), k("B"), k("A")]), chevron: false)
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
         #expect(!moves(await r.actuator.calls).isEmpty)
@@ -254,7 +254,7 @@ struct FullBarChurnEngineTests {
 
     @Test func aMembershipThenOrderPassOnABarWithoutAChevronStillOrdersInOnePass() async {
         let order = [k("A"), k("B"), k("C"), k("D")]
-        let r = await chevRig(order: order, layout: Layout(visible: [k("C"), k("B"), k("A")], hidden: [k("D")]), chevron: false)
+        let r = await chevRig(order: order, layout: Layout.placedAll(visible: [k("C"), k("B"), k("A")], hidden: [k("D")]), chevron: false)
         let rep = await r.engine.reconcileOnce()
         let calls = await r.actuator.calls
         #expect(rep.outcome == .converged)
@@ -265,7 +265,7 @@ struct FullBarChurnEngineTests {
     @Test func theEngineNeverDragsAChurnZoneItemEvenWhenTheOrderPhaseRuns() async {
         // settled full bar: D1 is the first drawn item (churn zone); the layout wants it last.
         let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
-        let layout = Layout(visible: [k("P1"), k("P2"), k("P3"), k("D2"), k("D3"), k("D4"), k("D1")])
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D2"), k("D3"), k("D4"), k("D1")])
         let r = await chevRig(order: order, layout: layout)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         let touched = moves(await r.actuator.calls).flatMap { c -> [ItemKey] in
@@ -316,7 +316,7 @@ struct FullBarChevronChangeTests {
     @Test func theChurnZoneSurvivesTheVanishedChevronForPlannerAndEngine() {
         let on = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3")]
         let observed = ObservedOrder(onBar: on, parked: [])
-        let layout = Layout(visible: [k("P3"), k("P2"), k("P1"), k("D1"), k("D3"), k("D2")])
+        let layout = Layout.placedAll(visible: [k("P3"), k("P2"), k("P1"), k("D1"), k("D3"), k("D2")])
         let zone = SystemOverflowRule.churnZone([rv65Read(), ChurnRead(entries: [])])
         #expect(zone.contains(k("P3")) && zone.contains(k("D1")))
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }

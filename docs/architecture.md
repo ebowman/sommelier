@@ -185,6 +185,15 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   A new key of an app the layout already lists (even if the listed siblings are not on the bar now) ignores the policy and joins its
   unit's section (`alwaysHidden` if any sibling is, else `hidden` if all are hidden, else `visible`).
 - Keys of apps that are not running stay in the file untouched (absent is not unknown).
+- `placed` (gdu.89): optional array of the keys the USER placed in Visible; the only source of an order obligation. Absent = empty
+  (every layout written before gdu.89 plans no moves; the engine logs "no order obligations exist" once at load). `isValid` requires
+  `placed` to be a subset of the three sections; decoding drops entries not in Visible (`pruningPlaced`), and `remove`/`move` out of Visible drop
+  the key. Written only when non-empty. A key enters only through `markPlaced`, called by `ArrangeDrop.outcome` for the `moved` keys
+  (hide-unit siblings included) of a drop INTO Visible, from Visible or from Hidden/Always hidden; an order-only drop inside Hidden or
+  Always hidden marks nothing (those strips are our own data). `LayoutBuilder`, `mbprobe layout init-from-current`, first launch
+  (`setLayout(userPlacement: false)` keeps the engine's current `placed`), "Adopt current order" (clears it), "Hide what does not fit",
+  new-item appends and `normalizedAroundSelfPositioning` never add to it. A satisfied placement stays an obligation (if macOS later moves the key, it is moved back)
+  until Adopt or the key leaves Visible/the layout.
 - Schema: `schemaVersion` (currently 1). Lenient decode (missing fields default; duplicates dropped with warnings via
   `Layout.decode`). Lower versions migrate in memory on load (no rewrite); higher throws `unsupportedSchema`.
 - Writes are atomic: temp file `layout.json.tmp-<uuid>` in the same directory, then `rename(2)`.
@@ -193,6 +202,18 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
 - Dev tool: `mbprobe layout show|init-from-current|move|remove [--file PATH]`. `init-from-current` writes stale self-positioning items (`SelfPositioning.defaultOwners`, `BarSignature.staleVerdict`) of an agreed scan with a stderr note and refuses (exit 1, keys named) on any other stale item; on no-agreement it names the last scan's stale keys and the keys that moved/changed class between the last two scans (`ScanDisagreement`, `OrderDiff`). It also refuses when any scan of the agreement loop (`observeDiagnosed().unknownSeen`, not only the final result) marked an item `placementUnknown`, or when the agreed read is `.incomplete` (`LayoutInit.evaluate`, gdu.82). `observeDetailed` still throws a bare `noAgreement` (the explanation is only on `observeDiagnosed`).
 
 ### Reconciler
+
+**Only placed keys are ordered (gdu.89).** `plan(..., placed:)` takes `Layout.placed` (the engine and `mbprobe` always pass it; `nil` is the legacy
+full-order rule, equivalent to `placed == Set(layout.visible)` for a bar without immovable items, kept for the planner tests). The order
+target is the OBSERVED drawn order (`base`) with every placed, movable key lifted out and re-inserted next to its neighbour in `Layout.visible`
+(`Reconciler.placedTarget`): after the nearest left neighbour that is drawn, not in macOS's overflow, not the chevron and not self-positioning;
+else before the nearest such right neighbour; a placed key whose only neighbours are other placed keys refills the slots it vacated in layout
+order; a key with no neighbour at all goes leftmost (first in the layout; with a chevron, before the first drawn item) or rightmost (before the
+trailing anchor block). `moves(from:to:)` then treats every non-placed key as fixed, so non-placed keys (and anchors) are never the subject of a
+move, whatever the saved `visible` order says. Membership (hide/show) planning, anchors, overflow/system-block invariants, `fullBarOrderGate` and the
+two-scan rule are unchanged. A placed key dropped from Hidden is shown first (membership pass), then moved by the follow-up order pass.
+Each planned move is announced before it runs: `EngineState.orderMoveNotice` / `orderMoveReasons` ("Moving K: you placed it after L"; Arrange status line
+chain position after `orderNotAppliedNotice`, row `.moving` tooltip via `ArrangeRow.moveReason`) and the log line `order: moving K after L (user placement)`.
 
 `Reconciler.plan(observed:layout:capabilities:showHiddenSection:)` (`Reconciler.swift`) is pure: observed `ObservedOrder`
 (on-bar left to right + parked; stale and width<=1 items excluded) and a `Layout` in, a `Plan` out. The engine loops observe -> plan -> act -> verify.

@@ -68,6 +68,10 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var unitMates: [String]
     /// Display name of the app whose Control Center entry governs this unit (gdu.76); nil when unknown or not a tracked unit.
     public var unitApp: String? = nil
+    /// gdu.89: why this item is being dragged right now ("Moving X: you placed it after Y"); only set while its badge is `.moving`.
+    public var moveReason: String? = nil
+    /// Tooltip of the badge: the move reason replaces the generic "waiting" text while a planned drag is in flight.
+    public var badgeTooltip: String { badge == .moving ? (moveReason ?? badge.tooltip) : badge.tooltip }
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
     public var capabilityNote: String?
     public var id: String { isGhost ? key.description + "#ghost" : key.description }
@@ -195,7 +199,7 @@ public enum ArrangeSections {
                             awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
                             pendingConfirmation: Set<ItemKey> = [],
                             observationProblem: String? = nil, filter: String = "", units: HideUnitRule = .ownerKeys,
-                            unitAppName: (String) -> String? = { _ in nil }) -> ArrangeContent {
+                            unitAppName: (String) -> String? = { _ in nil }, moveReasons: [ItemKey: String] = [:]) -> ArrangeContent {
         // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
@@ -213,11 +217,13 @@ public enum ArrangeSections {
                 ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k),
                         pendingConfirmation: pendingConfirmation.contains(k))
                 : .none
-            return ArrangeRow(key: k, title: title(k), ownerName: info?.ownerName ?? "", ownerBundleID: info?.ownerBundleID ?? ownerBundleID(k),
+            var r = ArrangeRow(key: k, title: title(k), ownerName: info?.ownerName ?? "", ownerBundleID: info?.ownerBundleID ?? ownerBundleID(k),
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,
                               isGhost: ghost, isBoundary: observed.overflowChevron == k,
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
                               unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
+            if b == .moving, !ghost { r.moveReason = moveReasons[k] }
+            return r
         }
 
         // MARK: Visible = the observed bar + ghosts at layout slots + not-running group
@@ -437,7 +443,10 @@ public enum ArrangeDrop {
         }
         var l = layout
         let moved = l.move(key, to: section, index: index, units: units)
-        if l == layout { return .noop }
+        if l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
+        // gdu.89: a drop INTO Visible (from anywhere, siblings included) is the user's placement: it creates an order obligation.
+        // Order-only drops inside Hidden/Always hidden are our own data and create none (and a hide drops the key's obligation: `move`).
+        if section == .visible { l.markPlaced(moved) }
         // gdu.67: a planner anchor keeps its observed slot, so an order-only move that puts a movable row on the far side of a
         // self-positioning row (relative to the OBSERVED bar) is never reached: the next pass re-plans around the anchor. Refuse it.
         // Only a move that changes the row's side of the anchor in the layout AND disagrees with the bar is a crossing; a layout

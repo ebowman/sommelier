@@ -42,6 +42,8 @@ Before you start: quit Bartender (or any other menu bar manager). The engine pau
   that item's real menu; the item is hidden again after the menu closes.
 - **Right-click** menu: Arrange..., Settings..., Start at login, Quit.
 - **Arrange window**: three strips, Visible, Hidden and Always hidden. Drag and drop capsules within and across strips.
+  Sommelier only moves items you placed in Arrange; everything else keeps the order macOS gives it. While an item you placed is being
+  dragged the status line says why ("Moving X: you placed it after Y").
   The Visible strip mirrors the real bar and updates only when the bar has confirmed the move. Each capsule has a badge:
   - in place: the real bar matches the layout;
   - moving: the change is in flight;

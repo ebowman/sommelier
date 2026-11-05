@@ -329,6 +329,10 @@ public actor LayoutEngine {
         do {
             let (l0, moved) = try store.load().validatedReportingNormalization(units: rule)
             layout = l0
+            if l0.placed.isEmpty {
+                // gdu.89: every layout written before the `placed` field. The engine never infers an order obligation from a saved order.
+                log("layout loaded: no order obligations exist (no item was placed by you in Arrange); the engine will plan no moves, items keep the order macOS gives them")
+            }
             movedAtLoad = moved
             if !moved.isEmpty {
                 NSLog("[Sommelier] layout: all items governed by one Control Center entry hide or show at once; moved to visible: %@",
@@ -380,10 +384,14 @@ public actor LayoutEngine {
         }
         // Hide units are all-or-nothing: a split unit can never converge, so it is normalized (and reported) here too (gdu.44).
         refreshHideUnits()
-        let (new, moved) = requested.normalizedHideUnits(units: rule)
+        var (new, moved) = requested.normalizedHideUnits(units: rule)
         if !moved.isEmpty {
             log("layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
         }
+        // gdu.89: order obligations. A user placement (Arrange submit) carries its placed keys in `requested.placed`; a call that is not
+        // a user placement (a layout built from a scan) can neither add nor clear obligations. Either way only visible keys can hold one.
+        new.placed = userPlacement ? requested.placed : layout.placed
+        new = new.pruningPlaced()
         // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
         let wasVisible = Set(layout.visible)
         userPlacedVisible = userPlacedVisible.intersection(new.visible)
@@ -660,7 +668,7 @@ public actor LayoutEngine {
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          selfPositioningOwners: config.selfPositioningOwners, units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads))
+                                         churn: SystemOverflowRule.churnZone(recentReads), placed: layout.placedSet)
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -1067,7 +1075,7 @@ public actor LayoutEngine {
         let generation = layoutGeneration
         lastStart = .now
         var actionCount = 0
-        await publish { $0.passesStarted += 1; if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil } }
+        await publish { $0.passesStarted += 1; if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil }; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
 
         var userPass = false
         if let r = requestedAt {
@@ -1388,6 +1396,19 @@ public actor LayoutEngine {
                 continue
             }
             lastAction = action
+            do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
+                func name(_ k: ItemKey) -> String { itemInfo[k].map(OverflowEntries.displayName) ?? k.description }
+                var target: ItemKey?
+                switch rel { case .before(let t), .after(let t): target = t; default: break }
+                let text = OrderMoveNotice.text(name: name(key), relation: rel, target: target.map(name))
+                switch rel {
+                case .after(let t): log("order: moving \(key) after \(t) (user placement)")
+                case .before(let t): log("order: moving \(key) before \(t) (user placement)")
+                case .leftmost: log("order: moving \(key) to the left end (user placement)")
+                case .rightmost: log("order: moving \(key) to the right end (user placement)")
+                }
+                await publish { $0.orderMoveNotice = text; $0.orderMoveReasons[key] = text }
+            }
             await setStatus(key, .moving, inFlight: action)
             await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
             let result = await actuator.move(key, relation: rel)
@@ -1418,7 +1439,7 @@ public actor LayoutEngine {
             await publishObserved(obs, plan)
             if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
         }
-        await publish { $0.inFlight = nil }
+        await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()

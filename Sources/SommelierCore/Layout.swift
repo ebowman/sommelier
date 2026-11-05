@@ -25,9 +25,19 @@ public struct Layout: Codable, Equatable, Sendable {
     public var hidden: [ItemKey]
     public var alwaysHidden: [ItemKey]
     public var newItemPolicy: NewItemPolicy
+    /// gdu.89: the keys the USER placed in Visible (a drop in Arrange, including a drop from Hidden into Visible). Only these create an
+    /// order obligation on the real bar; every other visible key follows whatever order macOS gives it (the layout merely records it).
+    /// Optional on disk (absent = empty, so every layout written before this field plans no moves). A key enters only through
+    /// `markPlaced` (Arrange's submit); builders, "Adopt current order", "Hide what does not fit", new-item appends and
+    /// `normalizedAroundSelfPositioning` never add to it. A key that leaves the layout (or Visible) leaves `placed`. The array order is
+    /// not meaningful (the planner uses the order of `visible`).
+    public var placed: [ItemKey]
+    /// The planner's view of `placed`.
+    public var placedSet: Set<ItemKey> { Set(placed) }
 
     public init(schemaVersion: Int = Layout.currentSchemaVersion, visible: [ItemKey] = [], hidden: [ItemKey] = [],
-                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd) {
+                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, placed: [ItemKey] = []) {
+        self.placed = placed
         self.schemaVersion = schemaVersion
         self.visible = visible
         self.hidden = hidden
@@ -53,7 +63,22 @@ public struct Layout: Codable, Equatable, Sendable {
 
     public var isValid: Bool {
         let all = allKeys
-        return Set(all).count == all.count
+        return Set(all).count == all.count && Set(placed).isSubset(of: Set(all))
+    }
+
+    /// Records `keys` as user-placed (those that are in `visible`; others are ignored: only Visible has a bar order to enforce).
+    public mutating func markPlaced(_ keys: [ItemKey]) {
+        let vis = Set(visible)
+        for k in keys where vis.contains(k) && !placed.contains(k) { placed.append(k) }
+    }
+
+    /// Drops `placed` entries that are not in `visible` any more (and duplicates).
+    func pruningPlaced() -> Layout {
+        var out = self
+        let vis = Set(visible)
+        var seen = Set<ItemKey>()
+        out.placed = placed.filter { vis.contains($0) && seen.insert($0).inserted }
+        return out
     }
 
     // MARK: Mutators (each preserves the at-most-one-section invariant)
@@ -78,6 +103,7 @@ public struct Layout: Codable, Equatable, Sendable {
                 set(ks, in: s)
             }
         }
+        placed.removeAll { $0 == key }
         return found
     }
 
@@ -192,12 +218,12 @@ public struct Layout: Codable, Equatable, Sendable {
             }
             out.set(kept, in: s)
         }
-        return (out, dropped)
+        return (out.pruningPlaced(), dropped)
     }
 
     // MARK: Codable (keys are stored as their string form)
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, placed }
 
     private static func parse(_ s: String) throws -> ItemKey {
         guard let k = ItemKey(storeKey: s) else { throw LayoutError.badKey(s) }
@@ -211,7 +237,8 @@ public struct Layout: Codable, Equatable, Sendable {
             visible: try (c.decodeIfPresent([String].self, forKey: .visible) ?? []).map(Self.parse),
             hidden: try (c.decodeIfPresent([String].self, forKey: .hidden) ?? []).map(Self.parse),
             alwaysHidden: try (c.decodeIfPresent([String].self, forKey: .alwaysHidden) ?? []).map(Self.parse),
-            newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd)
+            newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd,
+            placed: try (c.decodeIfPresent([String].self, forKey: .placed) ?? []).map(Self.parse))
         self = raw.dedup().layout
     }
 
@@ -222,6 +249,7 @@ public struct Layout: Codable, Equatable, Sendable {
         try c.encode(hidden.map(\.description), forKey: .hidden)
         try c.encode(alwaysHidden.map(\.description), forKey: .alwaysHidden)
         try c.encode(newItemPolicy, forKey: .newItemPolicy)
+        if !placed.isEmpty { try c.encode(placed.map(\.description), forKey: .placed) }   // absent = empty: files without obligations keep their old shape
     }
 
     /// Decodes a layout file, reporting duplicates that were dropped and hide-unit normalization (reported once, here). Does not migrate.
@@ -232,6 +260,7 @@ public struct Layout: Codable, Equatable, Sendable {
             var hidden: [String]?
             var alwaysHidden: [String]?
             var newItemPolicy: NewItemPolicy?
+            var placed: [String]?
         }
         let r = try JSONDecoder().decode(Raw.self, from: data)
         let raw = Layout(
@@ -239,7 +268,8 @@ public struct Layout: Codable, Equatable, Sendable {
             visible: try (r.visible ?? []).map(parse),
             hidden: try (r.hidden ?? []).map(parse),
             alwaysHidden: try (r.alwaysHidden ?? []).map(parse),
-            newItemPolicy: r.newItemPolicy ?? .visibleAtEnd)
+            newItemPolicy: r.newItemPolicy ?? .visibleAtEnd,
+            placed: try (r.placed ?? []).map(parse))
         let d = raw.dedup()
         let n = d.layout.normalizedHideUnits()
         var warnings = d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }

@@ -53,8 +53,8 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 }
 
 private let A = k("A"), B = k("B"), C = k("C")
-private let allVisible = Layout(visible: [A, B, C])
-private let bHidden = Layout(visible: [A, C], hidden: [B])
+private let allVisible = Layout.placedAll(visible: [A, B, C])
+private let bHidden = Layout.placedAll(visible: [A, C], hidden: [B])
 
 private struct Rig {
     let engine: LayoutEngine
@@ -90,7 +90,7 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false,
     @Test func twoLayoutsInsideTheWindowAreOnePassForTheFinalLayout() async {
         let r = await rig(layout: allVisible, window: .milliseconds(300))
         await r.engine.setLayout(bHidden)
-        await r.engine.setLayout(Layout(visible: [B, A, C]))   // the user changed their mind
+        await r.engine.setLayout(Layout.placedAll(visible: [B, A, C]))   // the user changed their mind
         #expect(await waitUntil { await MainActor.run { r.state.isConverged && r.state.passesStarted >= 1 } })
         try? await Task.sleep(for: .milliseconds(100))
         #expect(await MainActor.run { r.state.passesStarted } == 1)
@@ -108,7 +108,7 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false,
         let slow = r.slow!
         await r.engine.setLayout(bHidden)
         #expect(await waitUntil { await slow.calls == 1 })     // the pass for L1 is observing
-        await r.engine.setLayout(Layout(visible: [B, A, C]))
+        await r.engine.setLayout(Layout.placedAll(visible: [B, A, C]))
         #expect(await waitUntil { await MainActor.run { r.state.isConverged && r.state.observed.onBar == [B, A, C] } })
         #expect(await slow.calls >= 2)                         // a fresh scan
         #expect(r.logs.count("pass superseded by setLayout") >= 1)
@@ -157,7 +157,7 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false,
         let r = await rig(layout: allVisible, window: .milliseconds(300))
         var firstPassAfterCall: Int?
         for i in 0..<8 {
-            await r.engine.setLayout(i % 2 == 0 ? Layout(visible: [B, A, C]) : allVisible)
+            await r.engine.setLayout(i % 2 == 0 ? Layout.placedAll(visible: [B, A, C]) : allVisible)
             let started = await MainActor.run { r.state.passesStarted }
             if firstPassAfterCall == nil, started >= 1 { firstPassAfterCall = i }
             try? await Task.sleep(for: .milliseconds(200))

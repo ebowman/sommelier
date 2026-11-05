@@ -144,10 +144,11 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 @Suite struct LayoutEngineTests {
     @Test func setLayoutNormalizesASplitUnitAndReportsIt() async {
         let a1 = ItemKey.status(ownerKey: "com.app.a", autosaveName: "1"), a2 = ItemKey.status(ownerKey: "com.app.a", autosaveName: "2")
-        let r = await rig(order: [a1, a2, k("B")], layout: Layout(visible: [a1, a2, k("B")]))
-        let split = Layout(visible: [a1, k("B")], hidden: [a2])
+        let r = await rig(order: [a1, a2, k("B")], layout: Layout.placedAll(visible: [a1, a2, k("B")]))
+        let split = Layout.placedAll(visible: [a1, k("B")], hidden: [a2])
         await r.engine.setLayout(split)
-        let want = Layout(visible: [a1, k("B"), a2])
+        // gdu.89: the engine-normalized sibling a2 is not a user placement, so it is not in `placed`.
+        let want = Layout(visible: [a1, k("B"), a2], placed: [a1, k("B")])
         #expect(r.state.layout == want)
         #expect(r.state.lastNormalization == [a2])
         #expect((try? r.store.load()) == want)
@@ -158,7 +159,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // MARK: gdu.55 - applied per the store, confirmation pending; failed live writes
 
     @Test func unconfirmedHideIsInPlaceWithAMarkerUntilALaterCompleteReadConfirms() async {
-        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        let r = await rig(order: [k("A"), k("B")], layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         await r.actuator.scriptUnconfirmed()
         _ = await r.engine.reconcileOnce()
         #expect(r.state.pendingConfirmation == [k("B")] && r.state.perItem[k("B")] == .inPlace)
@@ -170,7 +171,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func contradictedUnconfirmedHideIsReplannedNotStruckOut() async {
-        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        let r = await rig(order: [k("A"), k("B")], layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         await r.actuator.scriptUnconfirmed(applyChange: false)   // store said applied, the bar still shows B
         _ = await r.engine.reconcileOnce()
         if case .failed? = r.state.perItem[k("B")] { Issue.record("an unconfirmed hide must not be a failure") }
@@ -181,7 +182,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func liveWriteFailureIsFailedNotUnsupportedAndNotRetried() async {
-        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: [k("A"), k("B")], layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .liveWriteFailed("readback"))])
         _ = await r.engine.reconcileOnce()
         #expect(r.state.perItem[k("B")] == .failed(.liveWriteFailed("readback")))
@@ -195,7 +196,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // is never moved, the others are ordered around it.
     @Test func layoutOrderOfSelfPositioningOwnerIsIgnoredNotWaitedFor() async {
         let order = [istat, k("A"), k("B")]
-        let layout = Layout(visible: [k("B"), k("A"), istat])
+        let layout = Layout.placedAll(visible: [k("B"), k("A"), istat])
         let box = ActuatorBox()
         let r = await rig(order: order, layout: layout, observer: LevelObserver(box: box, level: .completeExceptSelfPositioning))
         box.actuator = r.actuator
@@ -209,7 +210,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // COMPLETE read (the target's frame is not trusted while its items are stale); it is not a failure and proceeds later.
     @Test func moveNextToSelfPositioningItemWaitsForACompleteRead() async {
         let order = [k("A"), istat, k("B")]
-        let layout = Layout(visible: [k("B"), istat, k("A")])   // B is placed before iStat (never dragged); the bar ends [B, A, istat] since anchor slots are kept per pass, not across passes
+        let layout = Layout.placedAll(visible: [k("B"), istat, k("A")])   // B is placed before iStat (never dragged); the bar ends [B, A, istat] since anchor slots are kept per pass, not across passes
         let box = ActuatorBox()
         let obs = MutableLevelObserver(box: box, level: .completeExceptSelfPositioning)
         let r = await rig(order: order, layout: layout, observer: obs)
@@ -231,7 +232,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // converges; the engine then rewrites the layout to that order, records it once, and the next pass has nothing to normalize.
     @Test func aStraddlingLayoutIsNormalizedAroundTheSelfPositioningItemOnce() async {
         let order = [k("A"), istat, k("B")]
-        let layout = Layout(visible: [k("B"), istat, k("A")])
+        let layout = Layout.placedAll(visible: [k("B"), istat, k("A")])
         let r = await rig(order: order, layout: layout)
         var passes = 0
         while passes < 4 {
@@ -252,7 +253,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func aLayoutThatAgreesWithTheBarAroundTheSelfPositioningItemIsNotNormalized() async {
         let order = [k("A"), istat, k("B")]
-        let r = await rig(order: order, layout: Layout(visible: order))
+        let r = await rig(order: order, layout: Layout.placedAll(visible: order))
         let revision = r.state.layoutRevision
         _ = await r.engine.reconcileOnce()
         #expect(r.state.lastNormalization.isEmpty)
@@ -261,7 +262,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func orderAmongOthersProceedsOnAnExceptSelfPositioningRead() async {
         let order = [istat, k("A"), k("B")]
-        let layout = Layout(visible: [istat, k("B"), k("A")])
+        let layout = Layout.placedAll(visible: [istat, k("B"), k("A")])
         let box = ActuatorBox()
         let r = await rig(order: order, layout: layout, observer: LevelObserver(box: box, level: .completeExceptSelfPositioning))
         box.actuator = r.actuator
@@ -271,7 +272,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func convergesInOnePass() async {
-        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["C", "B", "A"].map(k)))
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout.placedAll(visible: ["C", "B", "A"].map(k)))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
         #expect(rep.actionCount == 2)
@@ -284,7 +285,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func anAnchoredFailureOnlyCostsOnePass() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
                           failOn: [(1, .mechanismFailed("boom"))])
         let first = await r.engine.reconcileOnce()
         #expect(first.outcome == .incomplete)
@@ -308,7 +309,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func unknownItemPersistedVisibleAtEnd() async {
-        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["A", "B"].map(k)))
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
         #expect((try? r.store.load().visible) == ["A", "B", "C"].map(k))
@@ -317,7 +318,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func unknownItemPersistedHiddenPolicyThenHidden() async {
         let r = await rig(order: ["A", "B", "C"].map(k),
-                          layout: Layout(visible: ["A", "B"].map(k), newItemPolicy: .hidden))
+                          layout: Layout.placedAll(visible: ["A", "B"].map(k), newItemPolicy: .hidden))
         let rep = await r.engine.reconcileOnce()
         #expect((try? r.store.load().hidden) == [k("C")])
         #expect(rep.outcome == .converged)
@@ -327,7 +328,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func busyPausesThenRuns() async {
         let c = Counter()
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), busy: { c.next() <= 5 })
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)), busy: { c.next() <= 5 })
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
         #expect(r.sleeps.all.contains(.milliseconds(100)))
@@ -335,7 +336,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func busyForeverSkips() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), busy: { true })
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)), busy: { true })
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .skippedBusy)
         #expect(await r.actuator.calls.isEmpty)
@@ -345,7 +346,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // MARK: gdu.46 unsettled observations and pass latency
 
     @Test func unsettledObservationIsPublishedAndNothingIsPlanned() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
                           observer: FixtureObserver(unsettled: FakeMenuBar.resolved(onBar: ["A", "B"].map(k))))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .unsettled)
@@ -357,7 +358,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func settledObservationActsAndClearsTheFlag() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
                           observer: FixtureObserver(steps: [.unsettled(items), .items(items)]))
         #expect(await r.engine.reconcileOnce().outcome == .unsettled)
         #expect(await r.actuator.calls.isEmpty)
@@ -371,7 +372,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let fresh = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
         var staleA = fresh
         staleA[0].item.stale = true
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)),
                           observer: FixtureObserver([fresh, staleA, fresh, Array(fresh.dropFirst())]))
         _ = await r.engine.reconcileOnce()
         let before = r.state.items[k("A")]
@@ -385,7 +386,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func unsettledObservationClearsAnEarlierObserveError() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)),
                           observer: FixtureObserver(steps: [.failure(.noAgreement(scans: 6)), .unsettled(items)]))
         _ = await r.engine.reconcileOnce()
         #expect(r.state.lastError == .observe("scans did not agree after 6 attempts"))
@@ -396,7 +397,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func firstCompleteScanIsPublishedBeforeAgreement() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
         let gate = ProgressGate(items: items)
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)), observer: gate)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)), observer: gate)
         await r.engine.requestReconcile()
         #expect(await waitUntil { await MainActor.run { r.state.observed.onBar == ["A", "B"].map(k) } })
         #expect(await MainActor.run { !r.state.observationSettled })
@@ -407,13 +408,13 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func setLayoutAbandonsAnObservationInProgressAndStartsAPassAtOnce() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
         let slow = SlowFirstObserver(items: items)
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)), observer: slow)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["A", "B"].map(k)), observer: slow)
         await r.engine.requestReconcile()                       // a poll-style pass starts observing and blocks
         #expect(await waitUntil { await slow.calls == 1 })
         await r.engine.requestReconcile()                       // a plain trigger must NOT abandon it
         try? await Task.sleep(for: .milliseconds(60))
         #expect(await slow.calls == 1)
-        await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))   // the user's drop abandons it
+        await r.engine.setLayout(Layout.placedAll(visible: ["B", "A"].map(k)))   // the user's drop abandons it
         #expect(await waitUntil { await MainActor.run { r.state.isConverged && r.state.observed.onBar == ["B", "A"].map(k) } })
         #expect(await slow.calls >= 2)
         #expect(await slow.cancelledCalls == 1)
@@ -421,7 +422,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func permissionDeniedStopsUntilCleared() async {
         let obs = FixtureObserver(throwing: .permissionDenied)
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), observer: obs)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)), observer: obs)
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .permissionDenied)
         #expect(r.state.lastError == .permissionDenied)
@@ -435,7 +436,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func observeEmptyIsAnErrorWithoutActions() async {
-        let r = await rig(order: ["A"].map(k), layout: Layout(visible: [k("A")]), observer: FixtureObserver([[]]))
+        let r = await rig(order: ["A"].map(k), layout: Layout.placedAll(visible: [k("A")]), observer: FixtureObserver([[]]))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .observeFailed)
         if case .observe? = r.state.lastError {} else { Issue.record("expected .observe error") }
@@ -458,7 +459,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func unsupportedCapabilityDoesNotBlockConvergence() async {
-        let r = await rig(order: [k("B"), k("A"), clock], layout: Layout(visible: ["A", "B"].map(k), alwaysHidden: [clock]))
+        let r = await rig(order: [k("B"), k("A"), clock], layout: Layout.placedAll(visible: ["A", "B"].map(k), alwaysHidden: [clock]))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
         #expect(r.state.isConverged)
@@ -469,7 +470,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func membershipBatchThenOrderInSamePass() async {
         let r = await rig(order: ["A", "B", "C"].map(k), hidden: [k("B")],
-                          layout: Layout(visible: ["B", "A", "C"].map(k)))
+                          layout: Layout.placedAll(visible: ["B", "A", "C"].map(k)))
         let rep = await r.engine.reconcileOnce()
         let calls = await r.actuator.calls
         #expect(calls.first == .applyHiddenBatch([k("B"): false]))
@@ -480,7 +481,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func mechanismFailedBatchEndsPassWithStickyBatchFailed() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .mechanismFailed("restart"))])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
@@ -547,7 +548,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func planningFollowsATrackedEntryThatAppearsAfterLaunchWithoutRetry() async {
         let box = TrackedBox(["com.x.A"])
-        let r = await rig(order: [k("A"), k("B")], layout: Layout(visible: [k("A")], hidden: [k("B")]), config: snapshotConfig(box))
+        let r = await rig(order: [k("A"), k("B")], layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]), config: snapshotConfig(box))
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.hidden.isEmpty)   // B untracked: planner skips it, nothing written
         if case .unsupported? = r.state.perItem[k("B")] {} else { Issue.record("B should be unsupported, got \(String(describing: r.state.perItem[k("B")]))") }
@@ -559,7 +560,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func aRefusedKeyIsRetriedWhenTheEntryReappearsAndNeedsNoRetryButton() async {
         let box = TrackedBox(["com.x.A", "com.x.B", "com.x.C"])
-        let r = await rig(order: [k("A"), k("B"), k("C")], layout: Layout(visible: [k("C")], hidden: [k("A"), k("B")]), config: snapshotConfig(box))
+        let r = await rig(order: [k("A"), k("B"), k("C")], layout: Layout.placedAll(visible: [k("C")], hidden: [k("A"), k("B")]), config: snapshotConfig(box))
         await r.actuator.setRefusals([k("B"): "cannot hide: not tracked by Control Center"])
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.hidden == [k("A")])
@@ -584,7 +585,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func aRefusedKeyThatVanishesIsPrunedWithNoStaleStatus() async {
         let box = TrackedBox(["com.x.A", "com.x.B", "com.x.C"])
-        let r = await rig(order: [k("A"), k("B"), k("C")], layout: Layout(visible: [k("C")], hidden: [k("A"), k("B")]), config: snapshotConfig(box))
+        let r = await rig(order: [k("A"), k("B"), k("C")], layout: Layout.placedAll(visible: [k("C")], hidden: [k("A"), k("B")]), config: snapshotConfig(box))
         await r.actuator.setRefusals([k("B"): "cannot hide: not tracked by Control Center"])
         _ = await r.engine.reconcileOnce()
         if case .unsupported? = r.state.perItem[k("B")] {} else { Issue.record("B should be unsupported") }
@@ -600,7 +601,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func revealSkipReasonFollowsTheCapabilityReason() {
         let apple = ItemKey.status(ownerKey: "com.apple.foo", autosaveName: "a"), untracked = k("U"), v = k("V")
         let rules = EngineFactory.makeCapabilityRules(tracked: ["com.x.V"], bundleID: { _ in nil })
-        let l = Layout(visible: [v], hidden: [apple, untracked])
+        let l = Layout.placedAll(visible: [v], hidden: [apple, untracked])
         let p = Reconciler().plan(observed: ObservedOrder(onBar: [v], parked: [apple, untracked]), layout: l,
                                   capabilities: { rules.capability(for: $0) }, showHiddenSection: true)
         let why = Dictionary(uniqueKeysWithValues: p.skipped.map { ($0.key, $0.reason) })
@@ -609,7 +610,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func userBusyBatchIsNotAFailureAndReschedulesThePass() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .userBusy)])
         await r.engine.requestReconcile()
         // The rescheduled (second) pass is observable as a second actuator call, which then converges.
@@ -621,7 +622,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func userBusyBatchWithoutDrainDoesNotSuppress() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .userBusy)])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
@@ -633,7 +634,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func driftedBatchSetsBatchDriftAndNeverDrags() async {
         // H must be hidden; C and A are out of order so an order phase would have run.
-        let r = await rig(order: ["A", "H", "B", "C"].map(k), layout: Layout(visible: ["C", "A", "B"].map(k), hidden: [k("H")]))
+        let r = await rig(order: ["A", "H", "B", "C"].map(k), layout: Layout.placedAll(visible: ["C", "A", "B"].map(k), hidden: [k("H")]))
         await r.actuator.scriptDrift(onCall: 1, expected: "a", observed: "b")
         let rep = await r.engine.reconcileOnce()
         let calls = await r.actuator.calls
@@ -658,7 +659,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func userBusyBatchIsNotBatchDrift() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .userBusy)])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
@@ -668,7 +669,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func concurrentTriggersCoalesce() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B", "C"].map(k))
         let gate = GateObserver(items: items)
-        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout(visible: ["A", "B", "C"].map(k)), observer: gate)
+        let r = await rig(order: ["A", "B", "C"].map(k), layout: Layout.placedAll(visible: ["A", "B", "C"].map(k)), observer: gate)
         await r.engine.requestReconcile()
         #expect(await waitUntil { await gate.calls == 1 })
         await r.engine.requestReconcile()
@@ -685,7 +686,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func maxActionsPerPassRespected() async {
         var cfg = LayoutEngine.Config()
         cfg.maxActionsPerPass = 1
-        let r = await rig(order: ["A", "B", "C", "D"].map(k), layout: Layout(visible: ["D", "C", "B", "A"].map(k)), config: cfg)
+        let r = await rig(order: ["A", "B", "C", "D"].map(k), layout: Layout.placedAll(visible: ["D", "C", "B", "A"].map(k)), config: cfg)
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
         #expect(rep.actionCount == 1)
@@ -693,7 +694,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func userBusyEndsPassWithoutSuppressing() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
                           failOn: [(1, .userBusy)])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
@@ -704,7 +705,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func stopsAfterThreeConsecutiveFailures() async {
         let names = ["A", "B", "C", "D", "E", "F"]
-        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)),
                           failOn: [(1, .mechanismFailed("x")), (2, .mechanismFailed("x")), (3, .mechanismFailed("x"))])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
@@ -724,7 +725,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         // a row (three passes) must not mark any key failed, and the pass must not count them as failed actions.
         let msg = "A \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
         let names = ["A", "B", "C"]
-        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)),
                           failOn: (1...12).map { ($0, ActuationError.mechanismFailed(msg)) })
         for _ in 0..<4 {
             let rep = await r.engine.reconcileOnce()
@@ -761,7 +762,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func stoppedAfterFailuresSurvivesObserveAndIsClearedExplicitly() async {
         let names = ["A", "B", "C", "D", "E"]
-        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)),
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)),
                           failOn: (1...12).map { ($0, ActuationError.mechanismFailed("x")) })
         _ = await r.engine.reconcileOnce(); _ = await r.engine.reconcileOnce()
         #expect(r.state.lastError == nil)
@@ -771,7 +772,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(r.state.lastError == .stoppedAfterFailures(3))
         await r.engine.clearFailures()
         #expect(r.state.lastError == nil)
-        await r.engine.setLayout(Layout(visible: names.map(k)))
+        await r.engine.setLayout(Layout.placedAll(visible: names.map(k)))
         #expect(r.state.lastError == nil)
     }
 
@@ -779,7 +780,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         var cfg = LayoutEngine.Config()
         cfg.maxActionsPerPass = 1
         let names = ["A", "B", "C", "D", "E"]
-        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)), config: cfg)
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)), config: cfg)
         await r.engine.requestReconcile()
         let state = r.state
         #expect(await waitUntil { await MainActor.run { state.passCount } >= 3 })
@@ -794,7 +795,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let both = FakeMenuBar.resolved(onBar: [k("A"), k("B")])
         let onlyA = FakeMenuBar.resolved(onBar: [k("A")])
         let obs = FixtureObserver([both, onlyA, both])
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]), observer: obs,
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]), observer: obs,
                           failOn: [(1, .mechanismFailed("restart"))])
         _ = await r.engine.reconcileOnce()
         #expect(r.state.perItem[k("B")] == .failed(.mechanismFailed("restart")))
@@ -806,7 +807,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func sameKeyFailingThreePassesInARowIsFailedUntilRetry() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .mechanismFailed("restart")), (2, .mechanismFailed("restart")), (3, .mechanismFailed("restart"))])
         for expected in 1...3 {
             let rep = await r.engine.reconcileOnce()
@@ -828,7 +829,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func aKeyThatRecoversBreaksItsStrikeStreak() async {
         // Fails once, succeeds on the retry; later single failures never accumulate to three.
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: [(1, .mechanismFailed("restart"))])
         _ = await r.engine.reconcileOnce()
         let rep = await r.engine.reconcileOnce()
@@ -838,7 +839,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func followUpPassesForAFailingKeyNeverExceedTheChainLimit() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]),
                           failOn: (1...9).map { ($0, ActuationError.mechanismFailed("restart")) })
         await r.engine.requestReconcile()
         let state = r.state
@@ -862,7 +863,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 @MainActor
 @Suite struct TransientRevealTests {
     @Test func heldUnitOnTheBarIsNotHiddenThenIsAfterTheHoldEnds() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
@@ -879,7 +880,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         // The revealed element can appear as an unknown heuristic item (the engine once dragged it while its menu was open),
         // and another unit that should be hidden is on the bar: with a hold active, zero actions and no persisted new item.
         let h = try #require(ItemKey(storeKey: "heuristic:com.apple.MenuBarAgent::#0"))
-        let r = await rig(order: [k("A"), k("B"), h], layout: Layout(visible: [k("B")], hidden: [k("A")]))
+        let r = await rig(order: [k("A"), k("B"), h], layout: Layout.placedAll(visible: [k("B")], hidden: [k("A")]))
         #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged && rep.actionCount == 0)
@@ -888,7 +889,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func heldUnitShowsAsPendingAndSecondHoldIsRefused() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         _ = await r.engine.reconcileOnce()   // learns the items
         #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
         #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)) == false)
@@ -897,7 +898,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func holdExpiresByItself() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .milliseconds(1)))
         let gone = await waitUntil { await !r.engine.isTransientlyRevealed(HideUnit(id: "com.x.B")) }
         #expect(gone)
@@ -907,7 +908,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         // gdu.76: a unit left alone because a member is stale is neither refused (sticky) nor struck; once the member is fresh
         // the NEXT pass hides it, with no Retry and no setLayout.
         let a = k("A"), b = k("B")
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]))
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]))
         await r.actuator.setUnsettled([a: "hides together with X: a member's state is unknown; retrying when the bar settles"])
         for _ in 0..<5 {   // more passes than maxKeyFailures: a strike would stop retrying
             let rep = await r.engine.reconcileOnce()
@@ -930,7 +931,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         // gdu.78 (a)
         let a = k("A"), b = k("B")
         var c = Self.retryConfig(); c.unsettledRetryBase = .seconds(30); c.unsettledRetryCap = .seconds(60)
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: c)
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]), config: c)
         await r.actuator.setUnsettled([a: Self.staleWhy])
         _ = await r.engine.reconcileOnce()
         let info = await r.engine.unsettledRetryInfo
@@ -940,7 +941,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func memberFreshBeforeTheRetryAppliesTheUnitWithoutRetryOrSetLayout() async {
         // gdu.78 (b)
         let a = k("A"), b = k("B")
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(60)))
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(60)))
         await r.actuator.setUnsettled([a: Self.staleWhy])
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.hidden.isEmpty)
@@ -954,7 +955,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func boundReachedReportsTheUnitsAndStopsSchedulingWithoutAStrike() async {
         // gdu.78 (c) + (d, notice part): a real trigger restarts the back-off
         let a = k("A"), b = k("B")
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(20), attempts: 2))
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(20), attempts: 2))
         await r.actuator.setUnsettled([a: Self.staleWhy])
         _ = await r.engine.reconcileOnce()
         #expect(await waitUntil { await MainActor.run { r.state.unsettledNotice != nil } })
@@ -976,7 +977,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func aRealTriggerResetsTheBackoff() async {
         // gdu.78 (d)
         let a = k("A"), b = k("B")
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(250)))
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]), config: Self.retryConfig(base: .milliseconds(250)))
         await r.actuator.setUnsettled([a: Self.staleWhy])
         _ = await r.engine.reconcileOnce()
         #expect(await waitUntil { await r.engine.unsettledRetryInfo.attempts >= 1 })
@@ -988,7 +989,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         // gdu.78 corrective: the retry is not "busy" for the poll; only user actions / non-poll triggers reset the back-off
         let a = k("A"), b = k("B")
         var c = Self.retryConfig(base: .milliseconds(200)); c.userPassReuseWindow = .zero; c.layoutCoalesce = .zero
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: c)
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]), config: c)
         await r.actuator.setUnsettled([a: Self.staleWhy])
         _ = await r.engine.reconcileOnce()
         #expect(await r.engine.unsettledRetryInfo.scheduledDelay != nil)
@@ -996,14 +997,14 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await waitUntil { await r.engine.unsettledRetryInfo.attempts >= 1 })
         await r.engine.requestReconcile(reason: "poll")
         #expect(await r.engine.unsettledRetryInfo.attempts >= 1)   // a poll request does not reset
-        await r.engine.setLayout(Layout(visible: [b], hidden: [a]))
+        await r.engine.setLayout(Layout.placedAll(visible: [b], hidden: [a]))
         #expect(await r.engine.unsettledRetryInfo.attempts == 0)   // a user action does
     }
 
     @Test func aVanishedUnsettledUnitIsPrunedFromTheWaitingCount() async {
         let a = k("A"), b = k("B")
         var c = Self.retryConfig(base: .seconds(30)); c.unsettledRetryCap = .seconds(60)
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]), config: c)
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]), config: c)
         await r.actuator.setUnsettled([a: Self.staleWhy])
         _ = await r.engine.reconcileOnce()
         #expect(await r.engine.unsettledRetryInfo.waiting == 1)
@@ -1015,7 +1016,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func onlyRefusedParkedUnitsInARevealedSectionAreCountedAsCannotBeShown() async {
         let a = k("A"), b = k("B"), c = k("C")
-        let r = await rig(order: [c], hidden: [a, b], layout: Layout(visible: [c], hidden: [a], alwaysHidden: [b]))
+        let r = await rig(order: [c], hidden: [a, b], layout: Layout.placedAll(visible: [c], hidden: [a], alwaysHidden: [b]))
         await r.actuator.setRefusals([a: "no entry", b: "no entry"])
         await r.engine.setReveal(hidden: true, alwaysHidden: false)
         _ = await r.engine.reconcileOnce()
@@ -1029,7 +1030,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         // gdu.72 review: one unit stale, a WRITTEN unit fails to verify: the write error and strike stand
         let a = k("A"), b = k("B"), c = k("C")
         var cfg = Self.retryConfig(); cfg.unsettledRetryBase = .seconds(30); cfg.unsettledRetryCap = .seconds(60)
-        let r = await rig(order: [a, b, c], layout: Layout(visible: [c], hidden: [a, b]), config: cfg)
+        let r = await rig(order: [a, b, c], layout: Layout.placedAll(visible: [c], hidden: [a, b]), config: cfg)
         await r.actuator.setUnsettled([a: Self.staleWhy])
         for n in 1...5 { await r.actuator.scriptDrift(onCall: n, expected: "B hidden", observed: "B on the bar", unapplied: true) }
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }   // more passes than maxKeyFailures
@@ -1041,7 +1042,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func revealSkipNoticeCountsAnActuatorRefusedParkedUnit() async {
         // gdu.78 (f)
         let a = k("A"), b = k("B")
-        let r = await rig(order: [b], hidden: [a], layout: Layout(visible: [b], hidden: [a]))
+        let r = await rig(order: [b], hidden: [a], layout: Layout.placedAll(visible: [b], hidden: [a]))
         await r.actuator.setRefusals([a: "no Control Center entry"])
         await r.engine.setReveal(hidden: true, alwaysHidden: false)
         #expect(await waitUntil { await MainActor.run { ArrangeSections.revealSkipNotice(state: r.state) != nil } })
@@ -1051,7 +1052,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func capabilityRefusalStaysStickyUntilRetry() async {
         let a = k("A"), b = k("B")
-        let r = await rig(order: [a, b], layout: Layout(visible: [b], hidden: [a]))
+        let r = await rig(order: [a, b], layout: Layout.placedAll(visible: [b], hidden: [a]))
         await r.actuator.setRefusals([a: "cannot hide"])
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.lastBatchRefused[a] == "cannot hide")

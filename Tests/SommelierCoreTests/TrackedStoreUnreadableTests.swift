@@ -174,7 +174,7 @@ private let denied = "access denied reading /Users/x/Library/Group Containers/gr
     }
 
     @MainActor @Test func anUnreadableStoreIsAnObserveErrorWithNoActionsNoAdoptionAndNoLayoutChange() async throws {
-        let layout = Layout(visible: ["B", "A"].map(k))   // differs from the bar: a normal pass would drag
+        let layout = Layout.placedAll(visible: ["B", "A"].map(k))   // differs from the bar: a normal pass would drag
         let r = await rig([problemSnap(["A", "B", "C"])], layout: layout)   // C is a "new item" a normal pass would append
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .observeFailed)
@@ -187,7 +187,7 @@ private let denied = "access denied reading /Users/x/Library/Group Containers/gr
     }
 
     @MainActor @Test func theNextReadableScanClearsTheErrorAndProceeds() async throws {
-        let layout = Layout(visible: ["B", "A", "C"].map(k))
+        let layout = Layout.placedAll(visible: ["B", "A", "C"].map(k))
         let clean = FakeMenuBar.snapshot(order: ["A", "B", "C"].map(k), hidden: [])
         let r = await rig([problemSnap(["A", "B", "C"]), clean], layout: layout)
         _ = await r.engine.reconcileOnce()
@@ -217,7 +217,7 @@ private let denied = "access denied reading /Users/x/Library/Group Containers/gr
 
     @MainActor @Test func theEngineRetriesByItselfAndRecoversWithoutAnyBarChange() async {
         let box = Scripted.Box([problemSnap(["A", "B", "C"])])      // every scan unreadable
-        let r = await retryRig(box, layout: Layout(visible: ["B", "A", "C"].map(k)))
+        let r = await retryRig(box, layout: Layout.placedAll(visible: ["B", "A", "C"].map(k)))
         await r.engine.requestReconcile()                            // the ordinary trigger path, not reconcileOnce
         #expect(await waitFor { await MainActor.run { if case .observe? = r.state.lastError { return true } else { return false } } })
         #expect(await r.actuator.calls.isEmpty)

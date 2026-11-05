@@ -86,7 +86,7 @@ private final class PIDBox: @unchecked Sendable {
 @Suite struct EngineRobustnessTests {
     @Test func anEmptyObservationNeverCausesAnAction() async {
         // The first scans after a respawn are empty: not "everything is hidden", never a basis for hides or moves.
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k), hidden: []),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k), hidden: []),
                           observer: FixtureObserver(steps: [.failure(.empty), .failure(.empty)]))
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .observeFailed)
@@ -96,7 +96,7 @@ private final class PIDBox: @unchecked Sendable {
 
     @Test func anIncompleteOrUnsettledReadNeverCausesAnAction() async {
         let partial = FakeMenuBar.resolved(onBar: [k("B")])   // a post-respawn read that lacks A
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)),
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
                           observer: FixtureObserver(steps: [.unsettled(partial), .failure(.noAgreement(scans: 6))]))
         #expect(await r.engine.reconcileOnce().outcome == .unsettled)
         #expect(await r.engine.reconcileOnce().outcome == .observeFailed)
@@ -105,7 +105,7 @@ private final class PIDBox: @unchecked Sendable {
 
     @Test func settledObservationsAreNotActedOnRightAfterAnAgentRestart() async {
         let logs = Logs()
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)), logs: logs)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)), logs: logs)
         await r.engine.agentRestarted(settle: .milliseconds(150))
         let early = await r.engine.reconcileOnce()
         #expect(early.outcome == .unsettled)
@@ -119,7 +119,7 @@ private final class PIDBox: @unchecked Sendable {
     }
 
     @Test func anAgentRestartDropsTransientRevealHolds() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")], hidden: [k("B")]))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         _ = await r.engine.reconcileOnce()
         #expect(await r.engine.beginTransientReveal(HideUnit(id: "com.x.B"), timeout: .seconds(60)))
         await r.engine.agentRestarted(settle: .milliseconds(10))
@@ -127,10 +127,10 @@ private final class PIDBox: @unchecked Sendable {
     }
 
     @Test func nothingRunsAcrossSleepAndWakeReconcilesAfterTheSettle() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)))
         await r.engine.willSleep()
         await r.engine.requestReconcile()
-        await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))
+        await r.engine.setLayout(Layout.placedAll(visible: ["B", "A"].map(k)))
         try? await Task.sleep(for: .milliseconds(80))
         #expect(await r.actuator.calls.isEmpty)
         #expect(await r.engine.reconcileOnce().outcome == .incomplete)   // a direct pass is refused too
@@ -143,7 +143,7 @@ private final class PIDBox: @unchecked Sendable {
 
     @Test func aPassStartedWhileAsleepDoesNothingAndResumeClearsTheFlag() async {
         let names = ["A", "B", "C", "D"]
-        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)))
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)))
         // Sleep is announced before the pass: the pass must not start any action.
         await r.engine.willSleep()
         _ = await r.engine.reconcileOnce()
@@ -154,7 +154,7 @@ private final class PIDBox: @unchecked Sendable {
     }
 
     @Test func burstsWithTheSameReasonBecomeOnePass() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)))
         for _ in 0..<8 { await r.engine.scheduleReconcile(after: .milliseconds(60), reason: "display change") }
         try? await Task.sleep(for: .milliseconds(30))
         #expect(r.state.passCount == 0)
@@ -166,7 +166,7 @@ private final class PIDBox: @unchecked Sendable {
 
     @Test func aNewUnknownItemSurfacesATransientNoticeAndALogLine() async throws {
         let logs = Logs()
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: [k("A")]), logs: logs)
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: [k("A")]), logs: logs)
         _ = await r.engine.reconcileOnce()
         #expect(r.state.newItemNotice?.hasPrefix("New item: ") == true)
         #expect(r.state.newItemNotice?.hasSuffix("placed in Visible") == true)
@@ -213,7 +213,7 @@ private final class Counter: @unchecked Sendable {
     @Test func aRevealToggledWhileAHideBatchRunsIsNotAFailureAndNeverStrikes() async {
         let inner = FakeActuator(order: ["A", "B"].map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let box = EngineBox()
-        let store = InMemoryLayoutStore(Layout(visible: [k("A")], hidden: [k("B")]))
+        let store = InMemoryLayoutStore(Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         let state = EngineState()
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: ToggleDuringBatch(inner: inner, box: box), store: store,
                                   capabilities: Caps(), state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
@@ -256,7 +256,7 @@ private struct PidChangingObserver: MenuBarObserver {
         await inner.failOnCall(1, .mechanismFailed("restart"))
         let logs = Logs()
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: RespawningBatch(inner: inner),
-                                  store: InMemoryLayoutStore(Layout(visible: [k("A")], hidden: [k("B")])), capabilities: Caps(),
+                                  store: InMemoryLayoutStore(Layout.placedAll(visible: [k("A")], hidden: [k("B")])), capabilities: Caps(),
                                   state: EngineState(), resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
         await engine.start()
         _ = await engine.reconcileOnce()
@@ -274,7 +274,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let pid = PIDBox(100)
         let state = EngineState()
         let engine = LayoutEngine(observer: PidChangingObserver(inner: ActuatorObserver(actuator: inner), pid: pid, newPID: 200), actuator: inner,
-                                  store: InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k))), capabilities: Caps(), state: state,
+                                  store: InMemoryLayoutStore(Layout.placedAll(visible: ["B", "A"].map(k))), capabilities: Caps(), state: state,
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
                                   agentPID: { pid.value }, isOwnAgentPID: { _ in false })
         await engine.start()
@@ -290,7 +290,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let inner = FakeActuator(order: ["A", "B"].map(k), capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let pid = PIDBox(100)
         let engine = LayoutEngine(observer: PidChangingObserver(inner: ActuatorObserver(actuator: inner), pid: pid, newPID: 200), actuator: inner,
-                                  store: InMemoryLayoutStore(Layout(visible: ["B", "A"].map(k))), capabilities: Caps(), state: EngineState(),
+                                  store: InMemoryLayoutStore(Layout.placedAll(visible: ["B", "A"].map(k))), capabilities: Caps(), state: EngineState(),
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
                                   agentPID: { pid.value }, isOwnAgentPID: { $0 == 200 })
         await engine.start()
@@ -304,7 +304,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let pid = PIDBox(100)
         let act = RespawningBatchlessMove(inner: inner, pid: pid)
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: act,
-                                  store: InMemoryLayoutStore(Layout(visible: names.reversed().map(k))), capabilities: Caps(), state: EngineState(),
+                                  store: InMemoryLayoutStore(Layout.placedAll(visible: names.reversed().map(k))), capabilities: Caps(), state: EngineState(),
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
                                   agentPID: { pid.value }, isOwnAgentPID: { _ in false })
         await engine.start()
@@ -375,7 +375,7 @@ private struct OneItemSource: AccessibilitySource {
 @Suite struct ConflictDuringPassTests {
     @Test func aPassStopsBeforeTheNextActuatorCallOnceBartenderIsDetected() async {
         let names = ["A", "B", "C", "D"]
-        let r = await rig(order: names.map(k), layout: Layout(visible: names.reversed().map(k)))
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)))
         let engine = r.engine
         await r.actuator.setAfterCall { n in if n == 1 { engine.setConflict("Bartender 7") } }
         let rep = await engine.reconcileOnce()
@@ -394,7 +394,7 @@ private struct OneItemSource: AccessibilitySource {
     }
 
     @Test func aPassStartedWhileConflictedMakesNoCalls() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["B", "A"].map(k)))
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)))
         r.engine.setConflict("Bartender 7")
         #expect(await r.engine.reconcileOnce().outcome == .paused)
         await r.engine.requestReconcile()

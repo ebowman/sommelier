@@ -82,6 +82,10 @@ public final class EngineState {
     /// gdu.80: set by a reveal pass on a full bar whose layout order differs from the bar: membership was applied, the order was
     /// not (macOS decides what fits). Cleared at the start of every pass.
     public var orderNotAppliedNotice: String?
+    /// gdu.89: why the move in flight happens ("Moving X: you placed it after Y"); set before each planned drag, cleared when the order
+    /// phase ends and at the start of every pass. `orderMoveReasons` is the same text per moving key (the row badge tooltip).
+    public var orderMoveNotice: String?
+    public var orderMoveReasons: [ItemKey: String] = [:]
     /// gdu.78: set when the retries of units left unsettled (stale member) ran out; cleared when they apply or a trigger restarts the back-off.
     public var unsettledNotice: String?
     /// Keys the engine moved to `visible` when it adopted the last layout (`start`, `setLayout`) because their app also had a
@@ -102,6 +106,20 @@ public final class EngineState {
         self.isConverged = false
         self.lastPassAt = nil
         self.passCount = 0
+    }
+}
+
+/// gdu.89: wording of the "why is this item being dragged" notice. Every planned move exists because the user placed that item.
+public enum OrderMoveNotice {
+    public static func text(name: String, relation: Relation, target: String?) -> String {
+        let why: String
+        switch relation {
+        case .after: why = "you placed it after \(target ?? "its neighbour")"
+        case .before: why = "you placed it before \(target ?? "its neighbour")"
+        case .leftmost: why = "you placed it first"
+        case .rightmost: why = "you placed it last"
+        }
+        return "Moving \(name): \(why)"
     }
 }
 
