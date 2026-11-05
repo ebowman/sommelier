@@ -321,7 +321,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     let c = make(bar: [k("a"), k("b"), k("c"), clock], layout: layout, awaiting: [k("c")])
     #expect(ArrangeDrop.index(layout: layout, rows: c.visible.rows, slot: 0, key: k("a"), section: .visible) == 0)     // before the ghost
     #expect(ArrangeDrop.index(layout: layout, rows: c.visible.rows, slot: 3, key: k("a"), section: .visible) == 2) // before the real c: next target is the clock, clamped
-    #expect(ArrangeDrop.index(layout: layout, rows: c.visible.rows, slot: 5, key: k("a"), section: .visible) == nil) // end -> before the trailing block
+    #expect(ArrangeDrop.index(layout: layout, rows: c.visible.rows, slot: 5, key: k("a"), section: .visible) == 2) // end: after the clock, clamped to before the trailing block (gdu.101: neighbour-key rule)
 }
 
 @Test func stepSkipsAnchorsAndStopsAtTheTrailingBlock() {
@@ -577,4 +577,64 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 0, capabilities: free) {
         #expect(l.visible.first == k("b"))
     } else { Issue.record("an ordinary row can be reordered") }
+}
+
+// MARK: gdu.101 - stale on-bar items are shown, drops resolve by neighbour key and refuse stale neighbours
+
+private let istat: [ItemKey] = (0..<9).map { .status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "istat\($0)") }
+
+/// The 2026-11-05 13:59 shape: 15 fresh third-party rows + 9 stale iStat rows (interleaved) + 2 modules; the layout lists all of them.
+private func incident() -> (layout: Layout, bar: [ItemKey], content: ArrangeContent) {
+    let fresh = (0..<15).map { k("f\($0)") }
+    var bar: [ItemKey] = []
+    for (i, f) in fresh.enumerated() { bar.append(f); if i % 2 == 0, i / 2 < istat.count { bar.append(istat[i / 2]) } }
+    bar += istat.suffix(from: min(istat.count, 8)).filter { !bar.contains($0) }
+    bar += [cc, clock]
+    let layout = Layout(visible: bar)
+    let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: Set(istat), staleOnBar: Set(istat))
+    let c = ArrangeSections.make(observed: o, layout: layout, items: items(bar), perItem: [:], capabilities: caps)
+    return (layout, bar, c)
+}
+
+@Test func staleOnBarItemsAreRowsWithStaleBadgeAndNotDraggable() {
+    let (_, bar, c) = incident()
+    #expect(c.visible.rows.map(\.key) == bar && bar.count == 26)
+    let stale = c.visible.rows.filter(\.staleFrame)
+    #expect(stale.count == 9 && stale.allSatisfy { !$0.draggable && $0.badge == .stale && $0.badge.glyph == "~" })
+    #expect(c.visible.rows.filter { !$0.staleFrame && $0.badge == .stale }.isEmpty)
+    #expect(ArrangeBadge.stale.tooltip.hasPrefix("Position not refreshed yet"))
+}
+
+@Test func dropNextToAFreshNeighbourLandsNextToThatKey() {
+    let (layout, _, c) = incident()
+    let rows = c.visible.rows
+    // f1 and f2 are adjacent fresh rows (the iStat rows sit after the even ones): the drop lands right after f1 in layout.visible.
+    let i = rows.firstIndex { $0.key == k("f1") }!
+    guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: rows, slot: i + 1, key: k("f9"), section: .visible, capabilities: caps) else { Issue.record("not a move"); return }
+    let p = l.visible.firstIndex(of: k("f9"))!
+    #expect(l.visible[p - 1] == k("f1") && l.visible[p + 1] == k("f2"))
+}
+
+@Test func dropBesideAStaleRowIsRefusedWithTheExactText() {
+    let (layout, _, c) = incident()
+    let rows = c.visible.rows
+    let s = rows.firstIndex { $0.key == istat[0] }!
+    for slot in [s, s + 1] {   // right of a stale row, left of a stale row
+        #expect(ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: k("f9"), section: .visible, capabilities: caps)
+                == .rejected("The bar is not fully observed right now; try again in a moment."))
+    }
+    #expect(ArrangeDrop.barNotFullyObserved == "The bar is not fully observed right now; try again in a moment.")
+    // Move left/right across a stale capsule is refused too.
+    let f = k("f1")
+    if case .rejected(let m) = ArrangeDrop.step(layout: layout, rows: rows.map { var r = $0; if r.key == k("f0") { r.staleFrame = true }; return r }, key: f, .left, capabilities: caps) {
+        #expect(m == ArrangeDrop.barNotFullyObserved)
+    } else { Issue.record("step across a stale row was not refused") }
+}
+
+@Test func hiddenStripDropsIgnoreStaleness() {
+    let (_, _, c) = incident()
+    let layout = Layout(visible: c.visible.rows.map(\.key), hidden: [k("h1"), k("h2")])
+    let hr = [k("h1"), k("h2")].map { ArrangeRow(key: $0, title: "", ownerName: "", ownerBundleID: nil, ownerPID: nil, badge: .none, draggable: true, canHide: true, isAnchor: false, isGhost: false, isBoundary: false, notFitting: false, notRunning: false, unit: HideUnitRule.ownerKeys.unit(of: $0), unitMates: [], capabilityNote: nil) }
+    guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: hr, slot: 1, key: k("f0"), section: .hidden, capabilities: caps) else { Issue.record("not a move"); return }
+    #expect(l.hidden == [k("h1"), k("f0"), k("h2")])
 }

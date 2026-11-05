@@ -14,8 +14,13 @@ public struct ObservedOrder: Equatable, Sendable {
     /// gdu.94: keys in `onBar` whose slot rests on no hosted element (an app-side frame only: join `.none` / not corroborated), or that
     /// Control Center lists hidden / not allowed. The frame may be stale and sit on another item's slot: never a move subject.
     public var uncorroborated: Set<ItemKey>
+    /// gdu.101: keys in `onBar` whose frame is a carried-forward (stale) read: the item IS on the bar, at its last-known slot, but the app
+    /// has not answered a position read. Always also in `uncorroborated` when built from a scan. Shown (flagged) by the Arrange window,
+    /// never a move subject, never hidden on a stale frame alone.
+    public var staleOnBar: Set<ItemKey>
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
-                placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = []) {
+                placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = [], staleOnBar: Set<ItemKey> = []) {
+        self.staleOnBar = staleOnBar
         self.uncorroborated = uncorroborated
         self.placementUnknown = placementUnknown
         self.onBar = onBar
@@ -26,8 +31,9 @@ public struct ObservedOrder: Equatable, Sendable {
 
     /// Builds the observed order from a resolved scan. Fresh on-bar items (width > 1) in frame order become `onBar`;
     /// other items with width > 1 become `parked`. Items with width <= 1 (main-menu entries, not status items) are
-    /// ignored, and STALE items (carried forward from an earlier scan) are EXCLUDED entirely: the planner never plans
-    /// on data it cannot trust. Duplicate keys keep their first occurrence.
+    /// ignored. STALE items (carried forward from an earlier scan): a stale ON-BAR item is kept in `onBar` at its last-known x and
+    /// flagged in `staleOnBar` + `uncorroborated` (gdu.101: the UI must not omit items that are on the bar; the planner treats it as an
+    /// immovable anchor); a stale PARKED item is excluded (the planner never plans on it). Duplicate keys keep their first occurrence.
     public init(resolved: [ResolvedItem]) {
         var seen = Set<ItemKey>()
         var bar: [(CGFloat, ItemKey)] = []
@@ -35,13 +41,15 @@ public struct ObservedOrder: Equatable, Sendable {
         var ovf = Set<ItemKey>()
         var unknown = Set<ItemKey>()
         var uncorr = Set<ItemKey>()
+        var stale = Set<ItemKey>()
         var chevron: ItemKey?
-        for r in resolved where !r.item.stale && r.item.frame.width > 1 {
+        for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
             guard seen.insert(r.key).inserted else { continue }
             if r.item.isOnMenuBar {
+                if r.item.stale { stale.insert(r.key); uncorr.insert(r.key) }
                 bar.append((r.item.frame.minX, r.key))
-                if r.item.systemOverflow { ovf.insert(r.key) }
-                if r.item.isOverflowChevron { chevron = chevron ?? r.key }
+                if r.item.systemOverflow, !r.item.stale { ovf.insert(r.key) }
+                if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key }
                 // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
                 if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
                     || r.item.hiddenInControlCenter { uncorr.insert(r.key) }
@@ -49,7 +57,7 @@ public struct ObservedOrder: Equatable, Sendable {
         }
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
-        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr)
+        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr, staleOnBar: stale)
     }
 }
 
@@ -208,6 +216,9 @@ public struct Reconciler: Sendable {
                 unhideable.insert(k)
                 skipped.append(SkippedAction(k, k == b ? (capabilities(k).reason ?? "cannot be hidden")
                                                        : "cannot be hidden: \(b) in the same app cannot be hidden"))
+            } else if observed.staleOnBar.contains(k) {
+                // gdu.101: never hide on a stale frame alone; the item is on the bar as of the last read.
+                skipped.append(SkippedAction(k, Reconciler.staleSkipReason))
             } else {
                 hides.append(k)
             }
@@ -261,7 +272,7 @@ public struct Reconciler: Sendable {
         let base = kept + shows
         // gdu.94: an on-bar key whose slot is not corroborated by a hosted element (or that Control Center lists hidden) keeps its observed
         // slot like an anchor: it is never the subject of a move. Only a key the user placed is reported (once).
-        let uncorroborated = observed.uncorroborated.intersection(onBarSet).intersection(Set(base))
+        let uncorroborated = observed.uncorroborated.union(observed.staleOnBar).intersection(onBarSet).intersection(Set(base))
         let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) || uncorroborated.contains($0) })
         if let placed, !uncorroborated.isEmpty, hides.isEmpty, shows.isEmpty {
             // What the order step would have done had these keys been movable: report each key it would have dragged (once).
@@ -269,7 +280,7 @@ public struct Reconciler: Sendable {
             let desiredSet = Set(desired), baseSet = Set(base)
             let movable = layout.visible.filter { placed.contains($0) && desiredSet.contains($0) && baseSet.contains($0) && !free.contains($0) }
             if movable.contains(where: uncorroborated.contains) {
-                let t = Self.placedTarget(base: base, placed: movable, anchors: free, visible: layout.visible, eligible: desiredSet)
+                let t = Self.placedTarget(base: base, placed: movable, anchors: free.subtracting(observed.staleOnBar), visible: layout.visible, eligible: desiredSet.subtracting(observed.staleOnBar))
                 let would = Self.moves(from: base, to: t, anchors: Set(base).subtracting(movable), boundary: chevron != nil)
                 var seenSubjects = Set<ItemKey>()
                 for case .move(let k, _) in would where uncorroborated.contains(k) && seenSubjects.insert(k).inserted {
@@ -284,13 +295,13 @@ public struct Reconciler: Sendable {
             let baseSet = Set(base)
             let desiredSet = Set(desired)
             placedMovable = layout.visible.filter { placed.contains($0) && desiredSet.contains($0) && baseSet.contains($0) && !anchors.contains($0) }
-            target = Self.placedTarget(base: base, placed: placedMovable, anchors: anchors, visible: layout.visible, eligible: desiredSet)
+            target = Self.placedTarget(base: base, placed: placedMovable, anchors: anchors.subtracting(observed.staleOnBar), visible: layout.visible, eligible: desiredSet.subtracting(observed.staleOnBar))
         } else {
             target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
         }
         // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
         // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.
-        let anchorsInBase = base.filter { anchors.contains($0) }
+        let anchorsInBase = base.filter { anchors.contains($0) && !observed.staleOnBar.contains($0) }   // gdu.101: a stale frame proves no order
         let tIdx = Dictionary(uniqueKeysWithValues: target.enumerated().map { ($1, $0) })
         let seq = anchorsInBase.map { tIdx[$0]! }
         var anchorsOutOfOrder = false
@@ -313,7 +324,7 @@ public struct Reconciler: Sendable {
         // slot before the block (relative order kept); no drag ever targets the block.
         // The block is taken from the observed bar BEFORE shown items are appended (`kept`): in a membership pass the shows
         // would otherwise hide it, and `skipped`/`desiredOnBar` would put a key right of the clock until the order pass (gdu.44).
-        let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors)
+        let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors.subtracting(observed.staleOnBar))   // gdu.101: a stale key does not extend the system block
         if blockStart < kept.count {
             let blockSet = Set(kept[blockStart...])
             // Name the first MODULE of the block in skip messages: a self-positioning item (iStat, an anchor) can sit at its start
@@ -358,7 +369,7 @@ public struct Reconciler: Sendable {
             // Non-placed keys are never moved: they act as fixed points of the minimal-move computation (their relative order
             // in `target` is their observed one, so this is always consistent).
             let fixed = userOrder ? Set(base).subtracting(placedMovable) : anchors
-            actions = Self.moves(from: base, to: target, anchors: fixed, boundary: chevron != nil)
+            actions = Self.moves(from: base, to: target, anchors: fixed, boundary: chevron != nil, avoid: observed.staleOnBar)
             assert(Self.overflowViolations(actions, forbidden: ovf.union(chevron.map { [$0] } ?? []), boundary: chevron != nil).isEmpty,
                    "planned a move of or into macOS's overflow area")
             assert(Self.violations(actions, target: target, anchors: anchors, blockStart: blockStart).isEmpty,
@@ -367,6 +378,9 @@ public struct Reconciler: Sendable {
         }
         return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target)
     }
+
+    /// gdu.101: why a hide of an on-bar key with a stale frame is not planned.
+    public static let staleSkipReason = "position not refreshed; waiting for a fresh read"
 
     /// gdu.94: why a placed key whose bar position is not corroborated is not dragged.
     public static let uncorroboratedSkipReason = "its position on the bar is not corroborated by a hosted element (stale app-side frame or hidden in Control Center); no drag"
@@ -423,7 +437,9 @@ public struct Reconciler: Sendable {
         guard !placed.isEmpty else { return base }
         let baseSet = Set(base)
         let lifted = Set(placed)
-        let usable = eligible.intersection(baseSet)
+        // gdu.101: a Control Center module is never a neighbour to hang on (right of it is the unreachable system block); the search
+        // goes outward past modules and self-positioning keys to the nearest ELIGIBLE key on either side.
+        let usable = eligible.intersection(baseSet).filter { if case .module = $0 { return false } else { return true } }
         // Partition: hung on an observed (non-placed) key / refilling slots / alone.
         var hung: [ItemKey] = [], refill: [ItemKey] = [], alone: [ItemKey] = []
         for p in placed {
@@ -443,7 +459,11 @@ public struct Reconciler: Sendable {
         for p in placed where late.contains(p) {
             guard let li = visible.firstIndex(of: p) else { continue }
             let inCur = Set(cur)
-            if let l = visible[..<li].last(where: { inCur.contains($0) && usable.contains($0) }), let i = cur.firstIndex(of: l) {
+            let left = visible[..<li].lastIndex(where: { inCur.contains($0) && usable.contains($0) })
+            let right = visible[(li + 1)...].first(where: { inCur.contains($0) && usable.contains($0) })
+            // gdu.101: a module between the left neighbour and P means P sits right of the module in the layout; prefer the right neighbour.
+            let moduleBetween = left.map { visible[$0..<li].contains { if case .module = $0 { true } else { false } } } ?? false
+            if let lx = left, !(moduleBetween && right != nil), let i = cur.firstIndex(of: visible[lx]) {
                 cur.insert(p, at: i + 1)
             } else if let r = visible[(li + 1)...].first(where: { inCur.contains($0) && usable.contains($0) }), let i = cur.firstIndex(of: r) {
                 cur.insert(p, at: i)
@@ -457,7 +477,8 @@ public struct Reconciler: Sendable {
     }
 
     /// Minimal moves turning `current` into `target` (same key set) with `anchors` never moved.
-    static func moves(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>, boundary: Bool = false) -> [PlannedAction] {
+    /// `avoid`: keys never used as a relation target when another in-place neighbour exists (gdu.101: stale frames).
+    static func moves(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>, boundary: Bool = false, avoid: Set<ItemKey> = []) -> [PlannedAction] {
         guard current != target, current.count == target.count else { return [] }
         var tIndex: [ItemKey: Int] = [:]
         for (i, k) in target.enumerated() { tIndex[k] = i }
@@ -469,7 +490,9 @@ public struct Reconciler: Sendable {
             let left = i > 0 ? target[i - 1] : nil
             let right = i + 1 < target.count ? target[i + 1] : nil
             let relation: Relation
-            if let l = left, inPlace.contains(l) { relation = .after(l) }
+            if let l = left, inPlace.contains(l), !avoid.contains(l) { relation = .after(l) }
+            else if let r = right, inPlace.contains(r), !avoid.contains(r) { relation = .before(r) }
+            else if let l = left, inPlace.contains(l) { relation = .after(l) }
             else if let r = right, inPlace.contains(r) { relation = .before(r) }
             else if i == 0 {
                 // With a chevron, "leftmost" would drop the item left of it (inside the overflow area): drop before the

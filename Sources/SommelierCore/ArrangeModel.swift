@@ -18,6 +18,8 @@ public enum ArrangeBadge: Equatable, Sendable {
     case cannotChange(String)
     /// macOS moved it into its own overflow behind the chevron: reported on the bar but not drawn (gdu.45).
     case notFitting
+    /// gdu.101: on the bar but its position was not refreshed (the app has not answered a position read); shown at the last-known slot.
+    case stale
 
     public var glyph: String {
         switch self {
@@ -28,6 +30,7 @@ public enum ArrangeBadge: Equatable, Sendable {
         case .failed: return "⚠"
         case .cannotChange: return "⊘"
         case .notFitting: return "⇠"
+        case .stale: return "~"
         }
     }
 
@@ -40,6 +43,7 @@ public enum ArrangeBadge: Equatable, Sendable {
         case .failed(let e): return "Failed: \(e)"
         case .cannotChange(let r): return r
         case .notFitting: return "Does not fit: macOS moved it into its overflow behind the chevron"
+        case .stale: return "Position not refreshed yet (the app has not answered a position read); it is on the bar, here as of the last read"
         }
     }
 }
@@ -70,6 +74,9 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var unitApp: String? = nil
     /// gdu.89: why this item is being dragged right now ("Moving X: you placed it after Y"); only set while its badge is `.moving`.
     public var moveReason: String? = nil
+    /// gdu.101: on the bar, shown at its last-known slot because the app has not answered a position read. Not draggable until fresh;
+    /// a drop beside it is refused (`ArrangeDrop.barNotFullyObserved`).
+    public var staleFrame: Bool = false
     /// Tooltip of the badge: the move reason replaces the generic "waiting" text while a planned drag is in flight.
     public var badgeTooltip: String { badge == .moving ? (moveReason ?? badge.tooltip) : badge.tooltip }
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
@@ -213,15 +220,18 @@ public enum ArrangeSections {
             let anchor = !cap.canMove
             let info = items[k]
             let pending = ghost || awaiting.contains(k)
-            let b = hasObs
+            let stale = !ghost && observed.staleOnBar.contains(k)
+            var b = hasObs
                 ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k),
                         pendingConfirmation: pendingConfirmation.contains(k))
                 : .none
+            if stale, hasObs, b == .none || b == .inPlace || b == .inPlacePending { b = .stale }
             var r = ArrangeRow(key: k, title: title(k), ownerName: info?.ownerName ?? "", ownerBundleID: info?.ownerBundleID ?? ownerBundleID(k),
-                              ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove, canHide: cap.canHide, isAnchor: anchor,
+                              ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove && !stale, canHide: cap.canHide, isAnchor: anchor,
                               isGhost: ghost, isBoundary: observed.overflowChevron == k,
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
                               unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
+            r.staleFrame = stale
             if b == .moving, !ghost { r.moveReason = moveReasons[k] }
             return r
         }
@@ -411,6 +421,8 @@ public enum ArrangeDrop {
     /// gdu.67: refusal text for an order-only drop that would put a movable row on the other side of a self-positioning row.
     public static func cannotCross(_ name: String) -> String { "cannot cross \(name): it positions itself; move it in iStat Menus instead" }
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
+    /// gdu.101: refusal for a drop (or step) in Visible next to an item whose position has not been refreshed.
+    public static let barNotFullyObserved = "The bar is not fully observed right now; try again in a moment."
 
     public enum Direction: Sendable { case left, right }
 
@@ -481,6 +493,20 @@ public enum ArrangeDrop {
     public static func index(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection, units: HideUnitRule = .ownerKeys) -> Int? {
         let unit = units.unit(of: key)
         let lifted = layout.keys(in: section).filter { units.unit(of: $0) != unit }
+        if section == .visible {
+            // gdu.101: resolve by NEIGHBOUR KEYS. The nearest fresh, non-boundary row left of the slot that the layout lists
+            // (the unit lifted out): insert right after it; else the nearest such row right of the slot: insert right before it.
+            // A ghost stands for its key at the layout slot (a legitimate neighbour); the REAL capsule of a ghosted key is skipped.
+            func usable(_ r: ArrangeRow) -> Int? {
+                if r.isBoundary || r.staleFrame || units.unit(of: r.key) == unit { return nil }
+                if !r.isGhost, rows.contains(where: { $0.key == r.key && $0.isGhost }) { return nil }
+                return lifted.firstIndex(of: r.key)
+            }
+            let at = min(max(0, slot), rows.count)
+            for j in stride(from: at - 1, through: 0, by: -1) { if let p = usable(rows[j]) { return clamp(p + 1, in: lifted, section: section) } }
+            for j in at..<rows.count { if let p = usable(rows[j]) { return clamp(p, in: lifted, section: section) } }
+            return nil
+        }
         var idx: Int?
         var s = max(0, slot)
         while s < rows.count {
@@ -525,11 +551,23 @@ public enum ArrangeDrop {
                        bar: bar, displayName: displayName, units: units)
     }
 
+    /// True when the immediate real row left or right of `slot` (ghosts, the boundary and the moving unit's rows ignored) is stale.
+    static func nextToStale(rows: [ArrangeRow], slot: Int, key: ItemKey, units: HideUnitRule) -> Bool {
+        let unit = units.unit(of: key)
+        func skip(_ r: ArrangeRow) -> Bool { r.isGhost || r.isBoundary || units.unit(of: r.key) == unit }
+        let at = min(max(0, slot), rows.count)
+        if let l = rows[..<at].last(where: { !skip($0) }), l.staleFrame { return true }
+        if let r = rows[at...].first(where: { !skip($0) }), r.staleFrame { return true }
+        return false
+    }
+
     /// Full drop: slot in the displayed strip -> outcome.
     public static func drop(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection,
                             capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
                             bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
                             units: HideUnitRule = .ownerKeys) -> Outcome {
+        // gdu.101: a drop in Visible next to a row whose position was not refreshed is translated against a bar we do not fully see.
+        if section == .visible, nextToStale(rows: rows, slot: slot, key: key, units: units) { return .rejected(barNotFullyObserved) }
         let idx = index(layout: layout, rows: rows, slot: slot, key: key, section: section, units: units)
         let boundary = rows.firstIndex { $0.isBoundary }
         let notFit = boundary.map { slot <= $0 } ?? false
@@ -551,6 +589,7 @@ public enum ArrangeDrop {
         for j in seq {
             let c = rows[j]
             guard !c.isAnchor, !c.isBoundary, !c.isGhost, units.unit(of: c.key) != unit, let p = lifted.firstIndex(of: c.key) else { continue }
+            if c.staleFrame { return .rejected(barNotFullyObserved) }
             let notFit = c.notFitting && dir == .left
             return outcome(layout: layout, key: key, to: .visible, index: dir == .left ? p : p + 1, capabilities: capabilities, willNotFit: notFit,
                            bar: bar, displayName: displayName, units: units)

@@ -200,6 +200,11 @@ final class ArrangeViewModel {
                                        observationAvailable: observationAvailable,
                                        bar: state.observed.onBar, displayName: displayName, units: units)
         AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot)")
+        // gdu.101: what the drop resolved against (the rows as displayed): nearest real rows left/right of the slot, the moving key skipped.
+        let at = min(max(0, slot), rows.count)
+        let left = rows[..<at].last { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key
+        let right = rows[at...].first { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key
+        AppLog.log(.arrange, "arrange: drop context: left=\(left.map { "\($0)" } ?? "none") right=\(right.map { "\($0)" } ?? "none") staleOnBar=\(state.observed.staleOnBar.count) settled=\(state.observationSettled)")
         return submit(outcome, key: key)
     }
 

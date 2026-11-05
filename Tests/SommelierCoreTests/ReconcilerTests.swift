@@ -133,16 +133,96 @@ struct ReconcilerTests {
         let p = rec.plan(observed: obs(["a", "b", "a"]), layout: lay(v: ["a", "b"]), capabilities: free)
         #expect(p.phase == .converged)
     }
-    @Test func staleExcluded() {
-        func r(_ n: String, x: CGFloat, stale: Bool = false, onBar: Bool = true, w: CGFloat = 24) -> ResolvedItem {
-            ResolvedItem(item: MenuBarItem(ownerPID: 1, ownerBundleID: "com.x", ownerName: "X", title: n, axDescription: "",
-                                           axIdentifier: "", frame: CGRect(x: x, y: 3, width: w, height: 24),
-                                           source: .appExtras, isOnMenuBar: onBar, stale: stale), key: k(n), confidence: .exact)
+    private func res(_ n: String, x: CGFloat, stale: Bool = false, onBar: Bool = true, w: CGFloat = 24) -> ResolvedItem {
+        ResolvedItem(item: MenuBarItem(ownerPID: 1, ownerBundleID: "com.x", ownerName: "X", title: n, axDescription: "",
+                                       axIdentifier: "", frame: CGRect(x: x, y: 3, width: w, height: 24),
+                                       source: .appExtras, isOnMenuBar: onBar, stale: stale), key: k(n), confidence: .exact)
+    }
+    /// gdu.101 (replaces the old exclusion rule): a stale ON-BAR item stays in the observed order, flagged and immovable; a stale PARKED
+    /// item and zero-width entries are still excluded.
+    @Test func staleOnBarKeptFlagged() {
+        let o = ObservedOrder(resolved: [res("b", x: 50), res("a", x: 10), res("s", x: 20, stale: true), res("p", x: 0, onBar: false),
+                                         res("sp", x: 0, stale: true, onBar: false), res("w", x: 0, onBar: false, w: 0)])
+        #expect(o.onBar == [k("a"), k("s"), k("b")] && o.parked == [k("p")])
+        #expect(o.staleOnBar == [k("s")])
+        #expect(o.uncorroborated == [k("a"), k("s"), k("b")])
+    }
+    @Test func staleOnBarIsNeverMoved() {
+        let o = ObservedOrder(onBar: [k("a"), k("s"), k("b")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
+        let l = Layout(visible: [k("s"), k("a"), k("b")], placed: [k("s")])
+        let p = rec.plan(observed: o, layout: l, capabilities: free, placed: l.placedSet)
+        #expect(p.actions.isEmpty)
+    }
+    @Test func staleOnBarHideIsSkipped() {
+        let o = ObservedOrder(onBar: [k("a"), k("s")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
+        let p = rec.plan(observed: o, layout: lay(v: ["a"], h: ["s"]), capabilities: free)
+        #expect(p.actions.isEmpty)
+        #expect(p.skipped.contains(SkippedAction(k("s"), Reconciler.staleSkipReason)))
+        #expect(Reconciler.staleSkipReason == "position not refreshed; waiting for a fresh read")
+    }
+    /// gdu.101 step 4: the placed key hangs on the nearest eligible key outward, never on a module or in the "alone" rule.
+    @Test func placedHangsOnNearestEligibleSkippingIneligible() {
+        let a = k("A"), x = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "x"), pp = k("P")
+        let cc = ItemKey.module(name: "ControlCenter"), clock = ItemKey.module(name: "Clock")
+        let o = ObservedOrder(onBar: [a, x, pp, cc, clock], parked: [])
+        let l = Layout(visible: [a, x, pp, cc, clock], placed: [pp])
+        // P observed at the far right of the movable span; the layout wants it after A (iStat X is an anchor between).
+        let t = Reconciler.placedTarget(base: [a, x, cc, clock], placed: [pp], anchors: [x, cc, clock], visible: l.visible, eligible: [a, pp])
+        #expect(t == [a, pp, x, cc, clock])
+    }
+    @Test func placedSkipsLeftModuleToRightEligible() {
+        let wifi = ItemKey.module(name: "WiFi"), x = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "x")
+        let b = k("B"), pp = k("P")
+        let t = Reconciler.placedTarget(base: [wifi, x, b], placed: [pp], anchors: [wifi, x], visible: [wifi, x, pp, b], eligible: [b, pp, wifi])
+        #expect(t == [wifi, x, pp, b])
+    }
+
+    // MARK: gdu.101 corrective pass
+    @Test func staleChevronAndStaleOverflowDoNotFeedOverflowState() {
+        func item(_ n: String, x: CGFloat, chevron: Bool = false, ovf: Bool = false, stale: Bool) -> ResolvedItem {
+            ResolvedItem(item: MenuBarItem(ownerPID: 1, ownerBundleID: "com.x", ownerName: "X", title: n, axDescription: "", axIdentifier: "",
+                                           frame: CGRect(x: x, y: 3, width: 24, height: 24), source: .appExtras, isOnMenuBar: true,
+                                           stale: stale, isOverflowChevron: chevron, systemOverflow: ovf), key: k(n), confidence: .exact)
         }
-        let o = ObservedOrder(resolved: [r("b", x: 50), r("a", x: 10), r("s", x: 20, stale: true), r("p", x: 0, onBar: false),
-                                         r("w", x: 0, onBar: false, w: 0)])
-        #expect(o.onBar == [k("a"), k("b")] && o.parked == [k("p")])
-        #expect(o.uncorroborated == [k("a"), k("b")])   // gdu.94: app-side frames with no join
+        let o = ObservedOrder(resolved: [item("chev", x: 0, chevron: true, stale: true), item("o", x: 10, ovf: true, stale: true), item("a", x: 50, stale: false)])
+        #expect(o.onBar == [k("chev"), k("o"), k("a")] && o.staleOnBar == [k("chev"), k("o")])
+        #expect(o.systemOverflow.isEmpty && o.overflowChevron == nil)
+        let f = ObservedOrder(resolved: [item("chev", x: 0, chevron: true, stale: false), item("o", x: 10, ovf: true, stale: false)])
+        #expect(f.overflowChevron == k("chev") && f.systemOverflow == [k("o")])
+    }
+    @Test func placedNeverHangsOnAStaleNeighbour() {
+        let a = k("A"), b = k("B"), pp = k("P")
+        let o = ObservedOrder(onBar: [a, b, pp], parked: [], uncorroborated: [a], staleOnBar: [a])
+        let l = Layout(visible: [a, b, pp], placed: [pp])
+        // P is layout-after B; move it before... put it in a place that needs a move: observed has P last, layout wants A, P, B.
+        let l2 = Layout(visible: [a, pp, b], placed: [pp])
+        let p = rec.plan(observed: o, layout: l2, capabilities: free, placed: l2.placedSet)
+        #expect(p.actions == [.move(pp, .before(b))])
+        _ = l
+    }
+    @Test func staleKeyDoesNotExtendTheSystemBlock() {
+        let x = k("X"), s = k("S"), pp = k("P"), cc = ItemKey.module(name: "CC"), clock = ItemKey.module(name: "Clock")
+        let o = ObservedOrder(onBar: [pp, x, s, cc, clock], parked: [], uncorroborated: [s], staleOnBar: [s])
+        let l = Layout(visible: [k("Q"), pp], placed: [pp])
+        let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }, placed: l.placedSet)
+        #expect(p.desiredOnBar == [x, s, pp, cc, clock])
+        let t = Reconciler.placedTarget(base: [x, s, cc, clock], placed: [pp], anchors: [cc, clock], visible: [k("Q"), pp], eligible: [pp])
+        #expect(t == [x, s, pp, cc, clock])
+    }
+    @Test func layoutModeIgnoresStaleAnchorOrder() {
+        let a = k("a"), s1 = k("s1"), s2 = k("s2")
+        let o = ObservedOrder(onBar: [s2, s1, a], parked: [], uncorroborated: [s1, s2], staleOnBar: [s1, s2])
+        let p = rec.plan(observed: o, layout: lay(v: ["s1", "s2", "a"]), capabilities: free)
+        #expect(!p.skipped.contains { $0.reason.contains("out of layout order") })
+        #expect(p.actions.isEmpty)
+    }
+    @Test func placedPrefersRightNeighbourWhenAModuleLiesBetween() {
+        let a = k("A"), b = k("B"), pp = k("P"), wifi = ItemKey.module(name: "WiFi")
+        let t = Reconciler.placedTarget(base: [a, wifi, b], placed: [pp], anchors: [wifi], visible: [a, wifi, pp, b], eligible: [a, b, pp])
+        #expect(t == [a, wifi, pp, b])
+        // no right eligible key: falls back to after A
+        let t2 = Reconciler.placedTarget(base: [a, wifi], placed: [pp], anchors: [wifi], visible: [a, wifi, pp], eligible: [a, pp])
+        #expect(t2 == [a, pp, wifi])
     }
 }
 
