@@ -11,6 +11,10 @@
 # can never be notarized; set ALLOW_ADHOC_DMG=1 to opt in for local testing
 # only (the app build then also needs ALLOW_ADHOC=1 when no identity exists).
 #
+# SKIP_APP_BUILD=1 packages the EXISTING dist/Sommelier.app without rebuilding
+# it (used by notarize-dmg.sh to rebuild the DMG around the stapled app; a
+# rebuild would discard the app's ticket). Never set it for a normal release.
+#
 # Idempotent; staging dir and any mount are cleaned via trap.
 
 set -euo pipefail
@@ -55,8 +59,12 @@ if [ -z "${CODESIGN_IDENTITY}" ]; then
 fi
 export CODESIGN_IDENTITY
 
-echo "==> Building ${APP_NAME}.app..."
-"${SCRIPT_DIR}/build-app.sh"
+if [ "${SKIP_APP_BUILD:-}" = "1" ]; then
+    echo "==> SKIP_APP_BUILD=1: packaging the existing ${APP_NAME}.app"
+else
+    echo "==> Building ${APP_NAME}.app..."
+    "${SCRIPT_DIR}/build-app.sh"
+fi
 
 if [ ! -d "${APP_BUNDLE}" ]; then
     echo "error: expected ${APP_BUNDLE} after build-app.sh, but it is missing" >&2

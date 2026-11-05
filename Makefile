@@ -1,4 +1,4 @@
-.PHONY: build test app run app-run probe dummy dummy-stop clean release notarize publish
+.PHONY: build test app run app-run probe dummy dummy-stop clean release notarize publish check-scripts
 
 APP := build/Sommelier.app
 DUMMY := build/MBDummy.app
@@ -63,7 +63,9 @@ clean:
 
 # Release pipeline (Developer ID, hardened runtime, notarized, stapled DMG). See CONTRIBUTING.md.
 # VERSION defaults to the VERSION file; override with `make release VERSION=x.y.z`.
+# A rebuild invalidates any previous notarization, so stale artefacts of it are removed first.
 release:
+	rm -f dist/notarize-submit.json dist/notarize-log-*.json dist/Sommelier-notarize.zip dist/*.dmg.sha256 dist/release-notes.md
 	scripts/make-dmg.sh
 	@v="$$(scripts/read-app-version.sh short)"; \
 	  echo "==> dist/Sommelier-$$v.dmg"; shasum -a 256 "dist/Sommelier-$$v.dmg"
@@ -75,3 +77,7 @@ notarize:
 publish:
 	@[ "$$CONFIRM_PUBLISH" = "1" ] || { echo "refusing: run CONFIRM_PUBLISH=1 make publish"; exit 1; }
 	scripts/publish-release.sh
+
+# Shell tests for the release scripts (no network, no signing).
+check-scripts:
+	scripts/tests/publish-checks.sh

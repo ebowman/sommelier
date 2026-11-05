@@ -29,9 +29,17 @@ keychain profile) or a gitignored `.env` with `API_KEY_ID` and `API_ISSUER_ID` p
 `~/.appstoreconnect/private_keys/AuthKey_<API_KEY_ID>.p8`. Never commit `.env`.
 
 1. Set the version in `VERSION` (or pass `VERSION=x.y.z`).
-2. `make release` : release build, `dist/Sommelier.app` signed (hardened runtime, timestamp, `Resources/Sommelier.entitlements`),
-   `dist/Sommelier-<version>.dmg` signed, SHA-256 printed. `ALLOW_ADHOC=1` / `ALLOW_ADHOC_DMG=1` give a local-only ad-hoc build that cannot be notarized.
-3. `make notarize` : submits with `notarytool --wait`, staples and validates on Accepted; on rejection the log is saved in `dist/` and the command fails.
+2. `make release` : first removes stale notarization artefacts from `dist/` (`notarize-submit.json`, logs, zip, sha256, notes), then builds a release
+   `dist/Sommelier.app` signed (hardened runtime, timestamp, `Resources/Sommelier.entitlements`) and `dist/Sommelier-<version>.dmg` signed, SHA-256 printed.
+   `ALLOW_ADHOC=1` / `ALLOW_ADHOC_DMG=1` give a local-only ad-hoc build that cannot be notarized.
+   CFBundleVersion is the commit count (`git rev-list --count HEAD`): commit everything BEFORE `make release`. Any later commit or rebuild
+   changes the build number and means `make release` + `make notarize` again.
+3. `make notarize` : makes TWO notarytool submissions, each waiting several minutes. First `dist/Sommelier.app` (zipped) is notarized and the ticket is stapled to
+   the app itself (so a copied app launched offline still has its ticket); then the DMG is rebuilt around that stapled app (`SKIP_APP_BUILD=1 scripts/make-dmg.sh`),
+   notarized and stapled. Resumable: an app that already passes `xcrun stapler validate` skips its submission, and a stapled DMG built from the stapled app is not resubmitted.
+   On rejection the log is saved in `dist/` and the command fails. Afterwards `xcrun stapler validate` passes for both the app and the DMG.
 4. Run the "Release smoke" section of docs/testing.md on the notarized build.
-5. `CONFIRM_PUBLISH=1 make publish` : creates the GitHub release `v<version>` with the DMG and its SHA-256. Operator only;
-   `scripts/publish-release.sh --dry-run` prints the command without creating anything.
+5. `CONFIRM_PUBLISH=1 make publish` : creates the GitHub release `v<version>` with the DMG and its SHA-256. Operator only. It refuses unless the tree has no tracked changes,
+   the app inside the DMG has CFBundleVersion == the current commit count and CFBundleShortVersionString == `VERSION`, the DMG is stapled and passes spctl, and the tag is new.
+   `scripts/publish-release.sh --dry-run` runs every check and prints the SHA-256, the tag and the `gh` command without creating anything.
+   Shell tests for these checks: `make check-scripts`.
