@@ -432,7 +432,11 @@ public actor ItemActivator {
     /// Closes the expanded strip with a click on the chevron (Escape does not close it, seen live). Returns a note when it is still
     /// open afterwards; nil when it is closed or was not open.
     private func collapseOverflow(chevronAt point: CGPoint, say: (String) -> Void) async -> String? {
-        guard let probe = await platform.overflowProbe(), probe.expanded else { return nil }
+        guard let probe = await platform.overflowProbe() else {
+            say("overflow: probe unavailable at collapse; strip state unknown")
+            return "overflowStripStateUnknown"
+        }
+        guard probe.expanded else { return nil }
         let at = probe.chevron.map { CGPoint(x: $0.midX, y: $0.midY) } ?? point
         for attempt in 1...2 {
             guard platform.click(at: at, button: .left) else { break }
@@ -463,7 +467,7 @@ public actor ItemActivator {
                               afterClose: () async -> String? = { nil }) async -> ActivationResult {
         let unit = t.key.hideUnit
         if platform.pressedMouseButtons() != 0 {
-            _ = await afterClose()
+            if let n = await afterClose() { say("note: \(n)") }
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             return .failed(.unavailable("a mouse button is pressed; click refused"))
         }
@@ -474,7 +478,7 @@ public actor ItemActivator {
         let clickMS = Int(platform.now().timeIntervalSince(t0) * 1000)
         guard posted else {
             platform.closeMonitor?.stop()
-            _ = await afterClose()
+            if let n = await afterClose() { say("note: \(n)") }
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             return .failed(.unavailable("could not post the click event"))
         }
@@ -518,7 +522,7 @@ public actor ItemActivator {
 
         if menuAppear == nil {
             platform.closeMonitor?.stop()
-            _ = await afterClose()
+            if let n = await afterClose() { say("note: \(n)") }
             if revealed, let tracked { _ = await rehide(tracked: tracked, unit: unit, say: say) }
             if Task.isCancelled { return .failed(.cancelled) }
             return .failed(requireMenu && pressError != 0 ? .pressFailed(pressError) : .noMenu)

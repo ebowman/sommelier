@@ -59,9 +59,20 @@ final class OverflowPanelController {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let r = await self.onActivate(key, button)
-            guard case .failed(let e) = r else { return }
-            NSLog("[Sommelier] overflow activation of %@ failed: %@", "\(key)", e.description)
-            self.feedback.model.fail(entry, message: e.description, in: listAtClick)
+            guard let caption = ActivationCaption.make(r) else { return }
+            if caption.severity == .neutral {
+                self.feedback.model.note(key, message: caption.text)
+                self.clearTasks[key]?.cancel()
+                self.clearTasks[key] = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(4))
+                    guard !Task.isCancelled, let self else { return }
+                    self.feedback.model.clear(key)
+                    self.clearTasks[key] = nil
+                }
+                return
+            }
+            NSLog("[Sommelier] overflow activation of %@ failed: %@", "\(key)", caption.text)
+            self.feedback.model.fail(entry, message: caption.text, in: listAtClick)
             if let screen { self.show(anchoredTo: anchor, on: screen) }
             self.clearTasks[key]?.cancel()
             self.clearTasks[key] = Task { @MainActor [weak self] in
@@ -286,7 +297,7 @@ struct OverflowBarView: View {
                 if i > 0, entries[i - 1].unit != e.unit || entries[i - 1].kind != e.kind { Divider().frame(height: 16) }
                 OverflowEntryView(entry: e, showName: showNames,
                                   together: e.unitSize > 1 ? entries.filter { $0.unit == e.unit }.map(\.displayName) : [],
-                                  error: feedback?.errors[e.key], onActivate: onActivate)
+                                  error: feedback?.errors[e.key], note: feedback?.model.notes[e.key], onActivate: onActivate)
             }
         }
     }
@@ -298,6 +309,7 @@ struct OverflowEntryView: View {
     /// Display names of every item hidden with this one (empty when the app has a single item).
     var together: [String] = []
     var error: String?
+    var note: String?
     var onActivate: (OverflowEntry, ClickButton) -> Void = { _, _ in }
     @State private var hovering = false
 
@@ -307,6 +319,8 @@ struct OverflowEntryView: View {
             // Tooltips never show on a non-activating panel: the failure text is drawn inline too.
             if let error {
                 Text(error).font(.system(size: 9)).foregroundStyle(.red).lineLimit(2).frame(maxWidth: 160)
+            } else if let note {
+                Text(note).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: 160)
             }
         }
     }

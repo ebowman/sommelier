@@ -89,9 +89,11 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
     var stripStuck = false
     var expanded = false
     var chevronClicks = 0
+    var probeNilWhenExpanded = false
     private var landedFrame: CGRect { expanded ? expandedFrame : (landing ?? barFrame) }
     func overflowProbe() async -> OverflowProbe? {
         guard probeOn else { return nil }
+        if probeNilWhenExpanded && expanded { return nil }
         return OverflowProbe(chevron: chevron, expanded: expanded, hosted: otherGroups + (landing.map { [$0] } ?? []))
     }
     func frame(of t: ActivationTarget) -> CGRect? {
@@ -724,6 +726,32 @@ extension FakeHold { fileprivate func setRefuse() { refuse = true } }
         guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
         #expect(o.note == "overflowStripStillExpanded")
         #expect(p.chevronClicks == 3)      // expand + two closing attempts
+    }
+
+    @Test func nilProbeAtCollapseIsLoggedAndNoted() async {
+        let p = fullBar(); p.probeNilWhenExpanded = true
+        let lines = LineBox()
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left, progress: { lines.add($0) }) else { Issue.record("no"); return }
+        #expect(o.note == "overflowStripStateUnknown")
+        #expect(lines.all.contains { $0.contains("overflow: probe unavailable at collapse; strip state unknown") })
+    }
+
+    @Test func noMenuPathKeepsTheAfterCloseNote() async {
+        let p = fullBar(); p.menuAfter = nil; p.stripStuck = true
+        let lines = LineBox()
+        let r = await make(p).activate(key: key, button: .left, progress: { lines.add($0) })
+        #expect(r == .failed(.noMenu))
+        #expect(lines.all.contains { $0.contains("note: overflowStripStillExpanded") })
+    }
+
+    @Test func captionsForNotesAreNeutralAndFailuresAreErrors() {
+        func opened(_ n: String?) -> ActivationResult { .opened(ActivationOpened(mechanism: .revealClick, latencyMS: 1, note: n)) }
+        #expect(ActivationCaption.make(opened(nil)) == nil)
+        #expect(ActivationCaption.make(opened("overflowStripStillExpanded"))?.text == "menu opened; overflow strip left expanded")
+        #expect(ActivationCaption.make(opened("menuStillOpenAtCap"))?.severity == .neutral)
+        #expect(ActivationCaption.make(opened("menuStillOpenAtCap,overflowStripStillExpanded"))?.text == "menu still open; menu opened; overflow strip left expanded")
+        #expect(ActivationCaption.make(opened("some failure text")) == nil)
+        #expect(ActivationCaption.make(.failed(.noMenu))?.severity == .error)
     }
 
     @Test func menuNeverOpeningStillCollapsesTheStripBeforeTheReHide() async {
