@@ -28,6 +28,14 @@ panel has no observed state. Relaunch it afterwards (`open -a "Bartender 7"`). A
 2. Close rules: click anywhere outside the panel; press Escape (closes the panel whenever it is open; the frontmost app is not activated); leave the union of
    panel and menu bar strip with the pointer for 400 ms; or stay idle for "Auto re-hide" seconds (0 = never).
    Clicking the Sommelier item again toggles it closed.
+   Synthetic clicks (gdu.62): `cliclick c:x,y` posts mouse-down and mouse-up with zero gap, and the status item (hosted by
+   MenuBarAgent) drops about 25-35% of them: the app then logs nothing, because neither the down nor the up reaches the
+   app (a temporary NSEvent monitor showed global down/up events but no local event and no `clicked()`); when a click does
+   arrive the local down comes ~50 ms after the global one and `clicked()` runs once, so the app-side action is not at fault.
+   Measured 2026-11-05 (Bartender quit, item centre 1000,14 from the logged item frame, toggles counted from `before show` /
+   `overflow hide` lines): cliclick 15/20 (2 s spacing), 13/20 (0.8 s); down-up gap 10 ms 16/20, 25 ms 17/20, 40 ms 20/20,
+   70 ms 39/40; after the final build 20/20 at 70 ms (10 open/close pairs, log toggles). A human click is held 60-150 ms, so real clicks are not affected; no app change. In tests click with a
+   gap of at least 70 ms (CGEvent down, sleep 0.07, up) or accept cliclick misses and re-click after checking the log.
    gdu.37: any mouse-down outside the panel closes it, including another app's menu bar item (only the Sommelier item
    itself is exempt and toggles). The panel takes keyboard focus while open (key window, `makeKeyAndOrderFront`), a
    local plus a global keyDown monitor close it on Escape only while it is visible; `cliclick kp:esc` is not delivered
@@ -74,7 +82,7 @@ Procedure: `./ccset ie.boboco.mbdummy 0`, then `mbprobe list --json` in a loop e
 | Step | Observation |
 |---|---|
 | write `isAllowed=0` (ccset call itself) | 12-15 ms |
-| hide: write -> first complete scan reporting both dummies `notHosted` | implementer runs +0.95 s, +1.14 s; reviewer runs +1.59 s, +3.07 s, +4.13 s (range 0.95-4.13 s). One reviewer first scan (+2.54 s) was incomplete (16 failed reads) and reported on-bar. |
+| hide: write -> first complete scan reporting both dummies `notHosted` | implementer runs +0.95 s, +1.14 s; reviewer runs +1.59 s, +3.07 s, +4.13 s (range 0.95-4.13 s; docs/findings-live-trigger.md rounds this to 1.0-4.1 s). One reviewer first scan (+2.54 s) was incomplete (16 failed reads) and reported on-bar. |
 | hide, following scans | stay `notHosted` (sticky rule; before it, one incomplete scan flipped back to on-bar) |
 | show (`ccset ... 1`) -> first scan reporting both on-bar | implementer +1.5 s; reviewer +1.11, +1.65, +1.90 s |
 | non-dummy on-bar order, before vs during hide vs after show | identical (18 items; only the "64%" -> "65%" readout title changed) |
@@ -104,7 +112,7 @@ Do NOT restore a dummy to "visible" in a scratch layout by `layout move ... visi
 drags real (iStat) items. Restore from a copy taken while the dummies were visible. Results 2026-11-04: hide/show live 0.6-5.1 s (not a ceiling: 7.2 s was seen later), 40 ops (20 cycles), agent pid constant (implementer soak 40/40 live; the reviewer's run was 4/6 live under the old 6 s wall bound because of incomplete-read streaks),
 non-dummy on-bar order identical; engine apply hide 0.71 s / show 0.63 s actuation (5.6 / 6.5 s wall); unentitled copy: respawn path, both verified, no stray plist.
 
-Poll bound (after the reviewer's finding): full scans every 0.5 s; the FIRST complete read decides, an unsatisfied complete read gets one more complete read, hard ceiling 8 scans / 20 s. The respawn fallback should now occur only when no complete read arrives within that ceiling (or two complete reads disagree). The trace states scans taken, complete count and the ending rule.
+Poll bound (after the reviewer's finding): full scans every 0.5 s; the FIRST complete read decides, an unsatisfied complete read gets one more complete read, hard ceiling 8 scans / 20 s. The respawn fallback should now occur only when no complete read arrives within that ceiling (or a second complete read is still unsatisfied). The trace states scans taken, complete count and the ending rule.
 
 ## Layout import mirrors the bar
 

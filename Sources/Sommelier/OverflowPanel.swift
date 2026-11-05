@@ -83,6 +83,11 @@ final class OverflowPanelController {
     }
 
     func show(anchoredTo itemFrame: CGRect, on screen: NSScreen) {
+        if isVisible {   // already open (e.g. activation failed while the user reopened it): re-place only, keep the one set of monitors
+            self.anchor = itemFrame; self.screen = screen
+            place()
+            return
+        }
         self.anchor = itemFrame
         self.screen = screen
         placeCount = 0
