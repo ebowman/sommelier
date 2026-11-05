@@ -157,10 +157,8 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public func resolve(_ snapshot: MenuBarSnapshot) -> [ResolvedItem] { resolver.resolve(snapshot: snapshot) }
 
     public func trackedKey(for item: ResolvedItem) -> String? {
-        guard let entries = try? ControlCenterTrackedAppsStore().entries() else { return nil }
-        let keys = Set(entries.map(\.key))
-        for c in [item.item.ownerBundleID, item.ownerKey].compactMap({ $0 }) where keys.contains(c) { return c }
-        return nil
+        guard let resolver = TrackedEntryResolver.current() else { return nil }
+        return resolver.trackedKey(candidates: [item.item.ownerBundleID, item.ownerKey].compactMap { $0 })
     }
 
     public func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {

@@ -124,7 +124,7 @@ final class ArrangeViewModel {
     private func refreshCapabilities(force: Bool = false) {
         guard force || state.passCount != capPass || state.items.count != capItems else { return }
         capPass = state.passCount; capItems = state.items.count
-        capabilities = ArrangeCapabilities.rules(items: state.items, tracked: EngineFactory.currentTrackedSet())
+        capabilities = ArrangeCapabilities.rules(items: state.items, resolver: EngineFactory.currentTrackedResolver())
     }
 
     private func tick() {

@@ -58,8 +58,11 @@ public enum EngineFactory {
 
     /// Same rules, with the owning bundle id supplied by `bundleID` (the Arrange window reads it from `EngineState.items`).
     public static func makeCapabilityRules(bundleID: @escaping @Sendable (ItemKey) -> String?) -> CapabilityRules {
-        makeCapabilityRules(tracked: currentTrackedSet(), bundleID: bundleID)
+        makeCapabilityRules(resolver: currentTrackedResolver(), bundleID: bundleID)
     }
+
+    /// The Control Center tracked entries as stored now, as a resolver (`nil` = unreadable). Helper keys resolve to the parent entry.
+    public static func currentTrackedResolver() -> TrackedEntryResolver? { TrackedEntryResolver.current() }
 
     /// The Control Center tracked owner keys as stored now (`nil` = unreadable).
     public static func currentTrackedSet() -> Set<String>? {
@@ -67,10 +70,15 @@ public enum EngineFactory {
     }
 
     public static func makeCapabilityRules(tracked: Set<String>?, bundleID: @escaping @Sendable (ItemKey) -> String?) -> CapabilityRules {
+        makeCapabilityRules(resolver: tracked.map { TrackedEntryResolver(keys: $0) }, bundleID: bundleID)
+    }
+
+    /// Hideable = the owner has an entry, or is listed in a parent's entry (gdu.68); heuristic keys use their bundle id.
+    /// A nil resolver (unreadable store) is optimistic, as before.
+    public static func makeCapabilityRules(resolver: TrackedEntryResolver?, bundleID: @escaping @Sendable (ItemKey) -> String?) -> CapabilityRules {
         CapabilityRules(hasTrackedEntry: { key in
-            guard let tracked else { return true }
-            if case .status(let owner, _) = key { return tracked.contains(owner) || (bundleID(key).map(tracked.contains) ?? false) }
-            return false
+            guard let resolver else { return true }
+            return resolver.trackedKey(for: key, bundleID: bundleID(key)) != nil
         })
     }
 

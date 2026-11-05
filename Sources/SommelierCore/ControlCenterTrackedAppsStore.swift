@@ -15,7 +15,7 @@ public struct ControlCenterTrackedAppsStore {
             .appendingPathComponent("Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist")
     }
 
-    public struct Entry: Equatable {
+    public struct Entry: Equatable, Sendable {
         public var key: String       // bundle id, or the "relative" URL for adhocBinary locations
         public var isAllowed: Bool
         public var menuItemKeys: [String]

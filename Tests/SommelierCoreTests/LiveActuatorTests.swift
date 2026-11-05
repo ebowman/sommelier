@@ -623,6 +623,17 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     #expect(w.order == ["A"])
 }
 
+// gdu.68: a helper resolved to its parent entry shares the parent's flag.
+@Test func helperAndParentSiblingsHideThroughOneFlag() async {
+    // Actuator side: a helper and its parent's own item share one tracked key: one write, both verified.
+    let w = World(["A", "Helper", "Parent"])
+    w.shared = ["Helper": "tracked.Parent", "Parent": "tracked.Parent"]
+    let out = await actuator(w).applyHiddenBatchDetailed([key("Helper"): true])
+    #expect(out.result.isVerified)
+    #expect(Set(out.perKey.keys) == [key("Helper"), key("Parent")])
+    #expect(w.allowedWrites == [["tracked.Parent": false]])
+}
+
 @Test func batchRejectsConflictingRequestsForOneApp() async {
     let w = World(["A", "B"])
     w.shared = ["A": "tracked.AB", "B": "tracked.AB"]

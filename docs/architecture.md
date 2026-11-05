@@ -548,3 +548,11 @@ Debug: `SOMMELIER_ACTIVATE="<storeKey>[|right]"` (3 s after launch, result in `b
 
 ## Spacing (gdu.20)
 `SpacingSettings` (Core) reads/writes `NSStatusItemSpacing` and `NSStatusItemSelectionPadding` in the global domain, current user, current host (same store as `defaults -currentHost write -globalDomain`), clamped to 0...24, behind an injectable backend for tests. Measured on macOS 27: a change applies to each app when it relaunches, not to running apps, and no MenuBarAgent restart is needed (details in `docs/findings-spacing.md`). The Settings Spacing tab writes on slider release, offers "Reset to system default" (removes both keys) and never restarts the agent itself (gdu.55). `mbprobe spacing get|set|reset` is the CLI surface.
+
+### Tracked entry resolution (gdu.68)
+Helper processes (Hazel Helper, HoudahSpot Helper, Fantastical Helper, Keyboard Maestro Engine, Little Snitch Agent) have no Control Center entry of their own;
+they are listed in their parent app's `menuItemLocations`, and the parent's `isAllowed` adds/removes the helper's hosted element (docs/testing.md "Helper keys hide through the parent entry").
+`TrackedEntryResolver` maps an item's owner key / bundle id / heuristic bundle id to the governing entry: an own entry wins, else the single non-Apple entry that lists the id
+(ambiguous = none). `CapabilityRules` (via `EngineFactory.makeCapabilityRules(resolver:)`) and `ActuatorPlatform.trackedKey(for:)` share it, so the planner and the actuator agree and the
+actuator's per-entry grouping (one write, all members verified, conflicting requests refused) covers helper + parent. Not done: `ItemKey.hideUnit` is still the owner key, so Layout/Reconciler/Arrange do not yet
+treat a helper and its parent's own item as ONE unit (the actuator refuses a batch that asks them to differ). Untracked non-Apple apps (no entry anywhere) remain unhideable: the gdu.24 entry-creation recipe is not built.

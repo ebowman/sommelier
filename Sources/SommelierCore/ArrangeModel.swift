@@ -361,6 +361,12 @@ public enum ArrangeCapabilities {
         return EngineFactory.makeCapabilityRules(tracked: tracked, bundleID: { ids[$0] })
     }
 
+    /// Same, with the resolver (helper keys listed in a parent's entry are hideable through it, gdu.68).
+    public static func rules(items: [ItemKey: ItemInfo], resolver: TrackedEntryResolver?) -> CapabilityRules {
+        let ids = items.compactMapValues(\.ownerBundleID)
+        return EngineFactory.makeCapabilityRules(resolver: resolver, bundleID: { ids[$0] })
+    }
+
     /// Capability only from the engine's own data: a key without `ItemInfo` (no observation yet, or the app is not running)
     /// is UNKNOWN, so everything is allowed and the engine decides (the capsule shows "⟳" until it reports). Modules are
     /// anchors by kind. Known items get the real `CapabilityRules` answer (with the owning bundle id from `ItemInfo`).

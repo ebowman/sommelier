@@ -520,3 +520,19 @@ with "cannot be shown: not tracked by Control Center" and 13 shows for the track
 comparison: `com.apple.controlcenter.plist` byte-equal, `trackedApplications` equal after restoring MBDummy `isAllowed`, `com.apple.MenuBarAgent.plist` unchanged, real layout.json/slot-hints.json sha unchanged. `make test`: 640 tests.
 
 Activation captions (gdu.70): a successful overflow activation with a note (`overflowStripStillExpanded`, `menuStillOpenAtCap`, `overflowStripStateUnknown`) shows a short neutral grey caption under the entry for 4 s; unit-tested via `ActivationCaption.make`; the panel rendering itself is not live-verified.
+
+## Helper keys hide through the parent entry (gdu.68)
+
+Live 2026-11-05 (Bartender 7 quit, MenuBarAgent pid 21399 constant, both plists backed up). The "untracked" parked items are helper processes listed in the `menuItemLocations` of a parent app's entry (`mbprobe cc-allowed list` prints them as `items=[...]`):
+| item key | Control Center entry that governs it | isAllowed |
+|---|---|---|
+| `85C27NK92C.com.flexibits.fantastical2.mac.helper` | `com.flexibits.fantastical2.mac` | 0 |
+| `86Z3GCJ4MF.com.noodlesoft.HazelHelper` | `com.noodlesoft.Hazel` | 0 |
+| `com.houdah.HoudahSpot4.HoudahSpotHelper` | `com.houdah.HoudahSpot4` | 0 |
+| `com.stairways.keyboardmaestro.engine` | `com.stairways.keyboardmaestro.editor` | 0 |
+| `at.obdev.littlesnitch.agent` | `at.obdev.littlesnitch` | 0 |
+| `heuristic:com.robinlu.mac.Tooth-Fairy` | own entry `com.robinlu.mac.Tooth-Fairy` (the heuristic key was wrongly treated as untracked) | 0 |
+| `com.apple.ScriptMenuApp` | own Apple entry, refused (Apple apps are managed only in System Settings > Menu Bar) | 0 |
+
+One-helper live test (HoudahSpot, the only key touched): `mbprobe cc-allowed set com.houdah.HoudahSpot4 1 --live` (before: 0, hosted element count `mbprobe overflow` = 23, helper frame parked x=2) -> within 3 s hosted=24 and the helper item is on the bar (x 798, in the system overflow stack); `... 0 --live` -> hosted=23 again within 3 s, readback 0 (cycle run twice: the first time without the hosted count). So the parent entry IS the hide unit of its helpers. Caveat: after the cycle the helper's own AX frame stays at the stacked position (x 798) instead of returning to the parked x=2 until the helper relaunches, so `mbprobe list` shows it `overflow`/on-bar although it is hidden (same stale-frame behaviour as the dummies; detection by "seen hosted" needs a hosting history that a helper in the overflow stack never gets). Restored to the original value.
+`TrackedEntryResolver` (SommelierCore) is the single mapping used by `CapabilityRules` (planner/Arrange) and `ActuatorPlatform.trackedKey` (actuator): own entry first, else the single non-Apple entry listing the id, ambiguous -> none. `mbprobe plan --show-hidden` against the real layout (read-only) went from 14 skipped to 1 untracked (Script Menu) plus the overflow ones; hide/show of the dummies still `MECHANISM live` (1022 ms / 2803 ms). `make test`: 659 tests. End state: dummies stopped, Sommelier never started, Bartender 7 relaunched, `trackedApplications` decoded-equal to the backup (76 entries), `com.apple.controlcenter.plist` byte-equal, real layout.json untouched.
