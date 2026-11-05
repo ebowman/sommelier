@@ -362,6 +362,137 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == "Converged")
     }
 
+    // gdu.60: the e7t confirm pass of a steady disagreement is free; flappers stay capped.
+    private let fSig = base + [it("C", x: 300)]
+    private func real(_ n: String) -> [MenuBarItem] { fSig + [it(n, x: 340)] }
+    /// One poll per step (detecting + confirming scan read the same bar); returns the times (s) at which a pass was requested.
+    private func seq(_ r: Rig, _ steps: [([MenuBarItem], TimeInterval)], pass: Bool = true) async -> [Double] {
+        var serial = 0, t = 0.0
+        var times: [Double] = []
+        for (items, adv) in steps {
+            serial += 1
+            r.scans.set([items, items])
+            if pass { passPublishes(r, base, serial: serial) }
+            let before = r.fired.count
+            await r.triggers.poll()
+            if r.fired.count > before { times.append(t) }
+            r.clock.advance(adv); t += adv
+        }
+        return times
+    }
+    private func suppressions(_ r: Rig) -> [String] { r.fired.logs.filter { $0.hasPrefix("poll: suppressed") } }
+    private func alternate(_ states: [[MenuBarItem]], every: TimeInterval, for total: TimeInterval) -> [([MenuBarItem], TimeInterval)] {
+        (0..<Int(total / every)).map { (states[$0 % states.count], every) }
+    }
+    private var flapA: [MenuBarItem] { base + [it("C", x: 300)] }
+    private var flapB: [MenuBarItem] { base + [it("D", x: 300)] }
+
+    @Test func confirmPassesOfSteadyDisagreementAreFree() async {
+        // (i) the reviewer's sequence: F steady, then three real changes, each followed by its confirm pass.
+        let r = await rig()
+        let t = await seq(r, [(fSig, 120), (real("X"), 10), (fSig, 10), (real("Y"), 10), (fSig, 31), (real("Z"), 10), (fSig, 10)])
+        #expect(t.count == 7)
+        #expect(suppressions(r).isEmpty && !r.fired.logs.contains { $0.contains("flapping") } && r.reports.all.isEmpty)
+    }
+
+    @Test func steadyDisagreementAfterAnEarlierRealChangeIsNotCapped() async {
+        // (ii)
+        let r = await rig()
+        r.scans.set([base + [it("Q", x: 300)], base + [it("Q", x: 300)]]); await r.triggers.poll()
+        r.clock.advance(200)
+        let t = await seq(r, [(fSig, 120), (real("D"), 10), (fSig, 10), (real("E"), 10), (fSig, 10)])
+        #expect(t.count == 5)
+        #expect(suppressions(r).isEmpty && r.reports.all.isEmpty)
+    }
+
+    @Test func twoRealChangesFiveSecondsApartThenTheConfirmAreBothAppliedAndNotFlapping() async {
+        // (vi): the confirm is still free after two changes (the second must not reset the pre-change signature).
+        let r = await rig()
+        let t = await seq(r, [(fSig, 120), (real("X"), 5), (real("Y"), 10), (fSig, 10), (fSig, 10)])
+        #expect(t == [0, 120, 125, 135])
+        #expect(suppressions(r).isEmpty && !r.fired.logs.contains { $0.contains("flapping") } && r.reports.all.isEmpty)
+    }
+
+    @Test func aReturnAfterAnotherPassIsNotFree() async {
+        // F steady, X (pre F), W 70 s later (X was steady for a minute, so W's pre is X), then F: not a confirm, so counted.
+        let r = await rig()
+        let t = await seq(r, [(fSig, 120), (real("X"), 70), (real("W"), 10), (fSig, 10), (real("V"), 10)])
+        #expect(t == [0, 120, 190, 200])          // V would be the third counted pass in a minute (W, F, V)
+        #expect(suppressions(r).count == 1)
+    }
+
+    @Test(arguments: [10.0, 15, 20, 25, 29]) func twoStateFlapperFromFreshIsSuppressedAfterTwoPasses(_ every: TimeInterval) async {
+        // (iii) from fresh, and again once its 300 s window has ended (polling continues through the window, as live).
+        let r = await rig()
+        let t = await seq(r, alternate([flapA, flapB], every: every, for: 640), pass: false)
+        #expect(t.filter { $0 < 200 }.count == 2)
+        #expect(t.filter { $0 >= 300 }.count == 2)
+        #expect(t.count == 4 && suppressions(r).count == 2)
+        #expect(suppressions(r)[0].contains("status:C::C") && suppressions(r)[0].contains("status:D::D"))
+        #expect(r.reports.all.first??.keys.count == 2)
+        #expect(r.fired.logs.filter { $0.contains("suppressed") }.count == 2)   // logged once per window
+    }
+
+    @Test(arguments: [10.0, 15, 20, 29]) func flapperWhoseStateTriggeredAMinuteEarlierRunsAtMostThreePasses(_ every: TimeInterval) async {
+        // (iii) trade-off: the state that had been steady for >= 60 s earns one free confirm, so up to 3 passes.
+        let r = await rig()
+        _ = await seq(r, [(flapB, 200)], pass: false)
+        let t = await seq(r, alternate([flapA, flapB], every: every, for: 640), pass: false)
+        #expect(t.filter { $0 < 200 }.count <= 3 && t.filter { $0 < 200 }.count >= 2)
+        #expect(t.filter { $0 >= 300 }.count == 2)   // afterwards it is a plain flapper again
+        #expect(suppressions(r).count == 2)
+    }
+
+    @Test func threeStateAndIrregularCyclesAreSuppressedWithinAMinute() async {
+        // (iv)
+        let a = base + [it("A1", x: 300)], b = base + [it("B1", x: 300)], c = base + [it("C1", x: 300)]
+        for every in [10.0, 15, 20] {
+            let r = await rig()
+            let t = await seq(r, alternate([a, b, c], every: every, for: 120), pass: false)
+            #expect(t.count <= 3 && (t.last ?? 0) < 60 && suppressions(r).count >= 1)
+        }
+        let r = await rig()
+        let t = await seq(r, [(a, 30), (b, 30), (a, 10), (c, 20), (b, 30), (a, 10), (c, 20), (b, 30), (a, 10), (c, 20)], pass: false)
+        #expect(t.count <= 3 && suppressions(r).count == 1)
+    }
+
+    @Test(arguments: [31.0, 40, 59]) func slowTwoStateFlapperIsNotSuppressedButStaysUnderTwoPassesPerMinute(_ every: TimeInterval) async {
+        // (v) documented acceptable: a period >= 31 s never reaches the cap, and runs at most 2 passes in any minute.
+        let r = await rig()
+        let t = await seq(r, alternate([flapA, flapB], every: every, for: 600), pass: false)
+        #expect(suppressions(r).isEmpty)
+        for x in t { #expect(t.filter { $0 >= x && $0 < x + 60 }.count <= 2) }
+    }
+
+    private func value(order: [String], parked: [String] = []) -> BarSignature.Value {
+        BarSignature.Value(order: order, presence: [], parked: parked, staleParked: [])
+    }
+
+    @Test func flappingKeysSingleLongMoveListsOnlyThatItem() {
+        let a = value(order: ["a", "b", "c", "d", "e", "f"]), b = value(order: ["b", "c", "d", "e", "f", "a"])
+        #expect(EngineTriggers.flappingKeys(a, b) == ["a"])
+    }
+
+    @Test func flappingKeysOrderToParkedListsThatKey() {
+        let a = value(order: ["a", "b", "c"]), b = value(order: ["a", "c"], parked: ["b"])
+        #expect(EngineTriggers.flappingKeys(a, b) == ["b"])
+    }
+
+    @Test func flappingKeysSwapListsBoth() {
+        let a = value(order: ["a", "b", "c", "d"]), b = value(order: ["a", "c", "b", "d"])
+        #expect(EngineTriggers.flappingKeys(a, b).count == 1)   // one of the two left the longest common order (deterministic: "b")
+        #expect(EngineTriggers.flappingKeys(a, a).isEmpty)
+    }
+
+    @Test func expiredSuppressionIsNotShown() {
+        let key = ItemKey.status(ownerKey: "Foo", autosaveName: "Foo")
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let live = PollSuppression(until: now.addingTimeInterval(5), keys: [key])
+        #expect(ArrangeSections.pollPausedNames(suppression: live, items: [:], now: now) != nil)
+        #expect(ArrangeSections.pollPausedNames(suppression: live, items: [:], now: now.addingTimeInterval(5)) == nil)
+        #expect(ArrangeSections.pollPausedNames(suppression: nil, items: [:], now: now) == nil)
+    }
+
     @Test func flappingKeysAreTheSymmetricDifference() {
         let s = BarSignature(selfPositioningOwners: [])
         let a = s.value([ResolvedItem(item: it("A", x: 1), key: .status(ownerKey: "A", autosaveName: "A"), confidence: .inferred),
@@ -461,3 +592,5 @@ private final class FakeApps: RunningAppsSource {
         #expect(hits.count == 2)
     }
 }
+
+

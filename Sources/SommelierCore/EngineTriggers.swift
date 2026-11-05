@@ -93,10 +93,20 @@ public final class EngineTriggers {
     private var lastTriggered: BarSignature.Value?
     /// Poll-trigger timestamps (sliding minute) and the active suppression window (gdu.58).
     private var triggerTimes: [Date] = []
+    /// Free-confirm bookkeeping (gdu.60): the signature that was steady (read unchanged for at least a minute) before the latest
+    /// counted change, and whether that change's single free "confirm" (the return to it) is still unused.
+    private var preChange: BarSignature.Value?
+    private var confirmFree = false
+    /// The latest pass was a free confirm (so `preChange` is steady again), and the signature of the latest counted change.
+    private var lastWasConfirm = false
+    private var lastCounted: BarSignature.Value?
     private var suppressedUntil: Date?
     /// The last scan signature and the most recent one that differed from it (the flapping pair).
     private var lastSeen: BarSignature.Value?
     private var priorDifferent: BarSignature.Value?
+    /// When `lastSeen` first appeared, and how long `priorDifferent` had been the reading before `lastSeen` replaced it.
+    private var seenSince = Date.distantPast
+    private var priorHeld: TimeInterval = 0
     private(set) var polls = 0
     private(set) var triggered = 0
 
@@ -236,7 +246,8 @@ public final class EngineTriggers {
         let g = await gate()
         if let why = skipReason(g) { log("poll skipped: \(why)"); return }
         guard let sig = await scanSignature() else { return }
-        if let l = lastSeen, l != sig { priorDifferent = l }
+        if let l = lastSeen, l != sig { priorDifferent = l; priorHeld = now().timeIntervalSince(seenSince); seenSince = now() }
+        else if lastSeen == nil { seenSince = now() }
         lastSeen = sig
         // Suppression window (gdu.58): keep scanning (the pair above stays current), trigger nothing. A genuine single change
         // during the window is therefore also left to the next launch/quit trigger or user action, or to the first poll after it.
@@ -271,14 +282,35 @@ public final class EngineTriggers {
         if sig == lastTriggered { baseline = sig; baselineSerial = g.engineSignatureSerial; log("poll change unchanged by the previous pass; not repeating: \(what)"); return }
         let t = now()
         triggerTimes.removeAll { t.timeIntervalSince($0) >= 60 }
-        if triggerTimes.count >= config.maxPollPassesPerMinute {
-            let keys = Self.flappingKeys(sig, priorDifferent ?? base)
-            suppressedUntil = t.addingTimeInterval(config.suppressFor)
-            log("poll: suppressed for \(Int(config.suppressFor / 60)) min — flapping keys: \(keys.joined(separator: ", "))")
-            await report(PollSuppression(until: suppressedUntil!, keys: keys.compactMap { ItemKey(storeKey: $0) }))
-            return
+        // A return to the signature that was steady before the last counted change is that change's confirm pass (a steady
+        // fast/full-scan disagreement costs it once per real change): triggered, not counted, once.
+        let isConfirm = confirmFree && preChange == sig
+        if isConfirm {
+            confirmFree = false; lastWasConfirm = true
+        } else {
+            if triggerTimes.count >= config.maxPollPassesPerMinute {
+                let keys = Self.flappingKeys(sig, priorDifferent ?? base)
+                suppressedUntil = t.addingTimeInterval(config.suppressFor)
+                log("poll: suppressed for \(Int(config.suppressFor / 60)) min — flapping keys: \(keys.joined(separator: ", "))")
+                await report(PollSuppression(until: suppressedUntil!, keys: keys.compactMap { ItemKey(storeKey: $0) }))
+                return
+            }
+            // Pre-change signature of this counted change: kept while the previous counted change (still in the window) has its
+            // confirm unused, and after that change's confirm restored it; otherwise the reading just before this change, if it
+            // had been steady for a minute. A change identical to the previous counted one within the window (a flapper, not a
+            // new real change) gets no free confirm.
+            if confirmFree && !triggerTimes.isEmpty {
+                // keep preChange
+            } else if lastWasConfirm, preChange != nil, priorDifferent == preChange {
+                // the confirm restored it
+            } else if let p = priorDifferent, p != sig, priorHeld >= 60 { preChange = p } else { preChange = nil }
+            let repeats = !triggerTimes.isEmpty && lastCounted == sig
+            if repeats { preChange = nil }
+            confirmFree = preChange != nil
+            lastWasConfirm = false; lastCounted = sig
+            if repeats { triggerTimes.append(t) }   // oscillation evidence: the repeat takes two slots of the cap
+            triggerTimes.append(t)
         }
-        triggerTimes.append(t)
         lastTriggered = sig
         triggered += 1
         // The pass will publish a newer engine signature; until then do not re-trigger for the same bar.
@@ -287,11 +319,15 @@ public final class EngineTriggers {
         await trigger()
     }
 
-    /// Symmetric difference of the identified keys of two signatures; for a pure reorder, the keys whose position differs.
+    /// The minimal set of keys whose membership (on the bar / parked / present at all) or relative position differs between two
+    /// signatures (gdu.60): a key whose class changed, plus the common on-bar keys that left the longest common order
+    /// (`OrderDiff`: a single item moved far lists only that item, an adjacent swap lists both, shifted neighbours are never listed).
     static func flappingKeys(_ a: BarSignature.Value, _ b: BarSignature.Value) -> [String] {
-        func set(_ v: BarSignature.Value) -> Set<String> { Set(v.order).union(v.presence).union(v.parked) }
-        var d = set(a).symmetricDifference(set(b))
-        if d.isEmpty { for (i, k) in a.order.enumerated() where i >= b.order.count || b.order[i] != k { d.insert(k) } }
+        func cls(_ v: BarSignature.Value, _ k: String) -> Int { v.order.contains(k) ? 1 : v.parked.contains(k) ? 2 : 0 }
+        var d = Set(a.presence).symmetricDifference(b.presence)
+        for k in Set(a.order).union(a.parked).union(b.order).union(b.parked) where cls(a, k) != cls(b, k) { d.insert(k) }
+        let common = Set(a.order).intersection(b.order)
+        d.formUnion(OrderDiff.changedKeys(a.order.filter(common.contains), b.order.filter(common.contains)))
         return d.sorted()
     }
 }
