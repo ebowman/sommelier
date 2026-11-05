@@ -82,7 +82,13 @@ final class ArrangeViewModel {
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.newItemNotice)
+                                   observationSettled: state.observationSettled, notice: state.newItemNotice,
+                                   pollPausedNames: pollPausedNames)
+    }
+    /// Display names of the items whose flapping paused the poll, nil when it is not paused (gdu.58).
+    private var pollPausedNames: [String]? {
+        guard let s = state.pollSuppression, s.until > Date() else { return nil }
+        return s.keys.map { k in state.items[k].map { $0.ownerName } ?? "\(k)" }
     }
     var isPaused: Bool { model.isPaused }
     /// Capability only from the engine's own data; a key without `ItemInfo` is unknown, hence allowed (engine decides).

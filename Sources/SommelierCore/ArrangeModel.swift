@@ -281,10 +281,14 @@ public enum ArrangeSections {
         return out
     }
 
+    static func pollPausedText(_ names: [String]) -> String {
+        "Poll paused 5 min: \(names.isEmpty ? "an item" : names.joined(separator: ", ")) flapping"
+    }
+
     /// Bottom line: errors and counts first, "Converged" only when nothing is pending or failed.
     public static func statusLine(perItem: [ItemKey: ItemStatus], lastError: EngineError?, isConverged: Bool, inFlight: Bool,
                                   pendingAwaiting: Int = 0, observationSettled: Bool = true,
-                                  notice: String? = nil) -> String {
+                                  notice: String? = nil, pollPausedNames: [String]? = nil) -> String {
         let pending = perItem.values.filter { if case .pending = $0 { return true }; if case .moving = $0 { return true }; return false }.count
         let failed = perItem.values.filter { if case .failed = $0 { return true }; return false }.count
         let base = StatusLine.text(lastError: lastError, isConverged: isConverged, inFlight: inFlight, trusted: true, conflicting: nil,
@@ -294,8 +298,13 @@ public enum ArrangeSections {
         let n = max(pending, pendingAwaiting)
         if n > 0 { parts.append("\(n) pending") }
         if failed > 0 { parts.append("\(failed) failed") }
-        if parts.isEmpty { return notice.map { "\($0) · \(base)" } ?? base }
+        if parts.isEmpty {
+            var line = notice.map { "\($0) · \(base)" } ?? base
+            if let n = pollPausedNames { line += " · " + pollPausedText(n) }
+            return line
+        }
         if let notice { parts.insert(notice, at: 0) }
+        if let n = pollPausedNames { parts.append(pollPausedText(n)) }
         return parts.joined(separator: " · ")
     }
 }

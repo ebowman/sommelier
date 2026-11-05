@@ -16,6 +16,11 @@ public struct PollConfig: Sendable {
     public var confirmDelay: TimeInterval = 1
     /// No poll pass within this many seconds of a user-initiated request.
     public var userQuietPeriod: TimeInterval = 5
+    /// Cap on poll-triggered passes within any sliding minute (gdu.58): an unexempted two-state flapper would otherwise trigger
+    /// a pass every 10-20 s. Launch/quit triggers and user actions are not counted and not limited.
+    public var maxPollPassesPerMinute = 2
+    /// How long the poll triggers nothing once the cap was hit (it keeps scanning); 5 min.
+    public var suppressFor: TimeInterval = 300
     public init() {}
 
     /// Worst-case detection latency of a change: one full period plus the confirming scan (about 11 s; goal: 12 s).
@@ -34,6 +39,8 @@ public final class EngineTriggers {
     private let gate: () async -> PollGate
     private let trigger: () async -> Void
     private let sleep: (Duration) async -> Void
+    private let now: @Sendable () -> Date
+    private let report: (PollSuppression?) async -> Void
     private var tokens: [any NSObjectProtocol] = []
     private var timer: Timer?
     // Poll state.
@@ -43,6 +50,12 @@ public final class EngineTriggers {
     /// The signature that last triggered a pass: a second trigger for the same bar means the pass cannot change it (e.g. a parked
     /// item the fast scan sees differently), so it is not repeated.
     private var lastTriggered: BarSignature.Value?
+    /// Poll-trigger timestamps (sliding minute) and the active suppression window (gdu.58).
+    private var triggerTimes: [Date] = []
+    private var suppressedUntil: Date?
+    /// The last scan signature and the most recent one that differed from it (the flapping pair).
+    private var lastSeen: BarSignature.Value?
+    private var priorDifferent: BarSignature.Value?
     private(set) var polls = 0
     private(set) var triggered = 0
 
@@ -51,7 +64,9 @@ public final class EngineTriggers {
                 resolve: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem], config: PollConfig = PollConfig(),
                 signature: BarSignature = BarSignature(), log: @escaping @Sendable (String) -> Void = { _ in },
                 gate: (() async -> PollGate)? = nil, trigger: (() async -> Void)? = nil,
-                sleep: ((Duration) async -> Void)? = nil) {
+                sleep: ((Duration) async -> Void)? = nil, now: @escaping @Sendable () -> Date = { Date() },
+                reportSuppression: ((PollSuppression?) async -> Void)? = nil) {
+        self.now = now
         self.engine = engine; self.state = state; self.scanner = scanner; self.resolve = resolve
         self.config = config; self.signature = signature; self.log = log
         self.gate = gate ?? { [engine, state] in
@@ -62,6 +77,7 @@ public final class EngineTriggers {
         }
         self.trigger = trigger ?? { [engine] in await engine.requestReconcile(reason: "poll") }
         self.sleep = sleep ?? { try? await Task.sleep(for: $0) }
+        self.report = reportSuppression ?? { [engine] in await engine.setPollSuppression($0) }
     }
 
     public func start() {
@@ -137,6 +153,16 @@ public final class EngineTriggers {
         let g = await gate()
         if let why = skipReason(g) { log("poll skipped: \(why)"); return }
         guard let sig = await scanSignature() else { return }
+        if let l = lastSeen, l != sig { priorDifferent = l }
+        lastSeen = sig
+        // Suppression window (gdu.58): keep scanning (the pair above stays current), trigger nothing. A genuine single change
+        // during the window is therefore also left to the next launch/quit trigger or user action, or to the first poll after it.
+        if let until = suppressedUntil {
+            if now() < until { return }
+            suppressedUntil = nil
+            await report(nil)
+            log("poll: suppression ended, resuming")
+        }
         // The guard holds only while the bar keeps reading as the signature that last triggered a pass: any other reading (e.g. the
         // bar fixed by that pass) clears it, so a later recurrence of the same change triggers again.
         if sig != lastTriggered { lastTriggered = nil }
@@ -155,11 +181,29 @@ public final class EngineTriggers {
             return
         }
         if sig == lastTriggered { baseline = sig; baselineSerial = g.engineSignatureSerial; log("poll change unchanged by the previous pass; not repeating: \(what)"); return }
+        let t = now()
+        triggerTimes.removeAll { t.timeIntervalSince($0) >= 60 }
+        if triggerTimes.count >= config.maxPollPassesPerMinute {
+            let keys = Self.flappingKeys(sig, priorDifferent ?? base)
+            suppressedUntil = t.addingTimeInterval(config.suppressFor)
+            log("poll: suppressed for \(Int(config.suppressFor / 60)) min — flapping keys: \(keys.joined(separator: ", "))")
+            await report(PollSuppression(until: suppressedUntil!, keys: keys.compactMap { ItemKey(storeKey: $0) }))
+            return
+        }
+        triggerTimes.append(t)
         lastTriggered = sig
         triggered += 1
         // The pass will publish a newer engine signature; until then do not re-trigger for the same bar.
         baseline = sig; baselineSerial = g.engineSignatureSerial
         log("poll change confirmed, requesting a pass: \(what)")
         await trigger()
+    }
+
+    /// Symmetric difference of the identified keys of two signatures; for a pure reorder, the keys whose position differs.
+    static func flappingKeys(_ a: BarSignature.Value, _ b: BarSignature.Value) -> [String] {
+        func set(_ v: BarSignature.Value) -> Set<String> { Set(v.order).union(v.presence).union(v.parked) }
+        var d = set(a).symmetricDifference(set(b))
+        if d.isEmpty { for (i, k) in a.order.enumerated() where i >= b.order.count || b.order[i] != k { d.insert(k) } }
+        return d.sorted()
     }
 }
