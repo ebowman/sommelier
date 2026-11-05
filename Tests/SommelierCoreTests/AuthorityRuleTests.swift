@@ -157,7 +157,7 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
         _ = await e.reconcileOnce()
         #expect(await act.calls.isEmpty)
         #expect(await act.hidden == [k("A")])
-        if case .unsupported(let why)? = state.perItem[k("A")] { #expect(why == "hidden in Control Center; not listed as visible by you") }
+        if case .unsupported(let why)? = state.perItem[k("A")] { #expect(why == "hidden in Control Center (isAllowed=false); not shown without a new placement by you: drag it to Visible in Arrange to show it") }
         else { Issue.record("expected an unsupported skip, got \(String(describing: state.perItem[k("A")]))") }
         #expect(lines.all.contains { $0.contains("not showing") && $0.contains("isAllowed=false") && $0.contains("source=appExtras") && $0.contains("frame=") })
     }
@@ -198,4 +198,66 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     snap.items[1].placementUnknown = true
     let o = ObservedOrder(resolved: FakeMenuBar.resolve(snap))
     #expect(o.parked == [k("A")] && o.placementUnknown == [k("A")])
+}
+
+// MARK: corrective: hosted elements OVER the stale frames (the shape the first fixture lacked)
+
+private let kya = RunningAppInfo(pid: 14, bundleID: "info.marcel-dierkes.KeepingYouAwake", name: "KeepingYouAwake")
+private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenuApp", name: "Script Menu")
+
+@Suite struct AuthorityRuleWeakJoinTests {
+    private func run(_ s: Src, _ entries: [ControlCenterTrackedAppsStore.Entry]?) -> MenuBarSnapshot {
+        var sc = MenuBarScanner(source: s); sc.trackedEntries = { entries }; return sc.scan()
+    }
+
+    @Test func aFlagFalseItemCannotStealAnotherItemsHostedElement() {
+        var s = Src(apps: [agent, onePw, kya])
+        s.extras[11] = [AXElementInfo(frame: bar(783, w: 30))]   // 1Password: stale frame, identifier-less
+        s.extras[14] = [AXElementInfo(frame: bar(783, w: 30))]   // KeepingYouAwake: genuinely drawn here
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(783, w: 30))])
+        let snap = run(s, [entry("com.1password.1password", false), entry("info.marcel-dierkes.KeepingYouAwake", true)])
+        let pw = item(snap, "1Password"), k = item(snap, "KeepingYouAwake")
+        #expect(!pw.isOnMenuBar && pw.hiddenInControlCenter && pw.hiddenReason == .controlCenterHidden && pw.joinEvidence == .none)
+        #expect(k.isOnMenuBar && !k.placementUnknown)
+    }
+
+    @Test func aFlagFalseItemOverlappingThePileIsHidden() {
+        var s = Src(apps: [agent, scriptMenu])
+        s.extras[15] = [AXElementInfo(axDescription: "scroll", frame: bar(790, w: 22))]
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+            AXElementInfo(axDescription: "Other", identifier: "other", frame: bar(789, w: 24)),
+            AXElementInfo(axDescription: "x", frame: bar(795, w: 17, ), directWindowChild: true),
+        ])
+        let snap = run(s, [entry("com.apple.ScriptMenuApp", false)])
+        let i = item(snap, "Script Menu")
+        #expect(!i.isOnMenuBar && i.hiddenInControlCenter)
+        #expect(snap.items.contains { $0.axIdentifier == "other" && $0.isOnMenuBar })   // the element stays its real owner's / agent-only
+    }
+
+    @Test func anAllowedItemWithOnlyAWeakJoinInThePileIsUnknown() {
+        var s = Src(apps: [agent, kya])
+        s.extras[14] = [AXElementInfo(frame: bar(783, w: 30))]
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+            AXElementInfo(frame: bar(781, w: 28)),   // overlaps, widths differ by 2+: frameAmbiguous
+            AXElementInfo(frame: bar(795, w: 17), directWindowChild: true),
+        ])
+        let snap = run(s, [entry("info.marcel-dierkes.KeepingYouAwake", true)])
+        let i = item(snap, "KeepingYouAwake")
+        #expect(!i.isOnMenuBar && i.placementUnknown)
+    }
+
+    @Test func aFlagFalseUnjoinedItemIsHiddenOnAnExceptSelfPositioningRead() {
+        // Incomplete hosted read (a stale self-positioning group): the flag alone still decides.
+        var s = Src(apps: [agent, bolt])
+        s.extras[10] = [AXElementInfo(axDescription: "BoltAI", identifier: "boltai", frame: bar(783))]
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(axDescription: "Clock", frame: bar(1500))],
+                                 failedReads: 1, timedOut: [], unnamedTimeouts: 1)
+        let snap = run(s, [entry("co.podzim.boltai-mobile", false)])
+        #expect(snap.hostedReadComplete == false)
+        #expect(item(snap, "BoltAI").hiddenInControlCenter && !item(snap, "BoltAI").isOnMenuBar)
+    }
+
+    @Test func aScannerOnAFixtureSourceNeverReadsTheRealStore() {
+        #expect(MenuBarScanner(source: Src()).trackedEntries() == nil)
+    }
 }
