@@ -98,8 +98,8 @@ final class ArrangeViewModel {
     }
     /// Display names of the items whose flapping paused the poll, nil when it is not paused (gdu.58).
     private var pollPausedNames: [String]? {
-        guard let s = state.pollSuppression, s.until > Date() else { return nil }
-        return s.keys.map { k in state.items[k].map { $0.ownerName } ?? "\(k)" }
+        guard let s = state.pollSuppression else { return nil }
+        return ArrangeSections.pollPausedNames(suppression: s, items: state.items, now: Date())
     }
     var isPaused: Bool { model.isPaused }
     /// Capability only from the engine's own data; a key without `ItemInfo` is unknown, hence allowed (engine decides).
@@ -137,6 +137,8 @@ final class ArrangeViewModel {
             NSLog("[Sommelier] arrange: MAIN ACTOR STALL: timer %.0f ms late", (t.timeIntervalSince(last) - 0.25) * 1000)
         }
         lastTick = t
+        // The pause text hides itself when its window ends (gdu.60): `statusText` re-reads the clock, this makes the view re-render.
+        if let until = state.pollSuppression?.until, until <= t, windowVisible { state.pollSuppression = nil }
         guard windowVisible || !tracker.isEmpty || pending.isActive else { return }
         refreshCapabilities()
         pending.resolve(stateRevision: state.layoutRevision)

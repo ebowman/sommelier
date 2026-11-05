@@ -87,9 +87,9 @@ public final class EngineState {
     /// Keys the engine moved to `visible` when it adopted the last layout (`start`, `setLayout`) because their app also had a
     /// visible item: hide units are all-or-nothing (gdu.44). Empty when nothing was moved. Replaced by every adoption, so the
     /// Arrange status line can show "N items moved to Visible with their app" for the latest layout only.
+    public var lastNormalization: [ItemKey] = []
     /// Set while the poll is suppressed because of a flapping item (gdu.58); status line only, never an error.
     public var pollSuppression: PollSuppression?
-    public var lastNormalization: [ItemKey] = []
 
     public init(observed: ObservedOrder = ObservedOrder(onBar: [], parked: []), layout: Layout = .empty,
                 showHiddenSection: Bool = false) {

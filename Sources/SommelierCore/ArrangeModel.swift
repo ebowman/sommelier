@@ -287,6 +287,12 @@ public enum ArrangeSections {
         return out
     }
 
+    /// Display names for the pause text, nil once `until` has passed (gdu.60: not only after the next republish).
+    public static func pollPausedNames(suppression: PollSuppression?, items: [ItemKey: ItemInfo], now: Date) -> [String]? {
+        guard let s = suppression, s.until > now else { return nil }
+        return s.keys.map { k in items[k].map { $0.ownerName } ?? "\(k)" }
+    }
+
     static func pollPausedText(_ names: [String]) -> String {
         "Poll paused 5 min: \(names.isEmpty ? "an item" : names.joined(separator: ", ")) flapping"
     }
