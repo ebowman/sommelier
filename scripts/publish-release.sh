@@ -10,7 +10,20 @@
 # CFBundleShortVersionString == VERSION; the DMG passes spctl and has a stapled
 # ticket; the tag does not exist locally or on origin. If HEAD moved since the
 # build, rebuild AND re-notarize: make release && make notarize.
+# Also: the embedded SommelierGitCommit must equal `git rev-parse HEAD` and SommelierGitDirty
+# must be 0 (exact check; DMGs without the key are refused); the stapled app inside the DMG
+# must pass `xcrun stapler validate`.
 set -euo pipefail
+NOTES_FILE=""
+MOUNT_POINT=""
+cleanup() {
+    if [ -n "${MOUNT_POINT}" ]; then
+        hdiutil detach "${MOUNT_POINT}" -quiet -force >/dev/null 2>&1 || true
+        rmdir "${MOUNT_POINT}" 2>/dev/null || true
+    fi
+    if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${NOTES_FILE}" ]; then rm -f "${NOTES_FILE}"; fi
+}
+trap cleanup EXIT
 fail() { echo "error: $*" >&2; exit 1; }
 
 DRY_RUN=0
@@ -57,7 +70,6 @@ DMG="dist/Sommelier-${VERSION}.dmg"
 
 # Read the app version fields from INSIDE the DMG (that is what users get).
 MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/sommelier-publish-mount.XXXXXX")"
-trap 'hdiutil detach "${MOUNT_POINT}" -quiet -force >/dev/null 2>&1 || true; rmdir "${MOUNT_POINT}" 2>/dev/null || true' EXIT
 hdiutil attach "${DMG}" -mountpoint "${MOUNT_POINT}" -nobrowse -quiet -readonly \
     || fail "cannot mount ${DMG}"
 INFO_PLIST="${MOUNT_POINT}/Sommelier.app/Contents/Info.plist"
@@ -66,11 +78,25 @@ EMBEDDED_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${INFO_PL
     || fail "CFBundleVersion missing from the app inside ${DMG}"
 EMBEDDED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${INFO_PLIST}" 2>/dev/null)" \
     || fail "CFBundleShortVersionString missing from the app inside ${DMG}"
+EMBEDDED_SHA="$(/usr/libexec/PlistBuddy -c 'Print :SommelierGitCommit' "${INFO_PLIST}" 2>/dev/null)" || EMBEDDED_SHA=""
+EMBEDDED_DIRTY="$(/usr/libexec/PlistBuddy -c 'Print :SommelierGitDirty' "${INFO_PLIST}" 2>/dev/null)" || EMBEDDED_DIRTY=""
+# Validate the stapled ticket on the app itself (users copy the app out of the DMG).
+INNER_STAPLE_OK=1
+xcrun stapler validate "${MOUNT_POINT}/Sommelier.app" >/dev/null 2>&1 || INNER_STAPLE_OK=0
 hdiutil detach "${MOUNT_POINT}" -quiet >/dev/null 2>&1 || true
 
 HEAD_COUNT="$(git rev-list --count HEAD)"
 [ "${EMBEDDED_BUILD}" = "${HEAD_COUNT}" ] \
     || fail "DMG was not built from HEAD: embedded CFBundleVersion ${EMBEDDED_BUILD} != commit count ${HEAD_COUNT} (rebuild and re-notarize: make release && make notarize)"
+[ -n "${EMBEDDED_SHA}" ] \
+    || fail "DMG predates the SHA check (no SommelierGitCommit in the app); rebuild and re-notarize: make release && make notarize"
+HEAD_SHA="$(git rev-parse HEAD)"
+[ "${EMBEDDED_SHA}" = "${HEAD_SHA}" ] \
+    || fail "DMG was not built from HEAD: embedded git commit ${EMBEDDED_SHA} != ${HEAD_SHA} (rebuild and re-notarize: make release && make notarize)"
+[ "${EMBEDDED_DIRTY}" = "0" ] \
+    || fail "DMG was built from a dirty tree (SommelierGitDirty='${EMBEDDED_DIRTY}'); commit first, then rebuild and re-notarize"
+[ "${INNER_STAPLE_OK}" = "1" ] \
+    || fail "the app inside ${DMG} has no valid stapled notarization ticket (xcrun stapler validate failed)"
 [ "${EMBEDDED_VERSION}" = "${VERSION}" ] \
     || fail "embedded CFBundleShortVersionString ${EMBEDDED_VERSION} != VERSION ${VERSION}"
 

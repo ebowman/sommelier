@@ -40,6 +40,9 @@ keychain profile) or a gitignored `.env` with `API_KEY_ID` and `API_ISSUER_ID` p
    On rejection the log is saved in `dist/` and the command fails. Afterwards `xcrun stapler validate` passes for both the app and the DMG.
 4. Run the "Release smoke" section of docs/testing.md on the notarized build.
 5. `CONFIRM_PUBLISH=1 make publish` : creates the GitHub release `v<version>` with the DMG and its SHA-256. Operator only. It refuses unless the tree has no tracked changes,
-   the app inside the DMG has CFBundleVersion == the current commit count and CFBundleShortVersionString == `VERSION`, the DMG is stapled and passes spctl, and the tag is new.
+   the app inside the DMG has CFBundleVersion == the current commit count and CFBundleShortVersionString == `VERSION`, the embedded `SommelierGitCommit` (written into Info.plist by
+   `build-app.sh`) equals `git rev-parse HEAD` and `SommelierGitDirty` is `0` (exact check; a DMG built before this key existed is refused with "predates the SHA check; rebuild"),
+   the DMG is stapled and passes spctl, the app inside the DMG (mounted read-only) passes `xcrun stapler validate`, and the tag is new.
+   Note: this repo currently has no `origin` remote configured, so `make publish` (and `--dry-run`) refuses until one exists (`git remote add origin git@github.com:<owner>/<repo>.git`).
    `scripts/publish-release.sh --dry-run` runs every check and prints the SHA-256, the tag and the `gh` command without creating anything.
    Shell tests for these checks: `make check-scripts`.
