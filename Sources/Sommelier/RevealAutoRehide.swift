@@ -64,19 +64,19 @@ final class RevealAutoRehide {
         case .keyDown:
             if keyCode == 53, armedAt != nil {
                 closeSeenAt = now
-                NSLog("[Sommelier] reveal: Escape while an item menu is open (menu closed); re-hide after settle")
+                AppLog.log(.reveal, "reveal: Escape while an item menu is open (menu closed); re-hide after settle")
             }   // Escape closes a menu
         case .leftMouseDown:
             if overStrip(p), !(ownFrame()?.contains(p) ?? false) {
                 armedAt = now; closeSeenAt = nil; lastActivity = now
-                NSLog("[Sommelier] reveal: menu bar item clicked at %@; idle timer suspended until its menu closes", NSStringFromPoint(p))
+                AppLog.log(.reveal, "reveal: menu bar item clicked at \(NSStringFromPoint(p)); idle timer suspended until its menu closes")
             }
         case .leftMouseUp:
             if overStrip(p) {
                 lastActivity = now
             } else if armedAt != nil, closeSeenAt == nil {
                 closeSeenAt = now
-                NSLog("[Sommelier] reveal: click below the strip while an item menu is open (menu closed); re-hide after settle")   // a click below the strip while a menu is open: an entry chosen or the menu dismissed
+                AppLog.log(.reveal, "reveal: click below the strip while an item menu is open (menu closed); re-hide after settle")   // a click below the strip while a menu is open: an entry chosen or the menu dismissed
             }
         default: break
         }

@@ -10,6 +10,40 @@ Run the sections below in this order for a full pass; each links to its checklis
 6. Robustness: [Robustness (gdu.21)](#robustness-gdu21)
 7. Release smoke: [Release smoke (reviewer/human)](#release-smoke-reviewerhuman)
 
+## Reading the app's log (gdu.88)
+
+Every app log line (engine, apps, poll, reveal, activator, arrange, panel, app, permissions) goes through `AppLog` (`Sources/SommelierCore/AppLog.swift`) to three places:
+unified logging (subsystem `ie.boboco.sommelier`, one category per component, text marked public so it is never `<private>`), the file `~/Library/Logs/Sommelier/sommelier.log`
+(one line per entry: ISO-8601 UTC timestamp with milliseconds, category, text; rotated at 5 MB keeping `sommelier.log.1` to `.3`; status item menu "Open Log Folder"), and stderr
+in the old NSLog shape (so `make app-run` still fills `build/sommelier.log`). Works for a Finder launch of the notarized app.
+
+```
+/usr/bin/log show --last 10m --info --predicate 'subsystem == "ie.boboco.sommelier"' --style compact
+/usr/bin/log stream --info --predicate 'subsystem == "ie.boboco.sommelier"' --style compact
+tail -f ~/Library/Logs/Sommelier/sommelier.log
+```
+
+Always spell it `/usr/bin/log`: in zsh a bare `log` is the builtin that prints login/logout watch records and ignores these arguments. The lines are logged at the default level (`Df` in the output), so `--info` is not strictly required; it is kept in the commands so info-level lines from the system are visible alongside. Add `AND category == "arrange"` to the predicate to narrow it. The old text shapes are unchanged (`engine: ...`, `apps: ...`, `poll: ...`, `arrange rows: ...`).
+
+Verified 2026-11-05 without running Sommelier.app: a throwaway Developer ID signed (hardened runtime) app that compiles the same `AppLog.swift` was started with `open` and logged three lines.
+`/usr/bin/log show --last 2m --info --predicate 'subsystem == "ie.boboco.sommelier"' --style compact` printed them in full (no `<private>`):
+
+```
+2026-11-05 09:56:51.165 Df LogProbe[80026:41254f8] [ie.boboco.sommelier:engine] engine: probe line one drag Dropbox -> hidden slot 3
+2026-11-05 09:56:51.169 Df LogProbe[80026:41254f8] [ie.boboco.sommelier:arrange] arrange rows: V[a,b] H[c]  status=Converged
+2026-11-05 09:56:51.169 Df LogProbe[80026:41254f8] [ie.boboco.sommelier:poll] poll: probe line three
+```
+
+and the file sink wrote:
+
+```
+2026-11-05T09:56:51.178Z engine engine: probe line one drag Dropbox -> hidden slot 3
+2026-11-05T09:56:51.180Z arrange arrange rows: V[a,b] H[c]  status=Converged
+2026-11-05T09:56:51.180Z poll poll: probe line three
+```
+
+Not yet checked: the same from the notarized Sommelier.app itself (needs a human launch; the probe was signed but not notarized, and redaction does not depend on notarization of the text itself).
+
 ## Developer launch trick
 Run the app binary from a shell that has Accessibility trust, not via `open`:
 
@@ -426,9 +460,8 @@ Quit Bartender first; relaunch it afterwards.
    Use `SOMMELIER_LAYOUT_FILE` only for the terminal-started variant; a Finder launch uses the real layout, so back it up first.
 3. Launch from Finder (double-click). Expected Gatekeeper dialog: "Apple checked it for malicious software and none was found" with an Open button. Click Open.
 4. The onboarding window appears. Grant Accessibility in System Settings (macOS 27: "Device Control and Data Access"); Sommelier should start working without a relaunch.
-5. Confirm the app's own result (`mbprobe permissions` checks mbprobe, not the app): the onboarding/Settings state shows trusted. Do NOT use `log show`: NSLog text is
-   redacted to `<private>` in release builds. For `launch trusted=true` and live hide/show availability, run the bundle binary from a terminal and read its stderr
-   (`make app-run` style: `dist/Sommelier.app/Contents/MacOS/Sommelier 2>&1 | tee /tmp/s.log`). If live hide/show is unavailable, record that as the finding.
+5. Confirm the app's own result (`mbprobe permissions` checks mbprobe, not the app): the onboarding/Settings state shows trusted. Read the app's log as described in "Reading the app's log"
+   (`launch trusted=true`, live hide/show availability); the unified log text is public since gdu.88. If live hide/show is unavailable, record that as the finding.
 6. Start a dummy (`make dummy ARGS="--count 2"`), hide one dummy via the app (Arrange window or panel) with the live mechanism, verify with `make probe ARGS="list"` that it left the bar
    within 1-5 s and no MenuBarAgent restart happened, then show it again and verify.
 7. Quit Sommelier, `make dummy-stop`, relaunch Bartender.

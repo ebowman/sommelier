@@ -29,17 +29,17 @@ final class AppModel {
         } else {
             store = FileLayoutStore(url: FileLayoutStore.defaultURL())
         }
-        NSLog("[Sommelier] layout file: %@", store.url.path)
+        AppLog.log(.app, "layout file: \(store.url.path)")
         reveal = RevealController(state: state, apply: { [weak self] hidden, always in
             guard let engine = self?.engine else { return }
             Task { await engine.setReveal(hidden: hidden, alwaysHidden: always) }
-        }, now: { ContinuousClock.now }, log: { NSLog("[Sommelier] reveal: %@", $0) })
+        }, now: { ContinuousClock.now }, log: AppLog.logger(.reveal, prefix: "reveal: "))
         permissions.onControlCenterDataGranted = { [weak self] in
-            NSLog("[Sommelier] Control Center data readable; re-checking")
+            AppLog.log(.permissions, "Control Center data readable; re-checking")
             Task { @MainActor in await self?.engine?.requestReconcile(reason: "control center data granted") }
         }
         permissions.onAccessibilityGranted = { [weak self] in
-            NSLog("[Sommelier] accessibility granted")
+            AppLog.log(.permissions, "accessibility granted")
             Task { @MainActor in
                 guard let self else { return }
                 if let engine = self.engine { await engine.clearFailures() }
@@ -70,7 +70,7 @@ final class AppModel {
             // The engine's own platform: one scanner and one ScanState, so assumed-hidden records are shared and never overwritten.
             let live = LiveActivationPlatform(platform: platform, closeMonitor: NSEventCloseMonitor(),
                                               filter: { EngineFactory.dropSelf($0, bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
-            activator = ItemActivator(platform: live, hold: engine, log: { NSLog("[Sommelier] activator: %@", $0) })
+            activator = ItemActivator(platform: live, hold: engine, log: AppLog.logger(.activator, prefix: "activator: "))
         }
         guard let activator else { return .failed(.unavailable("no activator")) }
         let r = await activator.activate(key: key, button: button)
@@ -109,7 +109,7 @@ final class AppModel {
 
     func startIfReady() async {
         permissions.refresh()
-        NSLog("[Sommelier] startIfReady trusted=\(permissions.isReady)")
+        AppLog.log(.app, "startIfReady trusted=\(permissions.isReady)")
         guard permissions.isReady else { showOnboarding(); return }
         guard !starting else { return }
         starting = true
@@ -117,7 +117,7 @@ final class AppModel {
         if let m = platform.conflictingManager() {
             conflictingManager = m
             engine?.setConflict(m)
-            NSLog("[Sommelier] paused: \(m)")
+            AppLog.log(.app, "paused: \(m)")
             pollConflict()
             return
         }
@@ -126,17 +126,17 @@ final class AppModel {
         conflictTask?.cancel(); conflictTask = nil
         if engine == nil {
             let e = EngineFactory.makeLive(platform: platform, store: store, state: state,
-                                           log: { NSLog("[Sommelier] engine: %@", $0) },
+                                           log: AppLog.logger(.engine, prefix: "engine: "),
                                            allowAgentRestart: { UserDefaults.standard.object(forKey: "allowAgentRestart") as? Bool })
             engine = e
             triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") },
-                                       log: { NSLog(($0.hasPrefix("launch") || $0.hasPrefix("quit") || $0.hasPrefix("notification")) ? "[Sommelier] apps: %@" : "[Sommelier] poll: %@", $0) },
+                                       log: { AppLog.log(($0.hasPrefix("launch") || $0.hasPrefix("quit") || $0.hasPrefix("notification")) ? .apps : .poll, (($0.hasPrefix("launch") || $0.hasPrefix("quit") || $0.hasPrefix("notification")) ? "apps: " : "poll: ") + $0) },
                                        ownerPIDs: { [state] in
                                            let pids = Set(state.items.values.map { Int32($0.ownerPID) })
                                            return pids.isEmpty ? nil : pids
                                        })
             watchErrors()
-            agentWatcher = MenuBarAgentWatcher(log: { NSLog("[Sommelier] %@", $0) },
+            agentWatcher = MenuBarAgentWatcher(log: AppLog.logger(.engine, prefix: ""),
                                                 busy: { [platform] in platform.agentRestartInProgress },
                                                 isExpected: { [platform] in platform.isOwnAgentPID($0) }, onChange: { [platform, weak self] _, _ in
                 platform.invalidateAgentState()
@@ -155,23 +155,23 @@ final class AppModel {
                 guard reading.settled else {
                     // Two scans never agreed (gdu.46): do not persist a layout from a guess; the engine's pass adopts new items
                     // visible at the end in observed order once an observation settles.
-                    NSLog("[Sommelier] first-launch scan unsettled after \(reading.scans) scans; layout left empty")
+                    AppLog.log(.app, "first-launch scan unsettled after \(reading.scans) scans; layout left empty")
                     throw ObserveError.noAgreement(scans: reading.scans)
                 }
                 let resolved = reading.items
                 let unknown = LayoutBuilder.unknownPlacement(in: resolved)
                 guard unknown.isEmpty else {
                     // gdu.79: app-side frame only, no hosted element: where these items are is unknown; do not persist a guess.
-                    NSLog("[Sommelier] first-launch scan: %@; layout left empty", LayoutBuilder.unknownPlacementMessage(unknown, reasons: LayoutBuilder.unknownReasons(in: resolved)))
+                    AppLog.log(.app, "first-launch scan: \(LayoutBuilder.unknownPlacementMessage(unknown, reasons: LayoutBuilder.unknownReasons(in: resolved))); layout left empty")
                     throw ObserveError.noAgreement(scans: reading.scans)
                 }
                 let (layout, excluded) = LayoutBuilder.build(from: resolved, resolver: EngineFactory.currentTrackedResolver())
                 await engine.setLayout(layout, userPlacement: false)   // built from a scan: not a user placement (gdu.79)
-                NSLog("[Sommelier] initialized layout from current order (\(layout.keys(in: .visible).count + layout.keys(in: .hidden).count) keys; excluded \(excluded.count))")
+                AppLog.log(.app, "initialized layout from current order (\(layout.keys(in: .visible).count + layout.keys(in: .hidden).count) keys; excluded \(excluded.count))")
                 let selfKeys = (layout.keys(in: .visible) + layout.keys(in: .hidden)).filter { "\($0)".lowercased().contains("sommelier") }
-                NSLog("[Sommelier] own item in layout: \(selfKeys.isEmpty ? "none" : selfKeys.map { "\($0)" }.joined(separator: ","))")
+                AppLog.log(.app, "own item in layout: \(selfKeys.isEmpty ? "none" : selfKeys.map { "\($0)" }.joined(separator: ","))")
             } catch {
-                NSLog("[Sommelier] first-launch scan failed: \(error)")
+                AppLog.log(.app, "first-launch scan failed: \(error)")
             }
         }
         await engine.requestReconcile()
@@ -180,7 +180,7 @@ final class AppModel {
     }
 
     private func displayChanged() {
-        NSLog("[Sommelier] display configuration changed (%d screen(s)); reconcile in 1 s", NSScreen.screens.count)
+        AppLog.log(.app, "display configuration changed (\(NSScreen.screens.count) screen(s)); reconcile in 1 s")
         platform.invalidateStrip()
         onDisplayChange()
         guard let engine else { return }
@@ -204,14 +204,14 @@ final class AppModel {
 
     private func bartenderChanged() async {
         if let m = platform.conflictingManager() {
-            NSLog("[Sommelier] \(m); pausing")
+            AppLog.log(.app, "\(m); pausing")
             conflictingManager = m
             engine?.setConflict(m)   // a pass already running issues no further actuator call
             triggers?.stop()
             agentWatcher?.stop()
             pollConflict()
         } else if conflictingManager != nil {
-            NSLog("[Sommelier] Bartender gone; resuming")
+            AppLog.log(.app, "Bartender gone; resuming")
             await startIfReady()
         }
     }
@@ -224,7 +224,7 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self else { return }
                 if self.state.lastError == .permissionDenied, self.triggers != nil {
-                    NSLog("[Sommelier] permissionDenied; stopping triggers")
+                    AppLog.log(.permissions, "permissionDenied; stopping triggers")
                     self.triggers?.stop()
                     self.agentWatcher?.stop()
                     self.showOnboarding()

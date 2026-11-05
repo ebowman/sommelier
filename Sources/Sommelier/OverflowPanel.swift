@@ -65,7 +65,7 @@ final class OverflowPanelController {
                 self.scheduleClear(key)
                 return
             }
-            NSLog("[Sommelier] overflow activation of %@ failed: %@", "\(key)", caption.text)
+            AppLog.log(.panel, "overflow activation of \(key) failed: \(caption.text)")
             self.feedback.model.fail(entry, message: caption.text, in: listAtClick)
             if let screen { self.show(anchoredTo: anchor, on: screen) }
             self.scheduleClear(key)
@@ -100,12 +100,12 @@ final class OverflowPanelController {
         self.anchor = itemFrame
         self.screen = screen
         placeCount = 0
-        NSLog("[Sommelier] before show: NSApp.isActive=%d", NSApp.isActive)
+        AppLog.log(.panel, "before show: NSApp.isActive=\(NSApp.isActive ? 1 : 0)")
         let panel = self.panel ?? makePanel()
         self.panel = panel
         place()
         panel.makeKeyAndOrderFront(nil)   // non-activating: becomes key without activating the app
-        NSLog("[Sommelier] panel shown; NSApp.isActive=%d key=%d", NSApp.isActive, panel.isKeyWindow)
+        AppLog.log(.panel, "panel shown; NSApp.isActive=\(NSApp.isActive ? 1 : 0) key=\(panel.isKeyWindow ? 1 : 0)")
         lastActive = Date(); outsideSince = nil
         installMonitors()
     }
@@ -116,11 +116,11 @@ final class OverflowPanelController {
         anchor = itemFrame
         self.screen = screen
         place()
-        NSLog("[Sommelier] overflow panel repositioned after display change: %@", NSStringFromRect(panel?.frame ?? .zero))
+        AppLog.log(.panel, "overflow panel repositioned after display change: \(NSStringFromRect(panel?.frame ?? .zero))")
     }
 
     func hide(_ reason: String = "requested") {
-        if isVisible { NSLog("[Sommelier] overflow hide: %@", reason) }
+        if isVisible { AppLog.log(.panel, "overflow hide: \(reason)") }
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
         globalMonitor = nil; localMonitor = nil
@@ -163,7 +163,7 @@ final class OverflowPanelController {
         guard let panel, let hosting, let screen else { return }
         lastPlaced = placeInput(screen)
         placeCount += 1
-        NSLog("[Sommelier] place() run #%d", placeCount)
+        AppLog.log(.panel, "place() run #\(placeCount)")
         let vis = screen.visibleFrame
         let ideal = probe.fittingSize
         let cap = OverflowPlacement.maxWidth(anchor: anchor, screenVisible: vis)
@@ -172,7 +172,7 @@ final class OverflowPanelController {
         let f = OverflowPlacement.panelFrame(anchor: anchor, menuBarBottomY: barBottom, screenVisible: vis, contentSize: size)
         if lastLogged != f {
             lastLogged = f
-            NSLog("[Sommelier] panel place: ideal=%@ cap=%.0f final=%@", NSStringFromSize(ideal), cap, NSStringFromRect(f))
+            AppLog.log(.panel, "panel place: ideal=\(NSStringFromSize(ideal)) cap=\(String(format: "%.0f", cap)) final=\(NSStringFromRect(f))")
         }
         hosting.rootView = OverflowBarView(state: state, size: f.size, onArrange: onArrange, feedback: feedback, onActivate: { [weak self] e, b in self?.activate(e, b) })
         if panel.frame != f { panel.setFrame(f, display: true) }
@@ -346,7 +346,7 @@ struct OverflowEntryView: View {
         .onHover { hovering = $0 }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.red, lineWidth: error == nil ? 0 : 1.5))
         .overlay(ClickCatcher { button in
-            NSLog("[Sommelier] overflow click %@ (%@)", "\(entry.key)", button == .left ? "left" : "right")
+            AppLog.log(.panel, "overflow click \(entry.key) (\(button == .left ? "left" : "right"))")
             onActivate(entry, button)
         })
         .help(error.map { "Could not open: \($0)" } ?? helpText)

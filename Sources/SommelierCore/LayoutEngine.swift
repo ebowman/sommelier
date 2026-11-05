@@ -335,8 +335,7 @@ public actor LayoutEngine {
             }
             movedAtLoad = moved
             if !moved.isEmpty {
-                NSLog("[Sommelier] layout: all items governed by one Control Center entry hide or show at once; moved to visible: %@",
-                      moved.map(\.description).joined(separator: ", "))
+                AppLog.log(.engine, "layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
             }
             loaded = true
             stopped = false

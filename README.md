@@ -19,6 +19,8 @@ confirms it.** The UI renders observed state; what you asked for is shown separa
 Alpha (0.1.x). macOS 26 or later only. Developed and tested on macOS 27.0.1 (Xcode 27.1, Swift 6.4); macOS 26 is
 assumed to behave the same but has not been verified. Single display only; multi-display is untested.
 
+Logs: `~/Library/Logs/Sommelier/sommelier.log` (also in the unified log, subsystem `ie.boboco.sommelier`; status item menu, Open Log Folder).
+
 ## Requirements
 
 - macOS 26 or later.

@@ -12,12 +12,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) lazy var settings = SettingsWindowController(model: model)
     private var statusController: StatusItemController?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        AppLog.log(.app, "terminating")
+        AppLog.flush()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         let env = ProcessInfo.processInfo.environment
         permissions.refresh()
         permissions.startPolling()
-        NSLog("[Sommelier] launch trusted=\(permissions.isReady)")
+        AppLog.log(.app, "launch trusted=\(permissions.isReady)")
         model.showOnboarding = { [weak self] in self?.onboarding.show() }
         let sc = StatusItemController(model: model, onSettings: { [weak self] in self?.settings.show() },
                                       onArrange: { [weak self] in self?.arrange.show() },
@@ -26,7 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onDisplayChange = { [weak sc] in sc?.displayChanged() }
         if env["SOMMELIER_SHOW_ONBOARDING"] == "1" { onboarding.show() }
         if env["SOMMELIER_DEBUG_MENU"] == "1" {
-            NSLog("[Sommelier] menu titles: %@", sc.buildMenu().items.map { $0.isSeparatorItem ? "---" : "\($0.title)[\($0.state == .on ? "x" : " ")]" }.joined(separator: " | "))
+            AppLog.log(.app, "menu titles: \(sc.buildMenu().items.map { $0.isSeparatorItem ? "---" : "\($0.title)[\($0.state == .on ? "x" : " ")]" }.joined(separator: " | "))")
         }
         if env["SOMMELIER_OPEN_PANEL"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { sc.openPanelForVerification() }
@@ -36,11 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let keyText = right ? String(spec.dropLast("|right".count)) : spec
             Task { @MainActor [model] in
                 try? await Task.sleep(for: .seconds(Double(env["SOMMELIER_ACTIVATE_DELAY"] ?? "") ?? 3))   // delay: measure in steady state
-                guard let key = ItemKey(storeKey: keyText) else { NSLog("[Sommelier] activate: bad key %@", keyText); return }
+                guard let key = ItemKey(storeKey: keyText) else { AppLog.log(.activator, "activate: bad key \(keyText)"); return }
                 for _ in 0..<40 where model.engine == nil { try? await Task.sleep(for: .milliseconds(250)) }
                 let t0 = Date()
                 let r = await model.activate(key, button: right ? .right : .left)
-                NSLog("[Sommelier] activate result for %@: %@ (total %d ms)", keyText, "\(r)", Int(Date().timeIntervalSince(t0) * 1000))
+                AppLog.log(.activator, "activate result for \(keyText): \(r) (total \(Int(Date().timeIntervalSince(t0) * 1000)) ms)")
             }
         }
         // Headless reveal toggle for scripts/soak-events.sh (the status item can sit in Apple's overflow, where it cannot be
@@ -53,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let text = (try? String(contentsOfFile: path, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines),
                           text != last, text == "show" || text == "hide" else { continue }
                     last = text
-                    NSLog("[Sommelier] debug reveal file: %@", text)
+                    AppLog.log(.reveal, "debug reveal file: \(text)")
                     model.setShowHidden(text == "show")
                 }
             }
@@ -64,11 +69,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if env["SOMMELIER_OPEN_SETTINGS"] == "1" { settings.show() }
         if env["SOMMELIER_TOGGLE_LOGIN"] == "1" {
-            NSLog("[Sommelier] login status before=\(SMAppService.mainApp.status.rawValue)")
+            AppLog.log(.app, "login status before=\(SMAppService.mainApp.status.rawValue)")
             LoginItem.set(!LoginItem.isEnabled)
         }
         if env["SOMMELIER_LOGIN_OFF"] == "1" {
-            NSLog("[Sommelier] login status before=\(SMAppService.mainApp.status.rawValue)")
+            AppLog.log(.app, "login status before=\(SMAppService.mainApp.status.rawValue)")
             LoginItem.set(false)
         }
         Task { await model.startIfReady() }

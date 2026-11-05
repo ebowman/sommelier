@@ -41,8 +41,7 @@ final class StatusItemController: NSObject {
             if UserDefaults.standard.string(forKey: "revealMode") == "inline" {
                 let option = ev?.modifierFlags.contains(.option) == true || NSEvent.modifierFlags.contains(.option)
                 let r = model.reveal.click(option: option)
-                NSLog("[Sommelier] reveal click (option=%@, event flags %lx, global flags %lx): %@", "\(option)",
-                      ev?.modifierFlags.rawValue ?? 0, NSEvent.modifierFlags.rawValue, "\(r)")
+                AppLog.log(.reveal, "reveal click (option=\(option), event flags \(String(ev?.modifierFlags.rawValue ?? 0, radix: 16)), global flags \(String(NSEvent.modifierFlags.rawValue, radix: 16))): \(r)")
             } else {
                 togglePanel()
             }
@@ -70,7 +69,7 @@ final class StatusItemController: NSObject {
         statusItem.button?.image = NSImage(systemSymbolName: name, accessibilityDescription: "Sommelier")
         if st.showHiddenSection || st.showAlwaysHidden { autoRehide.start() }
         model.reveal.stateChanged()
-        NSLog("[Sommelier] reveal state: requested=%@ always=%@ observed=%@ icon=%@", "\(st.showHiddenSection)", "\(st.showAlwaysHidden)", "\(st.revealedObserved)", name)
+        AppLog.log(.reveal, "reveal state: requested=\(st.showHiddenSection) always=\(st.showAlwaysHidden) observed=\(st.revealedObserved) icon=\(name)")
     }
 
     /// Display change: an open overflow panel follows the status item to its (possibly new) screen.
@@ -100,8 +99,7 @@ final class StatusItemController: NSObject {
 
     private func logPanel() {
         let names = panel.entries.map(\.displayName).joined(separator: " | ")
-        NSLog("[Sommelier] panel frame=%@ item=%@ entries(%d)=%@", NSStringFromRect(panel.frame ?? .zero),
-              NSStringFromRect(statusItem.button?.window?.frame ?? .zero), panel.entries.count, names)
+        AppLog.log(.panel, "panel frame=\(NSStringFromRect(panel.frame ?? .zero)) item=\(NSStringFromRect(statusItem.button?.window?.frame ?? .zero)) entries(\(panel.entries.count))=\(names)")
     }
 
     func showMenu() {
@@ -130,6 +128,7 @@ final class StatusItemController: NSObject {
             m.addItem(item("Grant Control Center data access…", #selector(openPermissions)))
         }
         m.addItem(item("Permissions…", #selector(openPermissions)))
+        m.addItem(item("Open Log Folder", #selector(openLogFolder)))
         m.addItem(item("Quit", #selector(quit), key: "q"))
         return m
     }
@@ -145,5 +144,9 @@ final class StatusItemController: NSObject {
     @objc private func openSettings() { onSettings() }
     @objc private func toggleLogin() { LoginItem.set(!LoginItem.isEnabled) }
     @objc private func openPermissions() { onPermissions() }
+    @objc private func openLogFolder() {
+        try? FileManager.default.createDirectory(at: AppLog.logDirectory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(AppLog.logDirectory)
+    }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
 }

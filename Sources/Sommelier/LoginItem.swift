@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import SommelierCore
 
 @MainActor
 enum LoginItem {
@@ -14,6 +15,6 @@ enum LoginItem {
             a.informativeText = "\(error.localizedDescription)"
             a.runModal()
         }
-        NSLog("[Sommelier] login item set(\(on)) status=\(SMAppService.mainApp.status.rawValue)")
+        AppLog.log(.app, "login item set(\(on)) status=\(SMAppService.mainApp.status.rawValue)")
     }
 }

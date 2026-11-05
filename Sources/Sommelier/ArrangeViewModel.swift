@@ -137,7 +137,7 @@ final class ArrangeViewModel {
     private func tick() {
         let t = Date()
         if let last = lastTick, t.timeIntervalSince(last) - 0.25 > 0.1 {
-            NSLog("[Sommelier] arrange: MAIN ACTOR STALL: timer %.0f ms late", (t.timeIntervalSince(last) - 0.25) * 1000)
+            AppLog.log(.arrange, "arrange: MAIN ACTOR STALL: timer \(String(format: "%.0f", (t.timeIntervalSince(last) - 0.25) * 1000)) ms late")
         }
         lastTick = t
         // The pause text hides itself when its window ends (gdu.60): `statusText` re-reads the clock, this makes the view re-render.
@@ -149,7 +149,7 @@ final class ArrangeViewModel {
         for line in tracker.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
                                    showHiddenSection: state.showHiddenSection, now: t,
                                    observationSettled: state.observationSettled) {
-            NSLog("[Sommelier] arrange: %@", line)
+            AppLog.log(.arrange, "arrange: \(line)")
         }
         if windowVisible { logRowsIfChanged() }
     }
@@ -163,7 +163,7 @@ final class ArrangeViewModel {
         let sig = "V[\(line(c.visible))] H[\(line(c.hidden))] A[\(line(c.alwaysHidden))]"
         guard sig != lastSignature else { return }
         lastSignature = sig
-        NSLog("[Sommelier] arrange rows: %@  status=%@", sig, statusText)
+        AppLog.log(.arrange, "arrange rows: \(sig)  status=\(statusText)")
     }
 
     // MARK: gestures
@@ -175,7 +175,7 @@ final class ArrangeViewModel {
         let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,
                                        observationAvailable: observationAvailable,
                                        bar: state.observed.onBar, displayName: displayName, units: units)
-        NSLog("[Sommelier] arrange: drop %@ -> %@ slot %d", "\(key)", section.rawValue, slot)
+        AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot)")
         return submit(outcome, key: key)
     }
 
@@ -223,13 +223,13 @@ final class ArrangeViewModel {
                 guard let self else { return }
                 let parts = one.components(separatedBy: "|")
                 guard parts.count >= 3, let key = ItemKey(storeKey: parts.dropLast(2).joined(separator: "|")) else {
-                    NSLog("[Sommelier] arrange env move: bad spec %@", one); continue
+                    AppLog.log(.arrange, "arrange env move: bad spec \(one)"); continue
                 }
                 let section: LayoutSection? = ["visible": .visible, "hidden": .hidden, "always": .alwaysHidden, "alwaysHidden": .alwaysHidden][parts[parts.count - 2]]
                 let index = Int(parts[parts.count - 1])
-                guard let section else { NSLog("[Sommelier] arrange env move: bad section in %@", one); continue }
+                guard let section else { AppLog.log(.arrange, "arrange env move: bad section in \(one)"); continue }
                 self.ensureTimer()
-                NSLog("[Sommelier] arrange env move: %@ -> %@ movable index %@", "\(key)", section.rawValue, index.map(String.init) ?? "-")
+                AppLog.log(.arrange, "arrange env move: \(key) -> \(section.rawValue) movable index \(index.map(String.init) ?? "-")")
                 // Same clamp as a UI drop; the index is 0-based among movable items (modules do not count).
                 let outcome = ArrangeDrop.drop(layout: self.layout, key: key, section: section, movableIndex: index,
                                                capabilities: self.cap, observationAvailable: self.observationAvailable,
@@ -245,11 +245,11 @@ final class ArrangeViewModel {
         switch outcome {
         case .noop:
             message = nil
-            NSLog("[Sommelier] arrange: %@ dropped on its own position: no change", "\(key)")
+            AppLog.log(.arrange, "arrange: \(key) dropped on its own position: no change")
             return true
         case .rejected(let why):
             message = why
-            NSLog("[Sommelier] arrange: rejected %@: %@", "\(key)", why)
+            AppLog.log(.arrange, "arrange: rejected \(key): \(why)")
             return false
         case .move(let l, let moved, let willNotFit):
             let old = layout
@@ -260,7 +260,7 @@ final class ArrangeViewModel {
                 if was == now, now != .visible { continue }   // pure reorder inside a hidden strip: our data, nothing to verify
                 track.append(k)
             }
-            NSLog("[Sommelier] arrange: submit layout; moved=%@", moved.map { "\($0)" }.joined(separator: ", "))
+            AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
             apply(l, tracking: track, basedOn: state.layoutRevision)
             return true
         }
@@ -314,11 +314,11 @@ final class ArrangeViewModel {
         confirm = nil
         switch c {
         case .adopt(let l, let base):
-            NSLog("[Sommelier] arrange: adopt current order")
+            AppLog.log(.arrange, "arrange: adopt current order")
             tracker.removeAll()
             apply(l, basedOn: base)
         case .hideNotFitting(let l, let titles, _, let base):
-            NSLog("[Sommelier] arrange: hide what does not fit: %@", titles.joined(separator: ", "))
+            AppLog.log(.arrange, "arrange: hide what does not fit: \(titles.joined(separator: ", "))")
             let old = layout
             apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible }, basedOn: base)
         }
