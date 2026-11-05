@@ -99,7 +99,8 @@ public final class EngineTriggers {
     private var confirmFree = false
     /// The latest pass was a free confirm (so `preChange` is steady again), and the signature of the latest counted change.
     private var lastWasConfirm = false
-    private var lastCounted: BarSignature.Value?
+    /// Signatures of the counted changes within the last `suppressFor` (the repeat horizon, gdu.60); cleared by `stop()`.
+    private var countedHistory: [(sig: BarSignature.Value, at: Date)] = []
     private var suppressedUntil: Date?
     /// The last scan signature and the most recent one that differed from it (the flapping pair).
     private var lastSeen: BarSignature.Value?
@@ -180,6 +181,7 @@ public final class EngineTriggers {
         tokens = []
         apps.stopObserving()
         timer?.invalidate(); timer = nil
+        countedHistory = []; triggerTimes = []; preChange = nil; confirmFree = false; lastWasConfirm = false
     }
 
     private func scheduleNextPoll() {
@@ -282,6 +284,7 @@ public final class EngineTriggers {
         if sig == lastTriggered { baseline = sig; baselineSerial = g.engineSignatureSerial; log("poll change unchanged by the previous pass; not repeating: \(what)"); return }
         let t = now()
         triggerTimes.removeAll { t.timeIntervalSince($0) >= 60 }
+        countedHistory.removeAll { t.timeIntervalSince($0.at) >= config.suppressFor }
         // A return to the signature that was steady before the last counted change is that change's confirm pass (a steady
         // fast/full-scan disagreement costs it once per real change): triggered, not counted, once.
         let isConfirm = confirmFree && preChange == sig
@@ -304,10 +307,10 @@ public final class EngineTriggers {
             } else if lastWasConfirm, preChange != nil, priorDifferent == preChange {
                 // the confirm restored it
             } else if let p = priorDifferent, p != sig, priorHeld >= 60 { preChange = p } else { preChange = nil }
-            let repeats = !triggerTimes.isEmpty && lastCounted == sig
+            let repeats = countedHistory.contains { $0.sig == sig }
             if repeats { preChange = nil }
             confirmFree = preChange != nil
-            lastWasConfirm = false; lastCounted = sig
+            lastWasConfirm = false; countedHistory.append((sig, t))
             if repeats { triggerTimes.append(t) }   // oscillation evidence: the repeat takes two slots of the cap
             triggerTimes.append(t)
         }
@@ -321,7 +324,7 @@ public final class EngineTriggers {
 
     /// The minimal set of keys whose membership (on the bar / parked / present at all) or relative position differs between two
     /// signatures (gdu.60): a key whose class changed, plus the common on-bar keys that left the longest common order
-    /// (`OrderDiff`: a single item moved far lists only that item, an adjacent swap lists both, shifted neighbours are never listed).
+    /// (`OrderDiff`: a single item moved far lists only that item, an adjacent swap lists one of the two, shifted neighbours are never listed).
     static func flappingKeys(_ a: BarSignature.Value, _ b: BarSignature.Value) -> [String] {
         func cls(_ v: BarSignature.Value, _ k: String) -> Int { v.order.contains(k) ? 1 : v.parked.contains(k) ? 2 : 0 }
         var d = Set(a.presence).symmetricDifference(b.presence)

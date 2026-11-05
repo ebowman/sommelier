@@ -456,12 +456,14 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         #expect(t.count <= 3 && suppressions(r).count == 1)
     }
 
-    @Test(arguments: [31.0, 40, 59]) func slowTwoStateFlapperIsNotSuppressedButStaysUnderTwoPassesPerMinute(_ every: TimeInterval) async {
-        // (v) documented acceptable: a period >= 31 s never reaches the cap, and runs at most 2 passes in any minute.
+    @Test(arguments: [31.0, 40, 59]) func slowTwoStateFlapperStaysUnderTwoPassesPerMinuteAndEndsAtTheFirstRepeat(_ every: TimeInterval) async {
+        // (v) a period >= 31 s never fills the cap by itself (<= 2 passes in any minute); with the repeat horizon (gdu.60) its
+        // first repeat (the third pass) takes two slots, so it is still suppressed, after 3 passes.
         let r = await rig()
         let t = await seq(r, alternate([flapA, flapB], every: every, for: 600), pass: false)
-        #expect(suppressions(r).isEmpty)
+        #expect(!suppressions(r).isEmpty)
         for x in t { #expect(t.filter { $0 >= x && $0 < x + 60 }.count <= 2) }
+        #expect(t.prefix { $0 < 3 * every + 1 }.count == 3)
     }
 
     private func value(order: [String], parked: [String] = []) -> BarSignature.Value {
@@ -478,7 +480,7 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         #expect(EngineTriggers.flappingKeys(a, b) == ["b"])
     }
 
-    @Test func flappingKeysSwapListsBoth() {
+    @Test func flappingKeysSwapListsOneOfTheTwo() {
         let a = value(order: ["a", "b", "c", "d"]), b = value(order: ["a", "c", "b", "d"])
         #expect(EngineTriggers.flappingKeys(a, b).count == 1)   // one of the two left the longest common order (deterministic: "b")
         #expect(EngineTriggers.flappingKeys(a, a).isEmpty)
@@ -594,3 +596,99 @@ private final class FakeApps: RunningAppsSource {
 }
 
 
+
+// gdu.60: sequences from the reviewer's probe suite, as permanent tests. `run` returns the times (s) of requested passes and of
+// suppressions; items nil = poll skipped (busy).
+@MainActor
+@Suite struct PollCapHorizonTests {
+    static let F = base + [it("C", x: 300)]
+    static func real(_ n: String) -> [MenuBarItem] { F + [it(n, x: 340)] }
+    static let A = base + [it("C", x: 300)], B = base + [it("D", x: 300)]
+    func engineSig(_ items: [MenuBarItem]) -> BarSignature.Value {
+        let rule = BarSignature(selfPositioningOwners: ["S1", "S2"])
+        return rule.value(resolver(MenuBarSnapshot(items: items, capturedAt: Date())))!.forPoll(selfPositioningOwners: ["S1", "S2"])
+    }
+    func run(_ steps: [([MenuBarItem]?, TimeInterval)], pass: Bool) async -> (passes: [Double], supp: [Double], logs: [String]) {
+        let r = await rig()
+        var serial = 0, t = 0.0
+        var passes: [Double] = [], supp: [Double] = []
+        func nSupp() -> Int { r.fired.logs.filter { $0.hasPrefix("poll: suppressed") }.count }
+        for (items, adv) in steps {
+            serial += 1
+            if let items {
+                r.scans.set([items, items])
+                r.gate.value = pass ? PollGate(passesStarted: serial, engineSignature: engineSig(base), engineSignatureSerial: serial) : PollGate()
+            } else { r.gate.value = PollGate(busy: true) }
+            let b = r.fired.count, l = nSupp()
+            await r.triggers.poll()
+            if r.fired.count > b { passes.append(t) }
+            if nSupp() > l { supp.append(t) }
+            r.clock.advance(adv); t += adv
+        }
+        return (passes, supp, r.fired.logs)
+    }
+    func cyc(_ s: [[MenuBarItem]], _ every: TimeInterval, _ total: TimeInterval) -> [([MenuBarItem]?, TimeInterval)] {
+        (0..<Int(total / every)).map { (s[$0 % s.count], every) }
+    }
+    func maxPerMinute(_ p: [Double]) -> Int { p.map { x in p.filter { $0 >= x && $0 < x + 60 }.count }.max() ?? 0 }
+
+    @Test func i_distinctRealChangesKeepTheirFreeConfirms() async {
+        let F = Self.F
+        let r = await run([(F, 120), (Self.real("X"), 10), (F, 10), (Self.real("Y"), 10), (F, 31), (Self.real("Z"), 10), (F, 10)], pass: true)
+        #expect(r.passes == [0, 120, 130, 140, 150, 181, 191] && r.supp.isEmpty)
+    }
+
+    @Test func vi_twoChangesFiveSecondsApartThenConfirm() async {
+        let F = Self.F
+        let r = await run([(F, 120), (Self.real("X"), 5), (Self.real("Y"), 10), (F, 10), (F, 10)], pass: true)
+        #expect(r.passes == [0, 120, 125, 135] && r.supp.isEmpty)
+    }
+
+    @Test(arguments: [10.0, 14, 15, 20, 25]) func vii_steadyThenSaSbSaIsSuppressed(_ step: TimeInterval) async {
+        // F steady, then X, F, Bq, F, X, ...: the second X is a repeat (no free confirm, takes two slots), so it ends after
+        // 5 passes (3 counted + 2 free) and at most 5 steps after the first change; and again after the window.
+        let F = Self.F
+        let r = await run([(F, 120)] + cyc([Self.real("X"), F, Self.real("Bq"), F], step, 640), pass: true)
+        let first = r.supp[0]
+        #expect(r.passes.filter { $0 < first }.count <= 6)           // includes the F@0 pass
+        #expect(first - 120 <= 5 * step)
+        #expect(r.supp.count == 2)                                    // suppressed again after the 300 s window
+        #expect(maxPerMinute(r.passes) <= 4)
+    }
+
+    @Test(arguments: [15.0, 20]) func vii_sameWithoutEnginePublications(_ step: TimeInterval) async {
+        let S = base
+        let r = await run([(S, 120)] + cyc([Self.A, S, Self.B, S], step, 640), pass: false)
+        #expect(r.passes.filter { $0 < r.supp[0] }.count <= 5)
+        #expect(r.supp.count == 2 && maxPerMinute(r.passes) <= 4)
+    }
+
+    @Test func viii_slowTwoStateFlappers() async {
+        let fresh = await run(cyc([Self.A, Self.B], 30, 600), pass: false)
+        #expect(maxPerMinute(fresh.passes) <= 2 && fresh.passes.filter { $0 < fresh.supp[0] }.count == 3)
+        let steadyS = await run([(base, 120)] + cyc([Self.A, base], 30, 600), pass: false)
+        #expect(maxPerMinute(steadyS.passes) <= 2 && !steadyS.supp.isEmpty)
+        let steadyF = await run([(Self.F, 120)] + cyc([Self.real("X"), Self.F], 29, 600), pass: true)
+        #expect(maxPerMinute(steadyF.passes) <= 3 && !steadyF.supp.isEmpty)
+    }
+
+    @Test func ix_identicalRealChangeTwiceCostsTwoSlots() async {
+        let F = Self.F, X = Self.real("X")
+        let a = await run([(F, 120), (X, 10), (F, 20), (X, 10), (F, 10), (F, 10)], pass: true)
+        #expect(a.passes == [0, 120, 130, 150] && a.supp == [160])
+        let b = await run([(F, 120), (X, 10), (F, 55), (X, 10), (F, 10), (F, 10)], pass: true)
+        #expect(b.passes == [0, 120, 130, 185] && b.supp == [195])   // still a repeat inside the 5 min horizon
+    }
+
+    @Test func x_afterSkippedPollsFlappersAreBounded() async {
+        let two = await run([(Self.A, 10)] + Array(repeating: (nil, 10), count: 7) + cyc([Self.B, Self.A], 10, 300), pass: false)
+        #expect(two.passes.filter { $0 >= 70 }.count <= 3 && two.supp.count >= 1)
+        let four = await run([(Self.A, 10)] + Array(repeating: (nil, 10), count: 7) + cyc([Self.B, Self.A, base, Self.A], 15, 600), pass: false)
+        #expect(four.passes.filter { $0 >= 70 && $0 < four.supp[0] }.count <= 5 && four.supp.count == 2)
+    }
+
+    @Test func xi_theConfirmRunsExactlyOnce() async {
+        let r = await run([(Self.F, 120), (Self.real("X"), 10)] + Array(repeating: (Self.F, 10), count: 6), pass: true)
+        #expect(r.passes == [0, 120, 130] && r.supp.isEmpty)
+    }
+}
