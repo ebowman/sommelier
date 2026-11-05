@@ -370,3 +370,94 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         #expect(EngineTriggers.flappingKeys(a, b) == ["status:C::C"])
     }
 }
+
+// gdu.56: launch/quit detection that does not depend on NSWorkspace notifications (agent apps).
+@MainActor
+private final class FakeApps: RunningAppsSource {
+    var list: [RunningApp] = []
+    var handler: (@MainActor () -> Void)?
+    func current() -> [RunningApp] { list }
+    func startObserving(_ onChange: @escaping @MainActor () -> Void) { handler = onChange }
+    func stopObserving() { handler = nil }
+}
+
+@MainActor
+@Suite struct LaunchQuitTriggerTests {
+    private func make(owners: Set<Int32>? = nil) -> (EngineTriggers, FakeApps, Counter) {
+        let state = EngineState()
+        let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) }), store: InMemoryLayoutStore(.empty), capabilities: Caps(),
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+        let apps = FakeApps(), hits = Counter(), scans = ScanQueue(); scans.set([base])
+        let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver,
+                               apps: apps, ownerPIDs: { owners }, launchQuitTrigger: { hits.hit() })
+        return (t, apps, hits)
+    }
+    private let agent = RunningApp(pid: 500, bundleID: "x.dummy", policy: .accessory)
+
+    @Test func accessoryLaunchAndQuitEachRequestOnePass() async {
+        let (t, apps, hits) = make()
+        t.start(); defer { t.stop() }
+        apps.list = [agent]; await t.syncApps()
+        #expect(hits.count == 1)
+        apps.list = []; await t.syncApps()
+        #expect(hits.count == 2)
+    }
+
+    @Test func notificationAndKVOWithinDebounceMakeOneRequestWindow() async {
+        // Both paths request the same-reason delayed reconcile; the engine replaces the pending one, so close arrivals are one pass.
+        // Here: KVO diff requests once, the notification re-arms (a second call of the same reason), no third from repeated KVO.
+        let (t, apps, hits) = make()
+        t.start(); defer { t.stop() }
+        apps.list = [agent]
+        await t.syncApps()
+        await t.syncApps()   // repeated KVO: no diff, nothing
+        #expect(hits.count == 1)
+        await t.syncApps(notified: (agent, true))
+        #expect(hits.count == 2)   // re-arm, replaces the pending request in the engine
+    }
+
+    @Test func lateLaunchNotificationRearmsAfterKVOPass() async {
+        let (t, apps, hits) = make()
+        t.start(); defer { t.stop() }
+        apps.list = [agent]; await t.syncApps()
+        #expect(hits.count == 1)
+        await t.syncApps(notified: (agent, true))   // arrives after the KVO pass has run
+        #expect(hits.count == 2)
+    }
+
+    @Test func nonOwnerAccessoryQuitIgnoredOwnerQuitFires() async {
+        let (t, apps, hits) = make(owners: [500])
+        t.start(); defer { t.stop() }
+        let other = RunningApp(pid: 600, bundleID: "o", policy: .accessory)
+        apps.list = [agent, other]; await t.syncApps()
+        let base = hits.count
+        apps.list = [agent]
+        await t.syncApps(notified: (other, false))
+        #expect(hits.count == base)
+        apps.list = []
+        await t.syncApps(notified: (agent, false))
+        #expect(hits.count == base + 1)
+    }
+
+    @Test func prohibitedAppsAndUnownedQuitsAreIgnored() async {
+        let (t, apps, hits) = make(owners: [])
+        t.start(); defer { t.stop() }
+        apps.list = [RunningApp(pid: 7, bundleID: nil, policy: .prohibited)]; await t.syncApps()
+        #expect(hits.count == 0)
+        apps.list = [agent]; await t.syncApps()
+        #expect(hits.count == 1)
+        apps.list = []; await t.syncApps()   // known owners exist and exclude pid 500
+        #expect(hits.count == 1)
+    }
+
+    @Test func quitOfOwnerFiresAndBurstIsOneRequest() async {
+        let (t, apps, hits) = make(owners: [500])
+        t.start(); defer { t.stop() }
+        apps.list = [agent, RunningApp(pid: 501, bundleID: "h", policy: .accessory), RunningApp(pid: 502, bundleID: "h2", policy: .regular)]
+        await t.syncApps()
+        #expect(hits.count == 1)   // three launches in one change = one request
+        apps.list = [RunningApp(pid: 501, bundleID: "h", policy: .accessory), RunningApp(pid: 502, bundleID: "h2", policy: .regular)]
+        await t.syncApps()
+        #expect(hits.count == 2)
+    }
+}

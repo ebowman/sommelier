@@ -117,7 +117,11 @@ final class AppModel {
                                            allowAgentRestart: { UserDefaults.standard.object(forKey: "allowAgentRestart") as? Bool })
             engine = e
             triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") },
-                                       log: { NSLog("[Sommelier] poll: %@", $0) })
+                                       log: { NSLog(($0.hasPrefix("launch") || $0.hasPrefix("quit") || $0.hasPrefix("notification")) ? "[Sommelier] apps: %@" : "[Sommelier] poll: %@", $0) },
+                                       ownerPIDs: { [state] in
+                                           let pids = Set(state.items.values.map { Int32($0.ownerPID) })
+                                           return pids.isEmpty ? nil : pids
+                                       })
             watchErrors()
             agentWatcher = MenuBarAgentWatcher(log: { NSLog("[Sommelier] %@", $0) },
                                                 busy: { [platform] in platform.agentRestartInProgress },
