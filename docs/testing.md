@@ -479,3 +479,33 @@ Unit tests (`MenuBarScannerTests`): main-menu elements dropped, genuine parked (
 Live `mbprobe list` (read-only), count of Apple/File/Edit/.../`_NS:` entries and total `x=` rows: Finder front 0 (50 rows), TextEdit front 0 (48), Safari front 0 (50); the only `heuristic:com.apple.MenuBarAgent` row is the unnamed "System item" button (x=774). "Before" was also 0 live: the running agent did not mirror the main menu during this session (see docs/findings-identity.md, gdu.29); the 7-8 entries were recorded in docs/evidence/ax-b-drag-unrelated.txt.
 
 README screenshots (sommelier-gdu.63): Bartender quit, `make dummy ARGS="--count 2"`, scratch layout from `mbprobe layout init-from-current --file <scratch>/layout.json` with Dummy-A/B moved to the front of `hidden`, app run with `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json` (plus `SOMMELIER_OPEN_ARRANGE=1` for the Arrange window); click the Sommelier item (mouse-down >= 70 ms) and `screencapture -x -o -l <window id>` for each window (Arrange then `sips -Z 1400`), saved as `docs/images/panel.png` and `arrange.png`.
+
+## Inline reveal: "show the rest" mode 1 (gdu.15)
+Unit tests (`RevealTests.swift`, 9): planner flags (hidden appended in layout order, always-hidden only with `showAlwaysHidden`, hide units, clearing re-hides),
+`RevealController` (debounce 300 ms, re-hide on click while revealed, `revealedObserved` only after the pass), engine (`revealedObserved` set after convergence, not on
+request; a reveal whose actuator calls all fail is never reported as revealed). `make test`: 636 tests (baseline 627).
+
+Live 2026-11-05 (Bartender 7 quit, MBDummy `--count 2`, scratch layout via `SOMMELIER_LAYOUT_FILE` = `mbprobe layout init-from-current` with the Dummy unit in `hidden` and every
+real hidden item moved to `alwaysHidden`, `defaults write ie.boboco.sommelier revealMode inline` / `autoRehideSeconds -int 5`, real clicks at 70-90 ms hold with
+`clk`/`clko` at the Sommelier item (x 989, w 23, y 15)). Both plists backed up first. The bar is naturally full: the dummies land in the system overflow (stacked behind the chevron),
+so "on the bar" is judged with `mbprobe list` (on bar = flagged `overflow`, not parked), not by sight.
+* Click -> reveal converged (`reveal converged N ms after the click` in the app log): 2152, 3511, 2852 ms (further samples 4057, 3055, 4528, 4730). TARGET 1.5 s NOT MET with 2 items:
+  the pass needs two agreeing scans (~1.7 s of observation before the first write) plus ~1.1 s of live write and verification. Re-hide after the click (request -> observed hidden): 4.4 s once, 1.6 / 3.8 / 1.6 s for the idle re-hide.
+* Icon: `wineglass` -> `wineglass.fill` exactly at `observed=true` in the log, back to `wineglass` once the re-hide pass has landed (never at the request).
+* Order (`mbprobe list --include-self`): hidden: 30 on bar, 22 parked, Dummy-A/B parked; revealed: 32 on bar, 20 parked, Dummy-A/B on the bar (overflow area); re-hidden: 30/22,
+  Dummy-A/B parked. The hash of the DRAWN non-dummy order was identical before and after each cycle (`fecfa0f1` / `a85715a4`; two stable values because the width of the stacked
+  overflow pile changes which items are drawn, with dummies shown 17 drawn, hidden 17 or 19).
+* Auto re-hide: 5 s idle after convergence (`re-hide: idle 5 s` 5.05 s / 5.00 s / 4.95 s after converged). Click on a real menu bar item (Jump Desktop) while revealed ->
+  `idle timer suspended`, Escape -> `re-hide: menu bar item menu closed` 0.6 s later. Click on the Sommelier item while revealed (1.2 s after converged) -> `rehidden` at once.
+* Plain click with the Dummy unit in `alwaysHidden`: nothing to reveal, dummies stay parked, icon stays hollow, the request is withdrawn after 20 s (`reveal never converged`).
+* Option-click (the CGEvent `flags` of a posted click are not delivered to the button action; the click handler therefore also reads `NSEvent.modifierFlags`): detected
+  (`option=true`), `showAlwaysHidden` requested, the engine planned `membership actions=22` = the whole always-hidden section. NOT run to completion on purpose: every real hidden item
+  is in always-hidden in the scratch layout, so a completed option reveal would have shown the user's real items. The batch was refused before any write
+  (`unsupportedItem: macOS has no Control Center entry for this app yet`), nothing moved (22 still parked). Dummies-only always-hidden reveal is covered by the planner/engine unit tests.
+* End state: Sommelier and MBDummy stopped, Bartender 7 relaunched; `com.apple.controlcenter.plist` byte-equal; `group.com.apple.controlcenter.plist` `trackedApplications` equal entry by entry
+  after restoring MBDummy `isAllowed` (`mbprobe cc-allowed set ie.boboco.mbdummy 1 --live`, Bartender quit while writing); `com.apple.MenuBarAgent.plist` differs only in
+  `MenuBarAnalytics.lastReportedTrailingItemCount` (22 -> 24); real `layout.json`/`slot-hints.json` sha unchanged. A real item (DEVONthink) was shown once in the first run because the engine
+  adopted it as a new item into Hidden in the scratch layout; fixed by moving it to `alwaysHidden` and it was re-hidden by the engine (parked again at the end).
+
+Reviewer steps: scratch layout as above; `defaults write ie.boboco.sommelier revealMode inline`; click the Sommelier item; expect `reveal converged`, `wineglass.fill`, Dummy-A/B on bar in `mbprobe list`, re-hide after 5 s idle,
+click-while-revealed re-hide, `defaults delete ie.boboco.sommelier revealMode` afterwards.

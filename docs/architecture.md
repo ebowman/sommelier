@@ -380,7 +380,24 @@ restore afterwards).
 - Startup: refresh permissions -> if Accessibility missing show onboarding and stop -> if Bartender runs, show "paused" and
   poll every 5 s -> build engine, `start()` -> no layout file: initialize from one agreed scan (on bar visible, parked hidden)
   -> `requestReconcile()` once -> `EngineTriggers.start()`.
-- Left click toggles the hidden section; right click shows the menu (rebuilt per open). Our own item is never scanned.
+- Left click is configurable (Settings > General > "Left click", `revealMode`): the **overflow panel** (default, `panel`) or **show hidden
+  items in the menu bar** (`inline`); right click shows the menu (rebuilt per open). Our own item is never scanned.
+- **"Show the rest", two modes (gdu.15).** Mode 2 is the overflow panel (items stay parked, see "Overflow panel"). Mode 1 is the inline
+  reveal, driven by two engine flags: `LayoutEngine.setReveal(hidden:alwaysHidden:)` sets `showHiddenSection` (hidden section) and
+  `showAlwaysHidden` (always-hidden section too; option-click). The `Reconciler` treats the flagged sections as wanted on the bar, appended
+  right of the visible section in layout order (hidden first, then always-hidden); hide units stay whole (an app with an always-hidden item
+  stays hidden unless `showAlwaysHidden`). A reveal and its re-hide are NORMAL passes (live writes, verification, no respawn, gdu.55).
+  `EngineState.revealedObserved` is the OBSERVED state, written only when a pass ends (converged/incomplete) from the bar it observed:
+  true when a reveal is requested and at least one revealed item is on the bar (a partial reveal counts as shown; the failed items keep
+  their own `perItem` status), and with nothing requested it stays true until the re-hide has landed. The request alone never changes the
+  icon: `StatusItemController` shows `wineglass.fill` when `revealedObserved`, else `wineglass`.
+  `RevealController` (SommelierCore, testable) turns clicks into requests: a click while requested or revealed re-hides at once, option-click
+  also sets `showAlwaysHidden`, clicks within 300 ms of the previous accepted click are ignored, and it logs click -> converged time.
+  `RevealAutoRehide` (app) runs while a reveal is requested: re-hide after `autoRehideSeconds` (0 = never) without pointer activity over
+  the menu bar strip (the clock starts when the reveal is observed), or 0.6 s after the menu of a clicked menu bar item closed (global
+  `NSEvent` monitors: leftMouseDown over the strip arms it and suspends the idle clock; the next click below the strip or Escape is the close; a close
+  never seen ends after 20 s); a reveal that never converges is withdrawn after 20 s. Known limit: the engine's membership batch is
+  all-or-nothing, so one hidden item without a Control Center entry makes the whole reveal batch refuse (every item `.failed`, icon stays hollow).
 - Settings layout convention (gdu.59): a `TabView` of `Form`s with `.formStyle(.grouped)` (labels leading, controls trailing, captions and footnotes in secondary style); one shared width (540 pt) and a per-tab height chosen in `SettingsView.height`, so the window fits each pane with no dead band. New controls go into a Form row, never a fixed-width HStack.
 - Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
   re-grant calls `clearFailures()` and restarts.

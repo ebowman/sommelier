@@ -35,7 +35,7 @@ final class RevealAutoRehide {
         guard timer == nil else { return }
         lastActivity = Date(); requestedSince = Date(); armedAt = nil; closeSeenAt = nil
         if let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .keyDown], handler: { [weak self] ev in
-            let type = ev.type, code = ev.keyCode
+            let type = ev.type, code: UInt16 = ev.type == .keyDown ? ev.keyCode : 0   // keyCode is only valid on key events
             MainActor.assumeIsolated { self?.event(type, keyCode: code) }
         }) { monitors.append(m) }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -62,14 +62,21 @@ final class RevealAutoRehide {
         let p = NSEvent.mouseLocation, now = Date()
         switch type {
         case .keyDown:
-            if keyCode == 53, armedAt != nil { closeSeenAt = now }   // Escape closes a menu
+            if keyCode == 53, armedAt != nil {
+                closeSeenAt = now
+                NSLog("[Sommelier] reveal: Escape while an item menu is open (menu closed); re-hide after settle")
+            }   // Escape closes a menu
         case .leftMouseDown:
-            if overStrip(p), !(ownFrame()?.contains(p) ?? false) { armedAt = now; closeSeenAt = nil; lastActivity = now }
+            if overStrip(p), !(ownFrame()?.contains(p) ?? false) {
+                armedAt = now; closeSeenAt = nil; lastActivity = now
+                NSLog("[Sommelier] reveal: menu bar item clicked at %@; idle timer suspended until its menu closes", NSStringFromPoint(p))
+            }
         case .leftMouseUp:
             if overStrip(p) {
                 lastActivity = now
             } else if armedAt != nil, closeSeenAt == nil {
-                closeSeenAt = now   // a click below the strip while a menu is open: an entry chosen or the menu dismissed
+                closeSeenAt = now
+                NSLog("[Sommelier] reveal: click below the strip while an item menu is open (menu closed); re-hide after settle")   // a click below the strip while a menu is open: an entry chosen or the menu dismissed
             }
         default: break
         }

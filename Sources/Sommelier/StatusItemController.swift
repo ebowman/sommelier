@@ -39,8 +39,10 @@ final class StatusItemController: NSObject {
             showMenu()
         } else {
             if UserDefaults.standard.string(forKey: "revealMode") == "inline" {
-                let r = model.reveal.click(option: ev?.modifierFlags.contains(.option) == true)
-                NSLog("[Sommelier] reveal click: %@", "\(r)")
+                let option = ev?.modifierFlags.contains(.option) == true || NSEvent.modifierFlags.contains(.option)
+                let r = model.reveal.click(option: option)
+                NSLog("[Sommelier] reveal click (option=%@, event flags %lx, global flags %lx): %@", "\(option)",
+                      ev?.modifierFlags.rawValue ?? 0, NSEvent.modifierFlags.rawValue, "\(r)")
             } else {
                 togglePanel()
             }
