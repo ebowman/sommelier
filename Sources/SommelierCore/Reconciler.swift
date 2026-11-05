@@ -235,13 +235,16 @@ public struct Reconciler: Sendable {
         let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors)
         if blockStart < kept.count {
             let blockSet = Set(kept[blockStart...])
+            // Name the first MODULE of the block in skip messages: a self-positioning item (iStat, an anchor) can sit at its start
+            // (gdu.61). The block itself is unchanged, so the `violations` post-condition is unaffected.
+            let blockName = kept[blockStart...].first { if case .module = $0 { true } else { false } } ?? kept[blockStart]
             let systemBlock = blockSet.contains { if case .module = $0 { true } else { false } }
             if anchorsOutOfOrder, systemBlock, let first = desired.firstIndex(where: { blockSet.contains($0) }) {
                 // Out-of-order anchors keep their slots, so the movable keys the layout puts right of the block land left of
                 // it without being "beyond" in `target`: they still get their own skip entry (gdu.44). Only for a block that
                 // really holds system items (modules); a trailing run of merely immovable/failed third-party items is not one.
                 for k in desired[(first + 1)...] where !anchors.contains(k) && !blockSet.contains(k) {
-                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(kept[blockStart]))"))
+                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(blockName))"))
                 }
             }
             let firstBlockInTarget = target.firstIndex { blockSet.contains($0) } ?? target.count
@@ -258,7 +261,7 @@ public struct Reconciler: Sendable {
             } else { beyond = [] }
             if !beyond.isEmpty || !shows.isEmpty {
                 for k in beyond where !skipped.contains(where: { $0.key == k && $0.reason.hasPrefix("cannot be placed right of the system items") }) {
-                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(kept[blockStart]))"))
+                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(blockName))"))
                 }
                 target = target.filter { !blockSet.contains($0) } + kept[blockStart...]
             }

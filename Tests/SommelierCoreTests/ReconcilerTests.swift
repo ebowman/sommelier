@@ -308,3 +308,21 @@ struct ReconcilerRandomTests {
         }
     }
 }
+
+// gdu.61: iStat (an anchor) at the start of the trailing block must not be named as "the system items" in the skip message.
+struct TrailingBlockNameTests {
+    @Test func skipMessageNamesTheFirstModuleNotASelfPositioningItem() {
+        let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
+        let cc = ItemKey.module(name: "Clock")
+        let a = k("a"), b = k("b")
+        let caps: (ItemKey) -> Capability = { key in
+            if case .module = key { return Capability(canMove: false, canHide: false) }
+            return Capability(canMove: true, canHide: true)
+        }
+        let p = rec.plan(observed: ObservedOrder(onBar: [a, b, istat, cc], parked: []),
+                         layout: Layout(visible: [b, istat, cc, a]), capabilities: caps)
+        let skip = p.skipped.first { $0.key == a }
+        #expect(skip?.reason == "cannot be placed right of the system items (\(cc))")
+        #expect(!p.actions.contains { if case .move(let m, _) = $0 { m == istat } else { false } })
+    }
+}
