@@ -148,7 +148,7 @@ struct ReconcilerTests {
 // MARK: Randomized convergence
 
 /// Independent statement of the unit rule: which observed keys must end up on the bar.
-private func unitWantSet(layout: Layout, bar: [ItemKey], parked: [ItemKey], showHidden: Bool) -> Set<ItemKey> {
+private func unitWantSet(layout: Layout, bar: [ItemKey], parked: [ItemKey], showHidden: Bool, noHide: Set<ItemKey> = []) -> Set<ItemKey> {
     var out = Set<ItemKey>()
     for (_, ks) in hideUnits(bar + parked) {
         var secs = ks.compactMap { layout.section(of: $0) }
@@ -156,7 +156,12 @@ private func unitWantSet(layout: Layout, bar: [ItemKey], parked: [ItemKey], show
         if secs.isEmpty { secs = layout.allKeys.filter { $0.hideUnit == ks[0].hideUnit }.compactMap { layout.section(of: $0) } }
         let wants: Bool
         if secs.isEmpty { wants = layout.newItemPolicy == .visibleAtEnd && ks.contains { bar.contains($0) } }
-        else { wants = secs.contains(.visible) || (showHidden && secs.contains(.hidden) && !secs.contains(.alwaysHidden)) }
+        else {
+            let revealed = showHidden && secs.contains(.hidden) && !secs.contains(.alwaysHidden)
+            // gdu.15: a unit pulled onto the bar only by the reveal is dropped when a parked key of it cannot be shown.
+            let unshowable = !secs.contains(.visible) && ks.contains { parked.contains($0) && noHide.contains($0) }
+            wants = secs.contains(.visible) || (revealed && !unshowable)
+        }
         if wants { out.formUnion(ks) }
     }
     return out
@@ -227,7 +232,7 @@ struct ReconcilerRandomTests {
             for key in observedKeys where !anchorSet.contains(key) && Int.random(in: 0..<8, using: &g) == 0 { noHide.insert(key) }
             let caps = { (key: ItemKey) in Capability(canMove: !anchorSet.contains(key), canHide: !noHide.contains(key)) }
             let showHidden = Bool.random(using: &g)
-            let want0 = unitWantSet(layout: layout, bar: bar, parked: parked, showHidden: showHidden)
+            let want0 = unitWantSet(layout: layout, bar: bar, parked: parked, showHidden: showHidden, noHide: noHide)
 
             var converged = false
             var plans = 0

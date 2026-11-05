@@ -396,8 +396,12 @@ restore afterwards).
   `RevealAutoRehide` (app) runs while a reveal is requested: re-hide after `autoRehideSeconds` (0 = never) without pointer activity over
   the menu bar strip (the clock starts when the reveal is observed), or 0.6 s after the menu of a clicked menu bar item closed (global
   `NSEvent` monitors: leftMouseDown over the strip arms it and suspends the idle clock; the next click below the strip or Escape is the close; a close
-  never seen ends after 20 s); a reveal that never converges is withdrawn after 20 s. Known limit: the engine's membership batch is
-  all-or-nothing, so one hidden item without a Control Center entry makes the whole reveal batch refuse (every item `.failed`, icon stays hollow).
+  never seen ends after 20 s); a reveal that never converges is withdrawn after 20 s (log line plus `EngineState.revealNotice`, shown in the
+  Arrange status line as "Reveal withdrawn: N items could not be shown"). Untracked units: the membership batch is all-or-nothing (`LiveActuator`
+  refuses it when one key has no Control Center entry), so the planner (`Reconciler.plan`, the `gdu.15` block in the unit loop) drops a unit that is
+  pulled onto the bar only by a reveal when one of its parked keys has `canHide == false`, with the skip reason "cannot be shown: not tracked by Control
+  Center" (neutral `.unsupported` status). The other units show; the reveal counts as converged and `revealedObserved` is true (partial = shown).
+  `LiveActuator`'s refusal stays as the belt-and-braces guard.
 - Settings layout convention (gdu.59): a `TabView` of `Form`s with `.formStyle(.grouped)` (labels leading, controls trailing, captions and footnotes in secondary style); one shared width (540 pt) and a per-tab height chosen in `SettingsView.height`, so the window fits each pane with no dead band. New controls go into a Form row, never a fixed-width HStack.
 - Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
   re-grant calls `clearFailures()` and restarts.

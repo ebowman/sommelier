@@ -49,6 +49,8 @@ public final class EngineState {
     /// reveal counts as shown; failed items carry their own `perItem` status); with no reveal requested, true while a
     /// hidden-listed item (not failed/unsupported) is still on the bar, i.e. until the re-hide has landed.
     public var revealedObserved: Bool = false
+    /// Arrange status-line text after a reveal was refused or withdrawn ("Reveal withdrawn: N items could not be shown"); cleared by the next reveal click.
+    public var revealNotice: String?
     public var inFlight: PlannedAction?
     public var perItem: [ItemKey: ItemStatus]
     /// Keys that are `.inPlace` because a live hide/show was APPLIED per the Control Center store, but no usable complete read

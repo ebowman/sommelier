@@ -49,6 +49,32 @@ struct RevealPlannerTests {
     }
 }
 
+@Suite("Inline reveal: untracked units")
+struct RevealUntrackedTests {
+    let v = k("v"), h1 = k("h1"), h2 = k("h2")
+    func caps(_ key: ItemKey) -> Capability {
+        key == h2 ? Capability(canMove: true, canHide: false, reason: "no Control Center entry") : Capability(canMove: true, canHide: true)
+    }
+
+    @Test func anUntrackedHiddenUnitIsSkippedAndTheOthersShow() {
+        let l = Layout(visible: [v], hidden: [h1, h2])
+        let p = Reconciler().plan(observed: obs(on: [v], parked: [h1, h2]), layout: l, capabilities: caps, showHiddenSection: true)
+        #expect(p.actions.compactMap { if case .show(let x) = $0 { x } else { nil } } == [h1])
+        #expect(p.skipped.map(\.key) == [h2])
+        #expect(p.skipped.first?.reason == "cannot be shown: not tracked by Control Center")
+        #expect(p.desiredOnBar == [v, h1])
+        // After the show the plan is converged; the skip does not keep the reveal pending.
+        let done = Reconciler().plan(observed: obs(on: [v, h1], parked: [h2]), layout: l, capabilities: caps, showHiddenSection: true)
+        #expect(done.phase == .converged && done.actions.isEmpty)
+    }
+
+    @Test func aRevealOfOnlyUntrackedUnitsPlansNothing() {
+        let l = Layout(visible: [v], hidden: [h2])
+        let p = Reconciler().plan(observed: obs(on: [v], parked: [h2]), layout: l, capabilities: caps, showHiddenSection: true)
+        #expect(p.phase == .converged && p.skipped.count == 1)
+    }
+}
+
 @MainActor
 @Suite("Inline reveal: click model")
 struct RevealControllerTests {
@@ -79,6 +105,18 @@ struct RevealControllerTests {
         st.revealedObserved = true                            // the engine's pass ended with the items on the bar
         c.stateChanged()
         #expect(c.lastConvergeMillis == 850)
+    }
+
+    @Test func withdrawingARevealSetsTheStatusNotice() {
+        let st = EngineState(layout: Layout(visible: [k("v")], hidden: [k("a"), k("b")])); let clock = Clock()
+        let c = RevealController(state: st, apply: { h, a in st.showHiddenSection = h; st.showAlwaysHidden = a }, now: { clock.t })
+        c.click(option: false)
+        c.withdraw(reason: "never converged")
+        #expect(st.revealNotice == "Reveal withdrawn: 2 items could not be shown")
+        #expect(!st.showHiddenSection)
+        clock.advance(400)
+        c.click(option: false)
+        #expect(st.revealNotice == nil)
     }
 
     @Test func rehideIsNoOpWhenNothingRevealed() {
@@ -144,5 +182,29 @@ private struct RevealCaps: CapabilityProvider {
         _ = await e.reconcileOnce()
         #expect(!st.revealedObserved)                            // items still parked: the icon must not claim "shown"
         #expect(st.lastError != nil || st.perItem.values.contains { if case .failed = $0 { true } else { false } })
+    }
+
+    @Test func anUntrackedHiddenKeyDoesNotBlockTheReveal() async {
+        let caps = UntrackedCaps(bad: k("C"))
+        let inner = FakeActuator(order: ["A", "B", "C"].map(k), hidden: [k("B"), k("C")], capabilities: caps, makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        let st = EngineState()
+        let e = LayoutEngine(observer: RevealObserver(actuator: inner), actuator: inner,
+                             store: InMemoryLayoutStore(Layout(visible: [k("A")], hidden: [k("B"), k("C")])),
+                             capabilities: caps, state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+        await e.start()
+        await e.setReveal(hidden: true, alwaysHidden: false)
+        let r = await e.reconcileOnce()
+        #expect(r.outcome == .converged)
+        #expect(await inner.hidden == [k("C")])                   // B shown, the untracked C stays parked
+        #expect(st.revealedObserved)                              // partial = shown
+        if case .unsupported(let why)? = st.perItem[k("C")] { #expect(why.contains("not tracked")) } else { Issue.record("C should be .unsupported") }
+        #expect(st.lastError == nil)
+    }
+}
+
+private struct UntrackedCaps: CapabilityProvider {
+    let bad: ItemKey
+    func capability(for key: ItemKey) -> Capability {
+        key == bad ? Capability(canMove: true, canHide: false, reason: "no Control Center entry") : Capability(canMove: true, canHide: true)
     }
 }

@@ -628,7 +628,7 @@ public actor LayoutEngine {
                     var wanted: [ItemKey] = []
                     if wantHidden { wanted += lay.hidden }
                     if wantAlways { wanted += lay.alwaysHidden }
-                    anyShown = wanted.contains { onBar.contains($0) }
+                    anyShown = wanted.contains { onBar.contains($0) && usable($0) }
                 } else {
                     anyShown = (lay.hidden + lay.alwaysHidden).contains { onBar.contains($0) && usable($0) }
                 }

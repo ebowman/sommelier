@@ -101,6 +101,7 @@ public struct Reconciler: Sendable {
         let onBar = observed.onBar.filter { seen.insert($0).inserted }
         let parked = observed.parked.filter { seen.insert($0).inserted }
         let onBarSet = Set(onBar)
+        let parkedSet = Set(parked)
         let observedAll = Set(onBar + parked)
 
         // Classify. Hide granularity is the app (HideUnit): decide per unit, then apply the decision to every observed
@@ -131,7 +132,17 @@ public struct Reconciler: Sendable {
             // `showAlwaysHidden` (option-click) lifts the pin for this reveal only.
             let pinned = secs.contains(.alwaysHidden) && !showAlwaysHidden
             let revealed = (showHiddenSection && secs.contains(.hidden) && !pinned) || (showAlwaysHidden && secs.contains(.alwaysHidden))
-            let wants = !allHidden || revealed
+            var wants = !allHidden || revealed
+            // gdu.15: a unit pulled onto the bar only by a reveal is dropped (whole unit, units stay whole) when one of its parked
+            // keys cannot be shown (no Control Center entry: the same predicate LiveActuator refuses a batch on). The reveal
+            // then shows the applicable units instead of one untracked key refusing the whole batch. A key that failed earlier
+            // is not skipped here (existing retry/strike handling).
+            if wants, allHidden, revealed,
+               let bad = ks.first(where: { parkedSet.contains($0) && !capabilities($0).canHide && capabilities($0).reason != "failed earlier" }) {
+                let why = "cannot be shown: not tracked by Control Center"
+                for k in ks where parkedSet.contains(k) { skipped.append(SkippedAction(k, k == bad ? why : "\(why) (\(bad) in the same app)")) }
+                wants = false
+            }
             unitWantsBar[unit] = wants
             if !wants {
                 if showHiddenSection, allHidden, pinned, let pin = ks.first(where: { layout.section(of: $0) == .alwaysHidden }) {

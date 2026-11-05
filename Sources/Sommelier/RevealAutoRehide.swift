@@ -87,7 +87,7 @@ final class RevealAutoRehide {
         let now = Date(), p = NSEvent.mouseLocation
         if !state.revealedObserved {
             lastActivity = now   // the idle clock starts when the reveal is observed, not when it was requested
-            if now.timeIntervalSince(requestedSince) >= Self.convergeCap { controller.rehide(reason: "reveal never converged"); stop() }
+            if now.timeIntervalSince(requestedSince) >= Self.convergeCap { controller.withdraw(reason: "reveal never converged"); stop() }
             return
         }
         if overStrip(p), p != lastPointer || NSEvent.pressedMouseButtons != 0 { lastActivity = now }

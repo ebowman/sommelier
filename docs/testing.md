@@ -509,3 +509,12 @@ so "on the bar" is judged with `mbprobe list` (on bar = flagged `overflow`, not 
 
 Reviewer steps: scratch layout as above; `defaults write ie.boboco.sommelier revealMode inline`; click the Sommelier item; expect `reveal converged`, `wineglass.fill`, Dummy-A/B on bar in `mbprobe list`, re-hide after 5 s idle,
 click-while-revealed re-hide, `defaults delete ie.boboco.sommelier revealMode` afterwards.
+
+WARNING (Option latch): posting Option-flagged mouse events (the `clko ... opt` helper) can latch the Option modifier system-wide. Before any plain click check
+`NSEvent.modifierFlags` / the `global flags` value in the app log line `reveal click (option=..., event flags .., global flags ..)` (0x80000 = Option held); if latched,
+release it (`osascript -e 'tell application "System Events" to key up option'`) before clicking. Never option-click with real items in always-hidden.
+
+Corrective live re-check 2026-11-05 (untracked key; Bartender quit; scratch layout: Dummy unit AND `status:at.obdev.littlesnitch.agent::Item-0` (parked, NO Control Center entry per `mbprobe plan --show-hidden`, which also showed 8 real untracked keys skipped
+with "cannot be shown: not tracked by Control Center" and 13 shows for the tracked ones) in `hidden`, every other real hidden item in `alwaysHidden`): 3 clicks -> plan `membership actions=2 skipped=1` (the dummies shown, Little Snitch skipped), converged after
+3514 / 3199 / 1324 ms, icon `wineglass.fill` at `observed=true`, Dummy-A/B on the bar (32 on bar, 20 parked), Little Snitch still parked, idle re-hide 5 s later back to 30 / 22 with the drawn non-dummy order hash unchanged. Plist
+comparison: `com.apple.controlcenter.plist` byte-equal, `trackedApplications` equal after restoring MBDummy `isAllowed`, `com.apple.MenuBarAgent.plist` unchanged, real layout.json/slot-hints.json sha unchanged. `make test`: 640 tests.

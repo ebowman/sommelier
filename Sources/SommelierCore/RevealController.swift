@@ -46,6 +46,7 @@ public final class RevealController {
         }
         clickAt = t
         lastConvergeMillis = nil
+        state.revealNotice = nil
         apply(true, option)
         return .revealed(alwaysHidden: option)
     }
@@ -56,6 +57,21 @@ public final class RevealController {
         log("re-hide: \(reason)")
         clickAt = nil
         apply(false, false)
+    }
+
+    /// A requested reveal that never showed anything (refused batch, nothing applicable) is withdrawn with visible feedback:
+    /// a log line and `EngineState.revealNotice` (Arrange status line).
+    public func withdraw(reason: String) {
+        let layout = state.layout
+        var wanted: [ItemKey] = []
+        if state.showHiddenSection { wanted += layout.hidden }
+        if state.showAlwaysHidden { wanted += layout.alwaysHidden }
+        let onBar = Set(state.observed.onBar)
+        let n = wanted.filter { !onBar.contains($0) }.count
+        let text = "Reveal withdrawn: \(n) item\(n == 1 ? "" : "s") could not be shown"
+        log("\(text) (\(reason))")
+        rehide(reason: reason)
+        state.revealNotice = text
     }
 
     /// Call when `state.revealedObserved` (or the request) changed: records click -> converged once per reveal click.
