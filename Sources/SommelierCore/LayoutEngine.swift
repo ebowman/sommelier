@@ -1410,6 +1410,7 @@ public actor LayoutEngine {
                 case .leftmost: log("order: moving \(key) to the left end (user placement)")
                 case .rightmost: log("order: moving \(key) to the right end (user placement)")
                 }
+                log("order: why: \(text); observed around \(key): \(DropTrace.around(key, in: obs.onBar))")   // gdu.102
                 await publish { $0.orderMoveNotice = text; $0.orderMoveReasons[key] = text }
             }
             log("engine: move subject evidence: \(evidence[key] ?? "none")")   // gdu.94

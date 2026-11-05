@@ -727,3 +727,29 @@ carry `joinEvidence: .identifier` because a fake bar is hosted. `swift test`: 86
 ### The Visible strip omitted stale on-bar items and a drop landed 8 items away (gdu.101, 2026-11-05 13:59)
 
 Incident (dev run): the user dropped MCP Maestro one slot right in the Visible strip (15 rows). The real bar had 24 items; the observation was `hostedComplete=false level=completeExceptSelfPositioning onBarStale=9`, and `ObservedOrder(resolved:)` dropped the 9 stale iStat items, so the strip omitted on-bar items and the slot was translated to a layout index against the truncated list (`move after module:WiFi`, 8 items from the intent). Rule: the arranging UI never lies about the bar. Stale on-bar items are shown (flagged `~`, not draggable) and stay anchors; drops resolve by neighbour key; a drop (or step) beside an unrefreshed row is refused ("The bar is not fully observed right now; try again in a moment."); a placed key hangs on the nearest eligible key, never a module. Tests: `ReconcilerTests.staleOnBarKeptFlagged` (replaces `staleExcluded`), `staleOnBarIsNeverMoved`, `staleOnBarHideIsSkipped`, `placedHangsOnNearestEligibleSkippingIneligible`, `placedSkipsLeftModuleToRightEligible`; `ArrangeModelTests` gdu.101 section (incident shape with 9 stale rows). `swift test`: 883 tests.
+
+## Reading a drop in the log (gdu.102)
+
+Every Arrange gesture (drop, step, menu move, debug env move) gets a per-launch id `drop#<n>` (the counter resets at launch). Each stage logs a line carrying it, so one grep tells the story:
+
+```
+grep 'drop#7' ~/Library/Logs/Sommelier/sommelier.log
+```
+
+The stages, in order: `intent` (what the user did: item, section, slot, the real rows left/right of the slot, observation counts), `layout` (the neighbours in the resulting layout and whether the key is now user-placed), `rejected`/`done: noop|rejected` (no change), then the engine and actuator lines (`order: moving`, `order: why`, `attempt N: drag subject ... target= expect=`, `attempt N: verified: K between A and B` or `notVerified(expected:observed:)`), and finally `done:` from the Arrange tracker with the observed final neighbours. Actuator and engine lines carry no drop id (they run on the engine actor); read them between the `layout` line and the `done` line by time. The `bar=` list in `drag subject` is cut to 12 x-values followed by an ellipsis.
+
+Worked example, the 2026-11-05 13:59 MCP Maestro incident (gdu.101) rewritten in the new format (keys abbreviated):
+
+```
+arrange: drop#7 intent: MCP Maestro(status:maestro/item) -> visible slot 11; between Clock(status:clock/item) and Siri(status:siri/item); observed: onBar=24 stale=9 settled=true
+arrange: submit layout; moved=status:maestro/item
+arrange: drop#7 layout: visible after status:clock/item before status:siri/item; placed=yes
+engine: order: moving status:maestro/item after status:clock/item (user placement)
+engine: order: why: Moving MCP Maestro: you placed it after Clock; observed around status:maestro/item: status:istat1/item status:istat2/item [status:maestro/item] status:clock/item status:siri/item
+engine: move subject evidence: source=appExtras join=identifier fresh=true
+attempt 1: drag subject frame=(1204.0, 0.0, 22.0, 24.0) fresh=true target=status:clock/item frame=(1240.0, 0.0, 22.0, 24.0) expect=after(status:clock/item) toX=1255 steps=12 bar=84,112,140,168,196,224,252,280,308,336,364,392…
+attempt 1: verified: status:maestro/item between status:clock/item and status:siri/item
+arrange: drop#7 done: status:maestro/item verified in place 3.4s after the drop (observed order matches); final: between status:clock/item and status:siri/item
+```
+
+Before gdu.101 the same drop logged `intent ... between` neighbours eight items away from the dropped slot (the strip omitted the 9 stale items), which is exactly the mismatch these lines expose: compare the `intent` neighbours with the `observed around` neighbours and with the `final:` neighbours. A drop that fails ends in `drop#7 done: ... FAILED ...; final: between ...` instead.

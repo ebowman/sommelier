@@ -657,6 +657,8 @@ public struct ArrangeTracker: Equatable, Sendable {
         public var since: Date
         public var awaitingStamp: Bool = false
         public var ticket: Int = 0
+        /// gdu.102: the `drop#<n>` of the gesture that created this entry (nil for actions that are not drops).
+        public var dropID: Int?
     }
     private var nextTicket = 0
     public private(set) var entries: [ItemKey: Entry] = [:]
@@ -681,17 +683,17 @@ public struct ArrangeTracker: Equatable, Sendable {
     /// supplies the engine's `passesStartedAtRevision` for the revision this drop produced (gdu.48). The returned ticket names
     /// this submission. Without it, `passesStarted` is the stamp (an action that publishes no layout).
     @discardableResult
-    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date, awaitingStamp: Bool = false) -> Int {
+    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date, awaitingStamp: Bool = false, dropID: Int? = nil) -> Int {
         nextTicket += 1
         for k in keys {
-            entries[k] = Entry(dropSequence: passesStarted, since: now, awaitingStamp: awaitingStamp, ticket: nextTicket)
+            entries[k] = Entry(dropSequence: passesStarted, since: now, awaitingStamp: awaitingStamp, ticket: nextTicket, dropID: dropID)
             timedOut.remove(k)
         }
         return nextTicket
     }
 
     public mutating func retry(passesStarted: Int, now: Date) {
-        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now, ticket: entries[k]?.ticket ?? 0) }
+        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now, ticket: entries[k]?.ticket ?? 0, dropID: entries[k]?.dropID) }
         timedOut = []
     }
 
@@ -720,6 +722,11 @@ public struct ArrangeTracker: Equatable, Sendable {
             return []
         }
         var log: [String] = []
+        // gdu.102: with a drop id the line reads "drop#n done: <text>; final: between A and B" (observed bar order).
+        func line(_ e: Entry, _ k: ItemKey, _ text: String) -> String {
+            guard let id = e.dropID else { return text }
+            return DropTrace.doneLine(id: id, outcome: "\(text); final: \(DropTrace.between(k, in: observed.onBar))")
+        }
         for (k, e) in entries {
             guard layout.section(of: k) != nil else { entries[k] = nil; timedOut.remove(k); continue }
             let dt = now.timeIntervalSince(e.since)
@@ -727,22 +734,22 @@ public struct ArrangeTracker: Equatable, Sendable {
                 switch perItem[k] {
                 case .failed(let err)?:
                     entries[k] = nil; timedOut.remove(k)
-                    log.append("\(k) FAILED \(String(format: "%.1f", dt))s after the drop: \(ArrangeSections.describe(err))")
+                    log.append(line(e, k, "\(k) FAILED \(String(format: "%.1f", dt))s after the drop: \(ArrangeSections.describe(err))"))
                     continue
                 case .unsupported(let r)?:
                     entries[k] = nil; timedOut.remove(k)
-                    log.append("\(k) unsupported \(String(format: "%.1f", dt))s after the drop: \(r)")
+                    log.append(line(e, k, "\(k) unsupported \(String(format: "%.1f", dt))s after the drop: \(r)"))
                     continue
                 case let st? where st == .inPlace || st == .notFitting:
                     if ArrangeSections.placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {
                         entries[k] = nil; timedOut.remove(k)
-                        log.append("\(k) verified in place \(String(format: "%.1f", dt))s after the drop (observed order matches)")
+                        log.append(line(e, k, "\(k) verified in place \(String(format: "%.1f", dt))s after the drop (observed order matches)"))
                         continue
                     }
                 default: break
                 }
             }
-            if dt > Self.timeout, timedOut.insert(k).inserted { log.append("\(k) NOT applied after \(Int(Self.timeout))s") }
+            if dt > Self.timeout, timedOut.insert(k).inserted { log.append(line(e, k, "\(k) NOT applied after \(Int(Self.timeout))s")) }
         }
         return log
     }

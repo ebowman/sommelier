@@ -321,7 +321,8 @@ public actor LiveActuator: MenuBarActuator {
                 }
                 let steps = attempt == 1 ? config.dragSteps : config.retrySteps
                 let pid = plan.subject.item.ownerPID
-                note("attempt \(attempt): drag subject frame=\(plan.subject.item.frame) fresh=\(!plan.subject.item.stale) toX=\(Int(x)) steps=\(steps) bar=\(ActuationVerifier.barOrder(plan.resolved).map { "\(Int($0.item.frame.minX))" }.joined(separator: ","))")
+                let targetText = plan.target.map { "\($0.key) frame=\($0.item.frame)" } ?? "none"
+                note("attempt \(attempt): drag subject frame=\(plan.subject.item.frame) fresh=\(!plan.subject.item.stale) target=\(targetText) expect=\(relation) toX=\(Int(x)) steps=\(steps) bar=\(DropTrace.truncated(ActuationVerifier.barOrder(plan.resolved).map { "\(Int($0.item.frame.minX))" }))")
                 let probeBefore = platform.menuProbe(for: plan.subject.item)
                 let upAt: Date
                 do { upAt = try await platform.drag(itemFrame: plan.subject.item.frame, toX: x, steps: steps) }
@@ -343,7 +344,7 @@ public actor LiveActuator: MenuBarActuator {
                 }
                 lastSnapshot = obs.snapshot
                 if obs.verified {
-                    note("attempt \(attempt): verified" + (opened ? " (a menu had opened and was dismissed)" : ""))
+                    note("attempt \(attempt): verified: \(key) \(DropTrace.between(key, in: ActuationVerifier.barOrder(obs.resolved).map(\.key)))" + (opened ? " (a menu had opened and was dismissed)" : ""))
                     return .verified(obs.snapshot)
                 }
                 if opened { lastError = .mechanismFailed("menu opened") }

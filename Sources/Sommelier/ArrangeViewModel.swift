@@ -42,6 +42,9 @@ final class ArrangeViewModel {
     var hoverSlot: (section: LayoutSection, slot: Int)?
     /// The waiting state machine (pure, in SommelierCore); this class only feeds it.
     private(set) var tracker = ArrangeTracker()
+    /// gdu.102: `drop#<n>` ids, one per gesture (drop, step, menu move, env move); resets per launch.
+    @ObservationIgnored private var dropCounter = 0
+    private func nextDropID() -> Int { dropCounter += 1; return dropCounter }
     /// The layout we submitted until the engine has published it (by revision, gdu.48); rapid consecutive drops build on it.
     private(set) var pending = PendingLayout()
     /// Capability rules derived from `state.items`; refreshed on demand (see `cap`), never only while the window is open.
@@ -199,18 +202,16 @@ final class ArrangeViewModel {
         let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,
                                        observationAvailable: observationAvailable,
                                        bar: state.observed.onBar, displayName: displayName, units: units)
+        let id = nextDropID()
         AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot)")
-        // gdu.101: what the drop resolved against (the rows as displayed): nearest real rows left/right of the slot, the moving key skipped.
-        let at = min(max(0, slot), rows.count)
-        let left = rows[..<at].last { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key
-        let right = rows[at...].first { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key
-        AppLog.log(.arrange, "arrange: drop context: left=\(left.map { "\($0)" } ?? "none") right=\(right.map { "\($0)" } ?? "none") staleOnBar=\(state.observed.staleOnBar.count) settled=\(state.observationSettled)")
-        return submit(outcome, key: key)
+        AppLog.log(.arrange, "arrange: " + DropTrace.intentLine(id: id, key: key, section: section, slot: slot, rows: rows, observed: state.observed,
+                                                              settled: state.observationSettled, displayName: displayName))
+        return submit(outcome, key: key, dropID: id)
     }
 
     func move(_ key: ItemKey, to section: LayoutSection) {
         _ = submit(ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
-                                       observationAvailable: observationAvailable, units: units), key: key)
+                                       observationAvailable: observationAvailable, units: units), key: key, dropID: nextDropID())
     }
 
     /// Item name for refusal texts: the engine's `ItemInfo` when known, else the key.
@@ -227,7 +228,7 @@ final class ArrangeViewModel {
 
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
         _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
-                                    observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units), key: key)
+                                    observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units), key: key, dropID: nextDropID())
     }
 
     func canStep(_ key: ItemKey, _ dir: ArrangeDrop.Direction, rows: [ArrangeRow]) -> Bool {
@@ -258,27 +259,33 @@ final class ArrangeViewModel {
                 let index = Int(parts[parts.count - 1])
                 guard let section else { AppLog.log(.arrange, "arrange env move: bad section in \(one)"); continue }
                 self.ensureTimer()
-                AppLog.log(.arrange, "arrange env move: \(key) -> \(section.rawValue) movable index \(index.map(String.init) ?? "-")")
+                let id = self.nextDropID()
+                AppLog.log(.arrange, "arrange env move: \(DropTrace.tag(id)) \(key) -> \(section.rawValue) movable index \(index.map(String.init) ?? "-")")
                 // Same clamp as a UI drop; the index is 0-based among movable items (modules do not count).
                 let outcome = ArrangeDrop.drop(layout: self.layout, key: key, section: section, movableIndex: index,
                                                capabilities: self.cap, observationAvailable: self.observationAvailable,
                                                bar: self.state.observed.onBar, displayName: self.displayName, units: self.units)
-                _ = self.submit(outcome, key: key)
+                _ = self.submit(outcome, key: key, dropID: id)
                 if interval > 0 { try? await Task.sleep(for: .seconds(interval)) }
             }
         }
     }
 
     @discardableResult
-    private func submit(_ outcome: ArrangeDrop.Outcome, key: ItemKey) -> Bool {
+    private func submit(_ outcome: ArrangeDrop.Outcome, key: ItemKey, dropID: Int? = nil) -> Bool {
         switch outcome {
         case .noop:
             message = nil
             AppLog.log(.arrange, "arrange: \(key) dropped on its own position: no change")
+            if let dropID { AppLog.log(.arrange, "arrange: " + DropTrace.doneLine(id: dropID, outcome: "noop")) }
             return true
         case .rejected(let why):
             message = why
             AppLog.log(.arrange, "arrange: rejected \(key): \(why)")
+            if let dropID {
+                AppLog.log(.arrange, "arrange: " + DropTrace.rejectedLine(id: dropID, why: why))
+                AppLog.log(.arrange, "arrange: " + DropTrace.doneLine(id: dropID, outcome: "rejected"))
+            }
             return false
         case .move(let l, let moved, let willNotFit):
             let old = layout
@@ -290,7 +297,8 @@ final class ArrangeViewModel {
                 track.append(k)
             }
             AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
-            apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved))
+            if let dropID { AppLog.log(.arrange, "arrange: " + DropTrace.layoutLine(id: dropID, key: key, layout: l)) }
+            apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved), dropID: dropID)
             return true
         }
     }
@@ -299,9 +307,9 @@ final class ArrangeViewModel {
     /// engine stamps on `l` (the stamp arrives with `setLayout`'s return).
     /// `basedOn`: the layout revision `l` was composed on (gdu.52); the engine re-adds items it appended after it. A drop composes
     /// and submits in the same main-actor turn, so it passes the current revision; a confirm dialog passes the revision from when it opened.
-    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = []) {
+    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = [], dropID: Int? = nil) {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
-        let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true)
+        let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true, dropID: dropID)
         pending.submit(l)
         ensureTimer()
         Task { [weak self] in   // never block the main actor on the engine
