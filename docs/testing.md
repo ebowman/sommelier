@@ -124,7 +124,7 @@ Read-only check (never the real layout file):
     $MB layout init-from-current --file SCRATCH/layout.json --force   # retry on "scans did not agree"
     # on "scans did not agree" it names the keys stale in the last scan and the keys that differed between the last two scans (gdu.30)
     # stale items in an AGREED scan: self-positioning owners (iStat) are written with a stderr "note: N self-positioning items were stale"; any other stale item (a parked one can be) refuses with the keys named (gdu.30)
-    # refuses (exit 1, nothing written) when ANY scan of the agreement loop marked an item placement-unknown (not only the final result) or the agreed read is `.incomplete` ("layout init needs a complete read; retry when the bar settles"); `.completeExceptSelfPositioning` is accepted (gdu.82, LayoutInitTests)
+    # refuses (exit 1, nothing written) when ANY scan of the agreement loop marked an item placement-unknown (not only the final result) or the agreed read is `.incomplete` ("layout init needs a complete read; retry when the bar settles (incomplete: <scanner reasons>)", gdu.84); `.completeExceptSelfPositioning` is accepted (gdu.82, LayoutInitTests)
     $MB list                                                           # on-bar section, left to right
     $MB plan --file SCRATCH/layout.json                                # phase: converged, actions (0), skipped (0)
 
@@ -587,3 +587,9 @@ Measured with read-only `mbprobe list --timing --debug --repeat 3`, 6 runs ~10 s
 Consistent with gdu.77 (answered 0.43-0.95 s, stale ~2.5-2.8 s). The probe cannot show the cap: it is a one-shot process with no persisted self-positioning record, and the stale reads had 9 unnamed failed reads for 8 iStat groups (one non-iStat, e.g. Universal Control/DEVONthink Helper), so the scanner reported `incomplete: 9 unnamed timeouts ...`, attributed nobody, and (correctly, by the gdu.51 rule) capped nobody; read 2 of runs 4/6 still paid ~2.7 s. The hysteresis therefore applies only where attribution holds (the app with its persisted record, 8 failures all iStat); that needs the deferred live check.
 
 Live (human/reviewer, deferred): with the app running and an alternating iStat, 3 reveal cycles with the dummies (plists backed up), record observe/verify ms; a stale full scan after a resolving read within 60 s should take ~0.7-0.9 s instead of ~2.5 s (log: the agent tree read time), and completeness stays `completeExceptSelfPositioning`.
+
+### gdu.84 exact-frame join tie-break (2026-11-05)
+
+Unit: `ExactFrameTieBreakTests` (rv82 numbers: KeepingYouAwake 795/w30 allowed + unowned hosted 795/w30 + pile neighbours 798/w27, 799/w22 + chevron): on-bar, `systemOverflow`, `frameUnique`; same shape flag-false -> `controlCenterHidden`; two allowed candidates both exact -> neither `frameUnique`; 2 pt off -> `placementUnknown` with the "weak join (frameAmbiguous) ... overflow pile ... make room in the bar" reason. `LayoutInitTests`: the `.incomplete` refusal contains "incomplete: <scanner reason>"; the unknown refusal uses the per-item reason. `frameJoinIsCorroboratedOnlyWhenMutualAndExclusive` fixture moved to a 3 pt offset (an exact 1 pt match is now corroborated by design). `make test`: 767 (baseline 761).
+
+Live (read-only, real bar): `mbprobe list --json` twice: KeepingYouAwake `isOnMenuBar` true, `systemOverflow` true, `joinEvidence` frameUnique, ccAllowed true; `layout init-from-current --file <scratch>` exit 0 (54 keys, 23 visible), no `cc-allowed list` isAllowed=0 owner among visible.

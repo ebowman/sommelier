@@ -158,7 +158,7 @@ final class AppModel {
                 let unknown = LayoutBuilder.unknownPlacement(in: resolved)
                 guard unknown.isEmpty else {
                     // gdu.79: app-side frame only, no hosted element: where these items are is unknown; do not persist a guess.
-                    NSLog("[Sommelier] first-launch scan: %@; layout left empty", LayoutBuilder.unknownPlacementMessage(unknown))
+                    NSLog("[Sommelier] first-launch scan: %@; layout left empty", LayoutBuilder.unknownPlacementMessage(unknown, reasons: LayoutBuilder.unknownReasons(in: resolved)))
                     throw ObserveError.noAgreement(scans: reading.scans)
                 }
                 let (layout, excluded) = LayoutBuilder.build(from: resolved, resolver: EngineFactory.currentTrackedResolver())

@@ -55,6 +55,19 @@ private let kPlaced = it("K", x: 140)
     #expect(m == "layout init needs a complete read; retry when the bar settles")
 }
 
+@Test func initIncompleteRefusalAppendsTheScannersReasons() async {
+    var s1 = snap([a, kPlaced], complete: false); s1.completenessReason = "named timeout not self-positioning (id:X)"
+    var s2 = snap([a, kPlaced], complete: false); s2.completenessReason = "named timeout not self-positioning (id:X)"
+    guard case .refuse(let m) = await LayoutInit.evaluate(observer: observer([s1, s2])) else { Issue.record("expected refusal"); return }
+    #expect(m.hasPrefix("layout init needs a complete read") && m.contains("incomplete: named timeout not self-positioning (id:X)"))
+}
+
+@Test func initUnknownRefusalUsesThePerItemReason() async {
+    var u = kUnknown; u.placementReason = "weak join (frameAmbiguous) with a hosted element in the overflow pile; make room in the bar so the item is drawn, or hide it in Control Center"
+    guard case .refuse(let m) = await LayoutInit.evaluate(observer: observer([snap([a, u]), snap([a, u])])) else { Issue.record("expected refusal"); return }
+    #expect(m.contains("weak join (frameAmbiguous)") && m.contains("overflow pile") && !m.contains("retry when the bar settles"))
+}
+
 @Test func initAcceptsASelfPositioningOnlyIncompleteRead() async {
     let o = observer([snap([a, kPlaced], complete: false, spOnly: true), snap([a, kPlaced], complete: false, spOnly: true)])
     guard case .build(let items, _, _) = await LayoutInit.evaluate(observer: o) else { Issue.record("expected build"); return }

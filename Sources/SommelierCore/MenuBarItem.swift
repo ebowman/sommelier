@@ -77,6 +77,9 @@ public struct MenuBarItem: @unchecked Sendable {
     public var placementUnknown: Bool
     /// The Control Center `isAllowed` readback the scanner consulted for an app-side-only item (nil = not consulted / unreadable / no entry).
     public var controlCenterAllowed: Bool?
+    /// gdu.84: why `placementUnknown` is set ("no hosted element" vs "weak join (frameAmbiguous) in the overflow pile" ...), with what
+    /// to do about it. Diagnostic only: not serialized, not part of identity.
+    public var placementReason: String?
     /// nil when on the bar; otherwise why it is off it.
     public var hiddenReason: HiddenReason? {
         isOnMenuBar ? nil : (assumedNotHosted ? .assumedNotHosted : (notHostedByAgent ? .notHosted
@@ -213,6 +216,19 @@ public struct OverflowProbe: Equatable, Sendable {
 /// Bare frame coincidence right of the chevron is NOT overflow (two drawn items can coincide by chance; findings-drag
 /// "False-positive incident"). No chevron: nothing is overflowed (the caller decides).
 public enum SystemOverflowRule {
+    /// gdu.84: the exact-frame tie-break of the scanner's join (`MenuBarScanner.assemble`, the `exactFrame` pass). Inside the overflow
+    /// pile neighbours overlap (TextInputMenuAgent 798/w27 and #4 799/w22 around KeepingYouAwake at 795/w30), so a plain intersection
+    /// join is ambiguous even when one unowned hosted element sits EXACTLY on the app item's frame. An ALLOWED item (never a
+    /// Control Center flag-false one, gdu.79) whose app-side frame equals an unowned hosted element's within `exactFrameTolerance`
+    /// in x AND width joins it as `frameUnique`, provided no other allowed candidate matches that element exactly too (and the
+    /// candidate matches no other element exactly). Two exact matches stay ambiguous.
+    public static let exactFrameTolerance: CGFloat = 1
+    public static func exactFrameMatch(_ hosted: CGRect, _ app: CGRect) -> Bool {
+        guard hosted.width > 0, app.width > 0 else { return false }
+        let i = hosted.intersection(app)
+        return !i.isNull && i.height > 0
+            && abs(hosted.minX - app.minX) <= exactFrameTolerance && abs(hosted.width - app.width) <= exactFrameTolerance
+    }
     public static func isOverflowed(_ frame: CGRect, chevron c: CGRect, hosted: [CGRect]) -> Bool {
         if frame.minX < c.minX { return true }
         if c.insetBy(dx: -2, dy: -2).contains(CGPoint(x: frame.midX, y: frame.midY)) { return true }

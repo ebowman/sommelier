@@ -12,10 +12,14 @@ public enum LayoutInit {
     public static let incompleteMessage = "layout init needs a complete read; retry when the bar settles"
 
     public static func evaluate(observer: AgreedScanObserver) async -> Outcome {
-        let r: (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?, completeness: ReadCompleteness, unknownSeen: [ItemKey])
+        let r: (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?, completeness: ReadCompleteness, unknownSeen: [ItemKey],
+               unknownReasons: [ItemKey: String], incompleteReasons: [String])
         do { r = try await observer.observeDiagnosed() } catch { return .refuse("\(error); not writing") }
         if let d = r.disagreement { return .refuse(d.message) }
-        if r.completeness == .incomplete { return .refuse(incompleteMessage) }
+        if r.completeness == .incomplete {
+            // gdu.84: say which groups/reads made it incomplete (the scanner's gdu.51 reason), not just "retry".
+            return .refuse(r.incompleteReasons.isEmpty ? incompleteMessage : incompleteMessage + " (incomplete: " + r.incompleteReasons.joined(separator: "; ") + ")")
+        }
         var notes: [String] = []
         switch BarSignature().staleVerdict(r.items) {
         case .clean: break
@@ -26,7 +30,9 @@ public enum LayoutInit {
         // The union over every scan the agreement loop considered, plus the final result.
         var unknown = r.unknownSeen
         for k in LayoutBuilder.unknownPlacement(in: r.items) where !unknown.contains(k) { unknown.append(k) }
-        if !unknown.isEmpty { return .refuse(LayoutBuilder.unknownPlacementMessage(unknown) + "; not writing") }
+        var reasons = r.unknownReasons
+        reasons.merge(LayoutBuilder.unknownReasons(in: r.items)) { old, _ in old }
+        if !unknown.isEmpty { return .refuse(LayoutBuilder.unknownPlacementMessage(unknown, reasons: reasons) + "; not writing") }
         return .build(items: r.items, scans: r.scans, notes: notes)
     }
 }

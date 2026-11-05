@@ -15,9 +15,18 @@ public enum LayoutBuilder {
     }
 
     /// The message of that refusal (names the keys).
-    public static func unknownPlacementMessage(_ keys: [ItemKey]) -> String {
-        "placement unknown for \(keys.count) items (app-side frame only, no hosted element); retry when the bar settles: "
-            + keys.map(\.description).joined(separator: ", ")
+    /// gdu.84: each key carries its own reason when known (`reasons`), e.g. "no hosted element" or "weak join (frameAmbiguous) with a
+    /// hosted element in the overflow pile", plus what to do about it.
+    public static func unknownPlacementMessage(_ keys: [ItemKey], reasons: [ItemKey: String] = [:]) -> String {
+        "placement unknown for \(keys.count) items: "
+            + keys.map { "\($0.description) (\(reasons[$0] ?? "no hosted element; make room in the bar so the item is drawn, or hide it in Control Center"))" }.joined(separator: ", ")
+    }
+
+    /// Per-key reasons of the placement-unknown items of `resolved`.
+    public static func unknownReasons(in resolved: [ResolvedItem]) -> [ItemKey: String] {
+        var out: [ItemKey: String] = [:]
+        for r in resolved where r.item.placementUnknown { if let w = r.item.placementReason, out[r.key] == nil { out[r.key] = w } }
+        return out
     }
 
     /// On-bar items -> `visible` (order preserved); parked items -> `hidden`. Items with width <= 1 (e.g. the frontmost

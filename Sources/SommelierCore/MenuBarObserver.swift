@@ -232,13 +232,15 @@ public struct AgreedScanObserver: MenuBarObserver {
     /// Also returns the read level the agreed result rests on and the union of keys ANY considered scan marked
     /// `placementUnknown` (gdu.82; observation only, the agreement rule is unchanged).
     public func observeDiagnosed() async throws -> (items: [ResolvedItem], scans: Int, disagreement: ScanDisagreement?,
-                                                    completeness: ReadCompleteness, unknownSeen: [ItemKey]) {
+                                                    completeness: ReadCompleteness, unknownSeen: [ItemKey],
+                                                    unknownReasons: [ItemKey: String], incompleteReasons: [String]) {
         let r = try await scanLoop(progress: nil, seed: nil)
-        guard let o = r.observation, o.settled else { return ([], r.disagreement.scans, r.disagreement, .incomplete, r.unknownSeen) }
-        return (o.items, o.scans, nil, o.completeness, r.unknownSeen)
+        guard let o = r.observation, o.settled else { return ([], r.disagreement.scans, r.disagreement, .incomplete, r.unknownSeen, r.unknownReasons, r.incompleteReasons) }
+        return (o.items, o.scans, nil, o.completeness, r.unknownSeen, r.unknownReasons, r.incompleteReasons)
     }
 
-    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed? = nil) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement, unknownSeen: [ItemKey]) {
+    private func scanLoop(progress: (@Sendable ([ResolvedItem]) -> Void)?, seed: ObservationSeed? = nil) async throws -> (observation: BarObservation?, disagreement: ScanDisagreement, unknownSeen: [ItemKey],
+                                                                                                                                                  unknownReasons: [ItemKey: String], incompleteReasons: [String]) {
         guard accessibilityTrusted() else { throw ObserveError.permissionDenied }
         let limit = Date().addingTimeInterval(deadline)
         var scans = 0
@@ -248,6 +250,8 @@ public struct AgreedScanObserver: MenuBarObserver {
         var sawNonEmpty = false
         var sentProgress = false
         var unknownSeen: [ItemKey] = []
+        var unknownReasons: [ItemKey: String] = [:]
+        var incompleteReasons: [String] = []
         // Latest complete read; a read without a stale item on the bar is preferred over one with.
         var best: [ResolvedItem]?
         var bestClean = false
@@ -269,6 +273,8 @@ public struct AgreedScanObserver: MenuBarObserver {
             prevRes = scans == 1 ? seedItems : lastRes
             lastRes = res
             for k in LayoutBuilder.unknownPlacement(in: res) where !unknownSeen.contains(k) { unknownSeen.append(k) }
+            unknownReasons.merge(LayoutBuilder.unknownReasons(in: res)) { old, _ in old }
+            if let why = snap.completenessReason, !incompleteReasons.contains(why) { incompleteReasons.append(why) }
             if !dups.isEmpty {
                 // Which copies existed (so the cause is visible in the log): x, size, stale flag, source, identifier.
                 let detail = dups.map { k in
@@ -298,7 +304,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             }
             if !empty, let compareSig, compareSig == prevSig {
                 return (BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel)),
-                        ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []), unknownSeen)
+                        ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []), unknownSeen, unknownReasons, incompleteReasons)
             }
             prevSig = sig
             prevLevel = level
@@ -309,9 +315,9 @@ public struct AgreedScanObserver: MenuBarObserver {
         let disagreement = ScanDisagreement.make(scans: scans, previous: prevRes, last: lastRes, rule: rule)
         if let best {
             log("scans did not agree after \(scans) attempts; returning the latest complete read, unsettled")
-            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel), disagreement, unknownSeen)
+            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel), disagreement, unknownSeen, unknownReasons, incompleteReasons)
         }
-        return (nil, disagreement, unknownSeen)
+        return (nil, disagreement, unknownSeen, unknownReasons, incompleteReasons)
     }
 }
 

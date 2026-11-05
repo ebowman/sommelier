@@ -111,7 +111,8 @@ private func item(_ s: MenuBarSnapshot, _ name: String) -> MenuBarItem { s.items
         let unknown = LayoutBuilder.unknownPlacement(in: r)
         #expect(unknown == [.status(ownerKey: "co.podzim.boltai-mobile", autosaveName: "boltai")])
         let msg = LayoutBuilder.unknownPlacementMessage(unknown)
-        #expect(msg.hasPrefix("placement unknown for 1 items (app-side frame only, no hosted element); retry when the bar settles"))
+        #expect(msg.hasPrefix("placement unknown for 1 items: "))
+        #expect(msg.contains("no hosted element") && msg.contains("make room in the bar"))
         #expect(msg.contains("boltai"))
         let l = LayoutBuilder.build(from: r).layout
         #expect(!l.allKeys.contains(unknown[0]))
@@ -259,5 +260,58 @@ private let scriptMenu = RunningAppInfo(pid: 15, bundleID: "com.apple.ScriptMenu
 
     @Test func aScannerOnAFixtureSourceNeverReadsTheRealStore() {
         #expect(MenuBarScanner(source: Src()).trackedEntries() == nil)
+    }
+}
+
+/// gdu.84: KeepingYouAwake (rv82 numbers): allowed, app-side 795/w30, an UNOWNED hosted element at exactly 795/w30 in the overflow pile, and
+/// pile neighbours that overlap it (TextInputMenuAgent 798/w27, #4 799/w22). The exact-frame tie-break joins it as frameUnique.
+@Suite struct ExactFrameTieBreakTests {
+    private let kya = RunningAppInfo(pid: 20, bundleID: "info.marcel-dierkes.KeepingYouAwake", name: "KeepingYouAwake")
+    private let kya2 = RunningAppInfo(pid: 21, bundleID: "ie.test.twin", name: "Twin")
+    private func mk(kyaFrame: CGRect, twinFrame: CGRect? = nil) -> Src {
+        var s = Src(apps: [agent, kya, kya2])
+        s.extras[20] = [AXElementInfo(frame: kyaFrame)]
+        if let t = twinFrame { s.extras[21] = [AXElementInfo(frame: t)] }
+        s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+            AXElementInfo(title: "TextInputMenuAgent", frame: bar(798, w: 27)),
+            AXElementInfo(title: "#3", frame: bar(795, w: 30)),
+            AXElementInfo(title: "#4", frame: bar(799, w: 22)),
+            AXElementInfo(axDescription: MenuBarItem.overflowChevronName, frame: bar(795, w: 17)),
+            AXElementInfo(axDescription: "Clock", frame: bar(1500)),
+        ])
+        return s
+    }
+    private func run(_ s: Src, allowed: [String: Bool]) -> MenuBarSnapshot {
+        var sc = MenuBarScanner(source: s)
+        sc.trackedEntries = { allowed.map { entry($0.key, $0.value) } }
+        return sc.scan()
+    }
+
+    @Test func allowedItemExactlyOnAnUnownedElementInThePileIsFrameUniqueAndOnBar() {
+        let s = run(mk(kyaFrame: bar(795, w: 30)), allowed: ["info.marcel-dierkes.KeepingYouAwake": true])
+        let i = item(s, "KeepingYouAwake")
+        #expect(i.joinEvidence == .frameUnique && i.isOnMenuBar && !i.placementUnknown && i.systemOverflow)
+        #expect(i.frame == bar(795, w: 30))
+    }
+
+    @Test func theSameShapeWithAFlagFalseItemStaysControlCenterHidden() {
+        let s = run(mk(kyaFrame: bar(795, w: 30)), allowed: ["info.marcel-dierkes.KeepingYouAwake": false])
+        let i = item(s, "KeepingYouAwake")
+        #expect(i.hiddenReason == .controlCenterHidden && !i.isOnMenuBar && i.joinEvidence == .none)
+    }
+
+    @Test func twoAllowedItemsExactlyMatchingOneElementStayAmbiguous() {
+        let s = run(mk(kyaFrame: bar(795, w: 30), twinFrame: bar(795, w: 30)),
+                    allowed: ["info.marcel-dierkes.KeepingYouAwake": true, "ie.test.twin": true])
+        #expect(!s.items.contains { $0.ownerName == "KeepingYouAwake" && $0.joinEvidence == .frameUnique })
+        #expect(!s.items.contains { $0.ownerName == "Twin" && $0.joinEvidence == .frameUnique })
+    }
+
+    @Test func anAllowedItemTwoPointsOffIsStillUnknownWithAPileReason() {
+        let s = run(mk(kyaFrame: bar(797, w: 30)), allowed: ["info.marcel-dierkes.KeepingYouAwake": true])
+        let i = item(s, "KeepingYouAwake")
+        #expect(i.placementUnknown && i.joinEvidence == .none)
+        #expect(i.placementReason?.contains("weak join (frameAmbiguous)") == true)
+        #expect(i.placementReason?.contains("overflow pile") == true && i.placementReason?.contains("make room in the bar") == true)
     }
 }

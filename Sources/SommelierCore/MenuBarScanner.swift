@@ -593,6 +593,21 @@ public struct MenuBarScanner {
         }
         pass(.identifier) { !$0.identifier.isEmpty && $0.identifier == $1.identifier }
         pass(.description) { !$0.axDescription.isEmpty && $0.axDescription == $1.axDescription }
+        // gdu.84 exact-frame tie-break (`SystemOverflowRule.exactFrameMatch`): before the loose intersection pass, an unmatched, allowed
+        // candidate and an unowned hosted element that coincide exactly pair up as `frameUnique` when neither has a second exact match.
+        // Flag-false candidates (gdu.79), assumed-hidden ones and the chevron (gdu.69) never take part.
+        for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) && !h.isOverflowChevron {
+            let eligible = candidates.indices.filter { matchedCandidates[$0] == nil && !assumedIdx.contains($0) && !flagFalseIdx.contains($0) }
+            let exact = eligible.filter { SystemOverflowRule.exactFrameMatch(h.frame, candidates[$0].info.frame) }
+            guard exact.count == 1, let ci = exact.first else { continue }
+            let rivals = hosted.indices.filter {
+                $0 != hi && !matchedHosted.contains($0) && !Self.isOwnHostedElement(hosted[$0]) && !hosted[$0].isOverflowChevron
+                    && SystemOverflowRule.exactFrameMatch(hosted[$0].frame, candidates[ci].info.frame)
+            }
+            guard rivals.isEmpty else { continue }
+            matchedHosted.insert(hi); matchedCandidates[ci] = h; hostedOwner[hi] = candidates[ci].app.pid
+            matchedBy[ci] = (.frameUnique, hi)
+        }
         pass(.frameAmbiguous) { h, c in
             guard h.frame.width > 0, c.frame.width > 0 else { return false }
             let i = h.frame.intersection(c.frame)
@@ -605,6 +620,7 @@ public struct MenuBarScanner {
             let h = hosted[m.hosted]
             switch m.pass {
             case .identifier: return .identifier
+            case .frameUnique: return .frameUnique   // the exact-frame pass above already proved uniqueness
             case .description:
                 let d = h.axDescription
                 let owners = candidates.filter { $0.info.axDescription == d }.count
@@ -744,7 +760,7 @@ public struct MenuBarScanner {
                     if !e.isAllowed { ccHidden = true; ccAllowed = false }
                     else if hostedComplete, h == nil || inPile { unknown = true; ccAllowed = true }
                     else { ccAllowed = true }
-                    if ccHidden || unknown, h != nil { why = "weak join (\(ev.rawValue)) with a hosted element" }
+                    if ccHidden || unknown, h != nil { why = "weak join (\(ev.rawValue)) with a hosted element" + (inPile ? " in the overflow pile" : "") }
                 } else {
                     ccAllowed = e.isAllowed
                     if !e.isAllowed {
@@ -755,11 +771,12 @@ public struct MenuBarScanner {
                 if ccHidden || unknown {
                     if h != nil { h = nil }   // the element is somebody else's: the app-side frame is all this item has
                     let line = "authority: \(c.app.bundleID ?? c.app.name) \(c.info.identityKey) app-side frame \(c.info.frame) (source appExtras, \(why)); Control Center isAllowed=\(ccAllowed.map(String.init(describing:)) ?? "?") -> " + (ccHidden ? "hidden" : "placement unknown")
+                        + (unknown ? " (make room in the bar so the item is drawn, or hide it in Control Center)" : "")
                     if state.authorityLogged.insert("\(c.app.pid)|\(c.info.identityKey)|\(line)").inserted { log(line) }
                 }
             }
             let frame = h?.frame ?? c.info.frame
-            items.append(MenuBarItem(
+            var built = MenuBarItem(
                 ownerPID: c.app.pid, ownerBundleID: c.app.bundleID, ownerName: c.app.name,
                 title: c.info.title, axDescription: c.info.axDescription,
                 axIdentifier: c.info.identifier, frame: frame,
@@ -768,7 +785,9 @@ public struct MenuBarScanner {
                 staleCount: h?.staleCount ?? carriedCount,
                 notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
                 joinEvidence: h == nil ? .none : ev,
-                hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed))
+                hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed)
+            if unknown { built.placementReason = why + "; make room in the bar so the item is drawn, or hide it in Control Center" }
+            items.append(built)
         }
         for (hi, owner) in attributed {
             let h = hosted[hi]
