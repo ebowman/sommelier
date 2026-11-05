@@ -437,9 +437,9 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
 ## Overflow panel
 - `EngineState.items` (`ItemInfo`, SommelierCore) carries display metadata (title, description, owner, width) for every
   currently known item; the engine refreshes it whenever it adopts a scan (`ItemInfo.merge` keeps the last known
-  width of parked items; vanished items are dropped).
-- `OverflowEntries.make` (pure) turns `layout.hidden` + `items` into entries in layout order; keys whose app is not
-  running are skipped. `OverflowPlacement.panelFrame` (pure) right-aligns the panel to the status item under the bar.
+  width of parked items; stale reads keep their previous info; vanished items are dropped).
+- `OverflowEntries.make` (pure) turns `layout.hidden` + `items` into entries in layout order; keys with no entry in `items` (not in the
+  latest scan; a stale read keeps its last info until a read omits it) are skipped. `OverflowPlacement.panelFrame` (pure) right-aligns the panel to the status item under the bar.
 - `OverflowPanelController` (app target) owns a non-activating `NSPanel` hosting `OverflowBarView`; it re-renders from
   the observed state and closes via monitors, a pointer poll and an inactivity timer (see docs/testing.md).
 

@@ -302,6 +302,22 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.calls.count == 1)
     }
 
+    @Test func staleItemKeepsItsInfoUntilACompleteReadDropsIt() async {
+        let fresh = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
+        var staleA = fresh
+        staleA[0].item.stale = true
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)),
+                          observer: FixtureObserver([fresh, staleA, fresh, Array(fresh.dropFirst())]))
+        _ = await r.engine.reconcileOnce()
+        let before = r.state.items[k("A")]
+        #expect(before != nil)
+        _ = await r.engine.reconcileOnce()          // a fast scan marks A stale
+        #expect(r.state.items[k("A")] == before)
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.reconcileOnce()          // a read without A
+        #expect(r.state.items[k("A")] == nil && r.state.items[k("B")] != nil)
+    }
+
     @Test func unsettledObservationClearsAnEarlierObserveError() async {
         let items = FakeMenuBar.resolved(onBar: ["A", "B"].map(k))
         let r = await rig(order: ["A", "B"].map(k), layout: Layout(visible: ["A", "B"].map(k)),

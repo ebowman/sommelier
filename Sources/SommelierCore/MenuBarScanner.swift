@@ -590,7 +590,7 @@ public struct MenuBarScanner {
         // reports the item on the bar. The agent's hosted tree is the authority: an app-extras candidate whose owner is
         // running (it was read, not carried), whose frame says "on bar", and which has a NAME the hosted tree should
         // mirror, but for which a COMPLETE hosted read has no element of that name, is hidden: `notHosted`.
-        //  - Name rule (owner bundle + AX identifier or description; the autosave name is what the app publishes as
+        //  - Name rule (AX identifier or description; the identifier set spans ALL owners, not just this item's bundle; the autosave name is what the app publishes as
         //    AXIdentifier and the agent mirrors it): with an identifier, no hosted element carries that identifier. The
         //    frame join is NOT consulted, because a crowded bar stacks unrelated items on top of each other and a frame
         //    overlap with another item's element must not keep a hidden item alive. Without an identifier, the

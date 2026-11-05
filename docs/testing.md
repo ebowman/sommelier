@@ -28,6 +28,15 @@ panel has no observed state. Relaunch it afterwards (`open -a "Bartender 7"`). A
 2. Close rules: click anywhere outside the panel; press Escape (closes the panel whenever it is open; the frontmost app is not activated); leave the union of
    panel and menu bar strip with the pointer for 400 ms; or stay idle for "Auto re-hide" seconds (0 = never).
    Clicking the Sommelier item again toggles it closed.
+   gdu.37: any mouse-down outside the panel closes it, including another app's menu bar item (only the Sommelier item
+   itself is exempt and toggles). The panel takes keyboard focus while open (key window, `makeKeyAndOrderFront`), a
+   local plus a global keyDown monitor close it on Escape only while it is visible; `cliclick kp:esc` is not delivered
+   (use `osascript -e 'tell application "System Events" to key code 53'`). `place()` runs once on show and again only
+   when the entries, feedback errors, show-names setting, anchor or screen frame change (log `place() run #N`).
+   Live 2026-11-05 (Bartender quit, pointer on the panel): Escape closed it 5/5 (`overflow hide: escape`); with Finder
+   activated after opening, 3/3 (1 global, 2 local); clicking Control Center (1285,12) closed it 3/3 (`click outside at {1285, 866}`),
+   Escape then closed that menu; own item click toggles (`overflow hide: requested`); `place() run #1` only, no further
+   runs over 5 s open. Note: moving the pointer off panel+bar closes it after 400 ms, so test Escape with the pointer on the panel.
 3. Show names off: Settings > "Show names in panel" shows icons only; hover shows the name as tooltip.
 4. Many items: when the row is wider than 80 % of the screen it scrolls horizontally.
 5. Empty state: with nothing hidden (or no hidden app running) the panel reads "Nothing hidden" with a disabled
@@ -92,7 +101,7 @@ Bartender quit (`osascript -e 'tell application "Bartender 7" to quit'`), `make 
     #   ~/Library/Preferences/group.com.apple.controlcenter.plist may appear.
 
 Do NOT restore a dummy to "visible" in a scratch layout by `layout move ... visible` without an index: it is appended after Clock and the engine's order phase then
-drags real (iStat) items. Restore from a copy taken while the dummies were visible. Results 2026-11-04: hide/show live 0.6-5.1 s, 40 ops (20 cycles), agent pid constant (implementer soak 40/40 live; the reviewer's run was 4/6 live under the old 6 s wall bound because of incomplete-read streaks),
+drags real (iStat) items. Restore from a copy taken while the dummies were visible. Results 2026-11-04: hide/show live 0.6-5.1 s (not a ceiling: 7.2 s was seen later), 40 ops (20 cycles), agent pid constant (implementer soak 40/40 live; the reviewer's run was 4/6 live under the old 6 s wall bound because of incomplete-read streaks),
 non-dummy on-bar order identical; engine apply hide 0.71 s / show 0.63 s actuation (5.6 / 6.5 s wall); unentitled copy: respawn path, both verified, no stray plist.
 
 Poll bound (after the reviewer's finding): full scans every 0.5 s; the FIRST complete read decides, an unsatisfied complete read gets one more complete read, hard ceiling 8 scans / 20 s. The respawn fallback should now occur only when no complete read arrives within that ceiling (or two complete reads disagree). The trace states scans taken, complete count and the ending rule.

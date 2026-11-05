@@ -85,6 +85,7 @@ final class OverflowPanelController {
     func show(anchoredTo itemFrame: CGRect, on screen: NSScreen) {
         self.anchor = itemFrame
         self.screen = screen
+        placeCount = 0
         NSLog("[Sommelier] before show: NSApp.isActive=%d", NSApp.isActive)
         let panel = self.panel ?? makePanel()
         self.panel = panel
@@ -125,8 +126,29 @@ final class OverflowPanelController {
         return CGRect(x: s.frame.minX, y: s.frame.maxY - h, width: s.frame.width, height: h)
     }
 
+    /// What the last `place()` was computed from; `tick()` re-places only when this changes.
+    private struct PlaceInput: Equatable {
+        var entries: [OverflowEntry]
+        var errors: [ItemKey: String]
+        var showNames: Bool
+        var anchor: CGRect
+        var screenFrame: CGRect
+        var screenVisible: CGRect
+    }
+    private var lastPlaced: PlaceInput?
+    private var placeCount = 0
+
+    private func placeInput(_ screen: NSScreen) -> PlaceInput {
+        PlaceInput(entries: entries, errors: feedback.errors,
+                   showNames: UserDefaults.standard.object(forKey: "overflowShowNames") as? Bool ?? true,
+                   anchor: anchor, screenFrame: screen.frame, screenVisible: screen.visibleFrame)
+    }
+
     private func place() {
         guard let panel, let hosting, let screen else { return }
+        lastPlaced = placeInput(screen)
+        placeCount += 1
+        NSLog("[Sommelier] place() run #%d", placeCount)
         let vis = screen.visibleFrame
         let ideal = probe.fittingSize
         let cap = OverflowPlacement.maxWidth(anchor: anchor, screenVisible: vis)
@@ -184,7 +206,10 @@ final class OverflowPanelController {
                     if ev.keyCode == 53 { self.hide("escape (global)") }
                     return
                 }
-                if !panel.frame.contains(NSEvent.mouseLocation) { self.hide("click outside") }
+                // Any mouse-down outside the panel closes it, the menu bar strip included (another app's status item);
+                // only our own status item is exempt (its action toggles the panel).
+                let p = NSEvent.mouseLocation
+                if !panel.frame.contains(p), !self.anchor.insetBy(dx: -1, dy: -1).contains(p) { self.hide("click outside at \(NSStringFromPoint(p))") }
             }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] ev in
@@ -201,7 +226,7 @@ final class OverflowPanelController {
 
     private func tick() {
         guard let panel, panel.isVisible, let screen else { return }
-        place()
+        if placeInput(screen) != lastPlaced { place() }
         let p = NSEvent.mouseLocation
         let inside = panel.frame.contains(p) || menuBarStrip(screen).contains(p)
         let now = Date()

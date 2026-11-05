@@ -33,10 +33,18 @@ public struct ItemInfo: Equatable, Sendable {
         return out
     }
 
-    /// Result is exactly the keys of `fresh` (vanished items are dropped); a fresh width <= 1 (parked item) keeps the
-    /// previous non-trivial width when one is known.
-    public static func merge(previous: [ItemKey: ItemInfo], fresh: [ItemKey: ItemInfo]) -> [ItemKey: ItemInfo] {
+    /// Keys that appear in `resolved` only as stale (carried-forward) reads: present, but with no fresh data this scan.
+    public static func staleOnlyKeys(from resolved: [ResolvedItem]) -> Set<ItemKey> {
+        let fresh = Set(resolved.filter { !$0.item.stale }.map(\.key))
+        return Set(resolved.filter { $0.item.stale }.map(\.key)).subtracting(fresh)
+    }
+
+    /// Result is the keys of `fresh` (vanished items are dropped) plus the `retaining` keys (stale reads, not yet confirmed
+    /// gone) that keep their previous info; a fresh width <= 1 (parked item) keeps the previous non-trivial width when one is known.
+    public static func merge(previous: [ItemKey: ItemInfo], fresh: [ItemKey: ItemInfo],
+                             retaining: Set<ItemKey> = []) -> [ItemKey: ItemInfo] {
         var out = fresh
+        for k in retaining where out[k] == nil { if let p = previous[k] { out[k] = p } }
         for (k, var v) in fresh where v.width <= 1 {
             if let p = previous[k], p.width > 1 { v.width = p.width; out[k] = v }
         }

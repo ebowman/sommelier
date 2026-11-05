@@ -604,7 +604,7 @@ public actor LayoutEngine {
                     log("confirmed by a settled complete read: \(done.map(\.description).sorted().joined(separator: ", "))")
                 }
             }
-            itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items))
+            itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items), retaining: ItemInfo.staleOnlyKeys(from: r.items))
             return .success((o, r.settled))
         } catch let e as ObserveError {
             return .failure(e)
@@ -622,7 +622,7 @@ public actor LayoutEngine {
         let o = ObservedOrder(resolved: items)
         guard !o.onBar.isEmpty else { return }
         hasObservation = true
-        itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: items))
+        itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: items), retaining: ItemInfo.staleOnlyKeys(from: items))
         let info = itemInfo
         log("first observation published (provisional, unsettled)")
         await publish { s in s.observed = o; s.items = info; s.observationSettled = false }
@@ -635,7 +635,7 @@ public actor LayoutEngine {
             let resolved = resolveSnapshot(snap)
             let o = ObservedOrder(resolved: resolved)
             if !o.onBar.isEmpty {
-                itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved))
+                itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved), retaining: ItemInfo.staleOnlyKeys(from: resolved))
                 notePollSignature(resolved)
                 obs = o; return true
             }
