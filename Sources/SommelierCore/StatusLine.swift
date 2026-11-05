@@ -11,6 +11,7 @@ public enum StatusLine {
         case .observe(let m)?: return "Error: \(m)"
         case .stoppedAfterFailures(let n)?: return "Error: stopped after \(n) failures"
         case .batchDrift(let e, let o)?: return "Error: order drifted (expected \(e), saw \(o))"
+        case .batchFailed(let m)?: return "Error: \(m)"
         case nil: break
         }
         if !observationSettled { return "Observing (unsettled)" }
