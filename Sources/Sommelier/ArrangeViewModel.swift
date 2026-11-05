@@ -82,8 +82,15 @@ final class ArrangeViewModel {
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? state.newItemNotice,
+                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? state.newItemNotice ?? selfPositioningNote,
                                    pollPausedNames: pollPausedNames)
+    }
+    /// gdu.67: shown after the engine rewrote a layout that straddled a self-positioning item (`lastNormalization` holds only those keys then).
+    private var selfPositioningNote: String? {
+        let keys = state.lastNormalization
+        guard !keys.isEmpty, keys.allSatisfy({ SelfPositioning.isSelfPositioning($0) }) else { return nil }
+        let names = keys.map { displayName($0) }.joined(separator: ", ")
+        return "Layout adjusted around \(names): it positions itself, so items cannot sit on both sides of it."
     }
     /// Display names of the items whose flapping paused the poll, nil when it is not paused (gdu.58).
     private var pollPausedNames: [String]? {
@@ -157,7 +164,8 @@ final class ArrangeViewModel {
         guard !isFiltering, let p = payloads.first, let key = ItemKey(storeKey: p.storeKey) else { return false }
         let rows = content.strip(section).rows
         let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,
-                                       observationAvailable: observationAvailable)
+                                       observationAvailable: observationAvailable,
+                                       bar: state.observed.onBar, displayName: displayName)
         NSLog("[Sommelier] arrange: drop %@ -> %@ slot %d", "\(key)", section.rawValue, slot)
         return submit(outcome, key: key)
     }
@@ -165,6 +173,11 @@ final class ArrangeViewModel {
     func move(_ key: ItemKey, to section: LayoutSection) {
         _ = submit(ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
                                        observationAvailable: observationAvailable), key: key)
+    }
+
+    /// Item name for refusal texts: the engine's `ItemInfo` when known, else the key.
+    private var displayName: (ItemKey) -> String {
+        { [items = state.items] k in items[k].map(OverflowEntries.displayName) ?? "\(k)" }
     }
 
     func canMove(_ key: ItemKey, to section: LayoutSection) -> Bool {
@@ -176,12 +189,12 @@ final class ArrangeViewModel {
 
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
         _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
-                                    observationAvailable: observationAvailable), key: key)
+                                    observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName), key: key)
     }
 
     func canStep(_ key: ItemKey, _ dir: ArrangeDrop.Direction) -> Bool {
         if case .move = ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
-                                         observationAvailable: observationAvailable) { return true }
+                                         observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName) { return true }
         return false
     }
 
@@ -210,7 +223,8 @@ final class ArrangeViewModel {
                 NSLog("[Sommelier] arrange env move: %@ -> %@ movable index %@", "\(key)", section.rawValue, index.map(String.init) ?? "-")
                 // Same clamp as a UI drop; the index is 0-based among movable items (modules do not count).
                 let outcome = ArrangeDrop.drop(layout: self.layout, key: key, section: section, movableIndex: index,
-                                               capabilities: self.cap, observationAvailable: self.observationAvailable)
+                                               capabilities: self.cap, observationAvailable: self.observationAvailable,
+                                               bar: self.state.observed.onBar, displayName: self.displayName)
                 _ = self.submit(outcome, key: key)
                 if interval > 0 { try? await Task.sleep(for: .seconds(interval)) }
             }

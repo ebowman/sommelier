@@ -336,6 +336,72 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     #expect(ArrangeDrop.step(layout: layout, rows: r, key: clock, .left, capabilities: caps) != .noop)   // anchors: capability rejects
 }
 
+// MARK: gdu.67 - an order-only drop never crosses a self-positioning row
+
+private let istat67 = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
+private let istat67b = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "mem")
+private func caps67(_ key: ItemKey) -> Capability {
+    SelfPositioning.isSelfPositioning(key) ? Capability(canMove: false, canHide: true) : caps(key)
+}
+private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(key)" }
+
+@Test func aDropAcrossASelfPositioningRowIsRefusedInBothDirections() {
+    let bar = [k("a"), istat67, k("b"), clock]
+    let layout = Layout(visible: bar)
+    // b before istat (index 0 among [a, istat, clock] lifted: before a)
+    let left = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 1, capabilities: caps67, bar: bar, displayName: crossName)
+    #expect(left == .rejected("cannot cross CPU: it positions itself; move it in iStat Menus instead"))
+    // a after istat
+    let right = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 2, capabilities: caps67, bar: bar, displayName: crossName)
+    #expect(right == .rejected("cannot cross CPU: it positions itself; move it in iStat Menus instead"))
+    // a straddling layout can be moved back to agree with the bar
+    let straddled = Layout(visible: [k("b"), istat67, k("a"), clock])
+    if case .move = ArrangeDrop.outcome(layout: straddled, key: k("a"), to: .visible, index: 0, capabilities: caps67, bar: bar, displayName: crossName) {} else { Issue.record("moving back must be allowed") }
+}
+
+@Test func aDropThatDoesNotCrossASelfPositioningRowIsAllowed() {
+    let bar = [k("a"), k("c"), istat67, k("b"), clock]
+    let layout = Layout(visible: bar)
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("c"), to: .visible, index: 0, capabilities: caps67, bar: bar) {
+        #expect(l.visible == [k("c"), k("a"), istat67, k("b"), clock])
+    } else { Issue.record("a move left of istat that stays left of it must be allowed") }
+    // hiding across it is a section change: allowed
+    if case .move = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .hidden, index: nil, capabilities: caps67, bar: bar) {} else { Issue.record("hide must be allowed") }
+    // istat not on the bar at all: no crossing applies
+    let noBar = [k("a"), k("b"), clock]
+    if case .move = ArrangeDrop.outcome(layout: Layout(visible: [k("a"), istat67, k("b"), clock]), key: k("b"), to: .visible, index: 0, capabilities: caps67, bar: noBar) {} else { Issue.record("istat off the bar") }
+}
+
+@Test func twoAdjacentSelfPositioningRowsAreEachRefused() {
+    let bar = [k("a"), istat67, istat67b, k("b"), clock]
+    let layout = Layout(visible: bar)
+    guard case .rejected = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 1, capabilities: caps67, bar: bar) else { Issue.record("first"); return }
+    guard case .rejected = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 1, capabilities: caps67, bar: bar) else { Issue.record("second"); return }
+}
+
+@Test func aDropAcrossAModuleAnchorKeepsItsExistingBehaviour() {
+    let bar = [k("a"), k("b"), cc, clock]
+    let layout = Layout(visible: bar)
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 1, capabilities: caps67, bar: bar) {
+        #expect(l.visible == [k("b"), k("a"), cc, clock])
+    } else { Issue.record("module anchors are not self-positioning rows") }
+}
+
+@Test func stepAcrossASelfPositioningRowIsRefusedAndNotStepable() {
+    let bar = [k("a"), istat67, k("b"), clock]
+    let layout = Layout(visible: bar)
+    let r = rows(layout)
+    #expect(ArrangeDrop.step(layout: layout, rows: r, key: k("b"), .left, capabilities: caps67, bar: bar, displayName: crossName)
+            == .rejected("cannot cross CPU: it positions itself; move it in iStat Menus instead"))
+    guard case .rejected = ArrangeDrop.step(layout: layout, rows: r, key: k("a"), .right, capabilities: caps67, bar: bar) else { Issue.record("right"); return }
+    // not crossing: allowed
+    let bar2 = [k("a"), k("c"), istat67, k("b"), clock]
+    let l2 = Layout(visible: bar2)
+    if case .move(let l, _, _) = ArrangeDrop.step(layout: l2, rows: rows(l2), key: k("c"), .left, capabilities: caps67, bar: bar2) {
+        #expect(l.visible == [k("c"), k("a"), istat67, k("b"), clock])
+    } else { Issue.record("step not crossing must be allowed") }
+}
+
 // MARK: toolbar actions
 
 @Test func hideNotFittingHidesTheOverflowedUnitsAndReportsBlockedOnes() {

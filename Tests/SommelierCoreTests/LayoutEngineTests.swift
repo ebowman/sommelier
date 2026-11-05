@@ -227,6 +227,38 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.order != order)
     }
 
+    // gdu.67: a persisted layout that straddles the self-positioning item is unreachable. The planner still ends [B, A, istat] and
+    // converges; the engine then rewrites the layout to that order, records it once, and the next pass has nothing to normalize.
+    @Test func aStraddlingLayoutIsNormalizedAroundTheSelfPositioningItemOnce() async {
+        let order = [k("A"), istat, k("B")]
+        let layout = Layout(visible: [k("B"), istat, k("A")])
+        let r = await rig(order: order, layout: layout)
+        var passes = 0
+        while passes < 4 {
+            passes += 1
+            if await r.engine.reconcileOnce().outcome == .converged, !r.state.lastNormalization.isEmpty || passes > 1 { break }
+        }
+        #expect(await r.actuator.order == [k("B"), k("A"), istat])
+        #expect(r.state.layout.visible == [k("B"), k("A"), istat])
+        #expect((try? r.store.load())?.visible == [k("B"), k("A"), istat])
+        #expect(r.state.lastNormalization == [istat])
+        let revision = r.state.layoutRevision
+        let calls = await r.actuator.calls.count
+        let rep = await r.engine.reconcileOnce()
+        #expect(rep.outcome == .converged)
+        #expect(r.state.layoutRevision == revision)           // not re-triggered
+        #expect(await r.actuator.calls.count == calls)
+    }
+
+    @Test func aLayoutThatAgreesWithTheBarAroundTheSelfPositioningItemIsNotNormalized() async {
+        let order = [k("A"), istat, k("B")]
+        let r = await rig(order: order, layout: Layout(visible: order))
+        let revision = r.state.layoutRevision
+        _ = await r.engine.reconcileOnce()
+        #expect(r.state.lastNormalization.isEmpty)
+        #expect(r.state.layoutRevision == revision)
+    }
+
     @Test func orderAmongOthersProceedsOnAnExceptSelfPositioningRead() async {
         let order = [istat, k("A"), k("B")]
         let layout = Layout(visible: [istat, k("B"), k("A")])

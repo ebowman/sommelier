@@ -925,6 +925,7 @@ public actor LayoutEngine {
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
+            if ok { _ = await normalizeAroundSelfPositioning(obs, generation: generation) }
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
@@ -1119,10 +1120,27 @@ public actor LayoutEngine {
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
+            if ok { _ = await normalizeAroundSelfPositioning(obs, generation: generation) }
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
         return await abort(.incomplete)
+    }
+
+    /// gdu.67: a persisted layout that straddles a self-positioning item ([B, iStat, A] while the bar is [A, iStat, B]) is not
+    /// reachable: the planner keeps iStat as an anchor and ends [B, A, iStat]. Once a pass has converged on a complete read, the
+    /// layout is rewritten to the order the bar actually has around that item (it is moved in the layout, never on the bar), so
+    /// the straddle does not re-trigger every pass. The moved self-positioning keys are recorded as `lastNormalization` (the
+    /// Arrange status line says so). Returns true when the layout was rewritten.
+    private func normalizeAroundSelfPositioning(_ obs: ObservedOrder, generation: Int) async -> Bool {
+        guard generation == layoutGeneration, observedCompleteness == .complete, transientReveals.isEmpty, failures.isEmpty else { return false }
+        let (new, moved) = layout.normalizedAroundSelfPositioning(observed: obs, owners: config.selfPositioningOwners)
+        guard !moved.isEmpty else { return false }
+        log("layout: straddled self-positioning item(s) \(moved.map(\.description).joined(separator: ", ")); the layout follows the bar around them")
+        layout = new
+        do { try store.save(new) } catch { log("cannot save layout: \(error)") }
+        await publishLayout(new, normalized: moved)
+        return true
     }
 
     /// Log line and a transient Arrange-window notice for unknown items placed by the new-item policy (no system notification).
@@ -1236,5 +1254,31 @@ final class ConflictBox: @unchecked Sendable {
     var value: String? {
         get { lock.lock(); defer { lock.unlock() }; return v }
         set { lock.lock(); v = newValue; lock.unlock() }
+    }
+}
+
+extension Layout {
+    /// gdu.67: moves each self-positioning key of `visible` that the layout places on the other side of a movable, drawn bar
+    /// item than the bar does to the slot the bar has (before the first following on-bar key). Returns the keys moved.
+    /// Overflowed keys, the chevron, modules and other self-positioning keys do not count.
+    func normalizedAroundSelfPositioning(observed: ObservedOrder, owners: Set<String>) -> (Layout, moved: [ItemKey]) {
+        let bar = observed.onBar
+        let ignored = observed.systemOverflow.union(observed.overflowChevron.map { [$0] } ?? [])
+        var l = self
+        var moved: [ItemKey] = []
+        for a in visible where SelfPositioning.isSelfPositioning(a, owners: owners) {
+            guard let ab = bar.firstIndex(of: a), !ignored.contains(a), let ai = l.visible.firstIndex(of: a) else { continue }
+            let straddles = l.visible.enumerated().contains { i, k in
+                guard k != a, !SelfPositioning.isSelfPositioning(k, owners: owners), !ignored.contains(k), let kb = bar.firstIndex(of: k) else { return false }
+                if case .module = k { return false }
+                return (i < ai) != (kb < ab)
+            }
+            guard straddles else { continue }
+            l.visible.remove(at: ai)
+            let at = l.visible.firstIndex { k in !ignored.contains(k) && (bar.firstIndex(of: k).map { $0 > ab } ?? false) } ?? l.visible.count
+            l.visible.insert(a, at: at)
+            if l.visible != visible { moved.append(a) }
+        }
+        return (l, moved)
     }
 }
