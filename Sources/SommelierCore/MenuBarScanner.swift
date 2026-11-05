@@ -27,6 +27,9 @@ public struct MenuBarScanner {
     public var slowOwnerExtrasTimeout: Float = 0.3
     /// Control Center `isAllowed` readback for a tracked key (nil = unreadable); injectable for tests.
     public var allowedReadback: @Sendable (String) -> Bool? = { k in (try? ControlCenterTrackedAppsStore.allowedLive([k]))?[k] }
+    /// The Control Center tracked entries with their live `isAllowed` (nil = unreadable); injectable for tests. Consulted lazily, at most
+    /// once per scan, and only when an app-side-only item needs the authority rule (gdu.79).
+    public var trackedEntries: @Sendable () -> [ControlCenterTrackedAppsStore.Entry]? = { nil }
     private let state: ScanState
 
     /// - Parameter cacheURL: when set, the scan cache is loaded from / saved to this file, so a new process starts warm.
@@ -46,6 +49,7 @@ public struct MenuBarScanner {
         self.includeSelf = includeSelf
         self.fallbackStrip = fallbackStrip
         self.state = ScanState(url: cacheURL)
+        if source is LiveAccessibilitySource { trackedEntries = { ControlCenterTrackedAppsStore.entriesLive() } }   // hermetic otherwise (tests)
     }
 
     public static var defaultCacheURL: URL { ScanState.defaultURL }
@@ -563,10 +567,24 @@ public struct MenuBarScanner {
         var hostedOwner: [Int: pid_t] = [:]
         // Which pass paired each candidate, and with which hosted element (gdu.28 `JoinEvidence`).
         var matchedBy: [Int: (pass: JoinEvidence, hosted: Int)] = [:]
+        var trackedResolver: TrackedEntryResolver?
+        var trackedLoaded = false
+        func tracked() -> TrackedEntryResolver? {
+            if !trackedLoaded { trackedLoaded = true; trackedResolver = trackedEntries().map { TrackedEntryResolver(entries: $0) } }
+            return trackedResolver
+        }
+        // gdu.79 corrective: a candidate whose tracked entry says isAllowed == false keeps a stale app-side frame in the same region as the
+        // overflow pile, so the frame-intersection join would hand it ANOTHER item's hosted element and put it on the bar. Such candidates
+        // are excluded from the frame pass (the element then joins its real owner); only an identifier / description join can place one.
+        func flagFalse(_ c: Candidate) -> Bool {
+            guard agent != nil, let r = tracked(), let tk = r.trackedKey(candidates: [c.app.bundleID].compactMap { $0 }) else { return false }
+            return r.entries.first(where: { $0.key == tk })?.isAllowed == false
+        }
+        let flagFalseIdx = Set(candidates.indices.filter { flagFalse(candidates[$0]) })
         func pass(_ kind: JoinEvidence, _ matches: (AXElementInfo, AXElementInfo) -> Bool) {
             for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) && !h.isOverflowChevron {
                 if let ci = candidates.indices.first(where: {
-                    matchedCandidates[$0] == nil && !assumedIdx.contains($0) && matches(h, candidates[$0].info)
+                    matchedCandidates[$0] == nil && !assumedIdx.contains($0) && !(kind == .frameAmbiguous && flagFalseIdx.contains($0)) && matches(h, candidates[$0].info)
                 }) {
                     matchedHosted.insert(hi); matchedCandidates[ci] = h; hostedOwner[hi] = candidates[ci].app.pid
                     matchedBy[ci] = (kind, hi)
@@ -672,6 +690,14 @@ public struct MenuBarScanner {
             return c.info.title.isEmpty || !unmatchedHostedTitles.contains(c.info.title)
         }
 
+        // THE authority rule (gdu.79): an app-side frame alone never makes an item "on the bar". After a live hide the owner's AX frames
+        // stay where they were (docs/findings-live-trigger.md section 4), so an item with NO joined hosted element is judged by the
+        // Control Center store the agent enforces: isAllowed == false => hidden; otherwise, for an item that store governs and a
+        // trusted (complete) hosted read, unknown placement. Items no entry governs (SystemUIServer's, system extras) cannot be
+        // live-hidden and keep the frame rule; so does everything while the store is unreadable or the hosted read is incomplete.
+        // One place: mbprobe list, the engine observation, LayoutBuilder and init-from-current all read this classification.
+        let chevronFrame = hosted.first(where: \.isOverflowChevron)?.frame
+        let pileFrames = hosted.filter { !$0.isOverflowChevron }.map(\.frame)
         var items: [MenuBarItem] = []
         var carriedUnverified: [String: Int] = [:]
         var newHidden = Set<String>()
@@ -700,17 +726,49 @@ public struct MenuBarScanner {
             let reportNotHosted = (notHosted && (!verifiedOnly || expectedHosted)) || assumed
             if !reportNotHosted { newHidden.remove(ckey) }
             // A candidate verified by the hosted tree takes the hosted (authoritative, fresh) frame and is not stale.
-            let h = reportNotHosted ? nil : matchedCandidates[ci]
+            var h = reportNotHosted ? nil : matchedCandidates[ci]
+            let ev: JoinEvidence = h == nil ? .none : joinEvidence(ci)
+            var ccHidden = false, unknown = false
+            var ccAllowed: Bool?
+            var why = "no hosted element"
+            if agent != nil, c.info.frame.width > 1, onBar(c.info.frame), !reportNotHosted, let r = tracked(), let tk = r.trackedKey(candidates: [c.app.bundleID].compactMap { $0 }),
+               let e = r.entries.first(where: { $0.key == tk }) {
+                // THE rule (gdu.79): only a CORROBORATED join (identifier / unique description / unique frame) lets a hosted element place an
+                // item that Control Center says is hidden or that sits in the overflow pile; a bare frame overlap there is how a stale frame
+                // stole another item's element.
+                let weakJoin = h != nil && !ev.corroborated
+                let inPile = h.map { hh in
+                    chevronFrame.map { SystemOverflowRule.isOverflowed(hh.frame, chevron: $0, hosted: pileFrames) } ?? false
+                } ?? false
+                if h == nil || weakJoin {
+                    if !e.isAllowed { ccHidden = true; ccAllowed = false }
+                    else if hostedComplete, h == nil || inPile { unknown = true; ccAllowed = true }
+                    else { ccAllowed = true }
+                    if ccHidden || unknown, h != nil { why = "weak join (\(ev.rawValue)) with a hosted element" }
+                } else {
+                    ccAllowed = e.isAllowed
+                    if !e.isAllowed {
+                        let line = "authority: SUSPICIOUS \(c.app.bundleID ?? c.app.name) \(c.info.identityKey) isAllowed=false but joined to a hosted element (\(ev.rawValue)); kept on the bar"
+                        if state.authorityLogged.insert("\(c.app.pid)|\(c.info.identityKey)|\(line)").inserted { log(line) }
+                    }
+                }
+                if ccHidden || unknown {
+                    if h != nil { h = nil }   // the element is somebody else's: the app-side frame is all this item has
+                    let line = "authority: \(c.app.bundleID ?? c.app.name) \(c.info.identityKey) app-side frame \(c.info.frame) (source appExtras, \(why)); Control Center isAllowed=\(ccAllowed.map(String.init(describing:)) ?? "?") -> " + (ccHidden ? "hidden" : "placement unknown")
+                    if state.authorityLogged.insert("\(c.app.pid)|\(c.info.identityKey)|\(line)").inserted { log(line) }
+                }
+            }
             let frame = h?.frame ?? c.info.frame
             items.append(MenuBarItem(
                 ownerPID: c.app.pid, ownerBundleID: c.app.bundleID, ownerName: c.app.name,
                 title: c.info.title, axDescription: c.info.axDescription,
                 axIdentifier: c.info.identifier, frame: frame,
-                source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted, axElement: c.info.element,
+                source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted && !ccHidden && !unknown, axElement: c.info.element,
                 stale: h == nil ? (c.stale || carriedCount > 0) : h!.stale,
                 staleCount: h?.staleCount ?? carriedCount,
                 notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
-                joinEvidence: h == nil ? .none : joinEvidence(ci)))
+                joinEvidence: h == nil ? .none : ev,
+                hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed))
         }
         for (hi, owner) in attributed {
             let h = hosted[hi]

@@ -155,8 +155,14 @@ final class AppModel {
                     throw ObserveError.noAgreement(scans: reading.scans)
                 }
                 let resolved = reading.items
+                let unknown = LayoutBuilder.unknownPlacement(in: resolved)
+                guard unknown.isEmpty else {
+                    // gdu.79: app-side frame only, no hosted element: where these items are is unknown; do not persist a guess.
+                    NSLog("[Sommelier] first-launch scan: %@; layout left empty", LayoutBuilder.unknownPlacementMessage(unknown))
+                    throw ObserveError.noAgreement(scans: reading.scans)
+                }
                 let (layout, excluded) = LayoutBuilder.build(from: resolved, resolver: EngineFactory.currentTrackedResolver())
-                await engine.setLayout(layout)
+                await engine.setLayout(layout, userPlacement: false)   // built from a scan: not a user placement (gdu.79)
                 NSLog("[Sommelier] initialized layout from current order (\(layout.keys(in: .visible).count + layout.keys(in: .hidden).count) keys; excluded \(excluded.count))")
                 let selfKeys = (layout.keys(in: .visible) + layout.keys(in: .hidden)).filter { "\($0)".lowercased().contains("sommelier") }
                 NSLog("[Sommelier] own item in layout: \(selfKeys.isEmpty ? "none" : selfKeys.map { "\($0)" }.joined(separator: ","))")
