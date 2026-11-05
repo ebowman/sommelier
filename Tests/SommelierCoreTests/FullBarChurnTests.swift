@@ -141,7 +141,7 @@ private func snapshot(_ g: Geometry, order: [ItemKey], hidden: Set<ItemKey>) -> 
     let chevron = g.hasChevron(hidden: hidden)
     func item(_ key: ItemKey, _ frame: CGRect, onBar: Bool, chev: Bool = false) -> MenuBarItem {
         MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: key.description, axDescription: "", axIdentifier: key.description,
-                    frame: frame, source: .appExtras, isOnMenuBar: onBar, isOverflowChevron: chev)
+                    frame: frame, source: .appExtras, isOnMenuBar: onBar, isOverflowChevron: chev, joinEvidence: .identifier)
     }
     var items: [MenuBarItem] = []
     let bar = order.filter { !hidden.contains($0) && $0 != chevKey }

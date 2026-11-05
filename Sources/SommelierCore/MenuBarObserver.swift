@@ -486,7 +486,7 @@ public enum FakeMenuBar {
     private static func item(_ key: ItemKey, x: CGFloat, onBar: Bool) -> MenuBarItem {
         MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: key.description, axDescription: "",
                     axIdentifier: key.description, frame: CGRect(x: x, y: 0, width: 24, height: 24),
-                    source: .appExtras, isOnMenuBar: onBar)
+                    source: .appExtras, isOnMenuBar: onBar, joinEvidence: .identifier)   // gdu.94: a fake bar is hosted, not an app-side frame
     }
 
     /// On-bar items left to right, then parked ones (every key in `hidden` that is not in `order` too).

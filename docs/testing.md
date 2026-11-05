@@ -707,3 +707,19 @@ permission probe uses `fileExists` + `isReadableFile` only (no read, no CFPrefer
 `Data(contentsOf:)` reads happen only in the explicit "Request…" action. Recovery: after a pass fails with the unreadable-store error the engine
 reschedules itself (5 s doubling to 60 s, forever), the poll requests a pass while that error is set even if the bar is unchanged, and
 `PermissionsModel.onControlCenterDataGranted` requests a reconcile.
+
+### A hidden item's stale frame was dragged at (gdu.94, 2026-11-05, build 226)
+
+Incident (13:30, Finder-launched, 52 items): the user dropped `status:com.airmail2hookmark.app::Item-0` into Visible in Arrange. The item is hidden in
+Control Center (`isAllowed=false`) and off the bar, but its app-side frame (1632,3 27x24) overlaps a different real item's slot. A pass with
+`hostedReadComplete=false` (`completeExceptSelfPositioning`, 8 stale on-bar items) planned `phase=order: move airmail after TextInputMenuAgent`; `LiveActuator`
+dragged at that frame ("fresh=true"), which opened the other item's menu ("menu opened; Escape", `mechanismFailed`). The next complete scan said
+`onBar=false join=none hidden=notHosted`. No `authority:` line was logged for it.
+
+Invariant now enforced, in three places: (1) the planner (`ObservedOrder.uncorroborated`, `Reconciler.uncorroboratedSkipReason`): an on-bar key whose slot rests
+on an app-side frame only (`joinEvidence` not corroborated) or that Control Center lists hidden / `isAllowed=false` keeps its observed slot like an anchor and is
+never a move subject; a placed key the planner would have dragged yields one skip. (2) `LiveActuator.frameTrustworthy(subject:among:)`: a subject that is stale,
+hidden in Control Center, not allowed, or whose frame overlaps (> 50 % of its width) a fresh on-bar item of another key is refused with
+`mechanismFailed("subject ... frame not trustworthy: ...")` and no drag. (3) The engine logs `engine: move subject evidence: ...` before every dispatched move.
+Tests: `UncorroboratedMoveTests`, `LiveActuatorTests.moveRefusesSubjectWhoseFrameOverlapsAFreshItem`. Test fakes (`FakeMenuBar`, `FullBarChurnTests.snapshot`) now
+carry `joinEvidence: .identifier` because a fake bar is hosted. `swift test`: 863 tests.

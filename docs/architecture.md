@@ -214,6 +214,7 @@ move, whatever the saved `visible` order says. Membership (hide/show) planning, 
 two-scan rule are unchanged. A placed key dropped from Hidden is shown first (membership pass), then moved by the follow-up order pass.
 Each planned move is announced before it runs: `EngineState.orderMoveNotice` / `orderMoveReasons` ("Moving K: you placed it after L"; Arrange status line
 chain position after `orderNotAppliedNotice`, row `.moving` tooltip via `ArrangeRow.moveReason`) and the log line `order: moving K after L (user placement)`.
+A placed key is only dragged when its on-bar position is corroborated by a hosted element (`ObservedOrder.uncorroborated`: join evidence corroborated, Control Center does not list it hidden or not allowed, gdu.94); otherwise the planner keeps its observed slot, reports a skip, and membership (show) comes first. `LiveActuator` refuses the same subjects (and any whose frame overlaps a fresh item) before dragging.
 
 `Reconciler.plan(observed:layout:capabilities:showHiddenSection:)` (`Reconciler.swift`) is pure: observed `ObservedOrder`
 (on-bar left to right + parked; stale and width<=1 items excluded) and a `Layout` in, a `Plan` out. The engine loops observe -> plan -> act -> verify.

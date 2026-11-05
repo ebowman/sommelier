@@ -102,6 +102,7 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
     func tracked(_ n: String) -> String { shared[n] ?? "tracked.\(n)" }
     var dragScript: [DragBehavior] = []
     var dragCalls: [(steps: Int, toX: CGFloat)] = []
+    var overlapName: String?
     var menu = false
     var escapes = 0, fullScans = 0, fastScans = 0, restarts = 0, allowedWrites: [[String: Bool]] = [], storeWrites: [[String: Double]] = []
     var pendingAllowed: [String: Bool] = [:]
@@ -190,6 +191,9 @@ private final class World: ActuatorPlatform, @unchecked Sendable {
         var items = order.enumerated().filter { !(dropScans > 0 && $1 == dropName) }.map {
             item($1, x: 100 + CGFloat($0) * 40, onBar: !(flickerScans > 0 && $1 == flickerName), stale: staleScans > 0 && $1 == staleName,
                  ident: unnamed.contains($1) ? "" : nil) }
+        if let o = overlapName, let i = items.firstIndex(where: { $0.ownerName == o }), let j = items.firstIndex(where: { $0.ownerName != o }) {
+            items[i].frame = items[j].frame   // gdu.94: a stale frame sitting on another fresh item's slot
+        }
         for n in corroborated { if let i = items.firstIndex(where: { $0.ownerName == n }) { items[i].joinEvidence = .frameUnique } }
         items += hidden.sorted().map { n in
             let g = ghosts.contains(n) && !assumedPIDs.contains(pidOf(n))
@@ -723,6 +727,16 @@ private func liveActuator(_ w: World, live: Bool = true, restart: Bool? = nil) -
     let (a, b) = await (r1, r2)
     #expect(a.isVerified && b.isVerified, "\(a) \(b) order=\(w.order)")
     #expect(w.dragCalls.count == 2, "drags=\(w.dragCalls.count) order=\(w.order)")
+}
+
+@Test func moveRefusesSubjectWhoseFrameOverlapsAFreshItem() async {
+    let w = World(["A", "B", "C", "D"])
+    w.overlapName = "D"
+    let act = actuator(w)
+    let r = await act.move(key("D"), relation: .after(key("A")))
+    guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
+    #expect(why.contains("frame not trustworthy"))
+    #expect(w.dragCalls.isEmpty)
 }
 
 // MARK: - Corrective pass: dropped reads are not verdicts

@@ -141,7 +141,8 @@ struct ReconcilerTests {
         }
         let o = ObservedOrder(resolved: [r("b", x: 50), r("a", x: 10), r("s", x: 20, stale: true), r("p", x: 0, onBar: false),
                                          r("w", x: 0, onBar: false, w: 0)])
-        #expect(o == obs(["a", "b"], ["p"]))
+        #expect(o.onBar == [k("a"), k("b")] && o.parked == [k("p")])
+        #expect(o.uncorroborated == [k("a"), k("b")])   // gdu.94: app-side frames with no join
     }
 }
 

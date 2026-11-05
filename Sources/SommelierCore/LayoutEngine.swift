@@ -1408,6 +1408,7 @@ public actor LayoutEngine {
                 }
                 await publish { $0.orderMoveNotice = text; $0.orderMoveReasons[key] = text }
             }
+            log("engine: move subject evidence: \(evidence[key] ?? "none")")   // gdu.94
             await setStatus(key, .moving, inFlight: action)
             await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
             let result = await actuator.move(key, relation: rel)

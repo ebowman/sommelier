@@ -11,8 +11,12 @@ public struct ObservedOrder: Equatable, Sendable {
     /// Keys in `parked` whose placement is unknown (gdu.79: app-side frame only, no hosted element, Control Center does not say hidden).
     /// The planner must not treat them as parked: they are neither shown nor counted as hidden.
     public var placementUnknown: Set<ItemKey>
+    /// gdu.94: keys in `onBar` whose slot rests on no hosted element (an app-side frame only: join `.none` / not corroborated), or that
+    /// Control Center lists hidden / not allowed. The frame may be stale and sit on another item's slot: never a move subject.
+    public var uncorroborated: Set<ItemKey>
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
-                placementUnknown: Set<ItemKey> = []) {
+                placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = []) {
+        self.uncorroborated = uncorroborated
         self.placementUnknown = placementUnknown
         self.onBar = onBar
         self.parked = parked
@@ -30,6 +34,7 @@ public struct ObservedOrder: Equatable, Sendable {
         var off: [ItemKey] = []
         var ovf = Set<ItemKey>()
         var unknown = Set<ItemKey>()
+        var uncorr = Set<ItemKey>()
         var chevron: ItemKey?
         for r in resolved where !r.item.stale && r.item.frame.width > 1 {
             guard seen.insert(r.key).inserted else { continue }
@@ -37,11 +42,14 @@ public struct ObservedOrder: Equatable, Sendable {
                 bar.append((r.item.frame.minX, r.key))
                 if r.item.systemOverflow { ovf.insert(r.key) }
                 if r.item.isOverflowChevron { chevron = chevron ?? r.key }
+                // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
+                if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
+                    || r.item.hiddenInControlCenter { uncorr.insert(r.key) }
             } else { off.append(r.key); if r.item.placementUnknown { unknown.insert(r.key) } }
         }
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
-        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown)
+        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr)
     }
 }
 
@@ -251,7 +259,24 @@ public struct Reconciler: Sendable {
         desired = desired.filter { !ovf.contains($0) && $0 != chevron && !isSP($0) }
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
         let base = kept + shows
-        let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
+        // gdu.94: an on-bar key whose slot is not corroborated by a hosted element (or that Control Center lists hidden) keeps its observed
+        // slot like an anchor: it is never the subject of a move. Only a key the user placed is reported (once).
+        let uncorroborated = observed.uncorroborated.intersection(onBarSet).intersection(Set(base))
+        let anchors = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) || uncorroborated.contains($0) })
+        if let placed, !uncorroborated.isEmpty, hides.isEmpty, shows.isEmpty {
+            // What the order step would have done had these keys been movable: report each key it would have dragged (once).
+            let free = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
+            let desiredSet = Set(desired), baseSet = Set(base)
+            let movable = layout.visible.filter { placed.contains($0) && desiredSet.contains($0) && baseSet.contains($0) && !free.contains($0) }
+            if movable.contains(where: uncorroborated.contains) {
+                let t = Self.placedTarget(base: base, placed: movable, anchors: free, visible: layout.visible, eligible: desiredSet)
+                let would = Self.moves(from: base, to: t, anchors: Set(base).subtracting(movable), boundary: chevron != nil)
+                var seenSubjects = Set<ItemKey>()
+                for case .move(let k, _) in would where uncorroborated.contains(k) && seenSubjects.insert(k).inserted {
+                    skipped.append(SkippedAction(k, Reconciler.uncorroboratedSkipReason))
+                }
+            }
+        }
         // gdu.89: in user-order mode the planner's "anchors" for the order step are every key that is not a placed, movable one.
         var placedMovable: [ItemKey] = []
         var target: [ItemKey]
@@ -342,6 +367,9 @@ public struct Reconciler: Sendable {
         }
         return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target)
     }
+
+    /// gdu.94: why a placed key whose bar position is not corroborated is not dragged.
+    public static let uncorroboratedSkipReason = "its position on the bar is not corroborated by a hosted element (stale app-side frame or hidden in Control Center); no drag"
 
     /// Why an item in macOS's own overflow area is not planned (gdu.69).
     public static let overflowSkipReason = "in the system overflow area; macOS decides what fits"

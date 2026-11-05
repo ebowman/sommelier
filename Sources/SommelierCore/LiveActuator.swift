@@ -140,6 +140,23 @@ public actor LiveActuator: MenuBarActuator {
         case ok(Plan)
         case absent(String)            // subject or target missing / not on the bar
         case parkedSubject
+        case untrustedFrame(String)    // gdu.94: subject's frame cannot be believed (hidden / stale / overlaps another fresh item)
+    }
+
+    /// gdu.94: nil when the subject's frame may be dragged at; otherwise why not. Two items cannot share a slot, so a frame that
+    /// overlaps (by more than half of the subject's own width) a FRESH on-bar item of another key is a stale frame.
+    static func frameTrustworthy(subject: ResolvedItem, among resolved: [ResolvedItem]) -> String? {
+        let i = subject.item
+        if i.stale { return "stale (carried forward from an earlier scan)" }
+        if i.hiddenInControlCenter { return "hidden in Control Center" }
+        if i.controlCenterAllowed == false { return "Control Center does not allow it (isAllowed=false)" }
+        for o in resolved where o.key != subject.key && !o.item.stale && o.item.isOnMenuBar && o.item.frame.width > 1 {
+            let w = i.frame.intersection(o.item.frame).width
+            if !i.frame.intersection(o.item.frame).isNull, w > i.frame.width * 0.5 {
+                return "its frame \(i.frame) overlaps the fresh item \(o.key) at \(o.item.frame)"
+            }
+        }
+        return nil
     }
 
     private func lookup(_ key: ItemKey, _ relation: Relation, _ snap: MenuBarSnapshot) -> Lookup {
@@ -154,6 +171,8 @@ public actor LiveActuator: MenuBarActuator {
         default: break
         }
         guard ActuationVerifier.onBar(subject) else { return .parkedSubject }
+        // A stale subject is rescanned by `prepare` (and times out if it stays stale); every other doubt is a refusal.
+        if !subject.item.stale, let why = Self.frameTrustworthy(subject: subject, among: resolved) { return .untrustedFrame(why) }
         return .ok(Plan(snapshot: snap, resolved: resolved, subject: subject, target: target))
     }
 
@@ -177,6 +196,10 @@ public actor LiveActuator: MenuBarActuator {
             case .absent: return (nil, .failed(.notFound, snap))
             case .parkedSubject:
                 return (nil, .failed(.unsupportedItem(reason: "The item is hidden (off the bar); show it before moving it."), snap))
+            case .untrustedFrame(let why):
+                let item = resolvedSubject(key, snap)?.item
+                note("refusing drag: subject \(key) frame not trustworthy: \(why); item: \(item.map { "source=\($0.source.rawValue) frame=\($0.frame) onBar=\($0.isOnMenuBar) join=\($0.joinEvidence.rawValue) ccHidden=\($0.hiddenInControlCenter) ccAllowed=\($0.controlCenterAllowed.map(String.init(describing:)) ?? "?")" } ?? "absent")")
+                return (nil, .failed(.mechanismFailed("subject \(key) frame not trustworthy: \(why)"), snap))
             case .ok(let plan):
                 if !plan.subject.item.stale && !(plan.target?.item.stale ?? false) { return (plan, nil) }
                 if round == 3 { return (nil, .failed(.timeout, snap)) }
@@ -184,6 +207,10 @@ public actor LiveActuator: MenuBarActuator {
             }
         }
         return (nil, .failed(.timeout, snap))
+    }
+
+    private func resolvedSubject(_ key: ItemKey, _ snap: MenuBarSnapshot) -> ResolvedItem? {
+        platform.resolve(snap).first(where: { $0.key == key })
     }
 
     private func waitMouseIdle() async -> Bool {
