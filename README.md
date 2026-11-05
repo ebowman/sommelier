@@ -6,7 +6,13 @@ Bartender's recurring failure mode is that it says it moved or hid an item and t
 order silently changed. Sommelier is built around one rule: **nothing is shown as done until the real menu bar
 confirms it.** The UI renders observed state; what you asked for is shown separately as pending, moving or failed.
 
-Screenshots: coming soon.
+![The overflow panel listing the hidden items, Dummy A and Dummy B first](docs/images/panel.png)
+
+*The overflow panel opens under the menu bar and lists the hidden items.*
+
+![The Arrange window with the Visible, Hidden and Always hidden sections](docs/images/arrange.png)
+
+*The Arrange window: Visible, Hidden and Always hidden, each item badged with its observed state.*
 
 ## Status
 
