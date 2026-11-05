@@ -250,7 +250,12 @@ public final class EngineTriggers {
         // bar fixed by that pass) clears it, so a later recurrence of the same change triggers again.
         if sig != lastTriggered { lastTriggered = nil }
         guard let base = reference(g) else { baseline = sig; baselineSerial = g.engineSignatureSerial; return }
-        if sig == base { baseline = sig; baselineSerial = g.engineSignatureSerial; return }
+        if sig == base {
+            baseline = sig; baselineSerial = g.engineSignatureSerial
+            // gdu.77: the bar still reads as the engine's own latest observation (not merely as an earlier poll): refresh its age.
+            if sig == g.engineSignature { await engine.notePollUnchanged(serial: g.engineSignatureSerial) }
+            return
+        }
         // Changed: confirm with a second scan before acting (a one-scan flicker never triggers).
         let what = sig.diff(from: base)
         await sleep(.seconds(config.confirmDelay))

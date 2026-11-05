@@ -65,6 +65,9 @@ public actor LayoutEngine {
         /// younger than this and its read level is usable, as the first of the two agreeing scans, so one fresh scan must agree
         /// before planning. Zero disables the reuse. Trigger-, poll- and restart-initiated passes never reuse.
         public var userPassReuseWindow: Duration = .seconds(2)
+        /// gdu.77: the window for an adopted observation whose age was refreshed by an unchanged poll (`notePollUnchanged`); the
+        /// poll interval (10 s) plus the scan and timer slack. The fresh full scan must still agree on the full signature.
+        public var polledSeedReuseWindow: Duration = .seconds(13)
         /// Builds the planner's capability rules from the SAME per-pass tracked-entry snapshot as the hide units (gdu.74), so an
         /// entry appearing or disappearing after launch is seen by planner and actuator alike. nil = the fixed provider given to `init`.
         public var capabilitiesFor: (@Sendable (TrackedEntryResolver?) -> any CapabilityProvider)?
@@ -147,6 +150,26 @@ public actor LayoutEngine {
     /// gdu.71: the latest adopted observation (a settled observation, or a snapshot adopted after an actuator call), for reuse
     /// as the first scan of a user-initiated pass.
     private var lastAdopted: (items: [ResolvedItem], completeness: ReadCompleteness, at: ContinuousClock.Instant)?
+    /// gdu.77: the poll-signature serial that belongs to `lastAdopted` (nil when its signature could not be noted), and whether its
+    /// age was refreshed by an unchanged poll (which widens the reuse window to `polledSeedReuseWindow`).
+    private var lastAdoptedSerial: Int?
+    private var lastAdoptedPolled = false
+    private func noteAdopted(_ items: [ResolvedItem], _ completeness: ReadCompleteness, serialBefore: Int) {
+        lastAdopted = (items, completeness, .now)
+        lastAdoptedSerial = pollSignatureSerial != serialBefore ? pollSignatureSerial : nil
+        lastAdoptedPolled = false
+    }
+
+    /// gdu.77: the poll's fast scan read the bar as the engine's own latest signature (`serial`). Refreshes ONLY the age of the
+    /// adopted observation (never its content) so an idle user click may still use it as the first of its two agreeing scans.
+    /// Ignored when the serial moved on, a pass is running or requested, or no adopted observation belongs to that serial.
+    public func notePollUnchanged(serial: Int) {
+        guard let a = lastAdopted, lastAdoptedSerial == serial, pollSignatureSerial == serial,
+              !inPass, !pending, requestedAt == nil, notReadyUntil == nil else { return }
+        if !lastAdoptedPolled { log("poll: bar unchanged since the adopted observation; its age is refreshed for the next user pass") }
+        lastAdopted = (a.items, a.completeness, .now)
+        lastAdoptedPolled = true
+    }
     /// Fresh scans the latest `observeOnce` used.
     private var lastObserveScans = 0
     /// Hide units temporarily revealed on purpose (overflow-panel click-forwarding, gdu.17): hold token per unit.
@@ -396,7 +419,7 @@ public actor LayoutEngine {
     /// acted on for `settle`, transient reveal holds are dropped (the revealed element is gone), and ONE reconcile follows.
     public func agentRestarted(settle: Duration = .seconds(2)) async {
         notReadyUntil = .now + settle
-        lastAdopted = nil
+        lastAdopted = nil; lastAdoptedSerial = nil; lastAdoptedPolled = false
         let units = Array(transientReveals.keys)
         transientReveals = [:]
         if !units.isEmpty {
@@ -725,8 +748,9 @@ public actor LayoutEngine {
             if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
             observedCompleteness = r.completeness
             lastObserveScans = r.scans
+            let serialBefore = pollSignatureSerial
             if r.settled { notePollSignature(r.items) }
-            if r.settled, r.completeness.membershipUsable { lastAdopted = (r.items, r.completeness, .now) }
+            if r.settled, r.completeness.membershipUsable { noteAdopted(r.items, r.completeness, serialBefore: serialBefore) }
             assumedKeys = Set(r.items.filter { $0.item.hiddenReason == .assumedNotHosted }.map(\.key))
             if r.settled, r.completeness == .complete {
                 // A settled complete read confirms a pending hide when the unit is off the bar by evidence (not by assumption),
@@ -770,8 +794,9 @@ public actor LayoutEngine {
             let o = ObservedOrder(resolved: resolved)
             if !o.onBar.isEmpty {
                 itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved), retaining: ItemInfo.staleOnlyKeys(from: resolved))
+                let serialBefore = pollSignatureSerial
                 notePollSignature(resolved)
-                if snap.completeness.membershipUsable { lastAdopted = (resolved, snap.completeness, .now) }
+                if snap.completeness.membershipUsable { noteAdopted(resolved, snap.completeness, serialBefore: serialBefore) }
                 obs = o; return true
             }
         }
@@ -789,7 +814,8 @@ public actor LayoutEngine {
     /// scan must still agree with it; the writes that follow are verified exactly as before.
     private func reusableSeed() -> ObservationSeed? {
         guard config.userPassReuseWindow > .zero, let a = lastAdopted, a.completeness.membershipUsable,
-              notReadyUntil == nil, !foreignRestartInPass, a.at.duration(to: .now) <= config.userPassReuseWindow else { return nil }
+              notReadyUntil == nil, !foreignRestartInPass,
+              a.at.duration(to: .now) <= (lastAdoptedPolled ? config.polledSeedReuseWindow : config.userPassReuseWindow) else { return nil }
         return ObservationSeed(items: a.items, completeness: a.completeness)
     }
 
