@@ -8,7 +8,12 @@ public struct ObservedOrder: Equatable, Sendable {
     public var systemOverflow: Set<ItemKey>
     /// The overflow chevron when it is on the bar: the hard left boundary of everything that may be dragged (gdu.45).
     public var overflowChevron: ItemKey?
-    public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil) {
+    /// Keys in `parked` whose placement is unknown (gdu.79: app-side frame only, no hosted element, Control Center does not say hidden).
+    /// The planner must not treat them as parked: they are neither shown nor counted as hidden.
+    public var placementUnknown: Set<ItemKey>
+    public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
+                placementUnknown: Set<ItemKey> = []) {
+        self.placementUnknown = placementUnknown
         self.onBar = onBar
         self.parked = parked
         self.systemOverflow = systemOverflow
@@ -24,6 +29,7 @@ public struct ObservedOrder: Equatable, Sendable {
         var bar: [(CGFloat, ItemKey)] = []
         var off: [ItemKey] = []
         var ovf = Set<ItemKey>()
+        var unknown = Set<ItemKey>()
         var chevron: ItemKey?
         for r in resolved where !r.item.stale && r.item.frame.width > 1 {
             guard seen.insert(r.key).inserted else { continue }
@@ -31,11 +37,11 @@ public struct ObservedOrder: Equatable, Sendable {
                 bar.append((r.item.frame.minX, r.key))
                 if r.item.systemOverflow { ovf.insert(r.key) }
                 if r.item.isOverflowChevron { chevron = chevron ?? r.key }
-            } else { off.append(r.key) }
+            } else { off.append(r.key); if r.item.placementUnknown { unknown.insert(r.key) } }
         }
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
-        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron)
+        self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown)
     }
 }
 

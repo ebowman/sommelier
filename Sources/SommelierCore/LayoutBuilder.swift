@@ -6,6 +6,20 @@ public enum LayoutBuilder {
     /// Used by `build` and by `BarSignature` so the agreement signature sees exactly what the layout will contain.
     public static func isNonItem(_ r: ResolvedItem) -> Bool { r.item.frame.width <= 1 }
 
+    /// Keys whose placement is unknown (gdu.79): app-side frame only, no hosted element, Control Center does not say hidden. A layout built
+    /// from a scan with any of these would have to guess; callers refuse (`init-from-current` exits 1, the first-launch build waits for
+    /// the next launch/scan). `build` itself never writes them anywhere, so a guess can never land in `visible`.
+    public static func unknownPlacement(in resolved: [ResolvedItem]) -> [ItemKey] {
+        var seen = Set<ItemKey>()
+        return resolved.filter { $0.item.placementUnknown && !EngineFactory.isOwnHosted($0) && !isNonItem($0) && seen.insert($0.key).inserted }.map(\.key)
+    }
+
+    /// The message of that refusal (names the keys).
+    public static func unknownPlacementMessage(_ keys: [ItemKey]) -> String {
+        "placement unknown for \(keys.count) items (app-side frame only, no hosted element); retry when the bar settles: "
+            + keys.map(\.description).joined(separator: ", ")
+    }
+
     /// On-bar items -> `visible` (order preserved); parked items -> `hidden`. Items with width <= 1 (e.g. the frontmost
     /// app's main-menu entries reported by MenuBarAgent) are not status items and are excluded. Duplicate keys collapse
     /// (first occurrence wins). `excluded` lists "key (title)" for each ignored non-item.
@@ -35,6 +49,7 @@ public enum LayoutBuilder {
                 excluded.append("\(r.key) (\(r.item.title))")
                 continue
             }
+            if r.item.placementUnknown { continue }   // never guessed into a section (gdu.79); callers refuse first
             if !seen.insert(r.key).inserted { continue }
             if r.item.isOnMenuBar { layout.visible.append(r.key) } else { layout.hidden.append(r.key) }
         }

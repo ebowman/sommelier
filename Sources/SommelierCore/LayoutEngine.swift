@@ -70,6 +70,9 @@ public actor LayoutEngine {
         public var polledSeedReuseWindow: Duration = .seconds(13)
         /// Builds the planner's capability rules from the SAME per-pass tracked-entry snapshot as the hide units (gdu.74), so an
         /// entry appearing or disappearing after launch is seen by planner and actuator alike. nil = the fixed provider given to `init`.
+        /// gdu.79: the live Control Center `isAllowed` for a tracked entry key (nil = unreadable). The membership guard reads it; nil
+        /// everywhere (the default) means the guard has no evidence and never fires.
+        public var trackedAllowed: @Sendable (String) -> Bool? = { _ in nil }
         public var capabilitiesFor: (@Sendable (TrackedEntryResolver?) -> any CapabilityProvider)?
         public init() {}
     }
@@ -108,6 +111,19 @@ public actor LayoutEngine {
     public var config: Config
 
     private var layout: Layout = .empty
+    /// gdu.79: keys the layout lists as visible because a USER placed them there (a `setLayout` that moved them into `visible`); a
+    /// layout loaded from disk, built by init-from-current, adopted at first launch or extended by the new-item policy is not one.
+    /// Cleared when the key is no longer listed visible or is seen on the bar.
+    private var userPlacedVisible: Set<ItemKey> = []
+    /// Per key: what the latest scan knew about where the item is (source, frame, join, Control Center flag), for the membership log.
+    private var evidence: [ItemKey: String] = [:]
+    private func noteEvidence(_ resolved: [ResolvedItem]) {
+        for r in resolved where !r.item.stale {
+            let i = r.item
+            evidence[r.key] = "source=\(i.source.rawValue) frame=(\(Int(i.frame.minX)),\(Int(i.frame.minY)) \(Int(i.frame.width))x\(Int(i.frame.height))) onBar=\(i.isOnMenuBar) join=\(i.joinEvidence.rawValue)"
+                + (i.hiddenReason.map { " hidden=\($0.rawValue)" } ?? "") + (i.controlCenterAllowed.map { " scanIsAllowed=\($0)" } ?? "")
+        }
+    }
     private var showHidden = false
     private var showAlways = false
     private var loaded = false
@@ -273,7 +289,7 @@ public actor LayoutEngine {
     /// (log `setLayout merged ...`); a key `requested` already places keeps the user's placement. `nil` (mbprobe, `apply`):
     /// `requested` replaces the layout wholesale.
     @discardableResult
-    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil) async -> LayoutRevision {
+    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil, userPlacement: Bool = true) async -> LayoutRevision {
         noteUserAction()
         var requested = requested
         if let revision {
@@ -286,6 +302,10 @@ public actor LayoutEngine {
         if !moved.isEmpty {
             log("layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
         }
+        // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
+        let wasVisible = Set(layout.visible)
+        userPlacedVisible = userPlacedVisible.intersection(new.visible)
+        if userPlacement { userPlacedVisible.formUnion(new.visible.filter { !wasVisible.contains($0) }) }
         layout = new
         loaded = true
         noteSupersede("setLayout")
@@ -524,6 +544,21 @@ public actor LayoutEngine {
         refreshHideUnits()
         reevaluateRefused(obs)
         var planObs = withoutTransient(obs)
+        userPlacedVisible.subtract(planObs.onBar)   // a user placement that came true is spent: a later hide by someone else stands
+        // gdu.79: parked keys the planner must not show. (1) placement unknown: nothing proves they are hidden, so there is nothing to
+        // show. (2) listed visible but not by the user while Control Center says isAllowed == false: a layout from disk / init-from-current
+        // / a scan must never un-hide an item the user hid. Both come back as explicit skips (neutral), never as an action.
+        var guarded: [(key: ItemKey, why: String)] = []
+        for k in planObs.parked where planObs.placementUnknown.contains(k) {
+            guarded.append((k, "placement unknown (app-side frame only, no hosted element)"))
+        }
+        let flagCandidates = planObs.parked.filter { layout.section(of: $0) == .visible && !userPlacedVisible.contains($0) && !planObs.placementUnknown.contains($0) }
+        for k in flagCandidates {
+            guard let tk = resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID), config.trackedAllowed(tk) == false else { continue }
+            guarded.append((k, "hidden in Control Center; not listed as visible by you"))
+            log("engine: not showing \(k): Control Center \(tk) isAllowed=false, layout lists it visible but not by a user placement; evidence: \(evidence[k] ?? "none")")
+        }
+        if !guarded.isEmpty { let g = Set(guarded.map(\.key)); planObs.parked.removeAll { g.contains($0) } }
         // gdu.72: parked units the actuator still refuses (after `reevaluateRefused`) are withheld from the Reconciler so it does not
         // plan an endless show; they come back as explicit skips with the refusal reason. On-bar ones: `effectiveCaps` (cannot hide).
         let refusedParked = planObs.parked.filter { actuatorRefused[$0] != nil }
@@ -534,6 +569,10 @@ public actor LayoutEngine {
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
         if !transientReveals.isEmpty { p.actions = []; p.newItems = []; p.phase = .converged }
+        for g in guarded {
+            p.skipped.removeAll { $0.key == g.key }
+            p.skipped.append(SkippedAction(g.key, g.why))
+        }
         for k in refusedParked {
             p.skipped.removeAll { $0.key == k }
             p.skipped.append(SkippedAction(k, actuatorRefused[k] ?? "cannot be shown"))
@@ -762,6 +801,7 @@ public actor LayoutEngine {
                 }
             }
             itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: r.items), retaining: ItemInfo.staleOnlyKeys(from: r.items))
+            noteEvidence(r.items)
             return .success((o, r.settled))
         } catch let e as ObserveError {
             return .failure(e)
@@ -780,6 +820,7 @@ public actor LayoutEngine {
         guard !o.onBar.isEmpty else { return }
         hasObservation = true
         itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: items), retaining: ItemInfo.staleOnlyKeys(from: items))
+        noteEvidence(items)
         let info = itemInfo
         log("first observation published (provisional, unsettled)")
         let hu = rule
@@ -794,6 +835,7 @@ public actor LayoutEngine {
             let o = ObservedOrder(resolved: resolved)
             if !o.onBar.isEmpty {
                 itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved), retaining: ItemInfo.staleOnlyKeys(from: resolved))
+                noteEvidence(resolved)
                 let serialBefore = pollSignatureSerial
                 notePollSignature(resolved)
                 if snap.completeness.membershipUsable { noteAdopted(resolved, snap.completeness, serialBefore: serialBefore) }
@@ -1074,6 +1116,11 @@ public actor LayoutEngine {
             // The actuator computes its expectations and `before` map from ITS OWN scan taken right before the write; the engine
             // passes only the keys and directions, never a snapshot, so a stale engine observation cannot leak into the verdict.
             log("membership batch: \(batch.count) key(s); the actuator verifies against its own pre-write scan")
+            for k in order {
+                let tk = resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID)
+                let flag = tk.flatMap { config.trackedAllowed($0) }
+                log("membership write: \(batch[k] == true ? "hide" : "show") \(k); layout=\(layout.section(of: k)?.rawValue ?? "none") userPlaced=\(userPlacedVisible.contains(k)); Control Center \(tk ?? "no entry") isAllowed=\(flag.map(String.init(describing:)) ?? "?"); \(evidence[k] ?? "no scan evidence")")
+            }
             let result = await actuator.applyHiddenBatch(batch)
             actionCount += 1
             var err: ActuationError?

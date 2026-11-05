@@ -21,6 +21,12 @@ public enum HiddenReason: String, Codable, Sendable {
     /// Our own successful live hide of the owner's identifier-less items was confirmed by a hosted-count drop, and nothing
     /// has contradicted it since; the app-side frame still says "on the bar" (of7). Never inferred from frames alone.
     case assumedNotHosted
+    /// The owner's own AX frame still says "on the bar" but there is NO hosted MenuBarAgent element for it and the Control
+    /// Center readback says `isAllowed == false` (gdu.79): the agent enforces that store, so the item is hidden.
+    case controlCenterHidden
+    /// The owner's own AX frame says "on the bar", no hosted element joins it and the Control Center flag does not say hidden
+    /// (allowed or unreadable) although the item has a tracked entry (gdu.79): its placement is unknown, never "on the bar".
+    case placementUnknown
 }
 
 /// How the owner's own AX item was paired with the MenuBarAgent hosted element that supplies its frame (gdu.28).
@@ -64,9 +70,17 @@ public struct MenuBarItem: @unchecked Sendable {
     public var notHostedByAgent: Bool
     /// True when the item is reported hidden only because of the assumed-hidden state (`HiddenReason.assumedNotHosted`).
     public var assumedNotHosted: Bool
+    /// gdu.79: app-side frame only (no hosted element joined) and Control Center says `isAllowed == false`: hidden, whatever the frame says.
+    public var hiddenInControlCenter: Bool
+    /// gdu.79: app-side frame only, no hosted element, and the Control Center flag does not prove it hidden: not on the bar, not
+    /// known to be anywhere. Never listed as visible and never shown by the engine because of this scan.
+    public var placementUnknown: Bool
+    /// The Control Center `isAllowed` readback the scanner consulted for an app-side-only item (nil = not consulted / unreadable / no entry).
+    public var controlCenterAllowed: Bool?
     /// nil when on the bar; otherwise why it is off it.
     public var hiddenReason: HiddenReason? {
-        isOnMenuBar ? nil : (assumedNotHosted ? .assumedNotHosted : (notHostedByAgent ? .notHosted : .parkedFrame))
+        isOnMenuBar ? nil : (assumedNotHosted ? .assumedNotHosted : (notHostedByAgent ? .notHosted
+            : (hiddenInControlCenter ? .controlCenterHidden : (placementUnknown ? .placementUnknown : .parkedFrame))))
     }
     /// True for the agent's overflow chevron ("<<", `overflowChevronName` in English): the control MenuBarAgent hosts when
     /// the bar is full. Detected structurally (see `AXElementInfo.isOverflowChevron`), so it is the same under any locale.
@@ -90,8 +104,12 @@ public struct MenuBarItem: @unchecked Sendable {
         frame: CGRect, source: MenuBarItemSource, isOnMenuBar: Bool,
         axElement: AXUIElement? = nil, stale: Bool = false, staleCount: Int = 0,
         notHostedByAgent: Bool = false, isOverflowChevron: Bool = false, systemOverflow: Bool = false,
-        assumedNotHosted: Bool = false, joinEvidence: JoinEvidence = .none
+        assumedNotHosted: Bool = false, joinEvidence: JoinEvidence = .none,
+        hiddenInControlCenter: Bool = false, placementUnknown: Bool = false, controlCenterAllowed: Bool? = nil
     ) {
+        self.hiddenInControlCenter = hiddenInControlCenter
+        self.placementUnknown = placementUnknown
+        self.controlCenterAllowed = controlCenterAllowed
         self.joinEvidence = joinEvidence
         self.assumedNotHosted = assumedNotHosted
         self.isOverflowChevron = isOverflowChevron
@@ -115,7 +133,7 @@ public struct MenuBarItem: @unchecked Sendable {
 extension MenuBarItem: Codable {
     private enum CodingKeys: String, CodingKey {
         case ownerPID, ownerBundleID, ownerName, title, axDescription, axIdentifier
-        case frame, source, isOnMenuBar, stale, staleCount, hidden, systemOverflow, overflowChevron, joinEvidence
+        case frame, source, isOnMenuBar, stale, staleCount, hidden, systemOverflow, overflowChevron, joinEvidence, ccAllowed
     }
 
     public init(from decoder: Decoder) throws {
@@ -138,7 +156,9 @@ extension MenuBarItem: Codable {
             isOverflowChevron: try c.decodeIfPresent(Bool.self, forKey: .overflowChevron) ?? false,
             systemOverflow: try c.decodeIfPresent(Bool.self, forKey: .systemOverflow) ?? false,
             assumedNotHosted: reason == .assumedNotHosted,
-            joinEvidence: try c.decodeIfPresent(JoinEvidence.self, forKey: .joinEvidence) ?? .none)
+            joinEvidence: try c.decodeIfPresent(JoinEvidence.self, forKey: .joinEvidence) ?? .none,
+            hiddenInControlCenter: reason == .controlCenterHidden, placementUnknown: reason == .placementUnknown,
+            controlCenterAllowed: try c.decodeIfPresent(Bool.self, forKey: .ccAllowed))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -158,6 +178,7 @@ extension MenuBarItem: Codable {
         try c.encode(systemOverflow, forKey: .systemOverflow)
         if isOverflowChevron { try c.encode(true, forKey: .overflowChevron) }
         if joinEvidence != .none { try c.encode(joinEvidence, forKey: .joinEvidence) }
+        try c.encodeIfPresent(controlCenterAllowed, forKey: .ccAllowed)
     }
 }
 

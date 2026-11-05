@@ -770,6 +770,8 @@ func runLayout(_ a: [String]) async {
             FileHandle.standardError.write(Data(("note: \(keys.count) self-positioning items were stale in the agreed scan ("
                 + keys.joined(separator: ", ") + "); written as they were observed\n").utf8))
         }
+        let unknown = LayoutBuilder.unknownPlacement(in: res)
+        if !unknown.isEmpty { fail(LayoutBuilder.unknownPlacementMessage(unknown) + "; not writing") }
         let (l, excluded, normalized) = LayoutBuilder.buildReportingNormalization(from: res, resolver: EngineFactory.currentTrackedResolver())
         guard !l.visible.isEmpty else { fail("scan returned no items; not writing") }
         if !normalized.isEmpty {

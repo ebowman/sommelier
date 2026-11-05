@@ -27,6 +27,9 @@ public struct MenuBarScanner {
     public var slowOwnerExtrasTimeout: Float = 0.3
     /// Control Center `isAllowed` readback for a tracked key (nil = unreadable); injectable for tests.
     public var allowedReadback: @Sendable (String) -> Bool? = { k in (try? ControlCenterTrackedAppsStore.allowedLive([k]))?[k] }
+    /// The Control Center tracked entries with their live `isAllowed` (nil = unreadable); injectable for tests. Consulted lazily, at most
+    /// once per scan, and only when an app-side-only item needs the authority rule (gdu.79).
+    public var trackedEntries: @Sendable () -> [ControlCenterTrackedAppsStore.Entry]? = { ControlCenterTrackedAppsStore.entriesLive() }
     private let state: ScanState
 
     /// - Parameter cacheURL: when set, the scan cache is loaded from / saved to this file, so a new process starts warm.
@@ -672,6 +675,18 @@ public struct MenuBarScanner {
             return c.info.title.isEmpty || !unmatchedHostedTitles.contains(c.info.title)
         }
 
+        // THE authority rule (gdu.79): an app-side frame alone never makes an item "on the bar". After a live hide the owner's AX frames
+        // stay where they were (docs/findings-live-trigger.md section 4), so an item with NO joined hosted element is judged by the
+        // Control Center store the agent enforces: isAllowed == false => hidden; otherwise, for an item that store governs and a
+        // trusted (complete) hosted read, unknown placement. Items no entry governs (SystemUIServer's, system extras) cannot be
+        // live-hidden and keep the frame rule; so does everything while the store is unreadable or the hosted read is incomplete.
+        // One place: mbprobe list, the engine observation, LayoutBuilder and init-from-current all read this classification.
+        var trackedResolver: TrackedEntryResolver?
+        var trackedLoaded = false
+        func tracked() -> TrackedEntryResolver? {
+            if !trackedLoaded { trackedLoaded = true; trackedResolver = trackedEntries().map { TrackedEntryResolver(entries: $0) } }
+            return trackedResolver
+        }
         var items: [MenuBarItem] = []
         var carriedUnverified: [String: Int] = [:]
         var newHidden = Set<String>()
@@ -702,15 +717,30 @@ public struct MenuBarScanner {
             // A candidate verified by the hosted tree takes the hosted (authoritative, fresh) frame and is not stale.
             let h = reportNotHosted ? nil : matchedCandidates[ci]
             let frame = h?.frame ?? c.info.frame
+            var ccHidden = false, unknown = false
+            var ccAllowed: Bool?
+            if h == nil, !reportNotHosted, agent != nil, c.info.frame.width > 1, onBar(frame) {
+                if let r = tracked(), let tk = r.trackedKey(candidates: [c.app.bundleID].compactMap { $0 }),
+                   let e = r.entries.first(where: { $0.key == tk }) {
+                    ccAllowed = e.isAllowed
+                    if !e.isAllowed { ccHidden = true }
+                    else if hostedComplete { unknown = true }
+                }
+                if ccHidden || unknown {
+                    let line = ("authority: \(c.app.bundleID ?? c.app.name) \(c.info.identityKey) app-side frame \(c.info.frame) only (no hosted element, source appExtras); Control Center isAllowed=\(ccAllowed.map(String.init(describing:)) ?? "?") -> " + (ccHidden ? "hidden" : "placement unknown"))
+                    if state.authorityLogged.insert("\(c.app.pid)|\(c.info.identityKey)|\(line)").inserted { log(line) }
+                }
+            }
             items.append(MenuBarItem(
                 ownerPID: c.app.pid, ownerBundleID: c.app.bundleID, ownerName: c.app.name,
                 title: c.info.title, axDescription: c.info.axDescription,
                 axIdentifier: c.info.identifier, frame: frame,
-                source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted, axElement: c.info.element,
+                source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted && !ccHidden && !unknown, axElement: c.info.element,
                 stale: h == nil ? (c.stale || carriedCount > 0) : h!.stale,
                 staleCount: h?.staleCount ?? carriedCount,
                 notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
-                joinEvidence: h == nil ? .none : joinEvidence(ci)))
+                joinEvidence: h == nil ? .none : joinEvidence(ci),
+                hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed))
         }
         for (hi, owner) in attributed {
             let h = hosted[hi]

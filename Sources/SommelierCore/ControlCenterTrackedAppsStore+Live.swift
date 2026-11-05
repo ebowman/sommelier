@@ -48,6 +48,19 @@ extension ControlCenterTrackedAppsStore {
         return out
     }
 
+    /// Every tracked entry with its `isAllowed` as CFPreferences reports it now (the file when CFPreferences has nothing), for the
+    /// scanner's authority rule (gdu.79). nil = unreadable.
+    public static func entriesLive(access: LivePrefsAccess = .system()) -> [Entry]? {
+        guard let blob = access.read() ?? access.fileBlob(), let list = try? parseBlob(blob).list else { return nil }
+        var out: [Entry] = []
+        for i in stride(from: 0, to: list.count, by: 2) {
+            guard let k = locationKey(list[i]), let v = list[i + 1] as? [String: Any] else { continue }
+            let items = (v["menuItemLocations"] as? [Any] ?? []).compactMap { locationKey($0) }
+            out.append(Entry(key: k, isAllowed: (v["isAllowed"] as? Bool) ?? true, menuItemKeys: items))
+        }
+        return out
+    }
+
     static func parseBlob(_ blob: Data) throws -> (list: [Any], fmt: PropertyListSerialization.PropertyListFormat) {
         var fmt = PropertyListSerialization.PropertyListFormat.binary
         guard let inner = try? PropertyListSerialization.propertyList(from: blob, options: [], format: &fmt),
