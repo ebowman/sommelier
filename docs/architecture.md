@@ -479,7 +479,7 @@ Clicking an entry in the overflow panel opens the REAL item's menu or popover. M
    unchanged. Any identity or consistency miss falls to the next source. "Drawn" no longer needs the slow full hosted read: a PARKED target lands on its
    settled frame alone; a live-hidden target (stale on-bar frame) lands when the agent's top-level group count (`hostedGroupCount`, one shallow read) rises
    above its pre-write value, plus the settled frame. The pre-write full hosted baseline (re-hide evidence only) is time-boxed to `baselineBudget`
-   (300 ms); when it is skipped the reveal proceeds and the engine hides the unit on its next pass. Timings: docs/testing.md "Reveal latency before/after".
+   (300 ms); when it is skipped the reveal proceeds, the activator still writes the re-hide itself, and only the of7 assumed-hidden record is skipped (the engine's next pass records it once the readback shows the unit hidden); cancelling the baseline read does not stop the underlying hosted read, which runs to its own end. Timings: docs/testing.md "Reveal latency before/after".
 2. **`axPressParked` (fallback, left click only)**: `AXUIElementPerformAction(kAXPressAction)` on the app-side element while it stays parked.
    Used when live hide/show is unavailable (no app-group entitlement), the item has no Control Center entry, the live write throws, or the
    reveal does not land within 1.5 s. CAVEAT: the menu/popover appears at an unrelated place (the item's frame is the parked frame at

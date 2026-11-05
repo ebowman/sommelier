@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import Testing
@@ -63,7 +64,20 @@ private final class FakeActivation: ActivationPlatform, @unchecked Sendable {
     /// Frames returned (in order) once the item has landed; the last one repeats. Models an item still sliding in.
     var slide: [CGRect] = []
     private var slideIndex = 0
+    /// Frames returned in order for a stale-frame target (the last repeats); empty = always `barFrame`.
+    var staleFrames: [CGRect] = []
+    private var staleIndex = 0
+    /// Scripted `hostedGroupCount` results, one per call (the last repeats); empty = nil (unsupported: the old count path).
+    var groupCounts: [Int?] = []
+    var groupCalls = 0
+    func hostedGroupCount() -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        groupCalls += 1
+        guard !groupCounts.isEmpty else { return nil }
+        return groupCounts[min(groupCalls - 1, groupCounts.count - 1)]
+    }
     func frame(of t: ActivationTarget) -> CGRect? {
+        if staleFrame, !staleFrames.isEmpty { defer { staleIndex += 1 }; return staleFrames[min(staleIndex, staleFrames.count - 1)] }
         if staleFrame { return barFrame }
         if !slide.isEmpty, let s = shownAt, let l = landsAfter, clock.now().timeIntervalSince(s) >= l, writes.last?.values.contains(true) == true {
             defer { slideIndex += 1 }
@@ -501,6 +515,100 @@ private actor FakeHold: TransientRevealing {
 }
 
 extension FakeHold { fileprivate func setRefuse() { refuse = true } }
+
+@Suite struct ItemActivatorDrawnPathTests {
+    private func make(_ p: FakeActivation) -> ItemActivator {
+        var c = ItemActivator.Config(); c.baselineBudget = 0
+        return ItemActivator(platform: p, hold: FakeHold(), config: c)
+    }
+    private func liveHidden(_ p: FakeActivation) {
+        p.staleFrame = true
+        p.locateResult = .found(ActivationTarget(key: key, ownerPID: 42, trackedKey: "com.x.tool", frame: barFrame, isOnBar: true,
+                                                 systemOverflow: false, hiddenInControlCenter: true))
+    }
+
+    @Test func liveHiddenIsNotDrawnWhileTheGroupCountStaysThenDrawnWhenItRises() async {
+        let p = FakeActivation(); liveHidden(p); p.groupCounts = [5, 5, 5, 7]
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(p.groupCalls == 4)            // baseline + three settled polls; the click came only after the rise
+        #expect(p.clicks.count == 1)
+        #expect(o.revealMS! >= 100)           // not at once although the stale frame already looked settled
+    }
+
+    @Test func countRisingBeforeTheFrameSettlesKeepsWaitingThenDraws() async {
+        let p = FakeActivation(); liveHidden(p); p.groupCounts = [5, 7]
+        let sliding = CGRect(x: 800, y: 20, width: 24, height: 24)   // not on its resting row yet
+        p.staleFrames = [sliding, sliding, sliding, barFrame]
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(p.groupCalls == 2)            // baseline + one check, made only once the frame was settled on two polls
+        #expect(o.revealMS! >= 150)
+        #expect(p.clicks[0].0 == CGPoint(x: barFrame.midX, y: barFrame.midY))
+    }
+
+    @Test func countNeverRisingTimesOutWithHonestFeedback() async {
+        let p = FakeActivation(); liveHidden(p); p.groupCounts = [5]
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.mechanism == .axPressParked)   // left click: pressed in place, never clicked on the stale frame
+        #expect(p.clicks.isEmpty && p.presses == 1)
+        let q = FakeActivation(); liveHidden(q); q.groupCounts = [5]
+        #expect(await make(q).activate(key: key, button: .right) == .failed(.revealTimedOut))
+        #expect(q.clicks.isEmpty)
+        #expect(q.writes.last == ["com.x.tool": false])   // re-hidden
+    }
+
+    @Test func parkedTargetIsDrawnByItsFrameWithoutAnyCountRise() async {
+        let p = FakeActivation(); p.groupCounts = [5]
+        guard case .opened(let o) = await make(p).activate(key: key, button: .left) else { Issue.record("no"); return }
+        #expect(o.mechanism == .revealClick)
+        #expect(p.groupCalls == 1)            // only the pre-write baseline; the frame is proof
+        #expect(p.clicks.count == 1)
+    }
+}
+
+@Suite struct ItemActivatorIdentityTests {
+    private func item(id: String = "", desc: String = "", pid: pid_t = 42, onBar: Bool = true) -> MenuBarItem {
+        MenuBarItem(ownerPID: pid, ownerBundleID: "com.x.tool", ownerName: "Tool", title: "", axDescription: desc, axIdentifier: id,
+                    frame: barFrame, source: .appExtras, isOnMenuBar: onBar)
+    }
+    private func info(id: String = "", desc: String = "", stale: Bool = false, element: Bool = true) -> AXElementInfo {
+        AXElementInfo(axDescription: desc, identifier: id, frame: barFrame, element: element ? AXUIElementCreateSystemWide() : nil, stale: stale)
+    }
+    private typealias L = LiveActivationPlatform
+
+    @Test func sameIdentityRules() {
+        #expect(L.sameIdentity(item(id: "a", desc: "d"), identifier: "a", description: "other"))       // identifier decides
+        #expect(!L.sameIdentity(item(id: "a", desc: "d"), identifier: "b", description: "d"))
+        #expect(L.sameIdentity(item(desc: "d"), identifier: "zzz", description: "d"))                   // no identifier: description
+        #expect(!L.sameIdentity(item(desc: "d"), identifier: "", description: "e"))
+        #expect(!L.sameIdentity(item(), identifier: "", description: ""))                               // nothing to compare
+    }
+
+    @Test func consistentCoversEachBranch() {
+        let parked = parkedFrame, settled = barFrame
+        let sliding = CGRect(x: 800, y: 20, width: 24, height: 24)   // on the strip but not on its resting row
+        #expect(L.consistent(cachedOnBar: true, hiddenInControlCenter: false, liveFrame: settled))
+        #expect(!L.consistent(cachedOnBar: true, hiddenInControlCenter: false, liveFrame: parked))   // went off the bar
+        #expect(!L.consistent(cachedOnBar: true, hiddenInControlCenter: true, liveFrame: parked))
+        #expect(L.consistent(cachedOnBar: false, hiddenInControlCenter: false, liveFrame: parked))
+        #expect(!L.consistent(cachedOnBar: false, hiddenInControlCenter: false, liveFrame: settled)) // came onto the bar
+        #expect(L.consistent(cachedOnBar: false, hiddenInControlCenter: true, liveFrame: settled))   // stale frame excused
+        #expect(L.consistent(cachedOnBar: false, hiddenInControlCenter: false, liveFrame: sliding))
+    }
+
+    @Test func ownerMatchNeedsExactlyOneIdentityMatch() {
+        let it = item(desc: "Tool")
+        #expect(L.ownerMatch(it, in: [info(desc: "Other"), info(desc: "Tool")]) != nil)
+        #expect(L.ownerMatch(it, in: [info(desc: "Tool"), info(desc: "Tool")]) == nil)                       // twins: full scan
+        #expect(L.ownerMatch(it, in: [info(desc: "Other")]) == nil)                                           // none
+        #expect(L.ownerMatch(it, in: []) == nil)
+        #expect(L.ownerMatch(it, in: nil) == nil)                                                             // owner read failed
+        #expect(L.ownerMatch(it, in: [info(desc: "Tool", stale: true)]) == nil)                               // carried-forward is no evidence
+        #expect(L.ownerMatch(it, in: [info(desc: "Tool", element: false)]) == nil)                           // nothing to act on
+        #expect(L.ownerMatch(it, in: [info(desc: "Tool", stale: true), info(desc: "Tool")]) != nil)           // stale one ignored
+    }
+}
 
 @Suite struct ItemActivatorBarClickTests {
     @Test func drawnItemIsClickedInPlaceButAControlCenterHiddenOneIsRevealedFirst() async {

@@ -595,9 +595,21 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     /// The on-bar state of the cached item must still agree with the live frame; otherwise the cache is out of date.
     /// (A live-hidden item keeps a stale on-bar frame, so a Control Center "hidden" flag excuses an on-strip frame.)
     private func consistent(_ r: ResolvedItem, liveFrame f: CGRect, target t: ActivationTarget) -> Bool {
-        if r.item.isOnMenuBar && !ItemActivator.isOnBarStrip(f) { return false }
-        if !r.item.isOnMenuBar && !t.hiddenInControlCenter && ItemActivator.isSettledOnBar(f) { return false }
+        Self.consistent(cachedOnBar: r.item.isOnMenuBar, hiddenInControlCenter: t.hiddenInControlCenter, liveFrame: f)
+    }
+
+    static func consistent(cachedOnBar: Bool, hiddenInControlCenter: Bool, liveFrame f: CGRect) -> Bool {
+        if cachedOnBar && !ItemActivator.isOnBarStrip(f) { return false }
+        if !cachedOnBar && !hiddenInControlCenter && ItemActivator.isSettledOnBar(f) { return false }
         return true
+    }
+
+    /// The single owner-read element carrying the cached item's identity; nil when the read failed (nil) or zero / several match.
+    static func ownerMatch(_ item: MenuBarItem, in infos: [AXElementInfo]?) -> AXElementInfo? {
+        guard let infos else { return nil }
+        let hits = infos.filter { !$0.stale && sameIdentity(item, identifier: $0.identifier, description: $0.axDescription) }
+        guard hits.count == 1, hits[0].element != nil else { return nil }
+        return hits[0]
     }
 
     public func locateCached(_ key: ItemKey) async -> ActivationTarget? {
@@ -611,12 +623,11 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     public func locateByOwner(_ key: ItemKey) async -> ActivationTarget? {
         guard let r = cachedResolved(key) else { return nil }
         let item = r.item
-        guard let infos = platform.readOwnerExtras(pid: item.ownerPID, bundleID: item.ownerBundleID, name: item.ownerName) else { return nil }
         // Exactly one element may carry the identity; two same-fingerprint items need the full scan's ordinal logic.
-        let hits = infos.filter { !$0.stale && Self.sameIdentity(item, identifier: $0.identifier, description: $0.axDescription) }
-        guard hits.count == 1, let el = hits[0].element else { return nil }
-        let t = makeTarget(key: key, item, element: el, frame: hits[0].frame, resolved: r)
-        return consistent(r, liveFrame: hits[0].frame, target: t) ? t : nil
+        guard let hit = Self.ownerMatch(item, in: platform.readOwnerExtras(pid: item.ownerPID, bundleID: item.ownerBundleID, name: item.ownerName)),
+              let el = hit.element else { return nil }
+        let t = makeTarget(key: key, item, element: el, frame: hit.frame, resolved: r)
+        return consistent(r, liveFrame: hit.frame, target: t) ? t : nil
     }
 
     /// One element's pid, identifier, description and frame (five attribute reads, a few ms); nil when any is unreadable.
