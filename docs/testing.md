@@ -595,7 +595,7 @@ Fix: a complete read records an `appgroup:<owner name>` marker (`SPGroup(appGrou
 
 Unit tests (`SelfPositioningCompletenessTests`, gdu.83 section): 3 unnamed (cpu, mem, app group) after a complete read with the entry are `.completeExceptSelfPositioning`, attributed (capped), no `incomplete:` log; a 4th unnamed group stays `.incomplete` (reason `4 unnamed ..., absent: 3`) and nobody is capped; no marker without the entry; another app's main-menu entry records none; the marker survives an 8-scan streak; an answered app group is not absent. Suite 761 tests (755 + 6) pass.
 
-Live (read-only, 4 stalled runs of 10; hosted agent-tree read after the first stalled read of a streak; the first stalled read still pays once, 2.73-2.85 s):
+Live (read-only, 5 stalled runs of 10; hosted agent-tree read after the first stalled read of a streak; the first stalled read still pays once, 2.73-2.85 s):
 
 | run | read 1 (ms) | read 2 | read 3 | classification |
 |---|---|---|---|---|
@@ -606,4 +606,8 @@ Live (read-only, 4 stalled runs of 10; hosted agent-tree read after the first st
 | 10 | 2728 (16 stale) | 626 | - | attributed |
 
 Before (same machine, gdu.81 build): 923-985 ms capped reads (three waves) and every cold stall `incomplete`. Other stalled reads seen were unrelated and correctly `incomplete`: a previously hosted non-iStat item missing (KeepingYouAwake `frame:783,3,30` flapping), and a degraded read where the app group answered (`previous-tree absent: 14`). Scan totals (hosted read + app pass) for the capped reads were 0.50-0.87 s.
+
+Limitation (honest): not every stalled read is attributed. Flapping non-iStat items (Wi-Fi, Focus, KeepingYouAwake frames) make some stalled reads `.incomplete` ("non-self-positioning element missing"), which also clears the gdu.81 caps; 3-of-3 attributed stalled reads could not be obtained on this machine for that reason. Not fixed here (follow-up bead). `mbprobe` honours `SOMMELIER_PROBE_CACHE` for `list` only; the actuating subcommands still use the real cache by design.
+
+Corrective (gdu.83 review): the marker is subtracted from the absent count not only when the app group's entry was read but also when it TIMED OUT as a named entry (warm app: contents cached, `droppingMainMenu` removes them, so no unnamed timeout), and the titles of both reads (confirm re-read) are unioned. Test: warm app, iStat's 8 groups plus the app group timing out as named entries plus one unknown new group is `.incomplete` and uncapped.
 

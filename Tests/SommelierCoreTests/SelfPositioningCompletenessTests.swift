@@ -592,3 +592,23 @@ private let fullWithAppGroup = tree([dummyEl, otherEl, cpu, mem, fileMenuEntry, 
     _ = scanner.scan()
     #expect(scanner.scan().completeness == .incomplete)
 }
+
+@Test func warmAppGroupTimingOutNamedDoesNotCoverANewUnknownGroup() {
+    // Warm app: cpu, mem and the app group's entries time out NAMED; one never-seen group times out unnamed.
+    let t = tree([dummyEl, otherEl], failed: 4, timedOut: [stale(cpu), stale(mem), istatMenuEntry, fileMenuEntry], unnamed: 1)
+    let s = source([fullWithAppGroup, t])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    let r = scanner.scan()
+    #expect(r.completeness == .incomplete)
+    #expect(s.notes.v.last == false)
+}
+
+@Test func warmAppGroupTimingOutNamedAloneStaysAttributed() {
+    let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem), istatMenuEntry, fileMenuEntry])
+    let s = source([fullWithAppGroup, t])
+    let scanner = MenuBarScanner(source: s)
+    _ = scanner.scan()
+    #expect(scanner.scan().completeness == .completeExceptSelfPositioning)
+    #expect(s.notes.v.last == true)
+}

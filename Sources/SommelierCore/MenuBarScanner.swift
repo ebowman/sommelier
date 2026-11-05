@@ -178,9 +178,13 @@ public struct MenuBarScanner {
         // Titles of the main-menu entries that were READ in this scan, before `droppingMainMenu` removes them (gdu.83): an owner's
         // own application group is proven present by an entry titled with the owner's name.
         var mainMenuTitles = Set<String>()
+        // Titles of main-menu entries that TIMED OUT (named: their contents were cached): the group failed but is named, so it is
+        // not an unnamed timeout and its marker must not count as absent (gdu.83 corrective).
+        var timedOutMenuTitles = Set<String>()
         for attempt in 1...(retry ? 3 : 1) {
             let raw = readOnce()
-            mainMenuTitles = Set(raw.elements.filter(\.isMainMenuEntry).map(\.title))
+            mainMenuTitles.formUnion(raw.elements.filter(\.isMainMenuEntry).map(\.title))
+            timedOutMenuTitles.formUnion(raw.timedOut.filter(\.isMainMenuEntry).map(\.title))
             tree = Self.droppingMainMenu(raw)
             if !tree.elements.isEmpty || !tree.timedOut.isEmpty { break }
             log("MenuBarAgent hosted tree empty (attempt \(attempt))")
@@ -197,7 +201,8 @@ public struct MenuBarScanner {
         if !previous.isEmpty, tree.unnamedTimeouts == 0, !missing(tree).isEmpty, !tree.elements.isEmpty || retry {
             log("\(missing(tree).count) previously visible item(s) absent; re-reading to confirm")
             let againRaw = readOnce()
-            mainMenuTitles = Set(againRaw.elements.filter(\.isMainMenuEntry).map(\.title))
+            mainMenuTitles.formUnion(againRaw.elements.filter(\.isMainMenuEntry).map(\.title))
+            timedOutMenuTitles.formUnion(againRaw.timedOut.filter(\.isMainMenuEntry).map(\.title))
             let again = Self.droppingMainMenu(againRaw)
             let have = Set(again.elements.map(\.identityKey))
             let firstOnly = tree.elements.filter { !have.contains($0.identityKey) }
@@ -287,7 +292,7 @@ public struct MenuBarScanner {
         let namedKeys = Set(tree.timedOut.map(\.identityKey))
         var absentSP = Set(state.selfPositioningGroups.values.joined().map(\.key)).union(spMiss.map(\.identityKey))
         absentSP.subtract(freshKeys); absentSP.subtract(namedKeys); absentSP.subtract(prunedKeys)
-        absentSP.subtract(spApps.filter { mainMenuTitles.contains($0.name) }.map { SPGroup.appGroupKey($0.name) }) // answered in this read: not absent (a removed group is not absent, it is gone)
+        absentSP.subtract(spApps.filter { mainMenuTitles.contains($0.name) || timedOutMenuTitles.contains($0.name) }.map { SPGroup.appGroupKey($0.name) }) // answered in this read: not absent (a removed group is not absent, it is gone)
         var attributable = false
         let namedRelevant = tree.timedOut.filter { !isNoise($0) }
         if tree.failedReads > 0, tree.topFailures == 0, namedRelevant.allSatisfy(isSP),
