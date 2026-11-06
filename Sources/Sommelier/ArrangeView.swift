@@ -228,6 +228,7 @@ struct CapsuleSlot: View {
     /// Position in the strip's row list; nil for the not-running group (no drop target).
     let slot: Int?
     @State private var width: CGFloat = 60
+    @State private var shakeCount = 0
 
     var body: some View {
         let cap = CapsuleView(row: row, grouped: false)
@@ -245,6 +246,22 @@ struct CapsuleSlot: View {
             return vm.drop(items, section: section, slot: loc.x < width / 2 ? slot : slot + 1)
         })
         .contextMenu { if !row.isAnchor && !row.isGhost { menu } }
+        .keyframeAnimator(initialValue: CGFloat(0), trigger: shakeCount) { content, dx in
+            content.offset(x: dx)
+        } keyframes: { _ in
+            KeyframeTrack {
+                LinearKeyframe(-6, duration: 0.05); LinearKeyframe(6, duration: 0.05); LinearKeyframe(-4, duration: 0.05)
+                LinearKeyframe(4, duration: 0.05); LinearKeyframe(0, duration: 0.05)
+            }
+        }
+        .overlay(alignment: .top) {
+            if let r = vm.refusal, r.key == row.key, !row.isGhost {
+                CalloutBubble(text: r.text).alignmentGuide(.top) { d in d[.bottom] + 6 }.allowsHitTesting(false).transition(.opacity)
+            }
+        }
+        .zIndex(vm.refusal?.key == row.key ? 10 : 0)
+        .onChange(of: vm.refusal) { _, new in if let new, new.key == row.key { shakeCount += 1 } }
+        .animation(.easeOut(duration: 0.15), value: vm.refusal)
     }
 
     @ViewBuilder private var menu: some View {
@@ -274,6 +291,21 @@ struct CapsuleSlot: View {
     }
 }
 
+struct CalloutBubble: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11))
+            .lineLimit(4)
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .frame(minWidth: 240, maxWidth: 320, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)).shadow(radius: 3))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange, lineWidth: 1))
+    }
+}
+
 struct CapsuleView: View {
     let row: ArrangeRow
     let grouped: Bool
@@ -287,7 +319,7 @@ struct CapsuleView: View {
                 Image(systemName: sym).font(.system(size: 9)).foregroundStyle(.secondary).help(row.placementNote ?? "")
             }
             if let n = row.capabilityNote {
-                Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
+                Image(systemName: n == ArrangeSections.positionsItselfNote ? "questionmark.circle" : "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
             }
             if !row.unitMates.isEmpty {
                 Image(systemName: "link").font(.system(size: 9)).foregroundStyle(.secondary)

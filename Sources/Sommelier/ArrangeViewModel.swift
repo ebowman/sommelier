@@ -37,6 +37,8 @@ final class ArrangeViewModel {
     @ObservationIgnored private unowned let model: AppModel
     var filter = ""
     var message: String?
+    /// UI-only: the transient callout for the last refused drop (cleared by the tick after `RefusalCallout.duration`).
+    private(set) var refusal: RefusalCallout?
     var confirm: Confirm?
     /// Slot currently targeted by a drag, for the insertion indicator.
     var hoverSlot: (section: LayoutSection, slot: Int)?
@@ -170,7 +172,8 @@ final class ArrangeViewModel {
         // The pause text hides itself when its window ends (gdu.60): `statusText` re-reads the clock, this makes the view re-render.
         if let until = state.pollSuppression?.until, until <= t, windowVisible { state.pollSuppression = nil }
         driveWindowGuard()
-        guard windowVisible || !tracker.isEmpty || pending.isActive else { return }
+        if let r = refusal, !r.isActive(at: t) { refusal = nil }
+        guard windowVisible || !tracker.isEmpty || pending.isActive || refusal != nil else { return }
         refreshCapabilities()
         pending.resolve(stateRevision: state.layoutRevision)
         guard !pending.isActive else { if windowVisible { logRowsIfChanged() }; return }
@@ -297,6 +300,12 @@ final class ArrangeViewModel {
             return true
         case .rejected(let why):
             message = why
+            let c = content
+            if RefusalCallout.anchor(for: key, in: c.visible.rows + c.hidden.rows + c.alwaysHidden.rows + c.visible.notRunning + c.hidden.notRunning + c.alwaysHidden.notRunning) != nil {
+                refusal = RefusalCallout.show(refusal, key: key, why: why, now: Date())
+                AppLog.log(.arrange, "arrange: callout at \(key): \(why)")
+                ensureTimer()
+            }
             AppLog.log(.arrange, "arrange: rejected \(key): \(why)")
             if let dropID {
                 AppLog.log(.arrange, "arrange: " + DropTrace.rejectedLine(id: dropID, why: why))
@@ -360,7 +369,7 @@ final class ArrangeViewModel {
     func askHideNotFitting() {
         let r = ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap, units: units)
         let c = content
-        func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
+        func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows + c.visible.notRunning + c.hidden.notRunning + c.alwaysHidden.notRunning).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
         confirm = .hideNotFitting(r.layout, titles: r.moved.map(t), blocked: r.blocked.map(t), base: state.layoutRevision)
     }
 
