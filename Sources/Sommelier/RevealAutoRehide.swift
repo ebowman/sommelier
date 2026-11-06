@@ -85,7 +85,10 @@ final class RevealAutoRehide {
     private func tick() {
         guard state.showHiddenSection || state.showAlwaysHidden else { stop(); return }
         let now = Date(), p = NSEvent.mouseLocation
-        if !state.revealedObserved {
+        // gdu.111: on a full bar (chevron) the reveal is panel-only: every hidden item is a "cannot be shown" skip and nothing is drawn on
+        // the bar. That is "requested, nothing to show", not a reveal that never converged: no withdraw/error, the idle re-hide ends it.
+        let panelOnly = state.observed.overflowChevron != nil && ArrangeSections.revealSkipNotice(state: state) != nil
+        if !state.revealedObserved && !panelOnly {
             lastActivity = now   // the idle clock starts when the reveal is observed, not when it was requested
             if now.timeIntervalSince(requestedSince) >= Self.convergeCap { controller.withdraw(reason: "reveal never converged"); stop() }
             return

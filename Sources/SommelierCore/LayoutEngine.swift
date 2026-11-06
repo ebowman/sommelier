@@ -689,6 +689,10 @@ public actor LayoutEngine {
         }
     }
 
+    static let fullBarSkipReason = "cannot be shown: the bar is full; macOS would keep it behind the chevron. It is in the panel."
+    /// Number of keys withheld by the last pass's full-bar rule (log once per change, not once per pass).
+    private var fullBarLogged = 0
+
     private func makePlan(_ obs: ObservedOrder) -> Plan {
         refreshHideUnits()
         reevaluateRefused(obs)
@@ -713,6 +717,22 @@ public actor LayoutEngine {
         // plan an endless show; they come back as explicit skips with the refusal reason. On-bar ones: `effectiveCaps` (cannot hide).
         let refusedParked = planObs.parked.filter { actuatorRefused[$0] != nil }
         if !refusedParked.isEmpty { planObs.parked.removeAll { actuatorRefused[$0] != nil } }
+        // gdu.111: on a FULL bar (a fresh overflow chevron is present) a reveal into the menu bar is useless: there is no free space, so
+        // macOS keeps the shown items behind its chevron (reported, not drawn). The panel is the reveal; the hidden-listed parked keys are
+        // withheld from the Reconciler and come back as "cannot be shown" skips (counted by `revealSkipNotice`). No show, no re-plan.
+        var fullBarWithheld: [ItemKey] = []
+        if (showHidden || showAlways), planObs.overflowChevron != nil {
+            fullBarWithheld = planObs.parked.filter { k in
+                let sec = layout.section(of: k)
+                return (showHidden && sec == .hidden) || (showAlways && sec == .alwaysHidden)
+            }
+            if !fullBarWithheld.isEmpty {
+                let w = Set(fullBarWithheld)
+                planObs.parked.removeAll { w.contains($0) }
+                if fullBarLogged != fullBarWithheld.count { log("reveal: bar is full (chevron): \(fullBarWithheld.count) hidden items stay in the panel, none shown") }
+            }
+        }
+        fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          selfPositioningOwners: config.selfPositioningOwners, units: rule,
                                          churn: SystemOverflowRule.churnZone(recentReads), placed: layout.enforcesOrder ? layout.placedSet : [])   // 8z5.2: macOS owns the order -> nothing is placed, nothing may move
@@ -723,6 +743,9 @@ public actor LayoutEngine {
         for g in guarded {
             p.skipped.removeAll { $0.key == g.key }
             p.skipped.append(SkippedAction(g.key, g.why))
+        }
+        for k in fullBarWithheld where !p.skipped.contains(where: { $0.key == k }) {
+            p.skipped.append(SkippedAction(k, Self.fullBarSkipReason))
         }
         for k in refusedParked {
             p.skipped.removeAll { $0.key == k }

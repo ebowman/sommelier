@@ -95,9 +95,15 @@ public enum ActuationVerifier {
         return Verdict(ok: ok, expected: expected, observed: ok ? expected : position(of: subject, in: order))
     }
 
-    public static func visibilityVerdict(key: ItemKey, hidden: Bool, resolved: [ResolvedItem]) -> Verdict {
+    /// gdu.111: `barFull` (a fresh overflow chevron is on the final scan) + `confirmedShown` (Control Center's readback confirmed
+    /// isAllowed == true for this show) make "absent / not drawn on the bar" satisfied: macOS keeps the item behind its chevron.
+    public static func visibilityVerdict(key: ItemKey, hidden: Bool, resolved: [ResolvedItem],
+                                         barFull: Bool = false, confirmedShown: Set<ItemKey> = []) -> Verdict {
         let expected = "\(key) \(hidden ? "parked off the bar" : "on the bar")"
         func fail(_ why: String) -> Verdict { Verdict(ok: false, expected: expected, observed: why) }
+        if !hidden, barFull, confirmedShown.contains(key), resolved.first(where: { $0.key == key }).map({ !onBar($0) }) ?? true {
+            return Verdict(ok: true, expected: expected, observed: "shown; behind the chevron (bar full)")
+        }
         guard let me = resolved.first(where: { $0.key == key }) else { return fail("item absent from the final scan") }
         if me.item.stale { return fail("item read is stale (cached frame)") }
         if uncorroborated(me) { return fail("item identity is heuristic without an AX identifier; cannot confirm") }

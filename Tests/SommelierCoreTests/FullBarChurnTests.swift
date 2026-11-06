@@ -225,7 +225,8 @@ struct FullBarChurnEngineTests {
         #expect(!moves(await r.actuator.calls).isEmpty)
     }
 
-    @Test func revealOnAFullBarAppliesMembershipOnlyAndSurfacesTheNotice() async {
+    // gdu.111 supersedes the gdu.80 membership-only reveal: on a full bar the reveal plans NO show (the panel is the reveal).
+    @Test func revealOnAFullBarShowsNothingNeverDragsAndSurfacesTheNotice() async {
         let hidden = k("H1")
         let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
         // The layout order differs from the bar (D4 before D3); a reveal must not drag for it.
@@ -233,10 +234,10 @@ struct FullBarChurnEngineTests {
         let r = await chevRig(order: order, hidden: [hidden], layout: layout, reveal: true)
         let rep = await r.engine.reconcileOnce()
         let calls = await r.actuator.calls
-        #expect(calls.contains { if case .applyHiddenBatch(let c) = $0 { c[hidden] == false } else { false } })
+        #expect(!calls.contains { if case .applyHiddenBatch(let c) = $0 { c[hidden] == false } else { false } })
         #expect(moves(calls).isEmpty)
         #expect(rep.outcome == .converged)
-        #expect(r.state.orderNotAppliedNotice == LayoutEngine.orderNotAppliedText)
+        #expect(ArrangeSections.revealSkipNotice(state: r.state) == "1 item could not be shown")
         // a second reveal pass (already shown) still drags nothing
         _ = await r.engine.reconcileOnce()
         #expect(moves(await r.actuator.calls).isEmpty)

@@ -30,6 +30,11 @@ public struct BatchOutcome: Sendable {
 /// The real `MenuBarActuator`: precheck -> act -> settle -> verify (docs/architecture.md (c)).
 /// An actor, so two actuations never overlap.
 public actor LiveActuator: MenuBarActuator {
+    /// gdu.111: shows whose own tracked key read back isAllowed == true. A key absent from (or false in) the readback is not confirmed.
+    nonisolated static func confirmedShown(expectations: [ItemKey: Bool], readback: [String: Bool], trackedKey: (ItemKey) -> String?) -> Set<ItemKey> {
+        Set(expectations.filter { !$0.value }.keys.filter { k in trackedKey(k).map { readback[$0] == true } ?? false })
+    }
+
     public struct Config: Sendable {
         /// Minimum wait after a drag's mouse-up before the first settle poll (AX lags 0.4-2.0 s).
         public var dragFloor: TimeInterval = 2.0
@@ -556,8 +561,14 @@ public actor LiveActuator: MenuBarActuator {
                                 uniquingKeysWith: { a, _ in a })
 
         // Already in the requested state? Then there is nothing to do (and no restart flash).
+        // gdu.111: shows whose Control Center readback confirmed isAllowed == true in THIS batch. Empty during the "already satisfied?"
+        // pre-check (strict); filled after the write lands, so only the post-write verification accepts "behind the chevron (bar full)".
+        var confirmedShown = Set<ItemKey>()
         func verdicts(_ rs: [ResolvedItem]) -> [ItemKey: ActuationVerifier.Verdict] {
-            Dictionary(uniqueKeysWithValues: expectations.map { ($0.key, ActuationVerifier.visibilityVerdict(key: $0.key, hidden: $0.value, resolved: rs)) })
+            let barFull = !confirmedShown.isEmpty && rs.contains { $0.item.isOverflowChevron && !$0.item.stale }
+            return Dictionary(uniqueKeysWithValues: expectations.map {
+                ($0.key, ActuationVerifier.visibilityVerdict(key: $0.key, hidden: $0.value, resolved: rs, barFull: barFull, confirmedShown: confirmedShown))
+            })
         }
         if verdicts(resolved).values.allSatisfy(\.ok) {
             // gdu.26: one full scan is not a verdict. Confirm with a second full scan that agrees (SettleDetector.agree, frames
@@ -657,18 +668,25 @@ public actor LiveActuator: MenuBarActuator {
                 catch { writeFailure = "setAllowedLive threw: \(error)" }
                 if wrote {
                     var landed = false
+                    var readConfirmed = false
+                    var acceptedReadback: [String: Bool] = [:]
                     var seen = "unreadable"
                     let attempts = max(1, config.readbackAttempts)
                     for attempt in 1...attempts {
                         if let rb = platform.readAllowedLive(Array(intended.keys)) {
                             let wrong = intended.filter { kv in rb[kv.key].map { $0 != kv.value } ?? false }
                             seen = intended.keys.sorted().map { "\($0)=\(rb[$0].map(String.init(describing:)) ?? "?")" }.joined(separator: ", ")
-                            if wrong.isEmpty { landed = true; break }
+                            if wrong.isEmpty { landed = true; readConfirmed = true; acceptedReadback = rb; break }
                         } else { landed = true; seen = "unreadable"; break }
                         if attempt < attempts { await platform.sleep(config.readbackSpan / Double(attempts - 1)) }
                     }
-                    if landed { note("live: write applied per Control Center store (readback \(seen))") }
-                    else { wrote = false; writeFailure = "readback after \(attempts) attempts does not show the intended isAllowed (\(seen))" }
+                    if landed {
+                        note("live: write applied per Control Center store (readback \(seen))")
+                        if readConfirmed {
+                            let trackedByKey = Dictionary(resolved.compactMap { r in platform.trackedKey(for: r).map { (r.key, $0) } }, uniquingKeysWith: { a, _ in a })
+                            confirmedShown = Self.confirmedShown(expectations: expectations, readback: acceptedReadback, trackedKey: { trackedByKey[$0] })
+                        }
+                    } else { wrote = false; writeFailure = "readback after \(attempts) attempts does not show the intended isAllowed (\(seen))" }
                 }
                 if let why = writeFailure {
                     platform.clearExpectedToVanish()

@@ -1538,3 +1538,27 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
     _ = await actuator(w, fallback: false).move(key("D"), relation: .before(key("C")))
     #expect(!w.dragCalls.isEmpty)
 }
+
+// gdu.111: a confirmed show on a full bar is satisfied behind the chevron.
+@Test func visibilityVerdictBehindTheChevron() {
+    let r = resolved(["A"], parked: ["B"])
+    let v = ActuationVerifier.visibilityVerdict(key: key("B"), hidden: false, resolved: r, barFull: true, confirmedShown: [key("B")])
+    #expect(v.ok && v.observed == "shown; behind the chevron (bar full)")
+    #expect(!ActuationVerifier.visibilityVerdict(key: key("B"), hidden: false, resolved: r, barFull: false, confirmedShown: [key("B")]).ok)
+    #expect(!ActuationVerifier.visibilityVerdict(key: key("B"), hidden: false, resolved: r, barFull: true, confirmedShown: []).ok)
+    #expect(ActuationVerifier.visibilityVerdict(key: key("Z"), hidden: false, resolved: r, barFull: true, confirmedShown: [key("Z")]).ok)   // absent but confirmed
+    // a hide expectation is unaffected
+    #expect(!ActuationVerifier.visibilityVerdict(key: key("A"), hidden: true, resolved: r, barFull: true, confirmedShown: [key("A")]).ok)
+    #expect(ActuationVerifier.visibilityVerdict(key: key("B"), hidden: true, resolved: r, barFull: true, confirmedShown: [key("B")]).ok)
+}
+
+
+// gdu.111: confirmedShown is per key; "not contradicted" (absent from the readback) is not "confirmed".
+@Test func confirmedShownIsPerKey() {
+    let exp: [ItemKey: Bool] = [key("A"): false, key("B"): false, key("C"): false, key("H"): true]
+    let tracked: [ItemKey: String] = [key("A"): "a", key("B"): "b", key("C"): "c", key("H"): "h"]
+    let got = LiveActuator.confirmedShown(expectations: exp, readback: ["a": true, "c": false, "h": false], trackedKey: { tracked[$0] })
+    #expect(got == [key("A")])   // B absent, C false, H is a hide
+    #expect(LiveActuator.confirmedShown(expectations: exp, readback: [:], trackedKey: { tracked[$0] }).isEmpty)
+    #expect(LiveActuator.confirmedShown(expectations: exp, readback: ["a": true], trackedKey: { _ in nil }).isEmpty)
+}
