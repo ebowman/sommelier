@@ -282,6 +282,10 @@ The skip is usually transient (the scanner's join evidence for an item varies sc
 - `PlanSimulator.apply` replays actions on an `ObservedOrder` (show slot injectable); `ReconcilerRandomTests` uses it for seeded convergence checks.
 - Dev tool: `mbprobe plan [--show-hidden] [--file PATH] [--json]` prints the plan and executes nothing.
 
+### Off-bar unnamed hosted elements and no-entry shows (gdu.114)
+
+The scanner emits no item for an agent-hosted element that has no identifier and no description, is not the overflow chevron, and whose midY lies outside the menu bar strip (`MenuBarScanner.isOffBarNoise`); it is logged once as `ignored off-bar hosted element`. The engine refuses a membership `show` for a key with no Control Center entry (`engine: refusing show of K: no Control Center entry`), withholds it like an actuator refusal (`.unsupported("cannot be shown: no Control Center entry")`), and prunes legacy `heuristic:com.apple.MenuBarAgent::#N` keys (empty fingerprint) from a loaded layout (`Layout.prunedAgentNoise`).
+
 ### Observer (`AgreedScanObserver`, gdu.46)
 
 `observe()` is strict (settled or throws `noAgreement`); `observeDetailed(progress:)` is what the engine uses.

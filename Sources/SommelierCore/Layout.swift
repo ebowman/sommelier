@@ -84,6 +84,23 @@ public struct Layout: Codable, Equatable, Sendable {
         for k in keys where vis.contains(k) && !placed.contains(k) { placed.append(k) }
     }
 
+    /// gdu.114: removes keys `heuristic:com.apple.MenuBarAgent::#N` (empty fingerprint) left by earlier builds that made keys for
+    /// unnamed off-bar hosted elements. Sections and `placed` lose them; everything else is untouched.
+    public func prunedAgentNoise() -> (Layout, removed: [ItemKey]) {
+        func junk(_ k: ItemKey) -> Bool {
+            if case .heuristic(let b, let fp, _) = k { return b == "com.apple.MenuBarAgent" && fp.isEmpty }
+            return false
+        }
+        var out = self
+        var removed: [ItemKey] = []
+        for k in visible + hidden + alwaysHidden where junk(k) { removed.append(k) }
+        out.visible = visible.filter { !junk($0) }
+        out.hidden = hidden.filter { !junk($0) }
+        out.alwaysHidden = alwaysHidden.filter { !junk($0) }
+        out.placed = placed.filter { !junk($0) }
+        return (out, removed)
+    }
+
     /// Drops `placed` entries that are not in `visible` any more (and duplicates).
     func pruningPlaced() -> Layout {
         var out = self

@@ -806,3 +806,7 @@ Use a scratch layout that already has `placed` entries but no `orderMode` (an ol
 6. [ ] Quit, restore the three plists from the backups and diff them against the live files; `trackedApplications` equal to the backup; real `layout.json` absent or untouched.
 
 **Abort rules** (stop at once, restore the plists, report): any `plan: phase=order` or `order: moving` while in macOSOwns; in placedOnly, any drag of a key that is not in `placed`; any move dispatched while the toggle reads off; a layout write that changes `placed` while in macOSOwns.
+
+## Off-bar agent elements shown every pass (gdu.114, 2026-11-06 10:13)
+
+Build 262 logged `membership write: show heuristic:com.apple.MenuBarAgent::#0..#5` (Control Center no entry, frame y=183 16x16, onBar=false) every pass. Fixed by the scanner noise rule, the no-entry show refusal and the load-time prune of empty-fingerprint agent keys; covered by `Gdu114Tests.swift`. Manual check: after launch the log has no `membership write: show heuristic:com.apple.MenuBarAgent` lines and, once, `layout: pruned N agent heuristic key(s)` if the old layout held any.

@@ -142,6 +142,13 @@ public struct MenuBarScanner {
     /// Removes the frontmost app's main-menu entries (`isMainMenuEntry`, gdu.29) from a hosted read: they are not status
     /// items. Nothing else is touched. If every timed-out element was such an entry (and nothing else failed), the failure
     /// was a main-menu group and is not counted.
+    /// gdu.114: a hosted element with no identifier and no description whose midY lies outside the menu bar strip is not a menu bar
+    /// item (the agent keeps such helper elements far below the bar); no key is made for it.
+    static func isOffBarNoise(frame: CGRect, identifier: String, description: String, strip: CGRect) -> Bool {
+        let onBar = frame.width > 0 && frame.height > 0 && frame.midY >= strip.minY && frame.midY <= strip.maxY
+        return !onBar && identifier.isEmpty && description.isEmpty
+    }
+
     static func droppingMainMenu(_ t: AgentHostedTree) -> AgentHostedTree {
         guard t.elements.contains(where: \.isMainMenuEntry) || t.timedOut.contains(where: \.isMainMenuEntry) else { return t }
         var r = t
@@ -852,6 +859,13 @@ public struct MenuBarScanner {
         }
         if let agent {
             for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) {
+                // gdu.114: an unnamed hosted element off the strip (not the chevron) is noise, not a menu bar item.
+                if !h.isOverflowChevron, Self.isOffBarNoise(frame: h.frame, identifier: h.identifier, description: h.axDescription, strip: strip) {
+                    if state.loggedNoise.insert("offbar:" + h.identityKey).inserted {
+                        log("ignored off-bar hosted element (frame \(Int(h.frame.minX)),\(Int(h.frame.minY)) w\(Int(h.frame.width)))")
+                    }
+                    continue
+                }
                 items.append(MenuBarItem(
                     ownerPID: agent.pid, ownerBundleID: agent.bundleID,
                     ownerName: h.axDescription.isEmpty ? "System item" : h.axDescription,

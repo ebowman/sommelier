@@ -339,7 +339,13 @@ public actor LayoutEngine {
         var movedAtLoad: [ItemKey] = []
         refreshHideUnits()
         do {
-            let (l0, moved) = try store.load().validatedReportingNormalization(units: rule)
+            let loadedLayout = try store.load()
+            let (pruned, junk) = loadedLayout.prunedAgentNoise()
+            if !junk.isEmpty {
+                log("layout: pruned \(junk.count) agent heuristic key(s) with an empty fingerprint")
+                try? store.save(pruned)
+            }
+            let (l0, moved) = pruned.validatedReportingNormalization(units: rule)
             layout = l0
             if !l0.enforcesOrder || !l0.placed.isEmpty { logOrderMode(l0) }
             if l0.enforcesOrder && l0.placed.isEmpty {
@@ -689,6 +695,7 @@ public actor LayoutEngine {
         }
     }
 
+    static let noEntrySkipReason = "cannot be shown: no Control Center entry"
     static let fullBarSkipReason = "cannot be shown: the bar is full; macOS would keep it behind the chevron. It is in the panel."
     /// Number of keys withheld by the last pass's full-bar rule (log once per change, not once per pass).
     private var fullBarLogged = 0
@@ -1324,15 +1331,25 @@ public actor LayoutEngine {
             let caps = effectiveCaps()
             var batch: [ItemKey: Bool] = [:]
             var order: [ItemKey] = []
+            var noEntry: [ItemKey] = []
             for a in plan.actions {
                 switch a {
                 case .hide(let k):
                     guard caps(k).canHide else { log("engine: refusing hide of \(k): capability forbids"); continue }
                     batch[k] = true; order.append(k)
-                case .show(let k): batch[k] = false; order.append(k)
+                case .show(let k):
+                    // gdu.114: a show of a key with no Control Center entry writes nothing; refuse it and withhold it from the planner.
+                    if resolverSnapshot != nil, resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID) == nil {
+                        log("engine: refusing show of \(k): no Control Center entry")
+                        actuatorRefused[k] = Self.noEntrySkipReason; refusedEpoch[k] = snapshotEpoch
+                        noEntry.append(k)
+                        continue
+                    }
+                    batch[k] = false; order.append(k)
                 case .move: break
                 }
             }
+            if !noEntry.isEmpty { await publish { [noEntry] s in for k in noEntry { s.perItem[k] = .unsupported(Self.noEntrySkipReason) } } }
             guard let first = order.first else { return await abort(.incomplete) }
             let fullBefore = obs.overflowChevron != nil
             if conflicted { return await pausedMidPass(report(.paused)) }
