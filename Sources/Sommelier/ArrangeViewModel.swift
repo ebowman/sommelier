@@ -202,7 +202,8 @@ final class ArrangeViewModel {
         let rows = content.strip(section).rows
         let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,
                                        observationAvailable: observationAvailable,
-                                       bar: state.observed.onBar, displayName: displayName, units: units)
+                                       bar: state.observed.onBar, displayName: displayName, units: units,
+                                       parked: Set(state.observed.parked))
         let id = nextDropID()
         AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot)")
         AppLog.log(.arrange, "arrange: " + DropTrace.intentLine(id: id, key: key, section: section, slot: slot, rows: rows, observed: state.observed,
@@ -212,7 +213,8 @@ final class ArrangeViewModel {
 
     func move(_ key: ItemKey, to section: LayoutSection) {
         _ = submit(ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
-                                       observationAvailable: observationAvailable, units: units), key: key, dropID: nextDropID())
+                                       observationAvailable: observationAvailable, units: units,
+                                       parked: Set(state.observed.parked)), key: key, dropID: nextDropID())
     }
 
     /// Item name for refusal texts: the engine's `ItemInfo` when known, else the key.
@@ -221,9 +223,11 @@ final class ArrangeViewModel {
     }
 
     func canMove(_ key: ItemKey, to section: LayoutSection) -> Bool {
-        guard layout.section(of: key) != section else { return false }   // already there (menu item stays disabled)
+        let parked = Set(state.observed.parked)
+        // already there (menu item stays disabled), except a parked key listed Visible: Move to Visible is a show request (gdu.110)
+        guard layout.section(of: key) != section || (section == .visible && parked.contains(key)) else { return false }
         if case .move = ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
-                                            observationAvailable: observationAvailable, units: units) { return true }
+                                            observationAvailable: observationAvailable, units: units, parked: parked) { return true }
         return false
     }
 
@@ -276,7 +280,7 @@ final class ArrangeViewModel {
                 // Same clamp as a UI drop; the index is 0-based among movable items (modules do not count).
                 let outcome = ArrangeDrop.drop(layout: self.layout, key: key, section: section, movableIndex: index,
                                                capabilities: self.cap, observationAvailable: self.observationAvailable,
-                                               bar: self.state.observed.onBar, displayName: self.displayName, units: self.units)
+                                               bar: self.state.observed.onBar, displayName: self.displayName, units: self.units, parked: Set(self.state.observed.parked))
                 _ = self.submit(outcome, key: key, dropID: id)
                 if interval > 0 { try? await Task.sleep(for: .seconds(interval)) }
             }

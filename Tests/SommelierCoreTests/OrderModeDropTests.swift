@@ -76,4 +76,43 @@ struct OrderModeDropTests {
         let none = { (_: ItemKey) in Capability(canMove: false, canHide: false, reason: "no way") }
         #expect(ArrangeDrop.outcome(layout: l, key: k("A"), to: .visible, index: 1, capabilities: none) == .rejected("no way"))
     }
+
+    // gdu.110: a key listed Visible but parked (hidden in Control Center): a drop inside Visible is a show request.
+    @Test func parkedVisibleKeyDropInsideVisibleIsShowRequest() {
+        let l = lay(.macOSOwns, v: ["A", "B", "C"])
+        guard case .move(let same, let moved, _) = ArrangeDrop.outcome(layout: l, key: k("B"), to: .visible, index: 1, capabilities: free, parked: [k("B")]) else { Issue.record("expected move"); return }
+        #expect(moved == [k("B")])
+        #expect(same.visible == [k("A"), k("B"), k("C")])
+        guard case .move(let first, let moved0, _) = ArrangeDrop.outcome(layout: l, key: k("B"), to: .visible, index: 0, capabilities: free, parked: [k("B")]) else { Issue.record("expected move"); return }
+        #expect(moved0 == [k("B")])
+        #expect(first.visible == [k("B"), k("A"), k("C")])
+        #expect(first.placed == l.placed)
+    }
+
+    @Test func onBarVisibleKeyStillRefusedInMacOSOwns() {
+        let l = lay(.macOSOwns, v: ["A", "B", "C"])
+        #expect(ArrangeDrop.outcome(layout: l, key: k("B"), to: .visible, index: 1, capabilities: free, parked: []) == .rejected(ArrangeDrop.orderFollowsMacOS))
+        #expect(ArrangeDrop.outcome(layout: l, key: k("B"), to: .visible, index: 1, capabilities: free, parked: [k("A")]) == .rejected(ArrangeDrop.orderFollowsMacOS))
+    }
+
+    @Test func parkedSelfPositioningKeyShowIsAccepted() {
+        let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
+        #expect(SelfPositioning.isSelfPositioning(istat))
+        let l = Layout(visible: [k("A"), istat, k("C")], orderMode: .macOSOwns)
+        guard case .move(_, let moved, _) = ArrangeDrop.outcome(layout: l, key: istat, to: .visible, index: 0, capabilities: free, parked: [istat]) else { Issue.record("expected move"); return }
+        #expect(moved.contains(istat))
+        #expect(ArrangeDrop.outcome(layout: l, key: istat, to: .visible, index: 0, capabilities: free) == .rejected(ArrangeDrop.positionsItself))
+    }
+
+    @Test func placedOnlyParkedKeyShowMarksPlaced() {
+        let l = lay(.placedOnly, v: ["A", "B", "C"])
+        guard case .move(let out, _, _) = ArrangeDrop.outcome(layout: l, key: k("B"), to: .visible, index: 0, capabilities: free, parked: [k("B")]) else { Issue.record("expected move"); return }
+        #expect(out.placed.contains(k("B")))
+    }
+
+    @Test func movableIndexOverloadForwardsParked() {
+        let l = lay(.macOSOwns, v: ["A", "B", "C"])
+        guard case .move = ArrangeDrop.drop(layout: l, key: k("B"), section: .visible, movableIndex: 0, capabilities: free, parked: [k("B")]) else { Issue.record("expected move"); return }
+        #expect(ArrangeDrop.drop(layout: l, key: k("B"), section: .visible, movableIndex: 0, capabilities: free, parked: []) == .rejected(ArrangeDrop.orderFollowsMacOS))
+    }
 }

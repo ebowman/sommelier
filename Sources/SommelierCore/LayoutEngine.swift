@@ -705,7 +705,7 @@ public actor LayoutEngine {
         let flagCandidates = planObs.parked.filter { layout.section(of: $0) == .visible && !userPlacedVisible.contains($0) && !planObs.placementUnknown.contains($0) }
         for k in flagCandidates {
             guard let tk = resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID), config.trackedAllowed(tk) == false else { continue }
-            guarded.append((k, "hidden in Control Center (isAllowed=false); not shown without a new placement by you: drag it to Visible in Arrange to show it"))
+            guarded.append((k, "Hidden in Control Center. Drop it into Visible (or use Move to Visible) to show it."))
             log("engine: not showing \(k): Control Center \(tk) isAllowed=false, layout lists it visible but not by a user placement; evidence: \(evidence[k] ?? "none")")
         }
         if !guarded.isEmpty { let g = Set(guarded.map(\.key)); planObs.parked.removeAll { g.contains($0) } }

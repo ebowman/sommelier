@@ -158,7 +158,7 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
         _ = await e.reconcileOnce()
         #expect(await act.calls.isEmpty)
         #expect(await act.hidden == [k("A")])
-        if case .unsupported(let why)? = state.perItem[k("A")] { #expect(why == "hidden in Control Center (isAllowed=false); not shown without a new placement by you: drag it to Visible in Arrange to show it") }
+        if case .unsupported(let why)? = state.perItem[k("A")] { #expect(why == "Hidden in Control Center. Drop it into Visible (or use Move to Visible) to show it.") }
         else { Issue.record("expected an unsupported skip, got \(String(describing: state.perItem[k("A")]))") }
         #expect(lines.all.contains { $0.contains("not showing") && $0.contains("isAllowed=false") && $0.contains("source=appExtras") && $0.contains("frame=") })
     }

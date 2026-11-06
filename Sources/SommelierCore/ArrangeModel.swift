@@ -487,7 +487,10 @@ public enum ArrangeDrop {
     public static func outcome(layout: Layout, key: ItemKey, to section: LayoutSection, index: Int?,
                                capabilities: (ItemKey) -> Capability, willNotFit: Bool = false, observationAvailable: Bool = true,
                                bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
-                               units: HideUnitRule = .ownerKeys) -> Outcome {
+                               units: HideUnitRule = .ownerKeys,
+                               parked: Set<ItemKey> = []) -> Outcome {
+        // `parked`: keys the observation reports off the bar (ObservedOrder.parked); a drop of such a key into Visible is a show request (gdu.110), not a reorder.
+        let showRequest = section == .visible && layout.section(of: key) == .visible && parked.contains(key)
         // Only moves that stay inside our own data (Hidden <-> Always hidden) may proceed without an observation.
         if !observationAvailable, section == .visible || layout.section(of: key) == .visible || layout.section(of: key) == nil {
             return .rejected(noObservation)
@@ -497,15 +500,15 @@ public enum ArrangeDrop {
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
         // Reordering within Visible is ignored by the planner for a self-positioning item (an anchor, gdu.33): refuse it
         // instead of saving a layout that would never be applied. Changing section (hide/show) stays accepted.
-        if section == .visible, layout.section(of: key) == .visible, SelfPositioning.isSelfPositioning(key) {
+        if !showRequest, section == .visible, layout.section(of: key) == .visible, SelfPositioning.isSelfPositioning(key) {
             return .rejected(positionsItself)
         }
         // sommelier-8z5.3: while macOS owns the order a pure reorder inside Visible (any index, any step) is refused. Evaluated after
         // the observation/capability/self-positioning refusals so their messages win; before the move so nothing is computed or saved.
-        if !layout.enforcesOrder, section == .visible, layout.section(of: key) == .visible { return .rejected(orderFollowsMacOS) }
+        if !showRequest, !layout.enforcesOrder, section == .visible, layout.section(of: key) == .visible { return .rejected(orderFollowsMacOS) }
         var l = layout
         let moved = l.move(key, to: section, index: index, units: units)
-        if l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
+        if !showRequest, l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
         // gdu.89: a drop INTO Visible (from anywhere, siblings included) is the user's placement: it creates an order obligation.
         // Order-only drops inside Hidden/Always hidden are our own data and create none (and a hide drops the key's obligation: `move`).
         // sommelier-8z5.3: only when Sommelier enforces order; in macOSOwns `placed` stays untouched (inert).
@@ -514,7 +517,7 @@ public enum ArrangeDrop {
         // self-positioning row (relative to the OBSERVED bar) is never reached: the next pass re-plans around the anchor. Refuse it.
         // Only a move that changes the row's side of the anchor in the layout AND disagrees with the bar is a crossing; a layout
         // that already straddles (older layout.json) can still be moved back to agree with the bar.
-        if section == .visible, layout.section(of: key) == .visible,
+        if !showRequest, section == .visible, layout.section(of: key) == .visible,
            let anchor = crossedSelfPositioning(old: layout, new: l, moved: moved, bar: bar) {
             return .rejected(cannotCross(displayName(anchor)))
         }
@@ -606,10 +609,10 @@ public enum ArrangeDrop {
     public static func drop(layout: Layout, key: ItemKey, section: LayoutSection, movableIndex: Int?,
                             capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
                             bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
-                            units: HideUnitRule = .ownerKeys) -> Outcome {
+                            units: HideUnitRule = .ownerKeys, parked: Set<ItemKey> = []) -> Outcome {
         let idx = movableIndex.flatMap { index(layout: layout, movableIndex: $0, key: key, section: section, units: units) }
         return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, observationAvailable: observationAvailable,
-                       bar: bar, displayName: displayName, units: units)
+                       bar: bar, displayName: displayName, units: units, parked: parked)
     }
 
     /// True when the immediate real row left or right of `slot` (ghosts, the boundary and the moving unit's rows ignored) is stale.
@@ -626,14 +629,14 @@ public enum ArrangeDrop {
     public static func drop(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection,
                             capabilities: (ItemKey) -> Capability, observationAvailable: Bool = true,
                             bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
-                            units: HideUnitRule = .ownerKeys) -> Outcome {
+                            units: HideUnitRule = .ownerKeys, parked: Set<ItemKey> = []) -> Outcome {
         // gdu.101: a drop in Visible next to a row whose position was not refreshed is translated against a bar we do not fully see.
         if section == .visible, nextToStale(rows: rows, slot: slot, key: key, units: units) { return .rejected(barNotFullyObserved) }
         let idx = index(layout: layout, rows: rows, slot: slot, key: key, section: section, units: units)
         let boundary = rows.firstIndex { $0.isBoundary }
         let notFit = boundary.map { slot <= $0 } ?? false
         return outcome(layout: layout, key: key, to: section, index: idx, capabilities: capabilities, willNotFit: notFit,
-                       observationAvailable: observationAvailable, bar: bar, displayName: displayName, units: units)
+                       observationAvailable: observationAvailable, bar: bar, displayName: displayName, units: units, parked: parked)
     }
 
     /// "Move left/right" inside Visible: past the next movable capsule (anchors, the boundary and ghosts are skipped; the
