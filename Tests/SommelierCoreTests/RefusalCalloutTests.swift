@@ -28,7 +28,11 @@ import Testing
     @Test func anchorNeedsNonGhostRow() {
         let k = key("a")
         #expect(RefusalCallout.anchor(for: k, in: [row(key("z")), row(k)]) == k)
-        #expect(RefusalCallout.anchor(for: k, in: [row(k, ghost: true)]) == nil)
+        #expect(RefusalCallout.anchor(for: k, in: [row(k, ghost: true)]) == k)
+        var notRunning = row(k, ghost: true); notRunning.notRunning = true
+        #expect(RefusalCallout.anchor(for: k, in: [notRunning]) == nil)
+        var fixed = row(k, ghost: true); fixed.draggable = false
+        #expect(RefusalCallout.anchor(for: k, in: [fixed]) == nil)
         #expect(RefusalCallout.anchor(for: k, in: [row(key("z"))]) == nil)
     }
 }

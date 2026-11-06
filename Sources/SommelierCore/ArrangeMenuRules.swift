@@ -5,6 +5,14 @@ public enum ArrangeMenuRules {
     /// "Move left" / "Move right" exist only when Sommelier enforces an order for placed items.
     public static func showsStepItems(mode: OrderMode) -> Bool { mode == .placedOnly }
 
+    /// Ghost rows never get step items (they are not on the bar to step).
+    public static func showsStepItems(mode: OrderMode, isGhost: Bool) -> Bool { !isGhost && showsStepItems(mode: mode) }
+
+    /// gdu.113: a running ghost (listed Visible, not on the bar: hidden in Control Center or still arriving) can be dragged to another section and gets the section-move menu; its own drop inside Visible is a show request (gdu.110).
+    public static func ghostInteractive(_ row: ArrangeRow) -> Bool {
+        row.isGhost && !row.notRunning && row.draggable && !row.isAnchor
+    }
+
     /// Context-menu title of the placement item; nil for an item that is not placed.
     /// placedOnly: "Stop managing order"; macOSOwns nothing is managed, so "Forget placement" (same action).
     public static func placementMenuTitle(row isPlaced: Bool, mode: OrderMode) -> String? {

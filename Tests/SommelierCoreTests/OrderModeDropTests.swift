@@ -115,4 +115,18 @@ struct OrderModeDropTests {
         guard case .move = ArrangeDrop.drop(layout: l, key: k("B"), section: .visible, movableIndex: 0, capabilities: free, parked: [k("B")]) else { Issue.record("expected move"); return }
         #expect(ArrangeDrop.drop(layout: l, key: k("B"), section: .visible, movableIndex: 0, capabilities: free, parked: []) == .rejected(ArrangeDrop.orderFollowsMacOS))
     }
+
+    @Test func dropOnGhostRowResolves() {
+        let l = lay(.macOSOwns, v: ["A", "B", "C"])
+        let sec = ArrangeSections.make(observed: ObservedOrder(onBar: [k("A"), k("C")], parked: [k("B")]), layout: l, items: [:], perItem: [:], capabilities: free)
+        let r = sec.visible.rows
+        guard let g = r.firstIndex(where: { $0.isGhost && $0.key == k("B") }) else { Issue.record("no ghost row"); return }
+        for slot in [g, g + 1] {
+            guard case .move = ArrangeDrop.drop(layout: l, rows: r, slot: slot, key: k("B"), section: .visible, capabilities: free, parked: [k("B")]) else {
+                Issue.record("expected move at slot \(slot)"); continue
+            }
+        }
+        // a different key dropped on the ghost: no crash, a defined outcome
+        _ = ArrangeDrop.drop(layout: l, rows: r, slot: g, key: k("A"), section: .visible, capabilities: free)
+    }
 }

@@ -232,7 +232,7 @@ struct CapsuleSlot: View {
 
     var body: some View {
         let cap = CapsuleView(row: row, grouped: false)
-        let interactive = vm.filter.isEmpty && !row.isGhost
+        let interactive = vm.filter.isEmpty && (!row.isGhost || ArrangeMenuRules.ghostInteractive(row))
         Group {
             if row.draggable && interactive {
                 cap.draggable(ArrangePayload(storeKey: row.key.description))
@@ -245,7 +245,7 @@ struct CapsuleSlot: View {
             guard let slot else { return false }
             return vm.drop(items, section: section, slot: loc.x < width / 2 ? slot : slot + 1)
         })
-        .contextMenu { if !row.isAnchor && !row.isGhost { menu } }
+        .contextMenu { if !row.isAnchor && (!row.isGhost || ArrangeMenuRules.ghostInteractive(row)) { menu } }
         .keyframeAnimator(initialValue: CGFloat(0), trigger: shakeCount) { content, dx in
             content.offset(x: dx)
         } keyframes: { _ in
@@ -255,7 +255,7 @@ struct CapsuleSlot: View {
             }
         }
         .overlay(alignment: .top) {
-            if let r = vm.refusal, r.key == row.key, !row.isGhost {
+            if let r = vm.refusal, r.key == row.key, !row.isGhost || ArrangeMenuRules.ghostInteractive(row) {
                 CalloutBubble(text: r.text).alignmentGuide(.top) { d in d[.bottom] + 6 }.allowsHitTesting(false).transition(.opacity)
             }
         }
@@ -268,7 +268,7 @@ struct CapsuleSlot: View {
         Button("Move to Visible") { vm.move(row.key, to: .visible) }.disabled(!vm.canMove(row.key, to: .visible))
         Button("Move to Hidden") { vm.move(row.key, to: .hidden) }.disabled(!vm.canMove(row.key, to: .hidden))
         Button("Move to Always hidden") { vm.move(row.key, to: .alwaysHidden) }.disabled(!vm.canMove(row.key, to: .alwaysHidden))
-        if section == .visible && ArrangeMenuRules.showsStepItems(mode: vm.orderMode) {
+        if section == .visible && ArrangeMenuRules.showsStepItems(mode: vm.orderMode, isGhost: row.isGhost) {
             Divider()
             Button("Move left") { vm.step(row.key, .left) }.disabled(!vm.canStep(row.key, .left, rows: rows))
             Button("Move right") { vm.step(row.key, .right) }.disabled(!vm.canStep(row.key, .right, rows: rows))

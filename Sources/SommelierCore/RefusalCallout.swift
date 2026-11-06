@@ -18,9 +18,10 @@ public struct RefusalCallout: Equatable, Sendable {
 
     public func isActive(at now: Date) -> Bool { now < shownAt.addingTimeInterval(Self.duration) }
 
-    /// nil when the dragged key has no non-ghost capsule among `rows` (filtered out / not rendered): then only the message line shows.
+    /// nil when the dragged key has no interactive capsule among `rows` (filtered out / not rendered; a ghost counts only when
+    /// `ArrangeMenuRules.ghostInteractive`): then only the message line shows.
     public static func anchor(for key: ItemKey, in rows: [ArrangeRow]) -> ItemKey? {
-        rows.contains { $0.key == key && !$0.isGhost } ? key : nil
+        rows.contains { $0.key == key && (!$0.isGhost || ArrangeMenuRules.ghostInteractive($0)) } ? key : nil
     }
 
     /// Replaces `current` (any key) with a new callout for `key`; serial = (current?.serial ?? 0) + 1.
