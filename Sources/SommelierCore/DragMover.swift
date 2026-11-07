@@ -71,9 +71,13 @@ public struct DragMover {
     public var preUpHover: TimeInterval
     /// Cap on the per-step distance in points (raises the step count when needed); nil = off.
     public var maxStepPx: CGFloat?
+    /// Where every synthesized event goes (default: the HID event tap). Injectable so tests capture the sequence.
+    public var poster: @Sendable (CGEvent) -> Void
 
     public init(steps: Int = 10, stepDelay: TimeInterval = 0.015, holdTime: TimeInterval = 0.1,
-                armTime: TimeInterval = 0, preUpHover: TimeInterval = 0, maxStepPx: CGFloat? = nil) {
+                armTime: TimeInterval = 0, preUpHover: TimeInterval = 0, maxStepPx: CGFloat? = nil,
+                poster: @escaping @Sendable (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }) {
+        self.poster = poster
         self.steps = steps; self.stepDelay = stepDelay; self.holdTime = holdTime
         self.armTime = armTime; self.preUpHover = preUpHover; self.maxStepPx = maxStepPx
     }
@@ -92,12 +96,43 @@ public struct DragMover {
         let n = DragPlan.stepsCapping(distance: targetX - start.x, steps: steps, maxStepPx: maxStepPx)
         let plan = DragPlan.make(from: start, toX: targetX, steps: n, stepDelay: stepDelay, hold: holdTime,
                                  arm: armTime, preUp: preUpHover)
+        let saved = CGEvent(source: nil)?.location ?? .zero
+        defer { CGWarpMouseCursorPosition(saved) }
+        let r = perform(plan: plan, src: CGEventSource(stateID: .hidSystemState),
+                        sleep: { Thread.sleep(forTimeInterval: $0) }, warp: { CGWarpMouseCursorPosition($0) })
+        if let err = r.error { throw err }
+        Thread.sleep(forTimeInterval: 0.05)
+        return (r.upAt, r.trace)
+    }
+
+    /// Virtual key code of the (left) Command key.
+    public static let commandKeyCode: CGKeyCode = 0x37
+
+    /// A Command key-up `flagsChanged` event with no flags (clears a latched Command in the HID/session flags state).
+    static func commandKeyUpEvent(source: CGEventSource?) -> CGEvent? {
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: commandKeyCode, keyDown: false) else { return nil }
+        e.type = .flagsChanged
+        e.flags = []
+        return e
+    }
+
+    /// Posts the Command key-up on this mover's tap. Returns false when the event could not be created.
+    @discardableResult
+    public func postCommandKeyUp() -> Bool {
+        guard let e = Self.commandKeyUpEvent(source: CGEventSource(stateID: .hidSystemState)) else { return false }
+        poster(e)
+        return true
+    }
+
+    /// Runs the plan, posting through `poster`: Command-flagged move/down/dragged events, a flag-less mouse-up, then
+    /// (always, even on failure) an explicit Command key-up so the modifier is never left latched (sommelier-9o9.20).
+    func perform(plan: [DragStep], src: CGEventSource?, sleep: (TimeInterval) -> Void, warp: (CGPoint) -> Void)
+        -> (upAt: Date, error: DragError?, trace: [DragTraceEvent])
+    {
         var trace: [DragTraceEvent] = []
         var t0: Date?
-        let saved = CGEvent(source: nil)?.location ?? .zero
-        let src = CGEventSource(stateID: .hidSystemState)
-        defer { CGWarpMouseCursorPosition(saved) }
-        let outcome = Self.execute(plan: plan, sleep: { Thread.sleep(forTimeInterval: $0) }, post: { s in
+        let poster = self.poster
+        let outcome = Self.execute(plan: plan, sleep: sleep, post: { s in
             let type: CGEventType
             switch s.kind {
             case .move: type = .mouseMoved
@@ -105,22 +140,21 @@ public struct DragMover {
             case .dragged: type = .leftMouseDragged
             case .up: type = .leftMouseUp
             }
-            if s.kind == .move { CGWarpMouseCursorPosition(s.point) }
+            if s.kind == .move { warp(s.point) }
             // Event creation with the shared source can fail; a nil-source event is an acceptable last resort for the up.
             guard let e = CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: s.point, mouseButton: .left)
                     ?? (s.kind == .up ? CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: s.point, mouseButton: .left) : nil)
             else { return false }
-            e.flags = .maskCommand
-            e.post(tap: .cghidEventTap)
+            e.flags = s.kind == .up ? [] : .maskCommand
+            poster(e)
             let now = Date()
             if t0 == nil { t0 = now }
             trace.append(DragTraceEvent(kind: s.kind, planned: s.point, actual: CGEvent(source: nil)?.location ?? .zero,
                                         tMS: now.timeIntervalSince(t0!) * 1000))
             return true
         })
-        if let err = outcome.error { throw err }
-        Thread.sleep(forTimeInterval: 0.05)
-        return (outcome.upAt, trace)
+        if let up = Self.commandKeyUpEvent(source: src) ?? Self.commandKeyUpEvent(source: nil) { poster(up) }
+        return (outcome.upAt, outcome.error, trace)
     }
 
     /// Runs a plan through `post` (returns false when the event could not be created). If creation fails after a

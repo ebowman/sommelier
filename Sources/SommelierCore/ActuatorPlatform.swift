@@ -209,9 +209,15 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
 
     public func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {
         let result: Result<Date, DragError> = await onWork {
-            do { return .success(try DragMover(steps: steps).move(itemFrame: itemFrame, toX: toX)) }
-            catch let e as DragError { return .failure(e) }
-            catch { return .failure(.eventCreationFailed) }
+            let mover = DragMover(steps: steps)
+            let result: Result<Date, DragError>
+            do { result = .success(try mover.move(itemFrame: itemFrame, toX: toX)) }
+            catch let e as DragError { result = .failure(e) }
+            catch { result = .failure(.eventCreationFailed) }
+            if case .failure(.userBusy) = result { return result }   // nothing was posted
+            DragModifierGuard.settle(state: ModifierState(), postKeyUp: { mover.postCommandKeyUp() },
+                                     log: AppLog.logger(.engine, prefix: "actuator"))
+            return result
         }
         return try result.get()
     }

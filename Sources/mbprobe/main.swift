@@ -486,6 +486,7 @@ func runDrag(_ a: [String]) {
     let upAt: Date
     var dragTrace: [DragTraceEvent] = []
     do { let r = try mover.moveTraced(itemFrame: moved.frame, toX: dropX); upAt = r.upAt; dragTrace = r.trace } catch { sampler?.stop(); fail("\(error)") }
+    DragModifierGuard.settle(state: ModifierState(), postKeyUp: { mover.postCommandKeyUp() }, log: { print("  \($0)") })
     sampler?.stop()
     if trace {
         let ins = moved.frame.minX <= dropX && dropX <= moved.frame.maxX

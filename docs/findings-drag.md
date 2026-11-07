@@ -65,6 +65,18 @@ visible/confirmed by full scan (265-1730 ms). Escape was never needed.
 - Cursor is saved/restored; no menu opened in any trial; `NSEvent.pressedMouseButtons != 0` refuses to start (`.userBusy`).
 - Side observation: dummy values in the plist changed (A 783->747->777, B 813->777->747); extra key Dummy-C exists from earlier beads.
 
+## Command latch after the drag (sommelier-9o9.20, observed 2026-11-07)
+After a Sommelier strip-session Command-drag, `CGEventSource.flagsState(.combinedSessionState)` read `0x20100000`
+(Command bit `0x100000` set; `0x20000000` is the idle baseline on this machine): the synthetic drag set
+`maskCommand` on its mouse events but never released the key, so the next keystrokes could be read with Command held.
+Fix: the mouse-up carries no flags, and `DragMover` then posts a Command key-up (`flagsChanged`, virtual key `0x37`,
+`flags = []`) on the same tap. `LivePlatform.drag` and `mbprobe drag` then call `DragModifierGuard.settle`: if
+`ModifierState.isCommandLatched` (either flags state has Command), log `drag: modifier still latched; posted key-up`,
+post the key-up once more, re-check, and log `drag: modifier state clear` or `drag: modifier STILL latched` (no loop).
+Tests are hermetic (`DragModifierTests`: captured event sequence, fake `ModifierStateProviding`); real flags cannot be
+read reliably under `swift test`. Manual check: run a strip session or `mbprobe drag`, then read
+`CGEventSource.flagsState(.combinedSessionState)`; it must be `0x20000000`, and the app log must not show `STILL latched`.
+
 ## Failure modes seen
 - Wrong drop x (edge/center aim): silent no-op, item snaps back (not a menu).
 - 5-step drags: silent no-op.
