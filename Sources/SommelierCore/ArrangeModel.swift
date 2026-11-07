@@ -437,6 +437,12 @@ public enum ArrangeCapabilities {
 }
 
 public enum ArrangeDrop {
+    /// 9o9.3: refusal for a Visible drop while the upgrade adoption is pending and no clean observation has been read yet.
+    public static let readingOrder = "Reading your menu bar order…"
+    /// True when a drop changing Visible must be refused: the upgrade adoption is pending and no clean observation exists to adopt from.
+    public static func adoptionRefusal(pending: Bool, cleanObservation: Bool, current: Layout, proposed: Layout) -> Bool {
+        pending && !cleanObservation && proposed.visible != current.visible
+    }
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
     /// gdu.101: refusal for a drop (or step) in Visible next to an item whose position has not been refreshed.
     public static let barNotFullyObserved = "The bar is not fully observed right now; try again in a moment."

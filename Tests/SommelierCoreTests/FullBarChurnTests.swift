@@ -186,7 +186,7 @@ private func chevRig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout
     let engine = LayoutEngine(observer: GeoObserver(actuator: act, geo: geo), actuator: act,
                               store: InMemoryLayoutStore(layout), capabilities: Caps(), state: state,
                               resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { lines.add($0) },
-                              showHiddenSection: reveal)
+                              showHiddenSection: reveal, config: .multiMove)
     await engine.start()
     return ChevRig(engine: engine, state: state, actuator: act, geo: geo, lines: lines)
 }

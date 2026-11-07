@@ -61,7 +61,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         for _ in 0..<2 {
             _ = await r.engine.reconcileOnce()
             #expect(waitingKeys(r.state) == [k("c")])
-            #expect(!unsupported(r.state).contains(k("c")))   // TODO(system-of-record 9o9.3): with every Visible key ordered the uncorroborated c also makes a/b "cannot be placed right of the system items"; 9o9.3 rewrites that
+            #expect(unsupported(r.state).isEmpty)   // 9o9.3: the uncorroborated c is not the "system block"; a and b are not unplaceable
             #expect(await r.actuator.order == before)   // never dragged
         }
         _ = await r.engine.reconcileOnce()

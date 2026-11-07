@@ -51,6 +51,10 @@ private struct GoodObserver: MenuBarObserver {
     let actuator: FakeActuator
     func observe() async throws -> [ResolvedItem] { FakeMenuBar.resolve(FakeMenuBar.snapshot(order: await actuator.order, hidden: await actuator.hidden)) }
 }
+private struct FrozenObserver: MenuBarObserver {
+    let order: [ItemKey]
+    func observe() async throws -> [ResolvedItem] { FakeMenuBar.resolve(FakeMenuBar.snapshot(order: order, hidden: [])) }
+}
 private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bool {
     for _ in 0..<600 { if await cond() { return true }; try? await Task.sleep(for: .milliseconds(5)) }
     return false
@@ -86,6 +90,68 @@ private final class SteerableBox: @unchecked Sendable {
         #expect(rep.outcome == .converged)
         #expect(await r.actuator.calls.count == 1)
         #expect(await r.actuator.order == ["A", "C", "B", "D"].map(k))
+    }
+
+    @Test func theDefaultIsOneOrderMovePerPassAndTheSecondMoveComesOnAChainedPass() async {
+        #expect(LayoutEngine.Config().maxOrderMovesPerPass == 1)
+        // direct passes: one move each
+        let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["C", "B", "A"].map(k)))
+        let first = await r.engine.reconcileOnce()
+        #expect(first.outcome == .incomplete && first.actionCount == 1)
+        #expect(await r.actuator.calls.count == 1)
+        #expect(r.sink.lines.contains { $0.contains("plan: phase=order actions=") && $0.contains(" skipped=") })
+        let second = await r.engine.reconcileOnce()
+        #expect(second.outcome == .converged && second.actionCount == 1)
+        #expect(await r.actuator.order == ["C", "B", "A"].map(k))
+        // one request only: the cap ends the first pass and the engine chains the second by itself
+        var c = LayoutEngine.Config(); c.minPassInterval = .zero; c.layoutCoalesce = .zero
+        let q = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["C", "B", "A"].map(k)), config: c)
+        await q.engine.requestReconcile(reason: "test")
+        #expect(await waitUntil { await q.actuator.order == ["C", "B", "A"].map(k) })
+        #expect(q.sink.lines.contains { $0.contains("maxOrderMovesPerPass") })
+        #expect(await q.actuator.calls.count == 2)
+    }
+
+    // A move the actuator verified but the next read still plans is struck, not repeated (default config: one move per pass).
+    @Test func aVerifiedMoveThatTheReadStillPlansIsStruckNotRepeated() async {
+        let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "C", "B"].map(k)),
+                          observerFor: { _ in FrozenObserver(order: ["A", "B", "C"].map(k)) })
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 1)
+        _ = await r.engine.reconcileOnce()
+        let moved = r.sink.lines.filter { $0.contains("order: moving") }
+        #expect(Set(moved).count == moved.count)   // the identical move is not dragged a second time (the engine plans around the struck key)
+        let failed = r.state.perItem.values.filter { if case .failed(.notVerified) = $0 { true } else { false } }
+        #expect(failed.count == 1)
+        // later passes retry a struck key only within its strike budget, and every repeat is separated by a strike
+        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
+        var last: String?
+        for l in r.sink.lines where l.contains("order: moving") || l.contains("planned again") {
+            if l.contains("planned again") { last = nil; continue }   // a strike separates repeats
+            #expect(l != last); last = l
+        }
+        let settled = await r.actuator.calls.count   // the strike budget (3 per key) is spent: no further drags
+        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.actuator.calls.count == settled)
+        #expect(settled <= 2 * LayoutEngine.Config().maxKeyFailures + 1)
+    }
+
+    @Test func aLayoutEqualToTheBarDoesNothing() async {
+        let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "B", "C"].map(k)))
+        #expect(await r.engine.reconcileOnce().outcome == .converged)
+        #expect(await r.actuator.calls.isEmpty)
+    }
+
+    @Test func aStaleSubjectIsSkippedAndLogged() async {
+        let box = SteerableBox()
+        let r = await rig(order: ["B", "A", "C", "D"], layout: Layout(visible: ["A", "C", "D", "B"].map(k)), observerFor: { box.make($0) })
+        box.obs.set(level: .complete, stale: k("B"))
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(r.sink.lines.contains { $0.contains("order: skipped \(k("B")): stale frame") })
+        box.obs.set(level: .complete, stale: nil)
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.order == ["A", "C", "D", "B"].map(k))
     }
 
     @Test func membershipStillWorks() async {
@@ -157,11 +223,39 @@ private final class SteerableBox: @unchecked Sendable {
         #expect(LayoutEngine.adoptedVisible([a, b], bar: [b, a, c]) == [b, a])   // bar keys not in the layout are not invented
     }
 
-    @Test func aUserDropBeforeAdoptionSupersedesIt() async throws {
+    // 9o9.3: a drop while the adoption is pending first adopts the record from the last clean observation, then applies the drop on top.
+    @Test func aDropWhileAdoptionIsPendingAdoptsTheBarFirstAndThenAppliesTheDrop() async throws {
+        let decoded = try Layout.decode(Data(Self.legacyJSON.utf8))   // legacy record A C B D; the bar is A B C D
+        let r = await rig(order: ["A", "B", "C", "D"], layout: decoded.layout)
+        await r.engine.setCleanBarForTesting(["A", "B", "C", "D"].map(k))
+        // the Arrange window composes the drop (D to the front) on the legacy record
+        await r.engine.setLayout(Layout(visible: ["D", "A", "C", "B"].map(k)), moved: [k("D")])
+        #expect(!r.state.layout.pendingAdoption)
+        #expect(r.state.layout.visible == ["D", "A", "B", "C"].map(k))   // bar order A B C, D dropped first; the legacy C-before-B is not enforced
+        #expect(r.sink.lines.contains { $0.contains("adopted bar order before applying the drop") })
+    }
+
+    @Test func aDropWhileAdoptionIsPendingWithoutACleanReadIsRefused() async throws {
         let decoded = try Layout.decode(Data(Self.legacyJSON.utf8))
         let r = await rig(order: ["A", "B", "C", "D"], layout: decoded.layout)
-        await r.engine.setLayout(Layout(visible: ["D", "A", "B", "C"].map(k)))
+        await r.engine.setLayout(Layout(visible: ["D", "A", "C", "B"].map(k)), moved: [k("D")])
+        #expect(r.state.layout.pendingAdoption && r.state.layout.visible == decoded.layout.visible)
+        #expect(r.sink.lines.contains { $0.contains("setLayout refused") })
+        // the Arrange window refuses it up front with the callout text
+        #expect(ArrangeDrop.readingOrder == "Reading your menu bar order…")
+        #expect(ArrangeDrop.adoptionRefusal(pending: true, cleanObservation: false, current: decoded.layout, proposed: Layout(visible: ["D", "A", "C", "B"].map(k))))
+        #expect(!ArrangeDrop.adoptionRefusal(pending: true, cleanObservation: true, current: decoded.layout, proposed: Layout(visible: ["D", "A", "C", "B"].map(k))))
+        #expect(!ArrangeDrop.adoptionRefusal(pending: false, cleanObservation: false, current: decoded.layout, proposed: Layout(visible: ["D", "A", "C", "B"].map(k))))
+        #expect(!ArrangeDrop.adoptionRefusal(pending: true, cleanObservation: false, current: decoded.layout, proposed: decoded.layout))
+        // once a clean read exists the adoption happens by itself and a later drop is an ordinary one
+        _ = await r.engine.reconcileOnce()
         #expect(!r.state.layout.pendingAdoption)
-        #expect(r.state.layout.visible == ["D", "A", "B", "C"].map(k))
+    }
+
+    @Test func applyingADropKeepsTheAdoptedOrderOfUnmovedKeys() {
+        let (a, b, c, d) = (k("A"), k("B"), k("C"), k("D"))
+        #expect(LayoutEngine.applyingDrop(to: [a, b, c, d], requested: [d, a, c, b], moved: [d]) == [d, a, b, c])
+        #expect(LayoutEngine.applyingDrop(to: [a, b, c, d], requested: [a, c, b, d], moved: [c]) == [a, c, b, d])
+        #expect(LayoutEngine.applyingDrop(to: [a, b, c], requested: [a, c], moved: []) == [a, c])   // a removed key goes
     }
 }

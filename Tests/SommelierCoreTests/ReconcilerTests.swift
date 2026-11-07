@@ -150,7 +150,7 @@ struct ReconcilerTests {
     @Test func staleOnBarIsNeverMoved() {
         let o = ObservedOrder(onBar: [k("a"), k("s"), k("b")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
         let l = Layout(visible: [k("s"), k("a"), k("b")])
-        let p = rec.plan(observed: o, layout: l, capabilities: free, placed: Set(l.visible))
+        let p = rec.plan(observed: o, layout: l, capabilities: free)
         #expect(p.actions.isEmpty)
     }
     @Test func staleOnBarHideIsSkipped() {
@@ -159,22 +159,6 @@ struct ReconcilerTests {
         #expect(p.actions.isEmpty)
         #expect(p.skipped.contains(SkippedAction(k("s"), Reconciler.staleSkipReason)))
         #expect(Reconciler.staleSkipReason == "position not refreshed; waiting for a fresh read")
-    }
-    /// gdu.101 step 4: the placed key hangs on the nearest eligible key outward, never on a module or in the "alone" rule.
-    @Test func placedHangsOnNearestEligibleSkippingIneligible() {
-        let a = k("A"), x = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "x"), pp = k("P")
-        let cc = ItemKey.module(name: "ControlCenter"), clock = ItemKey.module(name: "Clock")
-        let o = ObservedOrder(onBar: [a, x, pp, cc, clock], parked: [])
-        let l = Layout(visible: [a, x, pp, cc, clock])
-        // P observed at the far right of the movable span; the layout wants it after A (iStat X is an anchor between).
-        let t = Reconciler.placedTarget(base: [a, x, cc, clock], placed: [pp], anchors: [x, cc, clock], visible: l.visible, eligible: [a, pp])
-        #expect(t == [a, pp, x, cc, clock])
-    }
-    @Test func placedSkipsLeftModuleToRightEligible() {
-        let wifi = ItemKey.module(name: "WiFi"), x = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "x")
-        let b = k("B"), pp = k("P")
-        let t = Reconciler.placedTarget(base: [wifi, x, b], placed: [pp], anchors: [wifi, x], visible: [wifi, x, pp, b], eligible: [b, pp, wifi])
-        #expect(t == [wifi, x, pp, b])
     }
 
     // MARK: gdu.101 corrective pass
@@ -196,18 +180,18 @@ struct ReconcilerTests {
         let l = Layout(visible: [a, b, pp])
         // P is layout-after B; move it before... put it in a place that needs a move: observed has P last, layout wants A, P, B.
         let l2 = Layout(visible: [a, pp, b])
-        let p = rec.plan(observed: o, layout: l2, capabilities: free, placed: [pp])
-        #expect(p.actions == [.move(pp, .before(b))])
+        let p = rec.plan(observed: o, layout: l2, capabilities: free)
+        for case .move(_, let rel) in p.actions { switch rel { case .before(let t), .after(let t): #expect(t != a); default: break } }
+        #expect(p.actions.reduce(o) { PlanSimulator.apply($1, to: $0) }.onBar == [a, pp, b])
         _ = l
     }
     @Test func staleKeyDoesNotExtendTheSystemBlock() {
         let x = k("X"), s = k("S"), pp = k("P"), cc = ItemKey.module(name: "CC"), clock = ItemKey.module(name: "Clock")
         let o = ObservedOrder(onBar: [pp, x, s, cc, clock], parked: [], uncorroborated: [s], staleOnBar: [s])
-        let l = Layout(visible: [k("Q"), pp])
-        let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }, placed: Set(l.visible))
-        #expect(p.desiredOnBar == [x, s, pp, cc, clock])
-        let t = Reconciler.placedTarget(base: [x, s, cc, clock], placed: [pp], anchors: [cc, clock], visible: [k("Q"), pp], eligible: [pp])
-        #expect(t == [x, s, pp, cc, clock])
+        let l = Layout(visible: [x, s, pp])
+        let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) })
+        #expect(p.desiredOnBar == [x, pp, s, cc, clock])
+        #expect(!p.skipped.contains { $0.reason.hasPrefix("cannot be placed right of the system items") })
     }
     @Test func layoutModeIgnoresStaleAnchorOrder() {
         let a = k("a"), s1 = k("s1"), s2 = k("s2")
@@ -215,14 +199,6 @@ struct ReconcilerTests {
         let p = rec.plan(observed: o, layout: lay(v: ["s1", "s2", "a"]), capabilities: free)
         #expect(!p.skipped.contains { $0.reason.contains("out of layout order") })
         #expect(p.actions.isEmpty)
-    }
-    @Test func placedPrefersRightNeighbourWhenAModuleLiesBetween() {
-        let a = k("A"), b = k("B"), pp = k("P"), wifi = ItemKey.module(name: "WiFi")
-        let t = Reconciler.placedTarget(base: [a, wifi, b], placed: [pp], anchors: [wifi], visible: [a, wifi, pp, b], eligible: [a, b, pp])
-        #expect(t == [a, wifi, pp, b])
-        // no right eligible key: falls back to after A
-        let t2 = Reconciler.placedTarget(base: [a, wifi], placed: [pp], anchors: [wifi], visible: [a, wifi, pp], eligible: [a, pp])
-        #expect(t2 == [a, pp, wifi])
     }
 }
 

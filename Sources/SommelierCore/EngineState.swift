@@ -56,6 +56,8 @@ public final class EngineState {
     public var revealedObserved: Bool = false
     /// Arrange status-line text after a reveal was refused or withdrawn ("Reveal withdrawn: N items could not be shown"); cleared by the next reveal click.
     public var revealNotice: String?
+    /// 9o9.3: a complete, settled observation with fresh frames exists (what a drop made during the pending upgrade adoption adopts first).
+    public var cleanObservationAvailable: Bool = false
     public var inFlight: PlannedAction?
     public var perItem: [ItemKey: ItemStatus]
     /// Keys that are `.inPlace` because a live hide/show was APPLIED per the Control Center store, but no usable complete read

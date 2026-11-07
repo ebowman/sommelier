@@ -29,7 +29,7 @@ private func rig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout, ob
     let store = InMemoryLayoutStore(layout)
     let state = EngineState()
     let engine = LayoutEngine(observer: observer ?? ActuatorObserver(actuator: act), actuator: act, store: store, capabilities: Caps(),
-                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) }, config: .multiMove)
     await engine.start()
     return (engine, state, act, store)
 }

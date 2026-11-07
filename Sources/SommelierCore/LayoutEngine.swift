@@ -40,6 +40,8 @@ public actor LayoutEngine {
     public struct Config: Sendable {
         public var minPassInterval: Duration = .milliseconds(500)
         public var maxActionsPerPass = 50
+        /// 9o9.3: order drags per pass (the safety envelope: one move, then a fresh observation on the chained pass).
+        public var maxOrderMovesPerPass = 1
         public var busyWait: Duration = .seconds(3)
         public var busyPoll: Duration = .milliseconds(100)
         /// Consecutive self-rescheduled incomplete passes (membership then order) before the engine waits for an external trigger.
@@ -116,6 +118,14 @@ public actor LayoutEngine {
     }
     /// Read level of the latest observation (gdu.51).
     private var observedCompleteness = ReadCompleteness.complete
+    /// 9o9.3: the on-bar order of the last observation that was complete, settled and had no stale on-bar frame; what a drop made while
+    /// the upgrade adoption is pending adopts first.
+    private var lastCleanBar: [ItemKey]?
+    /// 9o9.3: per subject, the last order move the actuator verified, kept across passes until a pass finds the bar converged; a pass that plans the identical move again strikes it `.notVerified`.
+    private var lastVerifiedOrderMove: [ItemKey: PlannedAction] = [:]
+    private var unverifiedStrikes: [ItemKey: Int] = [:]
+    /// Test hook: pretends a clean observation of `bar` was read (the pass records it and adopts in the same step, so a pending adoption never coexists with one in production).
+    func setCleanBarForTesting(_ bar: [ItemKey]?) { lastCleanBar = bar }
     /// Keys applied by a `.liveUnverified` batch and not yet confirmed by a settled complete read; value = hidden (gdu.55).
     private var unconfirmed: [ItemKey: Bool] = [:]
     /// Keys the latest observation reports hidden only through the assumed-hidden state (no hosted-tree evidence).
@@ -401,9 +411,22 @@ public actor LayoutEngine {
         if !moved.isEmpty {
             log("layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
         }
-        // 9o9.2: the pending-adoption flag is engine state: a scan-built layout never changes it. A user placement that changes Visible
-        // is itself the order, so it supersedes an adoption that has not happened yet.
-        new.pendingAdoption = layout.pendingAdoption && !(userPlacement && new.visible != layout.visible)
+        // 9o9.2/9o9.3: the pending-adoption flag is engine state: a scan-built layout never changes it. A user placement that changes
+        // Visible while the adoption is pending FIRST adopts the record from the last clean observation and then applies the drop on
+        // top of it (it must not enforce the legacy saved order, which could reorder unrelated items). With no clean observation yet
+        // the layout is left as it is (the Arrange window refuses such a drop before it gets here).
+        new.pendingAdoption = layout.pendingAdoption
+        if layout.pendingAdoption, userPlacement, new.visible != layout.visible {
+            guard let bar = lastCleanBar else {
+                log("setLayout refused: the menu bar order has not been read yet (adoption pending)")
+                let s = state
+                return await MainActor.run { LayoutRevision(revision: s.layoutRevision, passesStarted: s.passesStarted) }
+            }
+            let adopted = Self.adoptedVisible(layout.visible, bar: bar)
+            new.visible = Self.applyingDrop(to: adopted, requested: new.visible, moved: movedKeys)
+            new.pendingAdoption = false
+            log("layout: adopted bar order before applying the drop (\(new.visible.count) keys)")
+        }
         // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
         let wasVisible = Set(layout.visible)
         userPlacedVisible = userPlacedVisible.intersection(new.visible)
@@ -447,6 +470,24 @@ public actor LayoutEngine {
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         log("layout: adopted bar order on upgrade (\(n.count) keys)")
         _ = await publishLayout(l)
+    }
+
+    /// Pure (9o9.3): `adopted` (the record adopted from the bar) with the user's drop applied. `requested` is the Visible order the
+    /// drop was composed on (legacy order + the drop). Keys of `requested` that were not moved keep their adopted relative order; each
+    /// moved (or new) key goes right after its nearest preceding unmoved key of `requested`, or first when none precedes it. Keys
+    /// `requested` no longer lists are removed.
+    static func applyingDrop(to adopted: [ItemKey], requested: [ItemKey], moved: Set<ItemKey>) -> [ItemKey] {
+        let want = Set(requested)
+        let known = Set(adopted)
+        let mv = moved.union(requested.filter { !known.contains($0) })
+        var out = adopted.filter { want.contains($0) && !mv.contains($0) }
+        var anchor: ItemKey?
+        for k in requested {
+            if !mv.contains(k) { anchor = k; continue }
+            if let a = anchor, let i = out.firstIndex(of: a) { out.insert(k, at: i + 1) } else { out.insert(k, at: 0) }
+            anchor = k
+        }
+        return out
     }
 
     /// Pure: `visible` reordered so its on-bar keys follow `bar`; off-bar keys stay after their nearest preceding neighbour in `visible`
@@ -510,7 +551,7 @@ public actor LayoutEngine {
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
-        failures = [:]; strikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
+        failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
         unconfirmed = [:]
@@ -741,8 +782,9 @@ public actor LayoutEngine {
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads),
-                                         placed: layout.pendingAdoption ? [] : Set(layout.visible))   // 9o9.2: every Visible key is enforced; until the upgrade adoption completes nothing may move. TODO(system-of-record): 9o9.3 rewrites the order phase
+                                         churn: SystemOverflowRule.churnZone(recentReads))
+        // 9o9.2: until the upgrade adoption completes no order action is planned (the record is the legacy saved order, not the bar's).
+        if layout.pendingAdoption, p.phase == .order { p.actions = []; p.phase = .converged }
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -874,7 +916,7 @@ public actor LayoutEngine {
         for k in Array(failures.keys) where !acting.contains(k) && !failedThisPass.contains(k) && transientReveals[rule.unit(of: k)] == nil
             && (obs.onBar.contains(k) || obs.parked.contains(k))
             && ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden, showAlwaysHidden: showAlways) {
-            failures[k] = nil; strikes[k] = nil
+            failures[k] = nil; strikes[k] = nil; unverifiedStrikes[k] = nil
             log("cleared failure for \(k): now in place")
         }
     }
@@ -888,7 +930,7 @@ public actor LayoutEngine {
         var waiting = Set<ItemKey>()
         let now = ContinuousClock.now
         for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting {
-            if s.reason == Reconciler.uncorroboratedSkipReason {   // gdu.105: transient, see positionWaitTimeout
+            if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason {   // gdu.105: transient, see positionWaitTimeout
                 let since = positionWaitSince[s.key] ?? now
                 positionWaitSince[s.key] = since
                 waiting.insert(s.key)
@@ -1265,6 +1307,10 @@ public actor LayoutEngine {
 
         // (c0) upgrade migration (9o9.2): the first complete, settled observation after upgrading from an order-mode layout becomes the record.
         // Only a complete read whose on-bar frames are ALL fresh qualifies (a carried frame, even a recently verified one, may be a wrong slot).
+        if observedCompleteness == .complete, obs.staleOnBar.isEmpty, lastCleanBar != obs.onBar {
+            lastCleanBar = obs.onBar
+            if layout.pendingAdoption { await publish { $0.cleanObservationAvailable = true } }
+        }
         if layout.pendingAdoption {
             if observedCompleteness == .complete, obs.staleOnBar.isEmpty { await adoptBarOrder(obs) }
             else {
@@ -1290,6 +1336,7 @@ public actor LayoutEngine {
             plan = makePlan(obs)
         }
         log(Self.describe(plan))
+        for sk in plan.skipped where sk.reason == Reconciler.staleFrameSkipReason { log("order: skipped \(sk.key): stale frame") }
         await publishObserved(obs, plan)   // (e) skipped -> unsupported inside statuses()
 
         var phaseReached = plan.phase
@@ -1322,6 +1369,7 @@ public actor LayoutEngine {
 
         // (f)
         if plan.phase == .converged {
+            lastVerifiedOrderMove = [:]
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
@@ -1484,6 +1532,7 @@ public actor LayoutEngine {
 
         // (h) order phase
         var lastAction: PlannedAction?
+        var orderMoves = 0
         while plan.phase == .order {
             // Every iteration re-plans from the CURRENT layout, so a setLayout that arrived during a drag is acted on at the
             // next iteration (the rest of the running drag cannot be taken back); log when that happens.
@@ -1514,15 +1563,27 @@ public actor LayoutEngine {
                 plan = makePlan(obs)
                 continue
             }
-            if lastAction == action {
-                // Verified last time yet still planned: the actuator's verdict and our observation disagree.
-                markFailed(key, .notVerified(expected: "\(rel)", observed: "unchanged"))
+            // Verified last time (in this pass or an earlier one that did not converge: the persisted `lastVerifiedOrderMove`) yet still planned:
+            // the actuator's verdict and our observation disagree. Judged BEFORE the per-pass cap, which would otherwise end the pass first.
+            if lastAction == action || lastVerifiedOrderMove[key] == action {
+                // The strike streak resets when another key is the one struck in a later pass (the engine plans around a struck key),
+                // so verdict/observation disagreements are also counted per key across passes: the budget is spent once, not forever.
+                let disagreements = (unverifiedStrikes[key] ?? 0) + 1
+                unverifiedStrikes[key] = disagreements
+                log("order: \(key) was verified but is planned again (\(disagreements)); not dragged again, struck")
+                markFailed(key, .notVerified(expected: "\(rel)", observed: "unchanged"), fullStrike: disagreements >= config.maxKeyFailures)
                 consecutiveFailures += 1
                 await publishObserved(obs, makePlan(obs))
                 plan = makePlan(obs)
                 phaseReached = plan.phase
                 lastAction = nil
+                lastVerifiedOrderMove[key] = nil
                 continue
+            }
+            guard orderMoves < config.maxOrderMovesPerPass else {
+                log("order: \(orderMoves) move(s) this pass (maxOrderMovesPerPass); the rest follows on the next pass")
+                await publish { $0.inFlight = nil }
+                return await rescheduleIncomplete(report(.incomplete), converged: false)
             }
             lastAction = action
             do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
@@ -1544,9 +1605,11 @@ public actor LayoutEngine {
             await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
             let result = await actuator.move(key, relation: rel)
             actionCount += 1
+            orderMoves += 1
             switch result {
             case .verified(let snap):
                 consecutiveFailures = 0; allFailedStreak = 0
+                lastVerifiedOrderMove[key] = action
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
             case .failed(let e, let snap):
                 consecutiveFailures += 1

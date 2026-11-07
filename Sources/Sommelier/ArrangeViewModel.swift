@@ -290,6 +290,12 @@ final class ArrangeViewModel {
 
     @discardableResult
     private func submit(_ outcome: ArrangeDrop.Outcome, key: ItemKey, dropID: Int? = nil, intent: DropIntent? = nil) -> Bool {
+        var outcome = outcome
+        // 9o9.3: while the upgrade adoption is pending a Visible drop needs the bar order to adopt first; without a clean read it is refused.
+        if case .move(let l, _, _) = outcome, ArrangeDrop.adoptionRefusal(pending: state.layout.pendingAdoption, cleanObservation: state.cleanObservationAvailable,
+                                                                           current: state.layout, proposed: l) {
+            outcome = .rejected(ArrangeDrop.readingOrder)
+        }
         switch outcome {
         case .noop:
             message = nil

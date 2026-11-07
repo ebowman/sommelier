@@ -114,10 +114,15 @@ private struct Rig {
     let sleeps: Sleeps
 }
 
+extension LayoutEngine.Config {
+    /// Tests written before 9o9.3 drag several items per pass; the one-move-per-pass default is covered by its own tests.
+    nonisolated static var multiMove: LayoutEngine.Config { var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max; return c }
+}
+
 @MainActor
 private func rig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout,
                  observer: (any MenuBarObserver)? = nil, busy: @escaping @Sendable () -> Bool = { false },
-                 config: LayoutEngine.Config = .init(), failOn: [(Int, ActuationError)] = []) async -> Rig {
+                 config: LayoutEngine.Config = .multiMove, failOn: [(Int, ActuationError)] = []) async -> Rig {
     let act = FakeActuator(order: order, hidden: hidden, capabilities: Caps(),
                            makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     for (n, e) in failOn { await act.failOnCall(n, e) }
