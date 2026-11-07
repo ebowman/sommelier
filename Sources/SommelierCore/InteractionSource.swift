@@ -27,6 +27,8 @@ public struct LiveInteractionSource: InteractionSource {
     public static let menuOpenReason = "a menu is open"
     public static let screenLockedReason = "the screen is locked"
     public static let displayAsleepReason = "the display is asleep"
+    /// 9o9.7: the user is Command-dragging in the menu bar by hand (reported by the engine's hand-drag monitor, not read here).
+    public static let handDragReason = "you are dragging in the menu bar"
 
     static func mouseDown() -> Bool {
         [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.combinedSessionState, button: $0) }

@@ -58,6 +58,9 @@ public actor LayoutEngine {
         public var menuOpenMaxWait: Duration = .seconds(120)
         /// An Arrange drag flag older than this is treated as lost (its "ended" event never came).
         public var arrangeDragMaxAge: Duration = .seconds(30)
+        /// 9o9.7: after a hand Command-drag in the menu bar ends, the engine waits this long for a settled complete observation to adopt
+        /// (it never enforces the old record meanwhile); at the limit it adopts the last settled complete observation taken since the drag.
+        public var handDragAdoptWait: Duration = .seconds(10)
         /// Wall clock for the attempt window and the per-minute cap (tests override it).
         public var now: @Sendable () -> Date = { Date() }
         public var busyPoll: Duration = .milliseconds(100)
@@ -165,6 +168,18 @@ public actor LayoutEngine {
     private var capPublished: Date?
     private nonisolated let userPausedBox = ConflictBox()
     private nonisolated let arrangeDragBox = ArrangeDragBox()
+    /// 9o9.7: a hand Command-drag in the menu bar in progress, and the actuator calls in flight / started (the synthetic drags are ours).
+    private nonisolated let handDragBox = HandDragBox()
+    private nonisolated let flightBox = ActuatorFlightBox()
+    /// A hand drag ended and its result is not adopted yet: the time the wait for a settled read ends (the wait itself never ends until one comes).
+    private var handAdopt: Date?
+    /// The last settled, complete observation taken since the hand drag ended (adopted at the deadline when no clean one came).
+    private var handAgreeing: ObservedOrder?
+    private var handWaitLogged = false
+    /// Keys whose frames were stale or uncorroborated when a hand drag was adopted as "unchanged" at the deadline: when they were stamped.
+    private var handDragUnverified: Set<ItemKey> = []
+    private var handWaitLoggedAt: Date?
+    private var handNoticeSerial = 0
     /// Test hook: pretends a clean observation of `bar` was read (the pass records it and adopts in the same step, so a pending adoption never coexists with one in production).
     func setCleanBarForTesting(_ bar: [ItemKey]?) { lastCleanBar = bar }
     /// Keys applied by a `.liveUnverified` batch and not yet confirmed by a settled complete read; value = hidden (gdu.55).
@@ -461,6 +476,7 @@ public actor LayoutEngine {
         // top of it (it must not enforce the legacy saved order, which could reorder unrelated items). With no clean observation yet
         // the layout is left as it is (the Arrange window refuses such a drop before it gets here).
         new.pendingAdoption = layout.pendingAdoption
+        var adoptedPendingNow = false
         if layout.pendingAdoption, userPlacement, new.visible != layout.visible {
             guard let bar = lastCleanBar else {
                 log("setLayout refused: the menu bar order has not been read yet (adoption pending)")
@@ -470,6 +486,7 @@ public actor LayoutEngine {
             let adopted = Self.adoptedVisible(layout.visible, bar: bar)
             new.visible = Self.applyingDrop(to: adopted, requested: new.visible, moved: movedKeys)
             new.pendingAdoption = false
+            adoptedPendingNow = true
             log("layout: adopted bar order before applying the drop (\(new.visible.count) keys)")
         }
         // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
@@ -484,6 +501,18 @@ public actor LayoutEngine {
         var touched = movedKeys
         for k in cannotPlace.keys where layout.section(of: k) != new.section(of: k) { touched.insert(k) }
         clearGiveUp(touched.intersection(Set(cannotPlace.keys).union(orderAttempts.keys)))
+        if new.visible != layout.visible {
+            // 9o9.7: the user's own word from Arrange supersedes an unread hand drag, but only for the keys that edit repositioned;
+            // adopting the current order (pending adoption) took the whole bar as the record.
+            if adoptedPendingNow { handDragUnverified = [] }
+            else {
+                // Only keys the edit MOVED or REMOVED: a key whose neighbours changed because something was dropped next to it
+                // was not touched. The caller's `moved` set is authoritative; without it the mover is derived from the two lists.
+                let edited = movedKeys.isEmpty ? Self.movedOrRemoved(old: layout.visible, new: new.visible, unverified: handDragUnverified)
+                    : Set(layout.visible).subtracting(new.visible).union(movedKeys)
+                handDragUnverified.subtract(edited)
+            }
+        }
         layout = new
         loaded = true
         noteSupersede("setLayout")
@@ -506,6 +535,317 @@ public actor LayoutEngine {
             requestReconcile(supersede: true, reason: "setLayout", userInitiated: true)
         }
         return stamp
+    }
+
+    // MARK: Hand drags (9o9.7)
+
+    /// The monitor's events (main thread). Synchronous on purpose: whether a drag is Sommelier's own is decided here, at the moment the
+    /// button goes down, by the actuator-in-flight flag around `actuator.move` / `applyHiddenBatch`.
+    public nonisolated func handDragEvent(_ e: HandDragEvent) {
+        switch e {
+        case .began:
+            if flightBox.inFlight { handDragBox.ignoreCurrent(); return }   // our own synthetic drag
+            handDragBox.begin(now: Date(), flightSerial: flightBox.serial)
+            log("engine: you started dragging in the menu bar; no moves until you let go")
+        case .ended:
+            guard let began = handDragBox.end() else { return }
+            // The drag itself is what is compared: an actuator call after this point (membership, a later order move) is not part of it.
+            let moved = flightBox.inFlight || flightBox.serial != began
+            Task { await self.handDragEnded(engineMoved: moved) }
+        }
+    }
+
+    /// The hand drag ended: the next settled complete observation decides the new order. Observations in progress are abandoned (they
+    /// may show the bar mid-drag), the pause backoff is over, and a pass runs now.
+    func handDragEnded(engineMoved: Bool) async {
+        guard loaded, !stopped else { return }
+        endHandAdoption()
+        if engineMoved {
+            // The bar holds Sommelier's own move as well as the user's: nothing can be read from it as the user's order.
+            log("layout: your menu bar drag was not adopted: Sommelier moved an item during it")
+        } else {
+            handAdopt = config.now().addingTimeInterval(windowSeconds(config.handDragAdoptWait))
+            log("engine: you finished a menu bar drag; adopting the resulting order")
+        }
+        pauseRetry = nil
+        delayed[Self.interactionPauseReason]?.cancel(); delayed[Self.interactionPauseReason] = nil
+        noteSupersede("hand drag")
+        if handAdopt != nil { scheduleReconcile(after: config.handDragAdoptWait, reason: Self.handDragReason) }
+        requestReconcile(reason: "hand drag")
+    }
+    static let handDragReason = "hand drag adopt"
+
+    private func endHandAdoption() {
+        handAdopt = nil; handAgreeing = nil; handWaitLogged = false; handWaitLoggedAt = nil
+        delayed[Self.handDragReason]?.cancel(); delayed[Self.handDragReason] = nil
+    }
+
+    /// An adoptable read: settled (the caller guarantees it) and complete, or complete except the self-positioning owners' carried frames.
+    private var readIsAdoptable: Bool { observedCompleteness == .complete || observedCompleteness == .completeExceptSelfPositioning }
+
+    /// Stale (carried) on-bar keys of a read: their frames say nothing about where the user left them.
+    private func staleOnBarKeys(_ obs: ObservedOrder) -> Set<ItemKey> {
+        obs.staleOnBar.intersection(obs.onBar).subtracting(obs.overflowChevron.map { [$0] } ?? [])
+    }
+
+    /// Unread on-bar keys of a read: stale (carried) or uncorroborated (an ambiguous join: its frame may belong to another item).
+    private func unreadOnBarKeys(_ obs: ObservedOrder) -> Set<ItemKey> {
+        obs.uncorroborated.union(obs.staleOnBar).intersection(obs.onBar).subtracting(obs.overflowChevron.map { [$0] } ?? [])
+    }
+
+    /// Called with a settled observation while a hand drag awaits adoption. An adoptable read decides at once, unless it shows the order
+    /// UNCHANGED while some on-bar frame is stale: the dragged item may be one of those (its frame not refreshed yet), so that read only
+    /// waits (and is the deadline fallback).
+    private func considerHandDragAdoption(_ obs: ObservedOrder) async {
+        guard handAdopt != nil else { return }
+        if readIsAdoptable {
+            let old = layout.visible
+            let unchanged = Self.handDragAdopted(obs, record: old).visible == old
+            if !unchanged || unreadOnBarKeys(obs).isEmpty { endHandAdoption(); await adoptHandDrag(obs); return }
+            handAgreeing = obs
+        }
+        if !handWaitLogged {
+            handWaitLogged = true
+            log("layout: hand drag adoption waiting: \(!readIsAdoptable ? "the read is \(observedCompleteness.rawValue)" : "on-bar frames are not fresh and corroborated (the dragged item may be one of them)")")
+        }
+        scheduleReconcile(after: .seconds(2), reason: "hand drag retry")
+    }
+
+    /// At the start of a pass: the wait for a settled observation is over. Adopt the last adoptable read taken since the drag (an
+    /// "unchanged" one whose stale keys then become unverified). With none, KEEP WAITING (the order phase stays suppressed): the old
+    /// record is never enforced over the user's drag.
+    private func expireHandDragAdoption() async {
+        guard let deadline = handAdopt, config.now() >= deadline else { return }
+        if let last = handAgreeing {
+            endHandAdoption()
+            log("layout: hand drag: no clean observation within \(config.handDragAdoptWait); adopting the last settled one")
+            await adoptHandDrag(last, atDeadline: true)
+            return
+        }
+        let now = config.now()
+        if handWaitLoggedAt.map({ now.timeIntervalSince($0) >= 60 }) ?? true {
+            handWaitLoggedAt = now
+            log("hand drag: still waiting for a clean read")
+        }
+        scheduleReconcile(after: .seconds(2), reason: "hand drag retry")
+    }
+
+    /// A key left unverified by a deadline adoption is now read fresh: its observed slot is the user's (a drag that earlier reads could not
+    /// show). Only that key is placed, at its observed slot relative to ALL observed on-bar neighbours (fresh or stale: the planner
+    /// orders trusted keys against the stale ones' observed slots, so the record must agree); every other difference is not a hand drag's.
+    private func adoptLateHandDrags(_ obs: ObservedOrder) async {
+        guard !handDragUnverified.isEmpty, handAdopt == nil, readIsAdoptable else { return }
+        let stale = staleOnBarKeys(obs)
+        let ambiguous = obs.uncorroborated.subtracting(stale)   // fresh but ambiguous: neither placed nor an anchor
+        let full = Self.handDragBar(obs, record: layout.visible)
+        let seen = full.filter { !ambiguous.contains($0) }
+        var visible = layout.visible
+        var adopted: [ItemKey] = []
+        for k in handDragUnverified.sorted(by: { $0.description < $1.description }) {
+            guard obs.onBar.contains(k), !stale.contains(k), !obs.uncorroborated.contains(k) else { continue }
+            if !obs.stripExpanded, obs.systemOverflow.contains(k) { continue }   // stacked behind the chevron: no order to read
+            guard let fi = seen.firstIndex(of: k), visible.contains(k), let ai = full.firstIndex(of: k) else { handDragUnverified.remove(k); continue }
+            // An ambiguous key right beside it makes its slot unreadable (it may be the dragged one): wait for a clean read.
+            if (ai > 0 && ambiguous.contains(full[ai - 1])) || (ai + 1 < full.count && ambiguous.contains(full[ai + 1])) { continue }
+            handDragUnverified.remove(k)
+            var next = visible
+            next.removeAll { $0 == k }
+            if let p = seen[..<fi].last(where: { next.contains($0) }), let pi = next.firstIndex(of: p) { next.insert(k, at: pi + 1) }
+            else if let n = seen[(fi + 1)...].first(where: { next.contains($0) }), let ni = next.firstIndex(of: n) { next.insert(k, at: ni) }
+            else { continue }
+            if next != visible { visible = next; adopted.append(k) }
+        }
+        guard !adopted.isEmpty else { return }
+        var l = layout
+        l.visible = visible
+        layout = l
+        do { try store.save(l) } catch { log("cannot save layout: \(error)") }
+        for k in adopted { log("layout: adopted your menu bar drag of \(k) (read late)") }
+        clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
+        lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
+        _ = await publishLayout(l)
+        await announceHandDrag()
+    }
+
+    private func announceHandDrag() async {
+        handNoticeSerial += 1
+        let serial = handNoticeSerial
+        await publish { $0.handDragNotice = HandDragNotice.text }
+        Task { [weak self] in
+            try? await Task.sleep(for: NewItemNotice.lifetime)
+            await self?.clearHandNotice(serial)
+        }
+    }
+
+    /// Pure: the on-bar order a hand drag is judged by: the observed order verbatim for every on-bar key, fresh or stale, trusted or not
+    /// (a carried frame is the last real position, and the planner orders trusted keys against those same observed slots; fresh ambiguous keys are held back by `handDragAdopted`); only the
+    /// chevron is left out. With the strip collapsed the
+    /// stacked frames of the keys behind the chevron carry no order (9o9.11), so those keys keep their record order among
+    /// themselves in the slots they occupy; with the strip open every frame is real and the observation is used as it is.
+    static func handDragBar(_ obs: ObservedOrder, record: [ItemKey]) -> [ItemKey] {
+        var bar = obs.onBar.filter { $0 != obs.overflowChevron }
+        guard !obs.stripExpanded, !obs.systemOverflow.isEmpty else { return bar }
+        let slots = bar.indices.filter { obs.systemOverflow.contains(bar[$0]) }
+        let rank = Dictionary(record.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let pile = slots.map { bar[$0] }.sorted { (rank[$0] ?? .max) < (rank[$1] ?? .max) }
+        for (i, s) in slots.enumerated() { bar[s] = pile[i] }
+        return bar
+    }
+
+    /// Pure: the new record for a hand drag. Fresh corroborated and stale keys are adopted at their observed slot; fresh but UNCORROBORATED
+    /// keys (`deferred`) are not read from this observation: each keeps its record slot after its nearest preceding record neighbour that the
+    /// adoption did not move (else before its nearest following one), never attached to the dragged key.
+    static func handDragAdopted(_ obs: ObservedOrder, record: [ItemKey]) -> (visible: [ItemKey], deferred: Set<ItemKey>) {
+        let barAll = handDragBar(obs, record: record)
+        let deferred = obs.uncorroborated.subtracting(obs.staleOnBar).intersection(Set(barAll)).intersection(Set(record))
+        guard !deferred.isEmpty else { return (adoptedVisible(record, bar: barAll), []) }
+        let trusted = barAll.filter { !deferred.contains($0) }
+        let base = adoptedVisible(record.filter { !deferred.contains($0) }, bar: trusted)
+        let oldT = record.filter { base.contains($0) && trusted.contains($0) }
+        let newT = base.filter { oldT.contains($0) }
+        var moved = Set<ItemKey>()
+        if oldT != newT {
+            // Prefer the mover that explains the WHOLE bar (held-back keys included): a drag past an ambiguous key is one move.
+            let oldAll = record.filter { barAll.contains($0) }, newAll = barAll.filter { record.contains($0) }
+            if let mf = movedByDrag(old: oldAll, new: newAll), !deferred.contains(mf.key),
+               oldT.filter({ $0 != mf.key }) == newT.filter({ $0 != mf.key }) {
+                moved = [mf.key]
+            } else if let m = movedByDrag(old: oldT, new: newT) { moved = [m.key] } else { moved = Set(oldT).subtracting(keptInOrder(oldT, newT)) }
+        }
+        // Unmoved keys, held-back ones included, keep their record order; each moved key then goes to its observed slot.
+        var out = base.filter { !moved.contains($0) }
+        var placed: [ItemKey: Int] = [:]
+        for (i, k) in record.enumerated() where deferred.contains(k) {
+            if let a = record[..<i].last(where: { out.contains($0) && !deferred.contains($0) }), let ai = out.firstIndex(of: a) {
+                out.insert(k, at: ai + placed[a, default: 0] + 1); placed[a, default: 0] += 1
+            } else if let n = record[(i + 1)...].first(where: { out.contains($0) && !deferred.contains($0) }), let ni = out.firstIndex(of: n) {
+                out.insert(k, at: ni)
+            } else { out.insert(k, at: min(i, out.count)) }
+        }
+        for m in barAll where moved.contains(m) {
+            let bi = barAll.firstIndex(of: m)!
+            if let p = barAll[..<bi].last(where: { out.contains($0) }), let pi = out.firstIndex(of: p) { out.insert(m, at: pi + 1) }
+            else if let n = barAll[(bi + 1)...].first(where: { out.contains($0) }), let ni = out.firstIndex(of: n) { out.insert(m, at: ni) }
+            else { out.insert(m, at: min(base.firstIndex(of: m) ?? out.count, out.count)) }
+        }
+        return (out, deferred)
+    }
+
+    /// Pure: the unread keys adjacent (in the observed bar, or in the new record) to ANY key that could be the mover of old -> new
+    /// (every key whose lone travel explains the change; else every key outside a longest common subsequence). Empty when nothing moved.
+    static func unreadNearDrop(old: [ItemKey], new: [ItemKey], bar: [ItemKey], unread: Set<ItemKey>) -> Set<ItemKey> {
+        guard !unread.isEmpty else { return [] }
+        let common = Set(old).intersection(new)
+        let o = old.filter(common.contains), n = new.filter(common.contains)
+        guard o != n else { return [] }
+        var movers = Set<ItemKey>()
+        for k in o {
+            guard let i = o.firstIndex(of: k), let j = n.firstIndex(of: k), i != j else { continue }
+            var a = o, b = n
+            a.remove(at: i); b.remove(at: j)
+            if a == b { movers.insert(k) }
+        }
+        if movers.isEmpty { movers = Set(o).subtracting(keptInOrder(o, n)) }
+        var out = Set<ItemKey>()
+        for list in [bar, new] {
+            for m in movers {
+                guard let i = list.firstIndex(of: m) else { continue }
+                for d in [-1, 1] where list.indices.contains(i + d) && unread.contains(list[i + d]) && list[i + d] != m { out.insert(list[i + d]) }
+            }
+        }
+        return out.intersection(common)
+    }
+
+    /// Pure: keys `new` no longer holds, plus the keys an edit MOVED among those both lists hold: the single mover when one key
+    /// travelled (`movedByDrag`), else every key outside a longest common subsequence. Neighbours of a drop are not moved.
+    /// On a tie between equally good readings a key in `unverified` is kept as UNMOVED (never counted as moved).
+    static func movedOrRemoved(old: [ItemKey], new: [ItemKey], unverified: Set<ItemKey> = []) -> Set<ItemKey> {
+        let common = Set(old).intersection(new)
+        let o = old.filter(common.contains), n = new.filter(common.contains)
+        var out = Set(old).subtracting(new)
+        if o != n { out.formUnion(movedByDrag(old: o, new: n, avoiding: unverified).map { [$0.key] } ?? Set(o).subtracting(keptInOrder(o, n, prefer: unverified))) }
+        return out
+    }
+
+    /// Pure: the keys of a longest common subsequence of `a` and `b` (deterministic).
+    /// Length comes first; among equally long subsequences the one keeping more `prefer` keys wins.
+    static func keptInOrder(_ a: [ItemKey], _ b: [ItemKey], prefer: Set<ItemKey> = []) -> Set<ItemKey> {
+        let base = a.count + 1
+        var dp = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in stride(from: a.count - 1, through: 0, by: -1) {
+            for j in stride(from: b.count - 1, through: 0, by: -1) {
+                dp[i][j] = a[i] == b[j] ? dp[i + 1][j + 1] + base + (prefer.contains(a[i]) ? 1 : 0) : max(dp[i + 1][j], dp[i][j + 1])
+            }
+        }
+        var out = Set<ItemKey>()
+        var i = 0, j = 0
+        while i < a.count, j < b.count {
+            if a[i] == b[j] { out.insert(a[i]); i += 1; j += 1 }
+            else if dp[i + 1][j] >= dp[i][j + 1] { i += 1 } else { j += 1 }
+        }
+        return out
+    }
+
+    /// Pure: the key a reorder moved and what it now follows (nil key = more than one key moved). Among equivalent readings the key
+    /// that travelled farthest wins.
+    /// On an exact tie a key in `avoiding` (unverified) is not the mover.
+    static func movedByDrag(old: [ItemKey], new: [ItemKey], avoiding: Set<ItemKey> = []) -> (key: ItemKey, after: ItemKey?)? {
+        var best: (key: ItemKey, dist: Int)?
+        for k in old {
+            guard let i = old.firstIndex(of: k), let j = new.firstIndex(of: k), i != j else { continue }
+            var a = old, b = new
+            a.remove(at: i); b.remove(at: j)
+            guard a == b else { continue }
+            let d = abs(i - j)
+            if let cur = best {
+                if d > cur.dist || (d == cur.dist && avoiding.contains(cur.key) && !avoiding.contains(k)) { best = (k, d) }
+            } else { best = (k, d) }
+        }
+        guard let b = best, let j = new.firstIndex(of: b.key) else { return nil }
+        return (b.key, j > 0 ? new[j - 1] : nil)
+    }
+
+    /// The user's drag is the record: reorders Visible to the observed order, saves, logs, publishes the notice, and gives the engine a
+    /// fresh start with every item (the old attempts concerned the old record).
+    private func adoptHandDrag(_ obs: ObservedOrder, atDeadline: Bool = false) async {
+        let old = layout.visible
+        let adopted = Self.handDragAdopted(obs, record: old)
+        let new = adopted.visible
+        let unread = unreadOnBarKeys(obs).filter(old.contains)
+        for k in Self.handDragBar(obs, record: old) where !unread.contains(k) { handDragUnverified.remove(k) }   // fresh and corroborated: final
+        guard new != old else {
+            // Nothing the user dragged is visible: an ambiguous read may be the dragged key, so a corroborated read decides later.
+            handDragUnverified.formUnion(adopted.deferred)
+            if atDeadline, !unread.isEmpty {
+                log("hand drag: left the order unchanged as far as Sommelier can see; \(unread.count) item(s) still unread")
+                handDragUnverified.formUnion(unread)
+            } else { log("layout: your menu bar drag left the order unchanged") }
+            return
+        }
+        var l = layout
+        l.visible = new
+        layout = l
+        do { try store.save(l) } catch { log("cannot save layout: \(error)") }
+        func name(_ k: ItemKey) -> String { itemInfo[k].map(OverflowEntries.displayName) ?? k.description }
+        // An unread key next to the drop may be the real mover (or the real neighbour): its slot is not trusted, so it is placed when read.
+        let nearDrop = Self.unreadNearDrop(old: old, new: new, bar: Self.handDragBar(obs, record: old), unread: unread)
+        handDragUnverified.formUnion(nearDrop)
+        if let u = nearDrop.sorted(by: { $0.description < $1.description }).first {
+            log("hand drag: adopted; \(name(u)) next to the drop is unread and will be placed when read")
+        } else if let m = Self.movedByDrag(old: old, new: new) {
+            log("layout: adopted your menu bar drag: \(name(m.key)) now \(m.after.map { "after \(name($0))" } ?? "first")")
+        } else {
+            log("layout: adopted your menu bar drag: \(new.count) keys reordered")
+        }
+        clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
+        lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
+        _ = await publishLayout(l)
+        await announceHandDrag()
+    }
+
+    private func clearHandNotice(_ serial: Int) async {
+        guard serial == handNoticeSerial else { return }
+        await publish { $0.handDragNotice = nil }
     }
 
     /// Reorders `visible` to the observed on-bar order (keys not on the bar keep their relative order, inserted after their nearest
@@ -676,6 +1016,7 @@ public actor LayoutEngine {
 
     /// Nil when the user is not interacting. Otherwise waits up to `busyWait`; returns (reason, waited) where `reason` is nil if it cleared.
     private func interactionBlock() -> String? {
+        if handDragBox.active(now: Date(), maxAge: windowSeconds(config.arrangeDragMaxAge)) { return LiveInteractionSource.handDragReason }
         if arrangeDragBox.active(now: Date(), maxAge: windowSeconds(config.arrangeDragMaxAge)) { return "an Arrange drag is in flight" }
         guard let raw = interaction?.blockingReason() else { menuOpenSince = nil; menuIgnored = false; return nil }
         guard raw == LiveInteractionSource.menuOpenReason else { menuOpenSince = nil; menuIgnored = false; return raw }
@@ -977,10 +1318,12 @@ public actor LayoutEngine {
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          units: rule,
-                                         held: Set(cannotPlace.keys),
+                                         held: Set(cannotPlace.keys).union(handDragUnverified),   // 9o9.7: unverified keys are never a subject or target
                                          unsteady: unsteadyKeys)
         // 9o9.2: until the upgrade adoption completes no order action is planned (the record is the legacy saved order, not the bar's).
         if layout.pendingAdoption, p.phase == .order { p.actions = []; p.phase = .converged }
+        // 9o9.7: nor while a hand drag's result waits to be adopted (the record is about to change; never enforce the old one).
+        if handAdopt != nil, p.phase == .order { p.actions = []; p.phase = .converged }
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -1456,6 +1799,7 @@ public actor LayoutEngine {
 
         // (a0) 9o9.8: locked / asleep -> do not observe at all (wake signal or the long retry resumes); otherwise the pause episode is over.
         if let why = dormantReason() { return await endPausedForInteraction(why, PassReport(outcome: .paused)) }
+        await expireHandDragAdoption()
         if interactionBlock() == nil { await clearPauseNotice() }
 
         // (a) observe. Observation moves nothing, so it proceeds even while the user is busy; only actuation waits.
@@ -1540,6 +1884,9 @@ public actor LayoutEngine {
                 log("layout: adoption waiting: \(reason) (\(obs.staleOnBar.count) stale frames)")
             }
         }
+
+        if handAdopt != nil { await considerHandDragAdoption(obs) }
+        else { await adoptLateHandDrags(obs) }
 
         // (c) plan
         var plan = makePlan(obs)
@@ -1654,10 +2001,15 @@ public actor LayoutEngine {
             }
             if !noEntry.isEmpty { await publish { [noEntry] s in for k in noEntry { s.perItem[k] = .unsupported(Self.noEntrySkipReason) } } }
             guard let first = order.first else { return await abort(.incomplete) }
+            if handAdopt != nil {   // 9o9.7: the adoption must read a bar nobody but the user touched; membership waits for it
+                log("engine: membership change deferred until the menu bar drag is adopted")
+                scheduleReconcile(after: .seconds(2), reason: "hand drag retry")
+                return await abort(.incomplete)
+            }
             let fullBefore = obs.overflowChevron != nil
             if conflicted { return await pausedMidPass(report(.paused)) }
             switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
-            case .clear: break
+            case .clear: flightBox.begin()   // 9o9.7: at once (see the order loop)
             case .waitedThenClear:
                 if draining { pending = true }   // the observation is old after the wait: a fresh pass re-observes
                 return await abort(.incomplete)
@@ -1674,6 +2026,7 @@ public actor LayoutEngine {
                 log("membership write: \(batch[k] == true ? "hide" : "show") \(k); layout=\(layout.section(of: k)?.rawValue ?? "none") userPlaced=\(userPlacedVisible.contains(k)); Control Center \(tk ?? "no entry") isAllowed=\(flag.map(String.init(describing:)) ?? "?"); \(evidence[k] ?? "no scan evidence")")
             }
             let result = await actuator.applyHiddenBatch(batch)
+            flightBox.end()
             actionCount += 1
             var err: ActuationError?
             var snap: MenuBarSnapshot?
@@ -1853,7 +2206,7 @@ public actor LayoutEngine {
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
             }
             switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
-            case .clear: break
+            case .clear: flightBox.begin()   // 9o9.7: at once, so a mouse-down after the gate check is never read as a hand drag
             case .waitedThenClear:
                 if draining { pending = true }
                 await publish { $0.inFlight = nil }
@@ -1881,6 +2234,7 @@ public actor LayoutEngine {
             await setStatus(key, .moving, inFlight: action)
             await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
             let result = await actuator.move(key, relation: rel)
+            flightBox.end()
             actionCount += 1
             orderMoves += 1
             orderMoveTimes.append(config.now())

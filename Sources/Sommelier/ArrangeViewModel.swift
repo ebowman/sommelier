@@ -121,7 +121,7 @@ final class ArrangeViewModel {
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice,
+                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.handDragNotice ?? state.newItemNotice,
                                    pollPausedNames: pollPausedNames,
                                    showsBarMatch: true)
     }

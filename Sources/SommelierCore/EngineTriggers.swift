@@ -81,6 +81,7 @@ public final class EngineTriggers {
     private let ownerPIDs: () -> Set<Int32>?
     private let launchQuitTrigger: () async -> Void
     private let wakeSignals: any WakeSignalSource
+    private let handDrags: any HandDragMonitor
     /// pid -> app as of the last diff: the single dedupe point for the notification and the KVO path (one launch = one event).
     private var known: [Int32: RunningApp] = [:]
     private var tokens: [any NSObjectProtocol] = []
@@ -121,7 +122,9 @@ public final class EngineTriggers {
                 reportSuppression: ((PollSuppression?) async -> Void)? = nil,
                 apps: (any RunningAppsSource)? = nil, ownerPIDs: @escaping () -> Set<Int32>? = { nil },
                 launchQuitTrigger: (() async -> Void)? = nil,
-                wakeSignals: (any WakeSignalSource)? = nil) {
+                wakeSignals: (any WakeSignalSource)? = nil,
+                handDrags: (any HandDragMonitor)? = nil) {
+        self.handDrags = handDrags ?? LiveHandDragMonitor()
         self.now = now
         self.wakeSignals = wakeSignals ?? LiveWakeSignals()
         self.apps = apps ?? LiveRunningApps()
@@ -176,11 +179,13 @@ public final class EngineTriggers {
             Task { await engine.didWake() }
         })
         wakeSignals.start { [engine] in Task { await engine.interactionResumed() } }
+        handDrags.start { [engine] e in engine.handDragEvent(e) }   // 9o9.7
         scheduleNextPoll()
     }
 
     public func stop() {
         wakeSignals.stop()
+        handDrags.stop()
         let nc = NSWorkspace.shared.notificationCenter
         for t in tokens { nc.removeObserver(t) }
         tokens = []

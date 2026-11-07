@@ -193,6 +193,24 @@ Hermetic: `swift test --filter OrderObligation` (planner properties, Layout.plac
 launch): a `layout.json` without a `placed` field must produce no `order: moving` log line and zero drags on any bar; the engine logs
 "no order obligations exist" once at load. Only after a drop in Arrange does `layout.json` gain `"placed"`, and only those keys are ever dragged.
 
+## Hand drags are adopted (9o9.7; live checklist, needs the running app and a human hand)
+1. With Sommelier running and the bar at rest, Command-drag ONE non-system item (not an Apple item) to another slot by hand inside the
+   menu bar. Expect `engine: you started dragging in the menu bar` while the button is down, no `order: moving` line until you let go.
+2. Within one pass of letting go expect `layout: adopted your menu bar drag: <X> now after <Y>` in `Sommelier.log` and the Arrange
+   status line "Adopted your menu bar drag".
+3. Over the next three passes expect NO `order: moving` line for that item and the bar unchanged (no reversal).
+4. Repeat with an item behind the « chevron (open the strip yourself, drag inside it, close it): the same line, among-pile order
+   as dragged only when the strip was open at the settled observation.
+5. A bar change you did NOT make (quit and relaunch an app) must not print the adoption line.
+6. Known limit: a hand drag that BEGINS while Sommelier's own drag is running (including a strip session) is ignored as ours. The
+   interaction gate waits for an idle mouse before every Sommelier drag, so only starting to drag mid-drag hits it.
+7. With iStat items on the bar (carried frames, `level=completeExceptSelfPositioning`): hand-drag an iStat item. Expect the adoption
+   line for the other items at once, or `hand drag: left the order unchanged as far as Sommelier can see; N item(s) still unread` at
+   10 s and then `layout: adopted your menu bar drag of <key> (read late)` once iStat answers (within 600 s). No `order: moving`.
+8. Drag an item to just left of an iStat item; expect adoption (`hand drag: adopted; <iStat item> next to the drop is unread and will be placed when read`), then `(read late)` for the iStat item once it answers, and no reversal (no `order: moving` for either).
+9. Hermetic: `swift test --filter HandDrag` covers that a pending adoption never enforces the old record (no actuator call even after
+   the deadline without a clean read), that membership writes wait for the adoption, and the deadline adoption of the last settled read.
+
 ## Arrange window
 
 Dev safety: always run with `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json` (README "Developing"). Quit Bartender first

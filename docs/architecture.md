@@ -585,6 +585,73 @@ seconds after a drag (findings-drag "The expanded strip"). `FakeActuator.stripEv
 `mbprobe overflow expand|collapse` (write actions; plain `mbprobe overflow` stays read-only) and `mbprobe drag ... --strip` use the same
 controller; `mbprobe move` goes through `LiveActuator` and so gets sessions automatically.
 
+### Hand drags are adopted (9o9.7)
+The user decides the order. A Command-drag done by hand in the menu bar is the user changing their mind: the record follows it and the
+engine never undoes it. Any OTHER bar change (macOS, an app) is not adopted; the record wins and is enforced as usual.
+- Detection (`HandDragMonitor.swift`). `LiveHandDragMonitor` uses `NSEvent.addGlobalMonitorForEvents` for left mouse down/up. A drag is
+  BY HAND when the left button goes down with Command held (read from that event; `.flagsChanged` is not monitored) while
+  `NSEvent.mouseLocation` is inside any screen's menu bar rect (`HandDragRule`: the screen's full width at its top edge, edges inclusive,
+  height `max(NSStatusBar.system.thickness, NSScreen.safeAreaInsets.top)` so a notch display's taller bar is covered; every screen is
+  checked). It ends on the left mouse up. The monitor reports every such drag it sees, Sommelier's own synthetic ones included.
+- Ours are excluded by state, not by introspection: the engine raises `flightBox` around `actuator.move` and `applyHiddenBatch` (the
+  only calls that post Command-drags; the strip session's chevron clicks are inside `move`). `LayoutEngine.handDragEvent` (called
+  synchronously on the main thread; `EngineTriggers` wires the monitor like the wake signals) ignores a `began` while a call is in
+  flight, and the matching `ended`.
+- While a hand drag lasts `interactionBlock()` answers `LiveInteractionSource.handDragReason` ("you are dragging in the menu bar"):
+  `awaitQuiet` blocks, the pass ends `.paused`, the reason is published in `EngineState.pauseReason` and logged once as
+  `engine: paused: ...`. Observation continues. A drag older than `Config.arrangeDragMaxAge` (30 s) is treated as lost.
+- After the mouse up (`handDragEnded`): the pause backoff is reset, an observation in progress is abandoned (it may show the bar
+  mid-drag), a pass runs, and until the result is adopted the order phase plans nothing (the old record is never enforced). An adoptable
+  observation (settled, and complete or complete except the self-positioning owners' carried frames) becomes the new order: a CHANGED
+  read (the fresh, corroborated keys differ from the record) is adopted at once; an UNCHANGED read waits while any on-bar key is
+  unread (stale, i.e. carried, or uncorroborated, e.g. a frameAmbiguous join), because the dragged key may be that one, until
+  `handDragAdoptWait`, then the last unchanged read is adopted and its unread keys become unverified. Stale keys are adopted at
+  their carried slot (the last real position); fresh uncorroborated keys are NOT read: they keep their record slot after their
+  nearest unmoved record neighbour (never the dragged key); they, and the unread keys, enter the unverified set only when the read
+  is adopted as UNCHANGED (a changed corroborated set already holds the dragged key). A key leaves the unverified set ("read late" adoption, placed at its observed slot) only on a read where it is
+  fresh AND corroborated; an ambiguous read neither places nor clears it. `setLayout` clears from the set only the keys that edit
+  MOVED or REMOVED (the caller's `moved` set, else the derived mover: a key whose neighbours merely changed because something was dropped next to it stays unverified; hiding an unrelated item keeps an unread drag); adopting the current order from Arrange clears the whole set. The adoption uses `adoptedVisible(visible, bar:)` (via `handDragAdopted`) over
+  `handDragBar` (the OBSERVED order verbatim for every on-bar key; see "Verbatim rule" below; keys not on the bar keep their relative
+  position; the chevron is never in the record). With the strip COLLAPSED the stacked frames of the keys behind the chevron carry no order
+  (9o9.11), so those keys keep their RECORD order among themselves in the slots they occupy; with the strip open (observation taken
+  while it was open) the observed order is used as it is. Items behind the chevron are observable when the user drags them: clicking
+  « draws the pile at real frames at the left of the menu bar, so a hand Command-drag there happens inside the menu bar rect and the
+  order change is seen by the settled observation after the strip closes (the among-pile order is then ignored, as above).
+- No Sommelier move may have run DURING the drag: `flightBox.serial` (calls started) at the `ended` must equal its value at the `began`
+  and nothing may be in flight; otherwise the bar holds our move too and nothing is adopted (logged). Only the drag itself is
+  compared: actuator calls after the mouse-up do not count, because while adoption is pending the order phase plans nothing AND
+  membership actuation is deferred (planned, logged, not written; the retry runs every 2 s), so the adoption observation is of a bar
+  nobody but the user touched. The order phase stays suppressed while adoption is pending, with NO fallback to the old record, ever.
+  If no clean observation arrives within `Config.handDragAdoptWait` (10 s) the last settled complete observation taken since the drag
+  is adopted; if there is none the engine keeps waiting (log `hand drag: still waiting for a clean read`, at most once a minute) and
+  the order phase stays suppressed until a clean observation arrives. A fresh but UNCORROBORATED (ambiguous) key is not read: it is held back: it keeps its RECORD order relative to the UNMOVED keys (after its nearest unmoved record predecessor, else before its successor, else its old index) and its OBSERVED order relative to the MOVED keys (the record is built from the unmoved keys, held-back ones included, in record order, then each moved key is inserted at its observed slot next to its observed neighbours, held-back keys counting as neighbours: an unread frame can be anywhere, so nothing is claimed about how far off it is). It becomes unverified when the read is adopted as unchanged at the deadline, and ALSO, in a CHANGED adoption, when it is adjacent to a possible mover: every unread key (stale or held-back ambiguous) that is adjacent in the OBSERVED bar to any key that could be the mover, or adjacent in the new RECORD to such a key, enters the unverified set. Its first fresh corroborated read then places it at its observed slot (the late-adoption path) instead of the record being enforced on it, so `A B C D E` with E dropped left of an unread C (read `A B C E D`, indistinguishable from D dragged right of E) is not reversed when C answers. Where the mover is ambiguous between a trusted key and such an unread neighbour the log says `hand drag: adopted; <key> next to the drop is unread and will be placed when read` instead of naming a mover. A drag not adjacent to any unread key puts nothing into the set. Tie-break: where several readings of an edit are equally good (the single mover of `A B C` to `A C B`, or an LCS choice), a key in the unverified set is kept as UNMOVED, never counted as moved.
+  Known limit: a hand drag that BEGINS during Sommelier's own actuator call (including a strip session) is ignored as ours; the
+  interaction gate waits for an idle mouse before every drag, and `flightBox.begin()` is raised the moment `awaitQuiet` returns clear
+  (before the status publishes), so this needs the user to start dragging mid-drag.
+- Adoptable read (9o9.9 follow-up). A read is adoptable when it is settled AND `.complete` OR `.completeExceptSelfPositioning` (the
+  bar's normal level: iStat's frames are carried, `onBarStale` > 0). A read whose order differs from the record is adopted at once.
+- Verbatim rule. Adoption takes the OBSERVED on-bar order verbatim for every on-bar key: trusted or stale (fresh ambiguous keys are held back at their record slot, see above). A carried
+  frame is the key's last real position (gdu.120), and the planner (9o9.9) already orders trusted keys relative to the stale and
+  untrusted keys' observed slots; adopting the same picture keeps the record and the planner consistent. (The earlier rule, stale keys
+  keep their RECORD slot, attached a stale key to its record predecessor and made the engine undo part of a drag: record A B C D E, C
+  carried, B dragged to the end gave A D E B C instead of A C D E B.) Exceptions: (i) the chevron is never adopted; (ii) keys behind a
+  collapsed chevron (the pile) keep their record order among themselves (9o9.11); (iii) off-bar keys keep their relative position;
+  (iv) the DRAGGED key when it is itself stale, and any unread (stale or ambiguous) neighbour of the drop, are the cases where a carried or ambiguous frame is wrong, handled by the next bullet.
+- "Unchanged" is not trusted while any on-bar key is stale: the dragged item may be one of the stale keys whose frame has not refreshed
+  yet, so before the deadline such a read only keeps the wait going (and is the deadline fallback). At the deadline it is adopted as
+  unchanged (`hand drag: left the order unchanged as far as Sommelier can see; N item(s) still unread`) and every key stale in it enters
+  `handDragUnverified` (a set). The first later settled adoptable read in which such a key is fresh ADOPTS its observed slot (only that
+  key is placed, relative to ALL observed on-bar neighbours, fresh or stale, per the verbatim rule, and only when its immediate observed neighbours on both sides are trusted or stale: an ambiguous neighbour keeps it unverified; log `layout: adopted your menu bar
+  drag of <key> (read late)`) instead of enforcing the record. There is NO expiry: a stale key never moved while stale, so it stays
+  unverified until its first fresh read; the set is cleared when the user changes the record from Arrange (`setLayout`, including
+  adoption-from-Arrange). The order phase is not suppressed by unverified keys, but they are passed to the planner as `held`: never a
+  move subject or target until verified. Membership deferral applies only while adoption is pending (the 10 s window), never because
+  of `handDragUnverified`.
+  Adoption saves the layout, clears the per-item give-up state (the old attempts concerned the old
+  record), logs `layout: adopted your menu bar drag: <X> now after <Y>` (or `now first`; `N keys reordered` when more than one key
+  moved) and publishes `EngineState.handDragNotice` = "Adopted your menu bar drag" for the Arrange status line (cleared after
+  `NewItemNotice.lifetime`). The Arrange window shows it ahead of the new-item notice.
+
 ## Arrange window (gdu.19)
 `ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`
 (`@MainActor @Observable`), which feeds the pure `ArrangeModel.swift` in SommelierCore (`ArrangeSections.make`, `.badge`,

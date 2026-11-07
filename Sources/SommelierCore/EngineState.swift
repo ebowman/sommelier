@@ -87,6 +87,8 @@ public final class EngineState {
     public var passesStartedAtRevision: Int = 0
     /// Transient "New item: X placed in Visible" text for the Arrange window status line (cleared by the engine after a few seconds).
     public var newItemNotice: String?
+    /// 9o9.7: "Adopted your menu bar drag" for the Arrange status line after a hand Command-drag became the record (cleared after a few seconds).
+    public var handDragNotice: String?
     /// gdu.80: set by a reveal pass on a full bar whose layout order differs from the bar: membership was applied, the order was
     /// not (macOS decides what fits). Cleared at the start of every pass.
     public var orderNotAppliedNotice: String?
@@ -136,6 +138,11 @@ public enum OrderMoveNotice {
         }
         return "Moving \(name): \(why)"
     }
+}
+
+/// 9o9.7: wording of the hand-drag notice.
+public enum HandDragNotice {
+    public static let text = "Adopted your menu bar drag"
 }
 
 /// Wording of the transient new-item notice.
