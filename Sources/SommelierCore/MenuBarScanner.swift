@@ -650,6 +650,27 @@ public struct MenuBarScanner {
         }
         pass(.identifier) { !$0.identifier.isEmpty && $0.identifier == $1.identifier }
         pass(.description) { !$0.axDescription.isEmpty && $0.axDescription == $1.axDescription }
+        // 9o9.10 corroboration by title/description: an unmatched hosted element whose description (else title) equals the title or
+        // description of exactly one unmatched, allowed candidate, and that string is carried by no other unmatched hosted element,
+        // joins that candidate as `.description`. (The first description pass only compares AXDescription with AXDescription.)
+        var titleJoined = Set<Int>()
+        for (hi, h) in hosted.enumerated() where !matchedHosted.contains(hi) && !Self.isOwnHostedElement(h) && !h.isOverflowChevron {
+            let str = !h.axDescription.isEmpty ? h.axDescription : h.title
+            guard !str.isEmpty else { continue }
+            let hostedWith = hosted.indices.filter {
+                !matchedHosted.contains($0) && !Self.isOwnHostedElement(hosted[$0]) && !hosted[$0].isOverflowChevron
+                    && (hosted[$0].axDescription == str || (hosted[$0].axDescription.isEmpty && hosted[$0].title == str))
+            }
+            guard hostedWith == [hi] else { continue }
+            let owners = candidates.indices.filter {
+                matchedCandidates[$0] == nil && !assumedIdx.contains($0) && !flagFalseIdx.contains($0)
+                    && (candidates[$0].info.title == str || candidates[$0].info.axDescription == str)
+            }
+            guard owners.count == 1, let ci = owners.first else { continue }
+            matchedHosted.insert(hi); matchedCandidates[ci] = h; hostedOwner[hi] = candidates[ci].app.pid
+            matchedBy[ci] = (.description, hi)
+            titleJoined.insert(ci)
+        }
         let chevronFrame = hosted.first(where: \.isOverflowChevron)?.frame
         let pileFrames = hosted.filter { !$0.isOverflowChevron }.map(\.frame)
         // gdu.84 exact-frame tie-break (`SystemOverflowRule.exactFrameMatch`): before the loose intersection pass, an unmatched, allowed
@@ -677,14 +698,32 @@ public struct MenuBarScanner {
             return !i.isNull && i.width > 0 && i.height > 0
         }
 
+        /// 9o9.10: does candidate `ci` hold a CORROBORATED claim on its hosted element (identifier, title, unique description, or exact
+        /// frame)? An ambiguous description match or a loose `.frameAmbiguous` join never claims an element. Non-recursive.
+        func isCorroboratedClaim(_ ci: Int) -> Bool {
+            guard let m = matchedBy[ci] else { return false }
+            switch m.pass {
+            case .identifier, .frameUnique, .elimination: return true
+            case .description:
+                if titleJoined.contains(ci) { return true }
+                let d = hosted[m.hosted].axDescription
+                let owners = candidates.filter { $0.info.axDescription == d }.count
+                let hostedWith = hosted.enumerated().filter { !Self.isOwnHostedElement($0.element) && $0.element.axDescription == d }.count
+                return owners == 1 && hostedWith == 1
+            default: return false
+            }
+        }
+
         /// gdu.28: how trustworthy the pairing of candidate `ci` with its hosted element is (see `JoinEvidence`).
         func joinEvidence(_ ci: Int) -> JoinEvidence {
             guard let m = matchedBy[ci] else { return .none }
             let h = hosted[m.hosted]
             switch m.pass {
             case .identifier: return .identifier
+            case .elimination: return .elimination
             case .frameUnique: return .frameUnique   // the exact-frame pass above already proved uniqueness
             case .description:
+                if titleJoined.contains(ci) { return .description }   // uniqueness proven by the title pass
                 let d = h.axDescription
                 let owners = candidates.filter { $0.info.axDescription == d }.count
                 let hostedWith = hosted.enumerated().filter { !Self.isOwnHostedElement($0.element) && $0.element.axDescription == d }.count
@@ -697,9 +736,62 @@ public struct MenuBarScanner {
                 }
                 let c = candidates[ci].info
                 guard substantial(h.frame, c.frame), abs(h.frame.width - c.frame.width) <= 2 else { return .frameAmbiguous }
-                let hostedHits = hosted.indices.filter { !Self.isOwnHostedElement(hosted[$0]) && substantial(hosted[$0].frame, c.frame) }
-                let ownerHits = candidates.indices.filter { substantial(candidates[$0].info.frame, h.frame) }
+                // Elements and owners already claimed by an identifier / description / exact-frame join are not rivals (9o9.10).
+                let claimed = matchedBy.filter { $0.key != ci && isCorroboratedClaim($0.key) }
+                let claimedHosted = Set(claimed.values.map(\.hosted)), claimedCands = Set(claimed.keys)
+                let hostedHits = hosted.indices.filter { !Self.isOwnHostedElement(hosted[$0]) && !claimedHosted.contains($0) && substantial(hosted[$0].frame, c.frame) }
+                let ownerHits = candidates.indices.filter { !claimedCands.contains($0) && substantial(candidates[$0].info.frame, h.frame) }
                 return hostedHits == [m.hosted] && ownerHits == [ci] ? .frameUnique : .frameAmbiguous
+            }
+        }
+
+        // 9o9.10 corroboration by elimination. After every unique join, within a contiguous run of hosted elements that no
+        // identifier / description / frameUnique join has claimed, the unclaimed app-side candidates must pair ONE-TO-ONE in
+        // left-to-right order: same count, widths within 2 pt, and each candidate's app-side minX within one item width of its
+        // element's. Anything else (counts differ, a width disagrees, a candidate too far away) leaves the loose joins as they are.
+        var eliminated = Set<Int>()
+        do {
+            let strongHosted = Set(matchedBy.filter { isCorroboratedClaim($0.key) }.values.map(\.hosted))
+            let free = hosted.indices.filter {
+                !strongHosted.contains($0) && !Self.isOwnHostedElement(hosted[$0]) && !hosted[$0].isOverflowChevron && hosted[$0].identifier.isEmpty
+                    && hosted[$0].frame.width > 1 && onBar(hosted[$0].frame)
+            }.sorted { hosted[$0].frame.minX < hosted[$1].frame.minX }
+            var runs: [[Int]] = []
+            for hi in free {
+                if let last = runs.last?.last, hosted[hi].frame.minX - hosted[last].frame.maxX <= hosted[last].frame.width { runs[runs.count - 1].append(hi) }
+                else { runs.append([hi]) }
+            }
+            let freeCands = candidates.indices.filter {
+                let c = candidates[$0]
+                return (matchedBy[$0] == nil || matchedBy[$0]?.pass == .frameAmbiguous) && !assumedIdx.contains($0) && !flagFalseIdx.contains($0)
+                    && c.info.frame.width > 1 && onBar(c.info.frame)
+            }
+            for run in runs where run.count >= 2 {
+                let maxW = run.map { hosted[$0].frame.width }.max() ?? 0
+                let lo = hosted[run[0]].frame.minX - maxW, hi2 = hosted[run[run.count - 1]].frame.maxX + maxW
+                let cs = freeCands.filter { candidates[$0].info.frame.minX >= lo && candidates[$0].info.frame.minX <= hi2 }
+                    .sorted { candidates[$0].info.frame.minX < candidates[$1].info.frame.minX }
+                guard cs.count == run.count, !cs.contains(where: { candidates[$0].stale }) else { continue }
+                let ok = zip(cs, run).allSatisfy { ci, hi in
+                    let c = candidates[ci].info.frame, h = hosted[hi].frame
+                    return abs(c.width - h.width) <= 2 && abs(c.minX - h.minX) <= h.width
+                }
+                guard ok else { continue }
+                // Fallback only: a run whose loose joins already stand as corroborated (e.g. frameUnique) is left alone.
+                if cs.allSatisfy({ matchedBy[$0] != nil && joinEvidence($0).corroborated }) { continue }
+                for (ci, hi) in zip(cs, run) {
+                    if let m = matchedBy[ci] { matchedHosted.remove(m.hosted); hostedOwner[m.hosted] = nil }
+                    if let old = matchedBy.first(where: { $0.key != ci && $0.value.hosted == hi }) {   // loose pairing the run reassigns
+                        matchedBy[old.key] = nil; matchedCandidates[old.key] = nil
+                    }
+                    matchedHosted.insert(hi); matchedCandidates[ci] = hosted[hi]; hostedOwner[hi] = candidates[ci].app.pid
+                    matchedBy[ci] = (.elimination, hi)
+                    eliminated.insert(ci)
+                    let owner = candidates[ci].app.bundleID ?? candidates[ci].app.name
+                    if state.eliminationLogged.insert("\(owner)|\(candidates[ci].info.identityKey)").inserted {
+                        log("scanner: corroborated by elimination: \(owner) at x=\(Int(hosted[hi].frame.minX))")
+                    }
+                }
             }
         }
 

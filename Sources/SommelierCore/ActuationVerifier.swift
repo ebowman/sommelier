@@ -48,7 +48,7 @@ public enum ActuationVerifier {
         // gdu.28: `.corroborated` keys rest on a description match or a mutual-exclusive frame pairing, which is good
         // enough for the order check but not for a verified-move claim: only non-frame corroboration lifts the restriction.
         guard r.item.axIdentifier.isEmpty else { return false }
-        return r.confidence == .heuristic || (r.confidence == .corroborated && r.item.joinEvidence == .frameUnique)
+        return r.confidence == .heuristic || (r.confidence == .corroborated && (r.item.joinEvidence == .frameUnique || r.item.joinEvidence == .elimination))
     }
 
     static func name(_ r: ResolvedItem) -> String { r.key.description }

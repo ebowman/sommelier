@@ -91,6 +91,8 @@ final class ScanState: @unchecked Sendable {
     var lastIncompleteLog: (reason: String, at: Date)?
     /// Authority-rule log lines already written (gdu.79), so a steady state logs once, not once per scan.
     var authorityLogged: Set<String> = []
+    /// 9o9.10: owners already logged as corroborated by elimination (once per process).
+    var eliminationLogged: Set<String> = []
     /// Identity keys of hosted elements the actuator expects to vanish (it is hiding their unit); they are not "missing"
     /// for the attribution rule (gdu.51). Cleared when the batch ends; expires on its own after 60 s.
     var expectedToVanish: (keys: Set<String>, at: Date)?

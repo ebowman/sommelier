@@ -257,3 +257,88 @@ private func mainMenuFixture(withMenu: Bool, timedOutMenu: Bool = false) -> Fixt
     #expect(owned[0].joinEvidence == .frameAmbiguous)
     #expect(!items.contains { $0.joinEvidence == .frameUnique })
 }
+
+// MARK: - 9o9.10: corroboration by elimination / title (live 2026-11-07 fixture: Corsair ControlCenter + VPN Switch beside iStat Weather)
+
+/// Numbers from the live `mbprobe list --json --debug` capture. The iStat Weather element (identifier-joined, x 1136 w41) overlaps
+/// both identifier-less neighbours, so the mutual-and-exclusive frame rule can never call either of them unique: root cause of the
+/// `frameAmbiguous` verdicts (MenuBarScanner.joinEvidence: `hostedHits`/`ownerHits` count the identifier-claimed neighbour).
+private func vpnFixture(corsairW: CGFloat = 24, extraCandidate: Bool = false, hostedTitle: String = "") -> FixtureSource {
+    let istat = RunningAppInfo(pid: 10, bundleID: "com.bjango.istatmenus.status", name: "iStat")
+    let corsair = RunningAppInfo(pid: 11, bundleID: "com.corsair.ControlCenter", name: "ControlCenter")
+    let vpn = RunningAppInfo(pid: 12, bundleID: "ie.boboco.vpnswitch", name: "VPN Switch")
+    var s = FixtureSource(apps: [agent, istat, corsair, vpn])
+    func f(_ x: CGFloat, _ w: CGFloat) -> CGRect { CGRect(x: x, y: 2.5, width: w, height: 24) }
+    s.extras[10] = [AXElementInfo(identifier: "com.bjango.istatmenus.weather", frame: f(1136, 41))]
+    s.extras[11] = [AXElementInfo(frame: f(1136, corsairW))]
+    s.extras[12] = [AXElementInfo(title: "Shield Lefthalf Filled With A Checkmark Badge", frame: f(1162, 24))]
+    if extraCandidate { s.apps.append(RunningAppInfo(pid: 13, bundleID: "x.y", name: "X")); s.extras[13] = [AXElementInfo(frame: f(1190, 24))] }
+    s.tree = AgentHostedTree(stripFrame: CGRect(x: 0, y: 0, width: 2000, height: 30), elements: [
+        AXElementInfo(identifier: "com.bjango.istatmenus.weather", frame: f(1136, 41)),
+        AXElementInfo(frame: f(1136, 24)),
+        AXElementInfo(title: hostedTitle, frame: f(1162, 24)),
+    ])
+    return s
+}
+
+@Test func liveFixtureNeighbourPairTrustedAsFrameUnique() {
+    let items = MenuBarScanner(source: vpnFixture()).scan().items
+    let c = items.first { $0.ownerBundleID == "com.corsair.ControlCenter" }
+    let v = items.first { $0.ownerBundleID == "ie.boboco.vpnswitch" }
+    #expect(c?.joinEvidence == .frameUnique)
+    #expect(v?.joinEvidence == .frameUnique)
+}
+
+@Test func eliminationNotAppliedWhenCountsDiffer() {
+    let items = MenuBarScanner(source: vpnFixture(extraCandidate: true)).scan().items
+    #expect(!items.contains { $0.joinEvidence == .elimination })
+}
+
+@Test func eliminationNotAppliedWhenWidthsDisagree() {
+    let items = MenuBarScanner(source: vpnFixture(corsairW: 40)).scan().items
+    #expect(!items.contains { $0.joinEvidence == .elimination })
+    #expect(items.first { $0.ownerBundleID == "com.corsair.ControlCenter" }?.joinEvidence.corroborated == false)
+}
+
+@Test func uniqueTitleOnHostedElementCorroboratesByDescription() {
+    let items = MenuBarScanner(source: vpnFixture(hostedTitle: "Shield Lefthalf Filled With A Checkmark Badge")).scan().items
+    #expect(items.first { $0.ownerBundleID == "ie.boboco.vpnswitch" }?.joinEvidence == .description)
+}
+
+@Test func liveShapeVpnJoinsByDescriptionAndCorsairStaysCorroborated() {
+    let t = "Shield Lefthalf Filled With A Checkmark Badge"
+    var s = vpnFixture()
+    s.tree.elements[2] = AXElementInfo(title: t, axDescription: t, frame: CGRect(x: 1162, y: 2.5, width: 24, height: 24))
+    let items = MenuBarScanner(source: s).scan().items
+    #expect(items.first { $0.ownerBundleID == "ie.boboco.vpnswitch" }?.joinEvidence == .description)
+    #expect(items.first { $0.ownerBundleID == "com.corsair.ControlCenter" }?.joinEvidence == .frameUnique)
+}
+
+@Test func eliminationFallbackWhenFrameRuleFails() {
+    // Both owners' app-side frames lag onto each other's element: frame rule ambiguous, one-to-one left-to-right pairing holds.
+    let a = RunningAppInfo(pid: 21, bundleID: "a.a", name: "A"), b = RunningAppInfo(pid: 22, bundleID: "b.b", name: "B")
+    var s = FixtureSource(apps: [agent, a, b])
+    s.extras[21] = [AXElementInfo(frame: bar(1136))]
+    s.extras[22] = [AXElementInfo(frame: bar(1148))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [AXElementInfo(frame: bar(1136)), AXElementInfo(frame: bar(1162))])
+    let items = MenuBarScanner(source: s).scan().items
+    let ext = items.filter { $0.source == .appExtras }
+    #expect(ext.filter { $0.joinEvidence == .elimination }.count == 2)
+}
+
+@Test func sharedDescriptionNeverClaimsAnElement() {
+    // Two hosted elements share the description "Shared". Candidate A (description "Shared", frame on H1) gets an ambiguous
+    // description match; candidate B (no description) overlaps H1 only. A's ambiguous match must not claim H1, and
+    // B must not be promoted to frameUnique/elimination against it (gdu.94).
+    let a = RunningAppInfo(pid: 21, bundleID: "a.a", name: "A"), b = RunningAppInfo(pid: 22, bundleID: "b.b", name: "B")
+    func f(_ x: CGFloat) -> CGRect { CGRect(x: x, y: 2.5, width: 24, height: 24) }
+    var s = FixtureSource(apps: [agent, a, b])
+    s.extras[21] = [AXElementInfo(axDescription: "Shared", frame: f(1136))]
+    s.extras[22] = [AXElementInfo(frame: f(1136))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+        AXElementInfo(axDescription: "Shared", frame: f(1100)), AXElementInfo(axDescription: "Shared", frame: f(1136))])
+    let items = MenuBarScanner(source: s).scan().items.filter { $0.source == .appExtras }
+    #expect(items.count == 2)
+    #expect(items.first { $0.ownerBundleID == "a.a" }?.joinEvidence == .frameAmbiguous)
+    #expect(items.first { $0.ownerBundleID == "b.b" }?.joinEvidence == .frameAmbiguous)
+}

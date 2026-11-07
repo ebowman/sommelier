@@ -45,9 +45,12 @@ public enum JoinEvidence: String, Codable, Sendable {
     /// Frame join where more than one owner item or hosted element competes for the overlap (crowded or stacked bar,
     /// lagging app-side frame). The label may belong to a neighbour (docs/findings-drag.md pitfall 2).
     case frameAmbiguous
+    /// 9o9.10: frame join corroborated by elimination: a contiguous run of hosted elements no stronger join claimed pairs one-to-one,
+    /// left to right, with the same number of owner items of matching width (within 2 pt) and nearby app-side frames.
+    case elimination
 
     /// A pairing that does not rest on a bare, possibly mislabelled frame overlap.
-    public var corroborated: Bool { self == .identifier || self == .description || self == .frameUnique }
+    public var corroborated: Bool { self == .identifier || self == .description || self == .frameUnique || self == .elimination }
 }
 
 /// One menu bar item (status item / menu extra).
