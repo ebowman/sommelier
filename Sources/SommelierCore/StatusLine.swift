@@ -20,7 +20,12 @@ public enum StatusLine {
 
     @MainActor
     public static func text(state: EngineState, trusted: Bool, conflicting: String?) -> String {
-        text(lastError: state.lastError, isConverged: state.isConverged, inFlight: state.inFlight != nil,
+        if trusted, conflicting == nil {
+            if state.userPaused { return "Paused by you" }   // 9o9.4
+            if let until = state.orderCapUntil, until > Date() { return "Order moves capped for a minute" }
+            if let why = state.pauseReason { return "Waiting: \(why)" }
+        }
+        return text(lastError: state.lastError, isConverged: state.isConverged, inFlight: state.inFlight != nil,
              trusted: trusted, conflicting: conflicting, observationSettled: state.observationSettled)
     }
 

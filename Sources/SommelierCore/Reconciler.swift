@@ -113,7 +113,7 @@ public struct Reconciler: Sendable {
 
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
-                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = []) -> Plan {
+                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = [], held: Set<ItemKey> = []) -> Plan {
         // 9o9.3: `Layout.visible` is the ordered record and every Visible key carries the obligation. The order-phase target is the
         // record restricted to the keys observed on the bar with trusted frames; anchors (never a move subject) are the keys the
         // capabilities pin (the system block, unhideable items), the chevron and the keys whose frame is not trusted.
@@ -268,7 +268,8 @@ public struct Reconciler: Sendable {
         // gdu.94 / 9o9.3: an on-bar key whose frame is not trusted (slot not corroborated by a hosted element, or a stale frame) keeps its
         // observed slot: it is never the subject of a move, never a relation target while a fresh neighbour exists, and it is NOT part of
         // the trailing system block (one such key at the right end must not make every other key "unplaceable right of the system items").
-        let unfresh = observed.uncorroborated.union(observed.staleOnBar).intersection(onBarSet).intersection(Set(base))
+        // 9o9.4: `held` keys (the engine gave up on them) are pinned the same way, silently: they keep their observed slot.
+        let unfresh = observed.uncorroborated.union(observed.staleOnBar).union(held).intersection(onBarSet).intersection(Set(base))
         let pinned = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
         let anchors = pinned.union(unfresh)
         if !unfresh.isEmpty, hides.isEmpty, shows.isEmpty {
@@ -279,7 +280,7 @@ public struct Reconciler: Sendable {
                 let t = Self.layoutTarget(base: base, desired: full, anchors: pinned)
                 let would = Self.moves(from: base, to: t, anchors: pinned, boundary: chevron != nil)
                 var seenSubjects = Set<ItemKey>()
-                for case .move(let k, _) in would where unfresh.contains(k) && seenSubjects.insert(k).inserted {
+                for case .move(let k, _) in would where unfresh.contains(k) && !held.contains(k) && seenSubjects.insert(k).inserted {
                     skipped.append(SkippedAction(k, observed.staleOnBar.contains(k) ? Reconciler.staleFrameSkipReason : Reconciler.uncorroboratedSkipReason))
                 }
             }

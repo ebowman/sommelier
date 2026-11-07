@@ -49,6 +49,13 @@ final class ArrangeViewModel {
     /// UI-only: the transient callout for the last refused drop (cleared by the tick after `RefusalCallout.duration`).
     private(set) var refusal: RefusalCallout?
     var confirm: Confirm?
+    /// 9o9.4: ids of the drop targets a drag is hovering; non-empty = an Arrange drag is in flight (the engine makes no actuator call).
+    @ObservationIgnored private var dragTargets: Set<String> = []
+    func dragTargeting(_ id: String, _ on: Bool) {
+        let was = !dragTargets.isEmpty
+        if on { dragTargets.insert(id) } else { dragTargets.remove(id) }
+        if was != !dragTargets.isEmpty { model.arrangeDragChanged(!dragTargets.isEmpty) }
+    }
     /// Slot currently targeted by a drag, for the insertion indicator.
     var hoverSlot: (section: LayoutSection, slot: Int)?
     /// The waiting state machine (pure, in SommelierCore); this class only feeds it.
@@ -203,6 +210,7 @@ final class ArrangeViewModel {
 
     func drop(_ payloads: [ArrangePayload], section: LayoutSection, slot: Int) -> Bool {
         hoverSlot = nil
+        if !dragTargets.isEmpty { dragTargets = []; model.arrangeDragChanged(false) }   // the drag ended in a drop
         guard !isFiltering, let p = payloads.first, let key = ItemKey(storeKey: p.storeKey) else { return false }
         let rows = content.strip(section).rows
         let outcome = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: key, section: section, capabilities: cap,

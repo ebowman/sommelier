@@ -118,6 +118,7 @@ final class StatusItemController: NSObject {
         let show = item("Show hidden items", #selector(toggleHidden))
         show.state = model.state.showHiddenSection ? .on : .off
         m.addItem(show)
+        m.addItem(item(model.state.userPaused ? "Resume Sommelier" : "Pause Sommelier", #selector(togglePause)))
         m.addItem(item("Arrange…", #selector(openArrange)))
         m.addItem(item("Settings…", #selector(openSettings), key: ","))
         let login = item("Start at login", #selector(toggleLogin))
@@ -140,6 +141,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func toggleHidden() { model.setShowHidden(!model.state.showHiddenSection) }
+    @objc private func togglePause() { model.setUserPaused(!model.state.userPaused) }
     @objc private func openArrange() { onArrange() }
     @objc private func openSettings() { onSettings() }
     @objc private func toggleLogin() { LoginItem.set(!LoginItem.isEnabled) }

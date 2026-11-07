@@ -141,6 +141,7 @@ public enum ArrangeSections {
         case .failed(let e)?: return .failed(describe(e))
         case .unsupported(let r)?: return .cannotChange(r)
         case .waitingForPosition?: return .waitingForPosition
+        case .cannotPlace(let r, _)?: return .cannotChange("Can't place: \(r)")   // 9o9.4; the Arrange strip bead gives it its own badge
         case .notFitting?: return .notFitting
         case .pending?, .moving?: return .moving
         case .inPlace?, nil: break
@@ -801,6 +802,10 @@ public struct ArrangeTracker: Equatable, Sendable {
                 case .unsupported(let r)?:
                     entries[k] = nil; timedOut.remove(k)
                     log.append(line(e, k, "\(k) unsupported \(String(format: "%.1f", dt))s after the drop: \(r)"))
+                    continue
+                case .cannotPlace(let r, _)?:
+                    entries[k] = nil; timedOut.remove(k)
+                    log.append(line(e, k, "\(k) cannot be placed \(String(format: "%.1f", dt))s after the drop: \(r)"))
                     continue
                 case let st? where st == .inPlace || st == .notFitting:
                     if ArrangeSections.placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {

@@ -217,6 +217,9 @@ public final class EngineTriggers {
         for a in launched { log("launch pid \(a.pid) bundle \(a.bundleID ?? "-") policy \(a.policy.rawValue)\(visible(a) ? "" : " (ignored)")") }
         for a in quit { log("quit pid \(a.pid) bundle \(a.bundleID ?? "-") policy \(a.policy.rawValue)\(q.contains(a) ? "" : " (ignored)")") }
         guard force || !l.isEmpty || !q.isEmpty else { return }
+        // 9o9.4: a relaunched app starts fresh: the engine's give-up on its items is cleared.
+        let changed = l + q + (notified.map { [$0.app] } ?? [])
+        await engine.appsChanged(bundleIDs: Set(changed.compactMap(\.bundleID)), pids: Set(changed.map(\.pid)))
         await launchQuitTrigger()
     }
 

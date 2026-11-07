@@ -759,7 +759,8 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     @Test func stoppedAfterFailuresSurvivesObserveAndIsClearedExplicitly() async {
         let names = ["A", "B", "C", "D", "E"]
-        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)),
+        var cfg = LayoutEngine.Config.multiMove; cfg.maxAttemptsPerItem = 99; cfg.maxOrderMovesPerMinute = 99   // 9o9.4: the give-up and the cap would otherwise end the failing plan first
+        let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)), config: cfg,
                           failOn: (1...12).map { ($0, ActuationError.mechanismFailed("x")) })
         _ = await r.engine.reconcileOnce(); _ = await r.engine.reconcileOnce()
         #expect(r.state.lastError == nil)

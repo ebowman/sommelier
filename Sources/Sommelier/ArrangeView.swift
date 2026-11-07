@@ -173,7 +173,7 @@ struct StripView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(endTargeted ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.05)))
             .dropDestination(for: ArrangePayload.self, action: { items, _ in
                 vm.drop(items, section: strip.section, slot: strip.rows.count)
-            }, isTargeted: { endTargeted = $0 })
+            }, isTargeted: { endTargeted = $0; vm.dragTargeting("end-\(strip.section.rawValue)", $0) })
             if !strip.notRunning.isEmpty {
                 DisclosureGroup("Not running (\(strip.notRunning.count))", isExpanded: $showNotRunning) {
                     FlowLayout(lineSpacing: 4) {
@@ -201,7 +201,7 @@ struct DropGap: View {
             .contentShape(Rectangle())
             .dropDestination(for: ArrangePayload.self, action: { items, _ in
                 vm.drop(items, section: section, slot: slot)
-            }, isTargeted: { targeted = $0 })
+            }, isTargeted: { targeted = $0; vm.dragTargeting("gap-\(section.rawValue)-\(slot)", $0) })
     }
 }
 
@@ -238,7 +238,7 @@ struct CapsuleSlot: View {
         .dropDestination(for: ArrangePayload.self, action: { items, loc in
             guard let slot else { return false }
             return vm.drop(items, section: section, slot: loc.x < width / 2 ? slot : slot + 1)
-        })
+        }, isTargeted: { vm.dragTargeting("row-\(row.key.description)", $0) })
         .contextMenu { if !row.isAnchor && (!row.isGhost || ArrangeMenuRules.ghostInteractive(row)) { menu } }
         .keyframeAnimator(initialValue: CGFloat(0), trigger: shakeCount) { content, dx in
             content.offset(x: dx)

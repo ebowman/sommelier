@@ -20,6 +20,9 @@ public enum ItemStatus: Equatable, Sendable {
     /// macOS moved it into its own overflow (behind the chevron): reported on the bar but not drawn, so it cannot be
     /// dragged. Otherwise in place (gdu.45).
     case notFitting
+    /// 9o9.4: the engine gave up on this key after `attempts` order moves within the attempt window; it keeps its observed slot and
+    /// is excluded from planning until Retry, a new drop of it in Arrange, its app relaunching, or Sommelier relaunching.
+    case cannotPlace(reason: String, attempts: Int)
 }
 
 public enum EngineError: Equatable, Sendable {
@@ -99,6 +102,13 @@ public final class EngineState {
     public var lastNormalization: [ItemKey] = []
     /// Set while the poll is suppressed because of a flapping item (gdu.58); status line only, never an error.
     public var pollSuppression: PollSuppression?
+    /// 9o9.4: the user chose "Pause Sommelier": observation continues, no actuator call is made. Never persisted.
+    public var userPaused: Bool = false
+    /// 9o9.4: the per-minute order-move cap is active until this time (order phase skipped, membership still runs); nil when not capped.
+    public var orderCapUntil: Date?
+    /// 9o9.4: why the last pass ended without actuating (a menu open, the mouse down, a modifier held, an Arrange drag, a locked screen);
+    /// nil once a pass is allowed to actuate again.
+    public var pauseReason: String?
 
     public init(observed: ObservedOrder = ObservedOrder(onBar: [], parked: []), layout: Layout = .empty,
                 showHiddenSection: Bool = false) {

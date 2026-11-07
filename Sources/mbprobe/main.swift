@@ -697,6 +697,7 @@ func runApply(_ a: [String]) async {
         case .unsupported(let r): print("! \(k) unsupported(\(r))")
         case .waitingForPosition(let r): print("? \(k) waitingForPosition(\(r))")
         case .notFitting: print("o \(k) notFitting (macOS overflow)")
+        case .cannotPlace(let r, let n): print("! \(k) cannotPlace(\(r), \(n) attempts)")
         }
     }
     if let e = state.lastError { print("error: \(e)") }

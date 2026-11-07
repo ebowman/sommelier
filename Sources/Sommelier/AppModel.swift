@@ -84,6 +84,16 @@ final class AppModel {
 
     var isPaused: Bool { conflictingManager != nil }
 
+    /// "Pause Sommelier" / "Resume Sommelier" (9o9.4): observation continues, no actuator call is made. Never persisted.
+    func setUserPaused(_ on: Bool) {
+        guard let engine else { return }
+        AppLog.log(.app, on ? "user paused Sommelier" : "user resumed Sommelier")
+        Task { await engine.setUserPaused(on) }
+    }
+
+    /// The Arrange window reports a drag hovering its drop targets (9o9.4); the engine makes no actuator call while it lasts.
+    func arrangeDragChanged(_ on: Bool) { engine?.setArrangeDragInFlight(on) }
+
     var trusted: Bool { permissions.isReady }
 
     var statusText: String {

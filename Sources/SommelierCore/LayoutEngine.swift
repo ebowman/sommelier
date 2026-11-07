@@ -43,6 +43,19 @@ public actor LayoutEngine {
         /// 9o9.3: order drags per pass (the safety envelope: one move, then a fresh observation on the chained pass).
         public var maxOrderMovesPerPass = 1
         public var busyWait: Duration = .seconds(3)
+        /// 9o9.4 safety envelope. A key whose order moves reach `maxAttemptsPerItem` within `attemptWindow` (ANY order move of it counts,
+        /// whatever the relation or outcome, plus a verified move seen reverted and a failed call) becomes `.cannotPlace`.
+        public var maxAttemptsPerItem = 3
+        public var attemptWindow: Duration = .seconds(600)
+        /// At most this many order drags per `orderCapWindow`; beyond it passes still run membership and skip the order phase.
+        public var maxOrderMovesPerMinute = 6
+        public var orderCapWindow: Duration = .seconds(60)
+        /// A pass that ended `.paused` because the user is interacting is retried after this long.
+        public var interactionRetry: Duration = .seconds(2)
+        /// An Arrange drag flag older than this is treated as lost (its "ended" event never came).
+        public var arrangeDragMaxAge: Duration = .seconds(30)
+        /// Wall clock for the attempt window and the per-minute cap (tests override it).
+        public var now: @Sendable () -> Date = { Date() }
         public var busyPoll: Duration = .milliseconds(100)
         /// Consecutive self-rescheduled incomplete passes (membership then order) before the engine waits for an external trigger.
         public var maxChainedPasses = 2
@@ -100,6 +113,7 @@ public actor LayoutEngine {
     private let capabilities: any CapabilityProvider
     private let state: EngineState
     private let busy: @Sendable () -> Bool
+    private let interaction: (any InteractionSource)?
     private var itemInfo: [ItemKey: ItemInfo] = [:] { didSet { rule = HideUnitRule(resolver: resolverSnapshot, items: itemInfo) } }
     /// The tracked entries the current `rule` was built from (refreshed by `refreshHideUnits`).
     private var resolverSnapshot: TrackedEntryResolver?
@@ -124,6 +138,18 @@ public actor LayoutEngine {
     /// 9o9.3: per subject, the last order move the actuator verified, kept across passes until a pass finds the bar converged; a pass that plans the identical move again strikes it `.notVerified`.
     private var lastVerifiedOrderMove: [ItemKey: PlannedAction] = [:]
     private var unverifiedStrikes: [ItemKey: Int] = [:]
+    // 9o9.4 safety envelope (in memory only: a relaunch of Sommelier clears all of it).
+    private var orderAttempts: [ItemKey: [(at: Date, cause: String)]] = [:]
+    private var cannotPlace: [ItemKey: (reason: String, attempts: Int)] = [:]
+    /// A verified move planned again, identically, within `passesLeft` passes was reverted by macOS or the app: one more attempt.
+    private var revertWatch: [ItemKey: (action: PlannedAction, passesLeft: Int)] = [:]
+    private var orderMoveTimes: [Date] = []
+    private var capLoggedUntil: Date?
+    private var lastPauseLogged: String?
+    private var pausePublished = false
+    private var capPublished: Date?
+    private nonisolated let userPausedBox = ConflictBox()
+    private nonisolated let arrangeDragBox = ArrangeDragBox()
     /// Test hook: pretends a clean observation of `bar` was read (the pass records it and adopts in the same step, so a pending adoption never coexists with one in production).
     func setCleanBarForTesting(_ bar: [ItemKey]?) { lastCleanBar = bar }
     /// Keys applied by a `.liveUnverified` batch and not yet confirmed by a settled complete read; value = hidden (gdu.55).
@@ -314,7 +340,7 @@ public actor LayoutEngine {
     /// Name of a conflicting menu bar manager (Bartender), set from outside the actor so it takes effect between two actuator
     /// calls of a running pass. While set, no pass starts and a running pass ends `.paused` before its next actuator call.
     private nonisolated let conflictBox = ConflictBox()
-    private var conflicted: Bool { conflictBox.value != nil }
+    private var conflicted: Bool { conflictBox.value != nil || userPausedBox.value != nil }
     private var delayed: [String: Task<Void, Never>] = [:]
     private var noticeSerial = 0
     private let agentPID: @Sendable () -> pid_t?
@@ -326,6 +352,7 @@ public actor LayoutEngine {
     public init(observer: any MenuBarObserver, actuator: any MenuBarActuator, store: any LayoutStore,
                 capabilities: any CapabilityProvider, state: EngineState,
                 busy: @escaping @Sendable () -> Bool = { false },
+                interaction: (any InteractionSource)? = nil,
                 resolveSnapshot: @escaping @Sendable (MenuBarSnapshot) -> [ResolvedItem],
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
                 log: @escaping @Sendable (String) -> Void = { _ in },
@@ -336,7 +363,7 @@ public actor LayoutEngine {
         self.showHidden = showHiddenSection
         self.showAlways = showAlwaysHidden
         self.observer = observer; self.actuator = actuator; self.store = store; self.capabilities = capabilities
-        self.state = state; self.busy = busy; self.resolveSnapshot = resolveSnapshot; self.sleep = sleep
+        self.state = state; self.busy = busy; self.interaction = interaction; self.resolveSnapshot = resolveSnapshot; self.sleep = sleep
         self.log = log; self.config = config
     }
 
@@ -435,6 +462,10 @@ public actor LayoutEngine {
             // gdu.95: a key the user dropped counts as placed even when the layout already listed it visible (hidden in Control Center).
             userPlacedVisible.formUnion(movedKeys.intersection(Set(new.visible)))
         }
+        // 9o9.4: the user dropping a key again (or moving it between sections) gives the engine a fresh start with it.
+        var touched = movedKeys
+        for k in cannotPlace.keys where layout.section(of: k) != new.section(of: k) { touched.insert(k) }
+        clearGiveUp(touched.intersection(Set(cannotPlace.keys).union(orderAttempts.keys)))
         layout = new
         loaded = true
         noteSupersede("setLayout")
@@ -551,6 +582,7 @@ public actor LayoutEngine {
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
+        lastVerifiedOrderMove = [:]; revertWatch = [:]   // 9o9.4: a Retry drags on its first plan
         failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
@@ -564,6 +596,113 @@ public actor LayoutEngine {
             default: break
             }
         }
+    }
+
+    // MARK: Safety envelope (9o9.4)
+
+    /// Clears the give-up and the attempt history of `key` and plans it again (the Arrange "Retry" of one row).
+    public func retry(key: ItemKey) async {
+        clearGiveUp([key])
+        failures[key] = nil; strikes[key] = nil; unverifiedStrikes[key] = nil; lastVerifiedOrderMove[key] = nil; revertWatch[key] = nil
+        log("engine: retry \(key): attempts cleared")
+        await publish { s in
+            if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
+        }
+        requestReconcile(reason: "retry", userInitiated: true)
+    }
+
+    /// Apps launched or quit: their keys' give-ups are cleared (a relaunched app is a fresh start). Matches by pid, bundle id or owner key.
+    public func appsChanged(bundleIDs: Set<String>, pids: Set<pid_t>) async {
+        let stale = cannotPlace.keys.filter { k in
+            if let i = itemInfo[k], pids.contains(i.ownerPID) || (i.ownerBundleID.map(bundleIDs.contains) ?? false) { return true }
+            if case .status(let owner, _) = k, bundleIDs.contains(owner) { return true }
+            if case .heuristic(let b, _, _) = k, bundleIDs.contains(b) { return true }
+            return false
+        }
+        guard !stale.isEmpty else { return }
+        clearGiveUp(Set(stale))
+        for k in stale { log("engine: \(k): its app relaunched; attempts cleared") }
+    }
+
+    /// "Pause Sommelier": observation continues, no actuator call is made. Never persisted. Resuming plans again at once.
+    public func setUserPaused(_ on: Bool) async {
+        guard (userPausedBox.value != nil) != on else { return }
+        userPausedBox.value = on ? "paused by you" : nil
+        log(on ? "engine: paused: Sommelier paused by you" : "engine: resumed by you")
+        await publish { $0.userPaused = on }
+        if !on { requestReconcile(reason: "resumed", userInitiated: true) }
+    }
+
+    /// The Arrange window reports a drag hovering its drop targets; no actuator call is made while it lasts. Effective at once.
+    public nonisolated func setArrangeDragInFlight(_ on: Bool) { arrangeDragBox.set(on, now: Date()) }
+
+    private func clearGiveUp(_ keys: Set<ItemKey>) {
+        for k in keys { cannotPlace[k] = nil; orderAttempts[k] = nil; revertWatch[k] = nil }
+    }
+
+    private func windowSeconds(_ d: Duration) -> TimeInterval { Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18 }
+
+    /// Counts one attempt at placing `key` (any order move of it, a reverted verified move, or a failed call). At the limit within the
+    /// window the key becomes `.cannotPlace` (excluded from planning, keeps its observed slot).
+    private func noteAttempt(_ key: ItemKey, cause: String) {
+        let t = config.now()
+        let horizon = windowSeconds(config.attemptWindow)
+        var list = (orderAttempts[key] ?? []).filter { t.timeIntervalSince($0.at) < horizon }
+        list.append((t, cause))
+        orderAttempts[key] = list
+        if list.count >= config.maxAttemptsPerItem, cannotPlace[key] == nil {
+            cannotPlace[key] = (cause, list.count)
+            log("engine: giving up on \(key) after \(list.count) attempts: \(cause)")
+        }
+    }
+
+    /// Nil when the user is not interacting. Otherwise waits up to `busyWait`; returns (reason, waited) where `reason` is nil if it cleared.
+    private func interactionBlock() -> String? {
+        if arrangeDragBox.active(now: Date(), maxAge: windowSeconds(config.arrangeDragMaxAge)) { return "an Arrange drag is in flight" }
+        return interaction?.blockingReason()
+    }
+
+    private enum Quiet { case clear, waitedThenClear, blocked(String) }
+
+    private func awaitQuiet() async -> Quiet {
+        guard var reason = interactionBlock() else {
+            await clearPauseNotice()
+            return .clear
+        }
+        var waited = Duration.zero
+        while waited < config.busyWait {
+            await sleep(config.busyPoll)
+            waited += config.busyPoll
+            guard let r = interactionBlock() else { await clearPauseNotice(); return .waitedThenClear }
+            reason = r
+        }
+        return .blocked(reason)
+    }
+
+    private func clearPauseNotice() async {
+        lastPauseLogged = nil
+        if pausePublished { pausePublished = false; await publish { $0.pauseReason = nil } }
+    }
+
+    /// Ends the pass `.paused` because the user is interacting: the reason is logged once per episode, nothing is struck.
+    private func endPausedForInteraction(_ reason: String, _ r: PassReport) async -> PassReport {
+        if lastPauseLogged != reason { log("engine: paused: \(reason)"); lastPauseLogged = reason }
+        pending = false
+        pausePublished = true
+        await publish { $0.inFlight = nil; $0.pauseReason = reason }
+        scheduleReconcile(after: config.interactionRetry, reason: Self.interactionPauseReason)
+        return await finish(r, converged: false)
+    }
+    static let interactionPauseReason = "interaction pause"
+    static let orderCapReason = "order cap"
+
+    /// When the per-minute order-move cap is reached, the time it lifts; nil when not capped.
+    private func orderCapLiftsAt() -> Date? {
+        let t = config.now()
+        let horizon = windowSeconds(config.orderCapWindow)
+        orderMoveTimes = orderMoveTimes.filter { t.timeIntervalSince($0) < horizon }
+        guard orderMoveTimes.count >= config.maxOrderMovesPerMinute, let oldest = orderMoveTimes.first else { return nil }
+        return oldest.addingTimeInterval(horizon)
     }
 
     /// External trigger. Concurrent triggers coalesce: at most one further pass runs after the current one.
@@ -782,7 +921,7 @@ public actor LayoutEngine {
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads))
+                                         churn: SystemOverflowRule.churnZone(recentReads), held: Set(cannotPlace.keys))
         // 9o9.2: until the upgrade adoption completes no order action is planned (the record is the legacy saved order, not the bar's).
         if layout.pendingAdoption, p.phase == .order { p.actions = []; p.phase = .converged }
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
@@ -885,6 +1024,7 @@ public actor LayoutEngine {
         let present = Set(obs.onBar + obs.parked)
         failures = failures.filter { present.contains($0.key) }
         strikes = strikes.filter { present.contains($0.key) }
+        unverifiedStrikes = unverifiedStrikes.filter { present.contains($0.key) }   // 9o9.4: a key that left the bar starts over
         let previous = failedThisPass
         failedThisPass = []
         overflowRefused = [:]
@@ -957,6 +1097,8 @@ public actor LayoutEngine {
             delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
         }
         for (k, e) in failures where out[k] != nil { out[k] = .failed(e) }
+        for (k, c) in cannotPlace where out[k] != nil && failures[k] == nil
+            && !ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden, showAlwaysHidden: showAlways) { out[k] = .cannotPlace(reason: c.reason, attempts: c.attempts) }   // 9o9.4
         return out
     }
 
@@ -1182,7 +1324,8 @@ public actor LayoutEngine {
     /// A conflicting manager was detected during the pass: end it before the next actuator call. Not a failure: no strike,
     /// no suppression, `perItem` statuses stay as published (pending, never `.failed`).
     private func pausedMidPass(_ r: PassReport) async -> PassReport {
-        log("conflicting manager running (\(conflictBox.value ?? "?")); pass ends before the next actuator call")
+        if let who = conflictBox.value { log("conflicting manager running (\(who)); pass ends before the next actuator call") }
+        else { log("engine: paused: Sommelier paused by you; pass ends before the next actuator call") }
         pending = false
         await publish { $0.inFlight = nil }
         return await finish(r, converged: false)
@@ -1284,7 +1427,7 @@ public actor LayoutEngine {
             return r
         }
         if conflicted {
-            log("conflicting manager running; pass skipped")
+            log(conflictBox.value != nil ? "conflicting manager running; pass skipped" : "engine: paused: Sommelier paused by you; pass skipped")
             let r = PassReport(outcome: .paused)
             _ = await finish(r, converged: false)
             return r
@@ -1321,6 +1464,22 @@ public actor LayoutEngine {
 
         // (c) plan
         var plan = makePlan(obs)
+        // 9o9.4: a verified move of a key that a plan within the next 2 passes wants made again was reverted: one more attempt.
+        if !revertWatch.isEmpty {
+            var gaveUp = false
+            for (k, w) in revertWatch {
+                let again = plan.actions.contains { $0 == w.action }   // the very same move planned again: it did not hold
+                if again {
+                    revertWatch[k] = nil
+                    log("engine: \(k) was moved by a verified drag and a plan wants it moved again: counted as an attempt")
+                    let before = cannotPlace[k] == nil
+                    noteAttempt(k, cause: "the menu bar moved it back")
+                    if before, cannotPlace[k] != nil { gaveUp = true }
+                } else if w.passesLeft <= 1 { revertWatch[k] = nil }
+                else { revertWatch[k] = (w.action, w.passesLeft - 1) }
+            }
+            if gaveUp { plan = makePlan(obs) }
+        }
 
         // (d) persist new items, once per pass
         if !plan.newItems.isEmpty {
@@ -1411,6 +1570,13 @@ public actor LayoutEngine {
             guard let first = order.first else { return await abort(.incomplete) }
             let fullBefore = obs.overflowChevron != nil
             if conflicted { return await pausedMidPass(report(.paused)) }
+            switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
+            case .clear: break
+            case .waitedThenClear:
+                if draining { pending = true }   // the observation is old after the wait: a fresh pass re-observes
+                return await abort(.incomplete)
+            case .blocked(let why): return await endPausedForInteraction(why, report(.paused))
+            }
             let firstAction: PlannedAction = batch[first] == true ? .hide(first) : .show(first)
             await publish { s in for k in order { s.perItem[k] = .pending }; s.inFlight = firstAction }
             // The actuator computes its expectations and `before` map from ITS OWN scan taken right before the write; the engine
@@ -1568,6 +1734,10 @@ public actor LayoutEngine {
             if lastAction == action || lastVerifiedOrderMove[key] == action {
                 // The strike streak resets when another key is the one struck in a later pass (the engine plans around a struck key),
                 // so verdict/observation disagreements are also counted per key across passes: the budget is spent once, not forever.
+                if revertWatch[key] != nil {   // 9o9.4: reverted within this pass (a later pass's revert was counted at its start)
+                    revertWatch[key] = nil
+                    noteAttempt(key, cause: "the menu bar moved it back")
+                }
                 let disagreements = (unverifiedStrikes[key] ?? 0) + 1
                 unverifiedStrikes[key] = disagreements
                 log("order: \(key) was verified but is planned again (\(disagreements)); not dragged again, struck")
@@ -1580,10 +1750,31 @@ public actor LayoutEngine {
                 lastVerifiedOrderMove[key] = nil
                 continue
             }
+            // 9o9.4: the per-minute cap skips the ORDER phase only (membership already ran above); the pass is not retried until it lifts.
+            if let lifts = orderCapLiftsAt() {
+                if capLoggedUntil != lifts { capLoggedUntil = lifts; log("engine: order moves capped for \(Int(windowSeconds(config.orderCapWindow))) s") }
+                if capPublished != lifts { capPublished = lifts; await publish { $0.orderCapUntil = lifts } }
+                scheduleReconcile(after: .seconds(max(0.1, lifts.timeIntervalSince(config.now()) + 0.1)), reason: Self.orderCapReason)
+                await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+                return await abort(.incomplete)
+            } else if capPublished != nil {
+                capPublished = nil; capLoggedUntil = nil
+                await publish { $0.orderCapUntil = nil }
+            }
             guard orderMoves < config.maxOrderMovesPerPass else {
                 log("order: \(orderMoves) move(s) this pass (maxOrderMovesPerPass); the rest follows on the next pass")
                 await publish { $0.inFlight = nil }
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
+            }
+            switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
+            case .clear: break
+            case .waitedThenClear:
+                if draining { pending = true }
+                await publish { $0.inFlight = nil }
+                return await abort(.incomplete)
+            case .blocked(let why):
+                await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+                return await endPausedForInteraction(why, report(.paused))
             }
             lastAction = action
             do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
@@ -1606,10 +1797,13 @@ public actor LayoutEngine {
             let result = await actuator.move(key, relation: rel)
             actionCount += 1
             orderMoves += 1
+            orderMoveTimes.append(config.now())
             switch result {
             case .verified(let snap):
                 consecutiveFailures = 0; allFailedStreak = 0
                 lastVerifiedOrderMove[key] = action
+                revertWatch[key] = (action, 2)
+                noteAttempt(key, cause: "it keeps being moved without holding its place")
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
             case .failed(let e, let snap):
                 consecutiveFailures += 1
@@ -1620,6 +1814,7 @@ public actor LayoutEngine {
                     if draining { pending = true }
                     return await abort(.incomplete)
                 }
+                if !e.isOverflowRefusal { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
                 if e.isOverflowRefusal {
                     // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
                     consecutiveFailures -= 1
