@@ -80,6 +80,7 @@ public final class EngineTriggers {
     private let apps: any RunningAppsSource
     private let ownerPIDs: () -> Set<Int32>?
     private let launchQuitTrigger: () async -> Void
+    private let wakeSignals: any WakeSignalSource
     /// pid -> app as of the last diff: the single dedupe point for the notification and the KVO path (one launch = one event).
     private var known: [Int32: RunningApp] = [:]
     private var tokens: [any NSObjectProtocol] = []
@@ -119,8 +120,10 @@ public final class EngineTriggers {
                 sleep: ((Duration) async -> Void)? = nil, now: @escaping @Sendable () -> Date = { Date() },
                 reportSuppression: ((PollSuppression?) async -> Void)? = nil,
                 apps: (any RunningAppsSource)? = nil, ownerPIDs: @escaping () -> Set<Int32>? = { nil },
-                launchQuitTrigger: (() async -> Void)? = nil) {
+                launchQuitTrigger: (() async -> Void)? = nil,
+                wakeSignals: (any WakeSignalSource)? = nil) {
         self.now = now
+        self.wakeSignals = wakeSignals ?? LiveWakeSignals()
         self.apps = apps ?? LiveRunningApps()
         self.ownerPIDs = ownerPIDs
         self.launchQuitTrigger = launchQuitTrigger ?? { [engine] in
@@ -172,10 +175,12 @@ public final class EngineTriggers {
             guard let engine = self?.engine else { return }
             Task { await engine.didWake() }
         })
+        wakeSignals.start { [engine] in Task { await engine.interactionResumed() } }
         scheduleNextPoll()
     }
 
     public func stop() {
+        wakeSignals.stop()
         let nc = NSWorkspace.shared.notificationCenter
         for t in tokens { nc.removeObserver(t) }
         tokens = []

@@ -52,6 +52,10 @@ public actor LayoutEngine {
         public var orderCapWindow: Duration = .seconds(60)
         /// A pass that ended `.paused` because the user is interacting is retried after this long.
         public var interactionRetry: Duration = .seconds(2)
+        /// 9o9.8: the paused retry doubles per pause episode (2, 4, 8 ... s) up to this; also the fixed retry while locked / asleep.
+        public var interactionRetryMax: Duration = .seconds(60)
+        /// 9o9.8: a "a menu is open" reason that persists longer than this is ignored until it clears and reappears.
+        public var menuOpenMaxWait: Duration = .seconds(120)
         /// An Arrange drag flag older than this is treated as lost (its "ended" event never came).
         public var arrangeDragMaxAge: Duration = .seconds(30)
         /// Wall clock for the attempt window and the per-minute cap (tests override it).
@@ -147,6 +151,12 @@ public actor LayoutEngine {
     private var capLoggedUntil: Date?
     private var lastPauseLogged: String?
     private var pausePublished = false
+    /// 9o9.8: the retry delay of the current pause episode (nil = no episode), and the last one scheduled (diagnostics/tests).
+    private var pauseRetry: Duration?
+    private(set) var lastPauseRetryDelay: Duration?
+    private var menuOpenSince: Date?
+    private var menuLastSeen: Date?
+    private var menuIgnored = false
     private var capPublished: Date?
     private nonisolated let userPausedBox = ConflictBox()
     private nonisolated let arrangeDragBox = ArrangeDragBox()
@@ -659,7 +669,34 @@ public actor LayoutEngine {
     /// Nil when the user is not interacting. Otherwise waits up to `busyWait`; returns (reason, waited) where `reason` is nil if it cleared.
     private func interactionBlock() -> String? {
         if arrangeDragBox.active(now: Date(), maxAge: windowSeconds(config.arrangeDragMaxAge)) { return "an Arrange drag is in flight" }
-        return interaction?.blockingReason()
+        guard let raw = interaction?.blockingReason() else { menuOpenSince = nil; menuIgnored = false; return nil }
+        guard raw == LiveInteractionSource.menuOpenReason else { menuOpenSince = nil; menuIgnored = false; return raw }
+        // 9o9.8: a pop-up window that stays "open" for menuOpenMaxWait is not a menu the user is using; ignore it until it clears.
+        let t = config.now()
+        if let last = menuLastSeen, t.timeIntervalSince(last) > 2 * windowSeconds(config.interactionRetryMax) {
+            menuOpenSince = nil; menuIgnored = false   // it went away unobserved and came back
+        }
+        menuLastSeen = t
+        if menuOpenSince == nil { menuOpenSince = t }
+        if !menuIgnored, t.timeIntervalSince(menuOpenSince!) > windowSeconds(config.menuOpenMaxWait) {
+            menuIgnored = true
+            log("engine: a pop-up window has been open for 2 min; ignoring it for ordering")
+        }
+        return menuIgnored ? nil : raw
+    }
+
+    /// While locked / asleep nothing is observed: the pass ends before observing and waits for a wake signal or the long retry.
+    private func dormantReason() -> String? {
+        guard let r = interactionBlock() else { return nil }
+        return (r == LiveInteractionSource.screenLockedReason || r == LiveInteractionSource.displayAsleepReason) ? r : nil
+    }
+
+    /// 9o9.8: unlock / display wake / session active. Ends the pause backoff and runs a pass now.
+    public func interactionResumed() {
+        pauseRetry = nil
+        delayed[Self.interactionPauseReason]?.cancel()
+        delayed[Self.interactionPauseReason] = nil
+        requestReconcile(reason: "wake signal")
     }
 
     private enum Quiet { case clear, waitedThenClear, blocked(String) }
@@ -681,6 +718,7 @@ public actor LayoutEngine {
 
     private func clearPauseNotice() async {
         lastPauseLogged = nil
+        pauseRetry = nil
         if pausePublished { pausePublished = false; await publish { $0.pauseReason = nil } }
     }
 
@@ -690,7 +728,17 @@ public actor LayoutEngine {
         pending = false
         pausePublished = true
         await publish { $0.inFlight = nil; $0.pauseReason = reason }
-        scheduleReconcile(after: config.interactionRetry, reason: Self.interactionPauseReason)
+        let delay: Duration
+        if reason == LiveInteractionSource.screenLockedReason || reason == LiveInteractionSource.displayAsleepReason {
+            delay = max(config.interactionRetry, config.interactionRetryMax)
+        } else if let prev = pauseRetry {
+            delay = max(prev, min(prev * 2, config.interactionRetryMax))
+        } else {
+            delay = config.interactionRetry
+        }
+        pauseRetry = delay
+        lastPauseRetryDelay = delay
+        scheduleReconcile(after: delay, reason: Self.interactionPauseReason)
         return await finish(r, converged: false)
     }
     static let interactionPauseReason = "interaction pause"
@@ -1382,6 +1430,10 @@ public actor LayoutEngine {
                 log("pass delayed: \(requestedDuringPass ? "a pass was already running when the request arrived" : "scheduling (min interval or busy wait)") \(ms) ms")
             }
         }
+
+        // (a0) 9o9.8: locked / asleep -> do not observe at all (wake signal or the long retry resumes); otherwise the pause episode is over.
+        if let why = dormantReason() { return await endPausedForInteraction(why, PassReport(outcome: .paused)) }
+        if interactionBlock() == nil { await clearPauseNotice() }
 
         // (a) observe. Observation moves nothing, so it proceeds even while the user is busy; only actuation waits.
         var obs: ObservedOrder

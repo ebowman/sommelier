@@ -281,4 +281,69 @@ private func thrashA(_ r: R, passes: Int = 3) async {
         #expect(!r.state.userPaused)
         #expect(await waitUntil { await r.actuator.hidden.contains(k("B")) })
     }
+
+    // MARK: 9o9.8 paused-retry backoff, wake signal, menu staleness
+
+    @Test func pausedRetryDelaysDoubleAndCap() async {
+        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k))) { $0.interactionRetry = .seconds(2); $0.interactionRetryMax = .seconds(60) }
+        r.interaction.reason = "the mouse button is down"
+        var seen: [Duration] = []
+        for _ in 0..<8 {
+            _ = await r.engine.reconcileOnce()
+            if let d = await r.engine.lastPauseRetryDelay { seen.append(d) }
+        }
+        #expect(seen == [2, 4, 8, 16, 32, 60, 60, 60].map { Duration.seconds($0) })
+    }
+
+    @Test func anUnpausedPassResetsTheBackoff() async {
+        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k))) { $0.interactionRetry = .seconds(2) }
+        r.interaction.reason = "a modifier key is held"
+        for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.engine.lastPauseRetryDelay == .seconds(8))
+        r.interaction.reason = nil
+        _ = await r.engine.reconcileOnce()   // converges
+        await r.actuator.displace(k("A"), toIndex: 0)   // new work, so the next paused pass reaches the gate again
+        r.interaction.reason = "a modifier key is held"
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.engine.lastPauseRetryDelay == .seconds(2))
+    }
+
+    @Test func lockedWaitsTheLongRetryAndWakeRunsAPassAtOnce() async {
+        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k))) { $0.interactionRetry = .seconds(2) }
+        r.interaction.reason = "the screen is locked"
+        let a = await r.engine.reconcileOnce()
+        #expect(a.outcome == .paused && a.actionCount == 0)
+        #expect(await r.engine.lastPauseRetryDelay == .seconds(60))
+        #expect(await r.actuator.calls.isEmpty)
+        r.interaction.reason = nil
+        await r.engine.interactionResumed()
+        #expect(await waitUntil { await r.actuator.calls.count > 0 })
+    }
+
+    @Test func aMenuOpenPastTheBoundIsIgnoredUntilItClearsAndReappears() async {
+        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k))) { $0.menuOpenMaxWait = .seconds(120) }
+        r.interaction.reason = "a menu is open"
+        #expect(await r.engine.reconcileOnce().outcome == .paused)
+        r.clock.advance(100)
+        #expect(await r.engine.reconcileOnce().outcome == .paused)
+        #expect(!r.sink.lines.contains { $0.contains("pop-up window has been open") })
+        r.clock.advance(30)   // 130 s since first seen
+        #expect(await r.engine.reconcileOnce().outcome != .paused)
+        #expect(r.sink.lines.filter { $0 == "engine: a pop-up window has been open for 2 min; ignoring it for ordering" }.count == 1)
+        _ = await r.engine.reconcileOnce()
+        #expect(r.sink.lines.filter { $0.contains("pop-up window has been open") }.count == 1)   // logged once
+        r.interaction.reason = nil
+        _ = await r.engine.reconcileOnce()
+        await r.actuator.displace(k("A"), toIndex: 0)
+        r.interaction.reason = "a menu is open"   // reappears: blocking again
+        #expect(await r.engine.reconcileOnce().outcome == .paused)
+    }
+
+    @Test func otherReasonsAreNeverIgnoredByTheMenuBound() async {
+        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k))) { $0.menuOpenMaxWait = .seconds(1) }
+        r.interaction.reason = "the mouse button is down"
+        _ = await r.engine.reconcileOnce()
+        r.clock.advance(500)
+        #expect(await r.engine.reconcileOnce().outcome == .paused)
+    }
 }

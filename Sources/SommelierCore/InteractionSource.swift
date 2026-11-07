@@ -15,13 +15,18 @@ public struct LiveInteractionSource: InteractionSource {
     public init() {}
 
     public func blockingReason() -> String? {
-        if Self.screenLocked() { return "the screen is locked" }
-        if CGDisplayIsAsleep(CGMainDisplayID()) != 0 { return "the display is asleep" }
+        if Self.screenLocked() { return Self.screenLockedReason }
+        if CGDisplayIsAsleep(CGMainDisplayID()) != 0 { return Self.displayAsleepReason }
         if Self.mouseDown() { return "the mouse button is down" }
         if Self.modifierHeld() { return "a modifier key is held" }
-        if Self.menuOpen() { return "a menu is open" }
+        if Self.menuOpen() { return Self.menuOpenReason }
         return nil
     }
+
+    /// The reason strings the engine keys on (backoff/staleness), shared so a rename cannot desynchronise them.
+    public static let menuOpenReason = "a menu is open"
+    public static let screenLockedReason = "the screen is locked"
+    public static let displayAsleepReason = "the display is asleep"
 
     static func mouseDown() -> Bool {
         [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.combinedSessionState, button: $0) }
@@ -37,16 +42,49 @@ public struct LiveInteractionSource: InteractionSource {
         return (d["CGSSessionScreenIsLocked"] as? Bool) == true || (d["CGSSessionScreenIsLocked"] as? Int) == 1
     }
 
-    /// A pop-up menu (any app's, including a status item's) is an on-screen window at the pop-up-menu level.
+    /// A pop-up menu (any other app's, including a status item's) is an on-screen window at the pop-up-menu level that is
+    /// menu-sized (height >= 20, width >= 40), visible (alpha > 0) and not one of Sommelier's own windows.
     static func menuOpen() -> Bool {
         let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let me = Int(ProcessInfo.processInfo.processIdentifier)
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
         return list.contains { w in
             guard (w[kCGWindowLayer as String] as? Int) == level else { return false }
+            if (w[kCGWindowOwnerPID as String] as? Int) == me { return false }
             if let a = w[kCGWindowAlpha as String] as? Double, a <= 0 { return false }
-            if let b = w[kCGWindowBounds as String] as? [String: Any], let h = b["Height"] as? Double, h <= 1 { return false }
-            return true
+            guard let b = w[kCGWindowBounds as String] as? [String: Any],
+                  let h = b["Height"] as? Double, let wd = b["Width"] as? Double else { return false }
+            return h >= 20 && wd >= 40
         }
+    }
+}
+
+/// 9o9.8: "the user came back" signals (display wake, session active, screen unlocked), behind a protocol so tests can fire them.
+public protocol WakeSignalSource: AnyObject {
+    func start(_ handler: @escaping @Sendable () -> Void)
+    func stop()
+}
+
+public final class LiveWakeSignals: WakeSignalSource {
+    private var workspaceTokens: [any NSObjectProtocol] = []
+    private var distributedToken: (any NSObjectProtocol)?
+    public init() {}
+
+    public func start(_ handler: @escaping @Sendable () -> Void) {
+        guard workspaceTokens.isEmpty else { return }
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            workspaceTokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { _ in handler() })
+        }
+        distributedToken = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { _ in handler() }
+    }
+
+    public func stop() {
+        for t in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(t) }
+        workspaceTokens = []
+        if let d = distributedToken { DistributedNotificationCenter.default().removeObserver(d) }
+        distributedToken = nil
     }
 }
 
