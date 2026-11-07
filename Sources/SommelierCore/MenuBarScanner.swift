@@ -763,12 +763,13 @@ public struct MenuBarScanner {
                 if let last = runs.last?.last, hosted[hi].frame.minX - hosted[last].frame.maxX <= hosted[last].frame.width { runs[runs.count - 1].append(hi) }
                 else { runs.append([hi]) }
             }
-            let freeCands = candidates.indices.filter {
-                let c = candidates[$0]
-                return (matchedBy[$0] == nil || matchedBy[$0]?.pass == .frameAmbiguous) && !assumedIdx.contains($0) && !flagFalseIdx.contains($0)
-                    && c.info.frame.width > 1 && onBar(c.info.frame)
-            }
             for run in runs where run.count >= 2 {
+                // 9o9.13: rebuilt per run, so a candidate an earlier run paired is not picked again and moved off its element.
+                let freeCands = candidates.indices.filter {
+                    let c = candidates[$0]
+                    return !eliminated.contains($0) && (matchedBy[$0] == nil || matchedBy[$0]?.pass == .frameAmbiguous)
+                        && !assumedIdx.contains($0) && !flagFalseIdx.contains($0) && c.info.frame.width > 1 && onBar(c.info.frame)
+                }
                 let maxW = run.map { hosted[$0].frame.width }.max() ?? 0
                 let lo = hosted[run[0]].frame.minX - maxW, hi2 = hosted[run[run.count - 1]].frame.maxX + maxW
                 let cs = freeCands.filter { candidates[$0].info.frame.minX >= lo && candidates[$0].info.frame.minX <= hi2 }
@@ -779,6 +780,15 @@ public struct MenuBarScanner {
                     return abs(c.width - h.width) <= 2 && abs(c.minX - h.minX) <= h.width
                 }
                 guard ok else { continue }
+                // 9o9.13: an element whose description/title matches a DIFFERENT candidate is that candidate's (at best ambiguous)
+                // description claim; elimination must not take it.
+                let namesTaken = zip(cs, run).contains { ci, hi in
+                    let names = [hosted[hi].axDescription, hosted[hi].title].filter { !$0.isEmpty }
+                    return candidates.indices.contains { cj in
+                        cj != ci && names.contains { candidates[cj].info.axDescription == $0 || candidates[cj].info.title == $0 }
+                    }
+                }
+                guard !namesTaken else { continue }
                 // Fallback only: a run whose loose joins already stand as corroborated (e.g. frameUnique) is left alone.
                 if cs.allSatisfy({ matchedBy[$0] != nil && joinEvidence($0).corroborated }) { continue }
                 for (ci, hi) in zip(cs, run) {

@@ -342,3 +342,37 @@ private func vpnFixture(corsairW: CGFloat = 24, extraCandidate: Bool = false, ho
     #expect(items.first { $0.ownerBundleID == "a.a" }?.joinEvidence == .frameAmbiguous)
     #expect(items.first { $0.ownerBundleID == "b.b" }?.joinEvidence == .frameAmbiguous)
 }
+
+@Test func eliminationDoesNotRepairACandidateAnEarlierRunPaired() {
+    // 9o9.13: run 1 (H1 1100, H2 1148) pairs X 1076 / Y 1172. Run 2 (G1 1198 w26, G2 1224 w26) could also reach Y (within ~2 pt
+    // wider elements); with the free list rebuilt per run only Z is left, the counts differ, and Y stays on H2.
+    let x = RunningAppInfo(pid: 21, bundleID: "x.x", name: "X"), y = RunningAppInfo(pid: 22, bundleID: "y.y", name: "Y"),
+        z = RunningAppInfo(pid: 23, bundleID: "z.z", name: "Z")
+    var s = FixtureSource(apps: [agent, x, y, z])
+    s.extras[21] = [AXElementInfo(frame: bar(1076))]
+    s.extras[22] = [AXElementInfo(frame: bar(1172))]
+    s.extras[23] = [AXElementInfo(frame: bar(1250))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+        AXElementInfo(frame: bar(1100)), AXElementInfo(frame: bar(1148)),
+        AXElementInfo(frame: bar(1198, w: 26)), AXElementInfo(frame: bar(1224, w: 26))])
+    let items = MenuBarScanner(source: s).scan().items.filter { $0.source == .appExtras }
+    let yItem = items.first { $0.ownerBundleID == "y.y" }
+    #expect(yItem?.joinEvidence == .elimination)
+    #expect(yItem?.frame.minX == 1148)
+    #expect(items.first { $0.ownerBundleID == "z.z" }?.joinEvidence != .elimination)
+}
+
+@Test func eliminationRefusesAnElementWhoseDescriptionMatchesAnotherCandidate() {
+    // 9o9.13: A "Shared" (far away) matches both "Shared" elements only ambiguously; B and C (no description) must not take
+    // those elements by elimination.
+    let a = RunningAppInfo(pid: 21, bundleID: "a.a", name: "A"), b = RunningAppInfo(pid: 22, bundleID: "b.b", name: "B"),
+        c = RunningAppInfo(pid: 23, bundleID: "c.c", name: "C")
+    var s = FixtureSource(apps: [agent, a, b, c])
+    s.extras[21] = [AXElementInfo(axDescription: "Shared", frame: bar(1300))]
+    s.extras[22] = [AXElementInfo(frame: bar(1100))]
+    s.extras[23] = [AXElementInfo(frame: bar(1124))]
+    s.tree = AgentHostedTree(stripFrame: s.tree.stripFrame, elements: [
+        AXElementInfo(axDescription: "Shared", frame: bar(1100)), AXElementInfo(axDescription: "Shared", frame: bar(1124))])
+    let items = MenuBarScanner(source: s).scan().items.filter { $0.source == .appExtras }
+    #expect(items.filter { $0.joinEvidence == .elimination }.isEmpty)
+}
