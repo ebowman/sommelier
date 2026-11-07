@@ -381,7 +381,11 @@ public struct Reconciler: Sendable {
                 let pile = ovfKept.filter { observed.systemOverflow.contains($0) }
                 // The actuator performs a crossing with the strip OPEN after a fresh re-scan (real frames, nothing re-folds until it closes),
                 // so churn-zone drawn keys may be the pull-out target or the push-in subject.
-                let cannot = observed.uncorroborated.union(observed.staleOnBar).union(held)
+                // 9o9.22: a pile key is excluded only when HELD. Stacked pile frames are frameAmbiguous by construction, so requiring
+                // them to be corroborated on the collapsed read would refuse nearly every crossing; the strip session re-scans with the
+                // strip open (every frame real) and LiveActuator.prepare() applies the normal trust rules there. Drawn keys keep full trust.
+                let pileSet = Set(pile)
+                let cannot = observed.uncorroborated.union(observed.staleOnBar).union(held).subtracting(pileSet.subtracting(held))
                 let drawnAll = onBar.filter { !hideSet.contains($0) && !observed.systemOverflow.contains($0) && $0 != chevron && wantOnBar.contains($0) }
                 let foldBlockStart = blockStart < kept.count ? (drawnAll.firstIndex(of: kept[blockStart]) ?? drawnAll.count) : drawnAll.count
                 let fold = Self.crossFoldMove(record: fullRecord, drawn: drawnAll, pile: pile, excluded: cannot, canMove: { capabilities($0).canMove },
@@ -409,7 +413,7 @@ public struct Reconciler: Sendable {
                         guard let ik = rec[k], drawnRec.contains(where: { $0 < ik }) else { continue }
                         // The gdu.69 wording promises the strip will be opened for this key; here nothing will, so the truer reason replaces it.
                         skipped.removeAll { $0.key == k }
-                        skipped.append(SkippedAction(k, cannot.contains(k) ? Reconciler.noCrossingOwnPositionSkipReason : Reconciler.noCrossingSkipReason))
+                        skipped.append(SkippedAction(k, held.contains(k) ? Reconciler.noCrossingOwnPositionSkipReason : Reconciler.noCrossingSkipReason))
                     }
                 }
             }
@@ -492,7 +496,7 @@ public struct Reconciler: Sendable {
 
     /// 9o9.11: the one move across the fold the record asks for, or nil. With a collapsed strip the fold must be a PREFIX of the record:
     /// every key behind the chevron sits left of every drawn key. A violation is a pair (drawn Y, pile X) with the record placing Y
-    /// left of X. It is repaired by the smaller side: a push-in `Y .before(X)` (Y trusted and movable, X the record-first pile key right
+    /// left of X. It is repaired by a pull-out first (9o9.22), else a push-in `Y .before(X)` (Y trusted and movable, X the record-first pile key right
     /// of Y) or a pull-out `X .after(A)` (X trusted and movable, A the nearest trusted drawn key left of X in the record, not in the
     /// trailing block). `excluded`: untrusted (uncorroborated / stale / held) and churned keys, never subject or target. The order among
     /// pile keys is never touched.
@@ -529,7 +533,7 @@ public struct Reconciler: Sendable {
             guard let x = targets.filter({ rec[$0]! > iy }).min(by: { rec[$0]! < rec[$1]! }) else { return nil }
             return .move(y, .before(x))
         }
-        if !ys.isEmpty, ys.count < xs.count { return pushIn() ?? pullOut() }
+        // 9o9.22: the pull-out moves the key the user dragged; push-in is the fallback only.
         return pullOut() ?? pushIn()
     }
 

@@ -163,7 +163,7 @@ struct StackedPileStatusTests {
         #expect(state.perItem[k("P3")] != .notFitting)
     }
 
-    @Test func aPileKeyWhoseOwnPositionIsUnreadStaysPendingNeverUnsupported() async {
+    @Test func aPileKeyWhoseOwnPositionIsUnreadIsStillPulledOutAndStaysPendingNeverUnsupported() async {
         let act = FakeActuator(order: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2")], hidden: [], capabilities: Caps(),
                                makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let state = EngineState()
@@ -175,7 +175,12 @@ struct StackedPileStatusTests {
         let resolved = (try? await PileObserver().observe()) ?? []
         let plan = Reconciler().plan(observed: ObservedOrder(resolved: resolved), layout: Layout(visible: [k("P1"), k("P2"), chevKey, k("D1"), k("P3"), k("D2")]),
                                      capabilities: { _ in Capability(canMove: true, canHide: true) })
-        #expect(plan.skipped.first { $0.key == k("P3") }?.reason == Reconciler.noCrossingOwnPositionSkipReason, "skipped=\(plan.skipped)")
+        // 9o9.22: an unread pile position does not block the crossing (the strip session re-scans with real frames); only a HELD key does.
+        #expect(plan.actions == [.move(k("P3"), .after(k("D1")))], "actions=\(plan.actions) skipped=\(plan.skipped)")
+        let heldPlan = Reconciler().plan(observed: ObservedOrder(resolved: resolved), layout: Layout(visible: [k("P1"), k("P2"), chevKey, k("D1"), k("P3"), k("D2")]),
+                                         capabilities: { _ in Capability(canMove: true, canHide: true) }, held: [k("P3")])
+        #expect(heldPlan.actions.isEmpty)
+        #expect(heldPlan.skipped.first { $0.key == k("P3") }?.reason == Reconciler.noCrossingOwnPositionSkipReason, "skipped=\(heldPlan.skipped)")
         #expect(state.perItem[k("P3")] == .pending, "got \(String(describing: state.perItem[k("P3")]))")
         if case .unsupported = state.perItem[k("P3")] { Issue.record("P3 unsupported") }
     }

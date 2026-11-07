@@ -89,12 +89,42 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("x1")]))
 }
 
-@Test func aPushInPlansTheDrawnKeyBeforeTheOverflowedOne() {
-    // The record puts a before both pile keys: one push-in (a .before(x1)) beats two pull-outs.
+@Test func aPullOutIsPreferredToAPushInEvenWhenThePileIsLarger() {
+    // 9o9.22: the record puts a before both pile keys. The pull-out moves the key the user dragged (x1 after a), never the push-in.
     let o = obs(["x1", "x2", "ch", "a", "b"], ovf: ["x1", "x2"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "x2", "b"]), capabilities: anchorCh)
-    #expect(p.phase == .order && p.actions == [.move(k("a"), .before(k("x1")))])
+    #expect(p.phase == .order && p.actions == [.move(k("x1"), .after(k("a")))])
     #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("x1"), k("x2")]))
+}
+
+@Test func aPushInIsTheFallbackWhenThePileKeyCannotBePulledOut() {
+    let rec = ["a", "x1", "b"].map(k)
+    let m = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { $0 != k("x1") }, blockStart: 2)
+    #expect(m == .move(k("a"), .before(k("x1"))))
+    let both = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { _ in true }, blockStart: 2)
+    #expect(both == .move(k("x1"), .after(k("a"))))
+}
+
+@Test func anAmbiguousPileKeyIsPulledOutAfterTheLiveDrawnKey() {
+    // 9o9.22 live shape: record [KYA(pile), Jump(drawn), TimeMachine(pile, uncorroborated), ..., GateOpener]: exactly TimeMachine after Jump.
+    let o = obs(["kya", "tm", "focus", "ch", "jump", "gate"], ovf: ["kya", "tm", "focus"], uncorroborated: ["tm", "focus"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["kya", "jump", "tm", "focus", "gate"]), capabilities: anchorCh)
+    #expect(p.phase == .order && p.actions == [.move(k("tm"), .after(k("jump")))], "actions=\(p.actions) skipped=\(p.skipped)")
+    #expect(!p.skipped.contains { $0.key == k("tm") })
+}
+
+@Test func anAmbiguousPileKeyThatIsTheRecordSlotAfterADrawnKeyComesOut() {
+    // The first live shape: Jump ambiguous in the pile, the record puts it after KYA (drawn).
+    let o = obs(["jump", "ch", "kya", "b"], ovf: ["jump"], uncorroborated: ["jump"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["kya", "jump", "b"]), capabilities: anchorCh)
+    #expect(p.actions == [.move(k("jump"), .after(k("kya")))])
+}
+
+@Test func aHeldPileKeyIsNeverCrossedAndSaysItsOwnPositionIsUnread() {
+    let o = obs(["x1", "ch", "a", "b"], ovf: ["x1"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh, held: [k("x1")])
+    #expect(p.actions.isEmpty)
+    #expect(p.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingOwnPositionSkipReason])
 }
 
 @Test func theDrawnOrderIsSettledBeforeAnyMoveAcrossTheFold() {
@@ -119,7 +149,7 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
 }
 
-@Test func anUntrustedOrStaleDrawnKeyIsNeverTheSubjectOrTheTargetOfACrossFoldMove() {
+@Test func anUntrustedOrStaleDrawnKeyIsNeverTheSubjectOrTheTargetOfACrossFoldMoveButAPileKeyMayBe() {
     // a is the only drawn key left of x1 in the record. Stale (a carried frame): no pull-out target, no push-in subject.
     let stale = obs(["x1", "ch", "a", "b"], ovf: ["x1"], stale: ["a"])
     let p = Reconciler().plan(observed: stale, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
@@ -129,11 +159,10 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     let up = Reconciler().plan(observed: unc, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(up.actions.isEmpty)
     #expect(up.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingSkipReason])
-    // An untrusted pile key is never pulled out either.
+    // 9o9.22: an uncorroborated PILE key is a legal pull-out subject (its stacked frame is ambiguous by construction); only a held one is not.
     let ux = obs(["x1", "ch", "a", "b"], ovf: ["x1"], uncorroborated: ["x1"])
     let uxp = Reconciler().plan(observed: ux, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
-    #expect(uxp.actions.isEmpty)
-    #expect(uxp.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingOwnPositionSkipReason])
+    #expect(uxp.actions == [.move(k("x1"), .after(k("a")))])
     // Only the order among pile keys differs (fold-consistent): the gdu.69 wording stays, never the no-crossing one.
     let among = obs(["x1", "x2", "ch", "a"], ovf: ["x1", "x2"])
     let ap = Reconciler().plan(observed: among, layout: lay(v: ["x2", "x1", "a"]), capabilities: anchorCh)
