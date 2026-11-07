@@ -22,6 +22,10 @@ struct OnboardingView: View {
 
     private var form: some View {
         Form {
+            Section {
+                Text("Sommelier decides what shows in your menu bar and in what order. Arrange items in the window; the bar follows. System items at the right end stay where macOS puts them.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             row(title: "Accessibility (required)", state: model.accessibility, optional: false,
                 text: "Required to read and arrange menu bar items.",
                 request: { model.requestAccessibility() }, pane: .accessibility)

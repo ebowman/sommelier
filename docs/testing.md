@@ -188,10 +188,11 @@ No action names the chevron or an overflowed item. `apply` not run; the real lay
 ### Overflowed bar, idle (gdu.69)
 Live 2026-11-05 (Bartender quit, the user's naturally full bar, `mbprobe layout init-from-current` scratch layout via `SOMMELIER_LAYOUT_FILE`, `SOMMELIER_OPEN_ARRANGE=1`, Sommelier run directly, 5 min 22 s idle, no dummies). `mbprobe overflow` (new, read-only: chevron frame, expanded, hosted frames) shows the chevron; root cause found with it: the scan had NO chevron item because the hosted-to-app frame join paired the chevron element with Script Menu, so nothing was flagged. After the fix `mbprobe list` flags exactly the items left of or on the chevron plus the stacked pile within its reach (chevron x 786: iStat Network/Weather, SystemUIServer, KeepingYouAwake, TextInputMenuAgent, 1Password at 781, BoltAI, TextSniper, Tailscale, RescueTime, DEVONsphere, Grammarly = 12; first drawn item iStat Disks at 813 not flagged; before the fix 0). Log: 0 `failed N passes` / `marked failed` lines, 0 drag lines, every pass `plan: phase=converged actions=0`. Arrange window (`screencapture -l <window id>`): the 12 show the neutral orange `«` badge, no red anywhere, status line "Converged". End state: Sommelier stopped, Bartender 7 relaunched (pid 3338), `group.com.apple.controlcenter.plist` and `com.apple.controlcenter.plist` byte-equal to the backups, `com.apple.MenuBarAgent.plist` differs only in `MenuBarAnalytics.lastReportedTrailingItemCount` (22 -> 24, macOS's own counter), real `layout.json`/`slot-hints.json` sha unchanged. `swift test`: 614 tests.
 
-## Order obligations (gdu.89)
-Hermetic: `swift test --filter OrderObligation` (planner properties, Layout.placed model, engine with a fake actuator). Check by hand (read-only, no
-launch): a `layout.json` without a `placed` field must produce no `order: moving` log line and zero drags on any bar; the engine logs
-"no order obligations exist" once at load. Only after a drop in Arrange does `layout.json` gain `"placed"`, and only those keys are ever dragged.
+## Order is the record (9o9.2, 9o9.3)
+Hermetic: `swift test --filter RecordOrder` and `swift test --filter LayoutRecordModel` (planner properties, full-order target, upgrade adoption, engine with a
+fake actuator). Check by hand (read-only, no launch): a `layout.json` that carries `orderMode` or `placed` decodes with "ignored legacy field" warnings and
+nothing else; the file has no such field after the engine's next save, and `pendingAdoption` is absent once the bar order has been adopted. The full live
+checklist is "Live checklist: the system of record (9o9.6)" below.
 
 ## Hand drags are adopted (9o9.7; live checklist, needs the running app and a human hand)
 1. With Sommelier running and the bar at rest, Command-drag ONE non-system item (not an Apple item) to another slot by hand inside the
@@ -210,6 +211,11 @@ launch): a `layout.json` without a `placed` field must produce no `order: moving
 8. Drag an item to just left of an iStat item; expect adoption (`hand drag: adopted; <iStat item> next to the drop is unread and will be placed when read`), then `(read late)` for the iStat item once it answers, and no reversal (no `order: moving` for either).
 9. Hermetic: `swift test --filter HandDrag` covers that a pending adoption never enforces the old record (no actuator call even after
    the deadline without a clean read), that membership writes wait for the adoption, and the deadline adoption of the last settled read.
+10. (9o9.18) Relaunch inside the adoption wait. Command-drag one item by hand, then quit Sommelier within 10 s of letting go and relaunch it. Expect
+    `hand drag: resumed adoption after relaunch (age Ns)` at start, then the adoption line (or the `(read late)` line for an unread key), no `order: moving`
+    for that item, and the bar unchanged. `layout.json` carries `pendingHandDrag` (and `unreadAfterHandDrag` while keys are unread) only until the adoption is
+    saved. Repeat with a relaunch after more than 60 s: the older marker is still adopted from at the first adoptable read, never enforced first.
+11. (9o9.18) With iStat stalling (carried frames), hand-drag a non-iStat item next to an iStat item and check the log for `hand drag: adopted; <key> next to the drop is unread and will be placed when read`; the unread key must not be reversed when it answers.
 
 ## Arrange window
 
@@ -804,9 +810,12 @@ swift build
   - Caveats: menu extras that draw a gap of 4+ px inside themselves split into two blobs; adjacent items closer than 4 px merge; the clock and animated items cause `moving`. Treat the numbers as a rate, not exact truth.
 - **Decision rule (follow-up, not this bead).** If disagreement is frequent or long (for example more than a few percent of samples, or any key with runs of many seconds, or repeated unnoticed moves), file pixel tracking as a safety net for the opt-in order mode (epic sommelier-8z5). If rare and short, close the question.
 
-## Live checklist: order mode switch (sommelier-8z5.7)
+## Live checklist: the system of record (9o9.6)
 
-For the orchestrator, never an implementer. Bartender quit, the user's full bar, a scratch layout (`SOMMELIER_LAYOUT_FILE=<scratch>/layout.json`, so the real layout is never touched), `make dummy ARGS="--count 2"`, Sommelier run directly (`make app-run`).
+For the orchestrator, never an implementer. Bartender quit (`osascript -e 'tell application "Bartender 7" to quit'`), the user's full bar, a scratch layout
+(`SOMMELIER_LAYOUT_FILE=<scratch>/layout.json`, so the real layout is never touched), `make dummy ARGS="--count 2"`, Sommelier run directly (`make app-run`),
+`SOMMELIER_OPEN_ARRANGE=1`. Count log lines by comparing counts before and after each step (the log is cumulative): `grep -c 'order: moving'
+~/Library/Logs/Sommelier/sommelier.log`.
 
 Before anything, back up all three plists and note their checksums (restore and compare at the end):
 
@@ -814,16 +823,43 @@ Before anything, back up all three plists and note their checksums (restore and 
     cp ~/Library/Preferences/com.apple.controlcenter.plist <scratch>/controlcenter.plist.bak
     cp ~/Library/Group\ Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist <scratch>/group.controlcenter.plist.bak
 
-Use a scratch layout that already has `placed` entries but no `orderMode` (an older layout), so migration is exercised. Steps:
+Steps:
 
-1. [ ] **macOSOwns, 10 passes.** Start with the toggle off. The log shows `order mode: macOS owns the order (N remembered placements, not enforced)`. Run 10 passes (menu bar changes, Retry, launch/quit the dummy): `grep -c 'plan: phase=order' ~/Library/Logs/Sommelier/sommelier.log` and `grep -c 'order: moving'` over the run both stay 0 (compare counts before and after, the log is cumulative).
-2. [ ] **Hidden -> Visible show of a dummy.** Hide a dummy, drop it into Visible in Arrange: it spins only until it appears on the bar, then is verified wherever macOS put it (no order ghost, no timeout on order). Hide it again from Arrange and confirm it leaves the bar.
-3. [ ] **Reorder refused.** Drop a Visible capsule at another Visible position: the message line reads exactly "Order follows macOS here. Command-drag the item in the menu bar to move it, or turn on \"Let Sommelier keep an order for items I place\"." The layout file is unchanged and nothing moves. Placed rows show the crossed-out pin ("Placement remembered, not enforced (order follows macOS)"); there is no Move left/right in the context menu.
-4. [ ] **Switch to placedOnly.** Turn on "Let Sommelier keep an order for items I place". The log shows `order mode: placed items only (N placed)`. The remembered placements are now obligations: `plan: phase=order` may appear, and only for placed keys. A drop of a dummy at a Visible position is moved with the real mouse (floating notice shown), verified, and Move left/right appear. Hide/show of the dummy still works.
-5. [ ] **Switch back.** Turn the toggle off. The order notices clear, no further `plan: phase=order` or `order: moving` lines appear, placements are remembered (crossed-out pin), and hide/show of the dummy still works.
-6. [ ] Quit, restore the three plists from the backups and diff them against the live files; `trackedApplications` equal to the backup; real `layout.json` absent or untouched.
+1. [ ] **Upgrade from a legacy layout: nothing moves.** Scratch `layout.json` with an `"orderMode"` field (any value) and a `"placed"` list plus a Visible order that
+   differs from the bar. Launch. Log: `layout: legacy order fields found; the bar order will be adopted ...`, optionally `layout: adoption waiting: <reason>`,
+   then `layout: adopted bar order on upgrade (N keys)`. Arrange reads "Reading your menu bar order..." until then. Zero `order: moving` and zero drags before the
+   adoption line; the saved file has no `orderMode`/`placed`/`pendingAdoption`; the Visible strip equals the bar.
+2. [ ] **One adjacent swap.** Drop a dummy on the other side of its neighbour in the Visible strip. Expect exactly one `order: moving <dummy> after|before <neighbour>
+   (record order)`, the row's arrows turn into the check once the bar agrees, and the status line reads "Moving <name>..." then "Menu bar matches". The floating
+   mouse notice shows while it drags (Settings toggle).
+3. [ ] **One iStat swap.** Swap two adjacent iStat Menus items (or one past a neighbour) in Arrange. The engine may wait for a complete read ("Waiting to read N items"
+   / the gdu.51 gate); expect one verified move per swapped pair, no reversal on later passes, and the iStat rows draggable (no "Positions itself").
+4. [ ] **cannotPlace and Try again.** Use an item the bar will not hold where the record puts it (the orchestrator picks one live: an app that relocates its own item;
+   if none exists, run `swift test --filter SafetyEnvelopeTests` and record this step as NOT RUN LIVE). Drop it elsewhere. Expect three `order: moving` lines for it
+   within 10 min, then `engine: giving up on <key> after 3 attempts: <reason>`, a warning badge with the reason in plain words, the status line "1 item can't be
+   placed - right-click one for why", and no fourth drag. Right-click > "Try again": `engine: retry <key>: attempts cleared`, the row is planned again.
+5. [ ] **Pause / Resume.** Status item menu > "Pause Sommelier": `engine: paused: Sommelier paused by you`, Arrange reads "Paused". Drop an item: the record changes,
+   the row stays at arrows, zero `order: moving`. "Resume Sommelier": `engine: resumed by you` and the move runs at once. Quit and relaunch: not paused (never persisted).
+6. [ ] **The per-minute cap.** Chain seven order changes inside a minute with dummies (`SOMMELIER_ARRANGE_MOVE="a|visible|0;...;"` and
+   `SOMMELIER_ARRANGE_MOVE_INTERVAL=5`). Expect at most 6 `order: moving` lines in any 60 s, then `engine: order moves capped for 60 s`, the status line "Pausing order
+   moves for a minute", a hide/show of a dummy still working meanwhile, and the remaining move running when the window lifts.
+7. [ ] **An item behind « crosses the fold.** On the full bar, drag an item that sits behind the « chevron to the right of a drawn item. Expect exactly one strip session
+   in the log: one `phase strip: open t=...` and one `phase strip: closed t=...`, one `order: moving`, the strip collapsed afterwards (`mbprobe overflow` shows it collapsed), the row's « badge gone or moved to the right place, and no `New item: Show Hidden Menu Bar Items` notice. The order among the items that stay
+   behind « may differ from the strip: it is not tracked while the strip is closed.
+8. [ ] **Hand drags and System Settings hides are adopted.** Do the "Hand drags are adopted" list above (items 1-3 and 10), then hide a dummy in System Settings > Menu Bar:
+   `layout: adopted System Settings: <key> is hidden there; moved to Hidden`, the status line "Moved <name> to Hidden: it is hidden in System Settings", no Control Center write by
+   Sommelier (`membership write:` absent for it) and no "can't be placed" count.
+9. [ ] **The Command modifier is released (9o9.20).** Right after step 7 (a strip session) and after step 2 (a plain drag) read the HID modifier state:
+   `swift -e 'import CoreGraphics; print(String(CGEventSource.flagsState(.hidSystemState).rawValue, radix: 16))'`. The Command bit (0x100000) must be clear, and a plain
+   key press in any text field types a letter instead of firing a shortcut.
+10. [ ] **Idle cost of the Arrange window (gdu.117).** With Arrange open and nothing happening for 30 s: `ps -o cputime= -p $(pgrep -x Sommelier)` before and after changes by
+    well under 1 s (live after the fix: 0.38 s), and the log has no `arrange: renders=` line while idle (it is written at most once a second and only when the counters move).
+11. [ ] Quit, restore the three plists from the backups and diff them against the live files; `trackedApplications` equal to the backup; real `layout.json` absent or untouched;
+    Bartender relaunched.
 
-**Abort rules** (stop at once, restore the plists, report): any `plan: phase=order` or `order: moving` while in macOSOwns; in placedOnly, any drag of a key that is not in `placed`; any move dispatched while the toggle reads off; a layout write that changes `placed` while in macOSOwns.
+**Abort rules** (stop at once, restore the plists, report): any `order: moving` before the adoption line in step 1; more than 6 `order: moving` in any 60 s; a drag of a key the
+log shows as given up on; any drag while "Paused"; more than one strip open per crossing, or a strip left expanded; any `membership write:` or `show` of an item the user hid in System Settings;
+a move of any Control Center module or the clock.
 
 ## Off-bar agent elements shown every pass (gdu.114, 2026-11-06 10:13)
 

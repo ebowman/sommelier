@@ -1,93 +1,46 @@
-# Sommelier architecture: actuation strategy (bead sommelier-gdu.8)
+# Sommelier architecture
 
-Host facts: macOS 27.0.1. All numbers come from the findings docs: positioning = `findings-positioning.md` (gdu.5),
-visibility = `findings-visibility.md` (gdu.6), drag = `findings-drag.md` (gdu.7), order store = `findings-prefstore.md` (gdu.1),
-identity = `findings-identity.md` (gdu.4). Quality bar from the epic: **the UI never lies**; nothing is shown as moved/hidden
-until a settled full scan of the real bar agrees; failures are surfaced.
+Sommelier decides what shows in the menu bar and in what order. The **record** (the Visible, Hidden and Always hidden lists in
+`layout.json`) is the system of record; an observe -> plan -> act -> verify loop makes the real bar follow it; the Arrange window shows
+the record and, next to it, what the real bar actually does. The quality bar from the start: **the UI never lies**; nothing is shown as
+moved or hidden until a settled full scan of the real bar agrees; failures are surfaced.
 
-## (a) Primary mechanisms
+Host facts: macOS 27.0.1. The numbers come from the findings docs: positioning = `findings-positioning.md`, visibility =
+`findings-visibility.md`, drag = `findings-drag.md`, order store = `findings-prefstore.md`, identity = `findings-identity.md`,
+live trigger = `findings-live-trigger.md`, restart collateral = `findings-restart-collateral.md`. Dated measurements are collected in
+the "Live evidence" appendix at the end.
 
-| Action | Primary | Evidence |
-|---|---|---|
-| Reorder (on-bar third-party item) | Synthesized Cmd+drag via CGEvent on `.cghidEventTap`: 10 steps, 15 ms apart, 100 ms hold; drop at hovered item's `midX +/- 6 px` on the far side (`DragTarget.dropX`); wait >= 2 s; confirm with a full scan; retry once with the next drop point. No flash (bar changes once at mouse-up +90 ms); MenuBarAgent persists the new order itself, no restart. | findings-drag Exp A 20/20, B 23/23 (>=10 steps; 5-step drags succeed only 1/7, i.e. fail 6/7), C 10/10 on KeepingYouAwake, D (persist + no flash). 53/53 total. |
-| Hide / show | Control Center `trackedApplications[...].isAllowed` flip (`ControlCenterTrackedAppsStore.setAllowed`) + ONE batched `killall MenuBarAgent`. ~2-3 s, 1-2 s bar flash, other items keep slots, shown items return to their previous slot. Only apps that already have a tracked entry. **Live path (gdu.39, primary when the process has the `com.apple.security.application-groups` = `group.com.apple.controlcenter` entitlement, `AppGroupEntitlement`):** `ControlCenterTrackedAppsStore.setAllowedBatchLive` (CFPreferences set + synchronize, read back through CFPreferences), then `LiveActuator` polls full scans every 0.5 s until the first COMPLETE hosted read decides (an unsatisfied complete read gets one more complete read before giving up; hard ceiling 8 scans / 20 s). No respawn, no flash. Measured 2026-11-04 (MBDummy, Bartender quit, ad-hoc signed): write to verified 0.61-5.15 s over 40 ops (min 609 ms, median ~2.0 s, max 5146 ms; scan-bound, implementer soak 40/40 live, MenuBarAgent pid unchanged; the reviewer's run was 4/6 live under the old 6 s wall bound because of incomplete-read streaks of 2-3 s scans, hence the scan-count bound; fallback should now occur only when no complete read arrives within the ceiling); engine `apply` 5.6-6.5 s wall incl. ~4.5 s observe, actuation 0.63-0.71 s. **No bar flash from hides (gdu.55):** a verification timeout is never a respawn reason. After `setAllowedLive` succeeds the actuator reads `isAllowed` back through CFPreferences (`readAllowedLive`, 3 attempts over 1.5 s; an unreadable store cannot contradict the write). Readback shows the intended values: the batch is APPLIED and the poll only CONFIRMS: confirmed -> `.verified`, mechanism `live`; max scans (8) / timeout (20 s) without a contradiction -> `.verified` with mechanism `liveUnverified` (note `applied per Control Center store; confirmation pending`), the hide's owners recorded assumed-hidden, no respawn, no strike; two complete reads that still show the unit (store applied, agent did not act) or another item leaving the bar -> `.failed(.notVerified)` with mechanism `live`, assumed-hidden cleared (the scanner's `isAllowed` readback clears it too), no respawn, the engine re-plans normally. During a self-positioning streak (previous full read `completeExceptSelfPositioning`, non-self-positioning unit) the confirm polls use the fast hosted read (`scanVisible`, can only confirm) with a full scan every 3rd poll. **Respawn (file write + `killall MenuBarAgent`) only when the live write itself failed:** `liveHideShowAvailable == false`, `setAllowedLive` threw, or the readback never showed the intended value; and only if `LiveActuator.Config.allowAgentRestart` allows it (nil = automatic = `!liveHideShowAvailable`, i.e. on only when the entitlement is missing; `allowAgentRestartProvider` is read per batch and carries the Settings toggle "Allow menu bar restart as a last resort", `@AppStorage("allowAgentRestart")`, default off with the entitlement; `mbprobe hide|show|apply --allow-agent-restart`). Not allowed -> `.failed(.liveWriteFailed(reason))`: the engine logs it, marks the key failed (struck out at once like a respawned batch, not `.unsupported`) and does not restart. `lastBatchUnconfirmed` (`MenuBarActuator`) lets the engine keep `.liveUnverified` keys `.inPlace` and publish them in `EngineState.pendingConfirmation`; the Arrange badge stays a check mark with an orange dot and the tooltip "Applied; confirmation pending" until a later settled complete read confirms (hide: unit off the bar by evidence, not only by assumption; show: on the bar), and the engine does not strike such a key while the read still disagrees. Unit tests: `LiveActuatorTests` (gdu.55 section), `LayoutEngineTests`. The order-store fallback for `move` (`allowFallback`, mbprobe only) and the respawn path itself are unchanged, including the `fullStrike` for genuinely respawned batches. Developer ID/notarized: see findings-live-trigger section 8. The file-read fallback in `setAllowedBatchLive` (when CFPreferences returns nil) and the respawn fallback's file write can push a lagging on-disk blob into cfprefsd; low probability, same as the pre-existing respawn path. **Scanner detection of a live hide has three evidence kinds (of7):** (1) hosted-by-name: an item with an AX identifier (or description) that was seen hosted and is absent from a COMPLETE hosted read is `notHosted` (gdu.38); (2) parked frame (x -1..3, y ~1188), the post-respawn state; (3) write-time hosted-ELEMENT evidence for identifier-less items (Tot, Yoink, Moom; their hosted and app-side elements share no name, only an unreliable frame join): `LiveActuator` takes the attributed hosted tree of the full scan it already made before the write (`MenuBarSnapshot.hostedLayout`; if that read is incomplete: complete scans retried for up to 4 s, then the scanner's last complete tree if at most 10 s old; the trace says which baseline was used), writes, and probes complete hosted reads at 0.3/0.8/1.5/2.5/4/6 s plus the poll's own complete scans. Verified iff the post-write tree equals the pre-write tree minus exactly the unit's joined elements, in order (`HostedEvidence.removedExactly`: same identifiers/descriptions; widths compared only for identifier-less elements, because named readouts change width on their own; modules must still be present), and no other app-side item left the bar. A mere count match is NOT evidence (another element vanishing while one appears has the same count). Only pure-hide batches; a batch that also shows items keeps the complete-read poll alone. Evidence records the owner in `ScanState.assumedHidden` (pid, bundle id, Control Center tracked key, time, hosted count after, item count; persisted in `scan-cache.json`, so `mbprobe list` sees it). `MenuBarScanner` then reports that owner's identifier-less, on-bar-framed items `isOnMenuBar = false`, `hidden = assumedNotHosted`. Cleared by: a live/respawn SHOW by us (actuator and `ItemActivator` clear it at write time), a respawn, the owner quitting, a different bundle id on that pid (reuse guard), the Control Center `isAllowed` readback (CFPreferences, rate-limited to once per 10 s per owner) reading true (someone else showed it), or a 2 h hard safety expiry (logged). There is deliberately NO frame/width/count contradiction rule: a foreign element (our own status item sat on Tot's stale frame with the same width) can overlap a stale frame, and the store is what the agent enforces, so the record stands exactly as long as the store says hidden. If the actuator is asked to hide an identifier-less unit whose store value already reads hidden, it writes nothing, records the owners and returns `.verified` with mechanism `alreadyApplied` (trace "already hidden per Control Center store; recorded assumed-hidden"). Sommelier's own status item button carries `MenuBarScanner.ownStatusItemIdentifier`; the frame join never attributes that hosted element (or an identifier-less one described "Sommelier") to another candidate. Asymmetry: the flag is ONLY set by our own successful write plus element evidence, never inferred from frames or absence alone, so an untouched bar cannot produce a false hidden; a wrongly cleared flag merely restores the old behaviour (reported on-bar, respawn fallback). `ItemActivator` records the flag after its re-hide write when the hosted tree is again exactly the pre-reveal tree, and the activator shares the engine's `LivePlatform` (one scanner, one `ScanState`), so the engine's next pass plans nothing; while a transient reveal hold is active the engine plans no actions and records no new items at all (a revealed element may appear as an unknown heuristic item that must never be dragged). The flag is keyed by pid (the unit is the owner; identifier-less items' own keys are frame-based and move). | findings-visibility A2/A4/A6 (applies only after agent restart; no live reload A1/A3/A5); A7/A8 (hand-made entries are not honored); conclusion. |
+Contents: (a) the model, (b) observation, (c) the reconciler, (d) the actuator, (e) the safety envelope, (f) adoption of outside
+changes, (g) the Arrange window, (h) findings pointers. After them, reference sections for the engine loop, robustness, the app shell,
+system overflow, the overflow panel, click-forwarding, spacing, logging and platform limits.
 
-Legacy per-app `NSStatusItem Preferred Position` / `Visible` writes are NOT mechanisms on this OS (findings-positioning A/B;
-findings-visibility B1-B5).
+## (a) The model
 
-## (b) Fallbacks
+**The record is the order.** `Layout.visible` is the ordered list of everything that should be on the bar, left to right.
+`Layout.hidden` and `Layout.alwaysHidden` are the parked items (Control Center `isAllowed = 0`), ordered for display only. The
+Arrange window edits the record; the engine makes the bar match it; nothing else rewrites it except the adoption rules in (f).
+There are no modes, no per-item "placed" flag and no order checkbox: a layout file from an older version that carries `orderMode` or
+`placed` decodes with "ignored legacy field" warnings (the values are not parsed) and sets `pendingAdoption`, which (f) explains.
 
-* **Reorder fallback: order-store edit + agent restart.** `MenuBarOrderStore` writes
-  `TrailingItemPreferredPositions[status:<ownerKey>::<autosave>]` (bigger = further left; only relative order matters; fresh keys are
-  accepted; never `module:`), then `killall MenuBarAgent` (`MenuBarAgentControl.restart`). Used when (1) a drag failed verification
-  twice (the initial try plus the one retry), (2) the mouse is busy for the whole wait window and the user has asked for the change
-  anyway (UI may offer "apply now with flash"), or (3) a plan contains many moves (rule of thumb: >= 4 moves, or a move of a parked
-  item, which cannot be dragged) so one restart beats N sequential 2-3 s drags. Evidence: findings-positioning C1-C4, D, and
-  restart cost C6 (2.4-2.7 s stable, 4.5-5.8 s in 5 runs; two runs hit the 10 s poll timeout, one completing ~5 s later, i.e. ~15 s) and visibility A2 ("~1-12 s").
-  The restart must wait for the order file to be quiescent (poll mtime; drag Exp D: the agent rewrites it 0.85-4 s after mouse-up) or a
-  pending agent write can clobber ours.
-  **Value rule (gdu.25, `OrderStorePlanner`):** the fallback never permutes values among keys and never bails on duplicates. The subject
-  gets one unique value strictly between its new neighbours (`floor((L+R)/2)`; `R+2` / `L-2` at an end); when no integer fits (adjacent
-  integers, equal neighbour values, inverted values) the smallest contiguous run around the slot is re-based between two untouched anchors
-  (spacing >= 2, order kept, never a key outside the run, never `module:`). One write, one respawn, full-scan verification. Refused
-  when the engine config has `allowFallback == false`.
-* **Hide with no tracked entry:** the system creates the entry itself ~0.2-0.3 s after a status-item app launches (gdu.24, findings-untracked-hide.md),
-  so "untracked" is normally transient: re-read `trackedApplications` for >= 1 s before declaring it. If still absent, `Capability.canHide == false` with the reason
-  "cannot be hidden: not tracked by Control Center" and the UI offers "Open System Settings > Menu Bar". Creating the entry ourselves works (entitled cfprefsd write, `isAllowed=false`, honoured and kept)
-  ONLY with the exact system shape including `menuItemLocations` matching the launching executable (wrong shape is overwritten to `isAllowed=true` within ~0.25 s; a shape without `menuItemLocations` makes the system discard the whole blob). Proven for ad-hoc apps only; follow-up
-  (not yet filed): implement the recipe in findings-untracked-hide.md after proving the signed-app `menuItemLocations` form.
-* **Hide for Apple apps / modules:** only through System Settings (store refuses `com.apple.*` and `module:`).
-* **Show-in-place without restart:** none. AXPress on a parked item opens its UI (see (d)) but does not un-hide it.
+**The trailing system block.** The maximal run of Control Center modules and the clock at the right end of Visible belongs to macOS.
+Third-party items cannot be placed right of it (findings-positioning C3), no system item is ever moved, and a drop of an item into
+or past the block lands directly before it. `Layout.trailingSystemBlock` finds it; `Layout.move(_, to: .visible, index: nil)` and
+new items insert before it.
 
-## (c) Closed-loop contract
+**The chevron rule.** Everything in Visible is in order, including what macOS hides behind the « chevron; Sommelier opens the «
+strip for a moment when it has to move something across that fold. It never opens the strip just to look. The order among items
+that stay behind « is not tracked while the strip is closed (their collapsed frames are stacked and carry no order). The chevron
+itself is the agent's own control: its key never enters the record (`ItemKey.isOverflowChevron`, healed on decode with one warning
+per section), it is never a new item, never shown or hidden, never a move subject or target.
 
-Every `MenuBarActuator` call follows: **precheck -> act -> settle -> verify -> typed result**.
+**Honesty.** The Visible strip is the record in record order and never reorders itself to match the bar. Each row's badge is the
+only claim about the bar, and it comes from the engine's last plan and a settled observation, not from the window's own guess (g).
 
-1. **Precheck (no side effects).** Key absent from the latest snapshot -> `.failed(.notFound)`. `Capability` says no ->
-   `.failed(.unsupportedItem(reason))`. No Accessibility -> `.permissionDenied`. Drags only: `NSEvent.pressedMouseButtons != 0` ->
-   re-check for up to 2 s, then `.failed(.userBusy)`.
-2. **Act.** One mechanism (a), or the fallback (b). All actuations serialize through one actor; drags are strictly sequential.
-   `DragMover` must guarantee a mouseUp is posted even when event creation fails after mouseDown (gdu.7 review). After a drag, check
-   for an opened `AXMenu` on the item; if present post Escape and return/count `.mechanismFailed("menu opened")`.
-   Before any actuation, if Bartender 7 (`com.surteesstudios.Bartender`) is running, return `.failed(.conflictingManager("Bartender 7 is running"), nil)`.
-3. **Settle** (`SettleDetector`, gdu.9): poll until two consecutive agreeing scans (same keys, same order, frames within 1 pt). Fast scan
-   (`scanVisible`, sub-second) is for polling only; the **final verdict always uses a full scan** (fast scans mislabel identifier-less
-   items right after a move: findings-drag pitfall 2).
-   **Verdict rule (gdu.27):** after two agreeing fast scans the verdict full scan must itself agree with the last fast observation (`SettleDetector.verdictAgrees`: on-bar key order of items both scans can know; items stale in either scan, noise width <= 1 and self-positioning owners are ignored; parked set only when the fast scan reported parked items). A disagreeing verdict triggers a new fast pair and a new verdict (+ ~0.15 s + 2 fast scans + 1 full scan) until `maxWait` / `maxFullScans` (3 total full scans), then the outcome is not settled (`SettleOutcome.trace`: "verdict disagreed with fast observation"). An incomplete fast read (e.g. an iStat AX-timeout streak) is compared like any other, so it costs no extra full scan. Up to two retries of an empty full scan count toward `maxFullScans` but are not limited by it, so the total can exceed it by two. No extra scan when the verdict agrees.
-   Floors/caps: after a drag wait >= 2.0 s after mouse-up (AX lags 0.4-2.0 s,
-   median 1.0 s) with a ~4 s cap; after an agent restart wait until the hosted count recovers (budget 15 s; typical 2.5-3 s), then the same two-scan rule.
-   **Stale items never count as verified**: if the moved/hidden item (or its neighbor in a relation) has `stale == true`, keep waiting for a
-   fresh read or fall back to a full scan; still stale at the cap -> `.timeout` (gdu.23 review).
-4. **Verify (predicate on the final full scan, resolved to keys by `IdentityResolver`):**
-   * move: strict immediate adjacency per `Relation` (`DragTarget.holds`); `.leftmost`/`.rightmost` = first/last non-module on-bar item. NOTE: the existing `DragTarget.holds` / `DragRelation` only support string-keyed `before`/`after`/`toX`, not `.leftmost`/`.rightmost` and not `ItemKey`; **gdu.9 must extend `DragRelation` to ItemKey-keyed `before`/`after`/`leftmost`/`rightmost` and implement verification for all four**;
-   * hide: item present and `isOnMenuBar == false` (parked); show: on bar;
-   * batch: every key in the batch satisfies its predicate AND no non-batch item changed on-bar state;
-   * a verdict that depends on a `heuristic` key (or an `inferred` one in a stale-prone owner) cannot be `.verified` unless the item is
-     also confirmed by a non-frame attribute (AXIdentifier) in the full scan; otherwise `.notVerified`.
-5. **Result.** `.verified(snapshot)` or `.failed(error, lastSnapshot)`. Mismatch -> `.notVerified(expected:, observed:)`; no convergence ->
-   `.timeout`; anything else (event creation failure, plist write error) -> `.mechanismFailed(String)`.
-   **`.verified` never comes from one full scan (gdu.26).** A move that already looks satisfied on `prepare()`'s single scan is re-observed through `SettleDetector` first (disagreement -> re-plan from the settled observation, or `.timeout` if it keeps flapping); a batch that looks satisfied on one full scan needs a second full scan that agrees (`SettleDetector.agree`) before `batch already satisfied`, and a contradiction restarts the batch once from the newer scan. Cost: one extra settle / full scan (~0.3-1 s) on the no-op paths only. The live-write confirm poll (first complete hosted read after a write; gdu.39/51/55) and the store-based `alreadyApplied` / `liveUnverified` results are different evidence by design (a state change observed after the write, resp. the Control Center store), not a settle claim.
+**Adoption on upgrade and of outside changes.** The record starts from the real bar on upgrade, follows a hand Command-drag, and
+follows a System Settings hide (f). Any other bar change (macOS, an app) is not adopted: the record wins and is enforced as usual.
 
-**Retry policy.** Drag: attempt 1 with standard drop point; on `.notVerified` retry once with the drop point shifted (+/-6 px more, or 20
-steps); second failure -> fallback (order store + restart, if allowed by the caller) else `.failed`. Never retry after `.userBusy`,
-`.permissionDenied`, `.unsupportedItem`, `.notFound`. **Overflow guard (gdu.25):** items macOS has pushed into its menu bar overflow (ordered before the agent's `Show Hidden Menu Bar Items`
-chevron, or stacked with identical frame x/width) are reported on-bar but not drawn; drags there fail 27/28 (the one pass was confounded by a display change; 50/50 elsewhere, findings-drag
-"Intermittent adjacent-drag failures"). If the subject, the target or the item under the drop point is overflowed the drags are skipped:
-straight to the fallback when allowed, else `.failed(.mechanismFailed("... overflow area ..."))`. Drag defaults are unchanged (10 steps, 15 ms, 100 ms hold;
-retry 20 steps), no parameter variant helped. Restart-based actions: one retry of the restart if the verifying scan still shows the
-old state AND the plist write is confirmed to have landed; second failure -> `.failed`.
+### Identity and sections (reference)
 
-**Live hide/show path found (gdu.36, `docs/findings-live-trigger.md`):** writing `trackedApplications` through cfprefsd under `group.com.apple.controlcenter` (needs the app-group entitlement) hides/shows with no MenuBarAgent respawn; respawn stays the fallback. Verified in gdu.40 (`docs/findings-live-trigger.md` section 8): a Developer ID + hardened runtime + notarized binary with that entitlement gets the live path on the dev machine (macOS 27.0.1); not proven for an app bundle on a fresh Mac or macOS 26, so the respawn fallback stays.
-
-**Batching.** All hide/show changes in a plan are collected into ONE `isAllowed` write + one restart (`applyHiddenBatch`); fallback reorders
-join the same restart. Drags are never batched with each other (sequential, each verified) and run **before** any restart in the same plan
-(a restart blanks the bar for 1-2 s). Restart happens after the agent-store file is quiet. Validation happens before the write (back up the plist in memory); a missing key or conflicting
-requests still fail the whole batch, but units the capability rules refuse (no tracked entry, Apple app, no owner; gdu.72) are split off with their own
-reason (`BatchOutcome.perKey` `.failed(.unsupportedItem)`, `MenuBarActuator.lastBatchRefused`) and the applicable units go out in ONE write; the aggregate
-`result` covers only the applied units (all refused: no write, uniform `.failed(.unsupportedItem)`). The engine records refused units as skips (`.unsupported(reason)`,
-no strike, no `batchFailed`, not retried until `clearFailures`/layout change); a genuine write failure still raises `batchFailed`. Capability snapshot per pass (gdu.74): `LayoutEngine.refreshHideUnits` reads the tracked entries once at the start of each pass and derives BOTH the hide-unit rule and the planner's capability rules from that one snapshot (`Config.capabilitiesFor`; `EngineFactory.makeLive` wires it, tests/mbprobe keep the fixed `makeCapabilityRules(resolver:)`), so an entry appearing or disappearing after launch is seen by planner and actuator alike. Refused-unit re-evaluation: at the start of each pass `reevaluateRefused` drops an `actuatorRefused` key whose item vanished, or which was refused under an older snapshot and whose capability now allows it (it is planned again, no Retry needed); a unit the rules still refuse, or refused under the current snapshot, stays `.unsupported` without a strike. `clearFailures` (Retry/`setLayout`) still clears all. Still-refused parked units are withheld from the Reconciler (to avoid an endless show) and re-added as explicit skips with the refusal reason; the Reconciler's reveal skip reason is taken from `capabilities(k).reason` (Apple app vs not tracked). Verification is per-key. gdu.111: for a SHOW whose Control Center readback confirmed `isAllowed == true` in this batch, a final scan with a fresh overflow chevron and the item absent / not drawn is satisfied ("shown; behind the chevron (bar full)", `visibilityVerdict(barFull:confirmedShown:)`); the pre-write "already satisfied?" check stays strict.
-
-## (d) Identity model and the three sections
 
 `ItemKey` (`ItemKey.swift`): `.status(ownerKey, autosaveName)` and `.module(name)` are byte-identical to `TrailingItemPreferredPositions`
 keys; `.heuristic(bundleID, fingerprint, ordinal)` is synthesized. `ownerKey` is the bundle id for installed apps and the executable name
@@ -118,7 +71,7 @@ otherwise (findings-identity; the dev Sommelier build and MBDummy therefore key 
 
 **Sections** (left to right on screen: visible | hidden | always-hidden is a UI model; the OS has only "on bar" and "parked"):
 
-* **Visible**: `isAllowed == true`, on the bar. Order = drag / order store. Right boundary: Control Center + clock (cannot be passed).
+* **Visible**: `isAllowed == true`, on the bar. Order = the record. Right boundary: Control Center + clock (cannot be passed).
 * **Hidden ("the rest")**: Sommelier's own concept for items shown only on demand. OS-level they are parked via `isAllowed=0`, exactly like always-hidden;
   they differ only in panel exposure and in inline reveal (reveal shows Hidden only; option-reveal shows both). Temporary show has two implementations:
   1. **Inline reveal** = batch `isAllowed=1` + restart; re-hide = batch `isAllowed=0` + restart. Each costs ~2-3 s and a flash, so it is
@@ -126,13 +79,15 @@ otherwise (findings-identity; the dev Sommelier build and MBDummy therefore key 
   2. **Overflow panel (preferred for "show the rest temporarily")**: items stay parked (`isAllowed=0`); the panel lists them from the scan
      and activates one with `AXUIElementPerformAction(kAXPressAction)` on the parked item. The real UI opens but anchored at an unrelated place
      (Yoink at the left screen edge, Tot at x~710); AX can return -25204 although the menu opened, so success is judged by observing the item's
-     children; Escape via CGEvent dismisses. Evidence: findings-visibility C. Live images need Screen Recording (f).
+     children; Escape via CGEvent dismisses. Evidence: findings-visibility C. Live images need Screen Recording ("Permissions and distribution").
 * **Always-hidden ("never show")**: `isAllowed=0` and never offered by the panel's quick row; shown only in the settings list. Mechanically
   identical to Hidden: parked via Control Center; never revealed by plain inline reveal, only by option-reveal. The distinction between "hidden" (offered in the panel) and "always-hidden"
   (not offered) is Sommelier's own layout state, persisted by us.
 
 So: *Visible* = allowed. *Hidden* and *Always-hidden* both = parked by `isAllowed=0` (one restart batch), differing only in panel
-exposure. An item in the Hidden section that has no tracked entry cannot be parked and is shown disabled (see (e)).
+exposure. An item in the Hidden section that has no tracked entry cannot be parked and is shown disabled (see "What cannot be done").
+
+
 
 ### Layout model
 
@@ -192,64 +147,52 @@ exposure. An item in the Hidden section that has no tracked entry cannot be park
   a missing file loads as `Layout.empty`.
 - Dev tool: `mbprobe layout show|init-from-current|move|remove [--file PATH]`. `init-from-current` refuses (exit 1, keys named) on any stale item of an agreed scan, iStat's included (`BarSignature.staleVerdict`, gdu.120: no owner is exempt); on no-agreement it names the last scan's stale keys and the keys that moved/changed class between the last two scans (`ScanDisagreement`, `OrderDiff`). It also refuses when any scan of the agreement loop (`observeDiagnosed().unknownSeen`, not only the final result) marked an item `placementUnknown`, or when the agreed read is `.incomplete` (`LayoutInit.evaluate`, gdu.82). `observeDetailed` still throws a bare `noAgreement` (the explanation is only on `observeDiagnosed`).
 
-### Reconciler
 
-**Order input (9o9.2).** `plan(..., placed:)` takes the set of keys that carry an order obligation: the engine passes every Visible key (`Set(layout.visible)`), or an empty set while an upgrade adoption is pending (no order action is planned until the bar order is adopted from a complete read with no stale on-bar frame); `nil` is the legacy full-order rule, kept for the planner tests. The full-order target rule is rewritten in 9o9.3. Until then the order
-target is the OBSERVED drawn order (`base`) with every obligated, movable key lifted out and re-inserted next to its neighbour in `Layout.visible`
-(`Reconciler.placedTarget`): after the nearest left neighbour that is drawn, not in macOS's overflow and not the chevron;
-else before the nearest such right neighbour; a placed key whose only neighbours are other placed keys refills the slots it vacated in layout
-order; a key with no neighbour at all goes leftmost (first in the layout; with a chevron, before the first drawn item) or rightmost (before the
-trailing anchor block). `moves(from:to:)` then treats every non-placed key as fixed, so non-placed keys (and anchors) are never the subject of a
-move, whatever the saved `visible` order says. Membership (hide/show) planning, anchors, overflow/system-block invariants, `fullBarOrderGate` and the
-two-scan rule are unchanged. A placed key dropped from Hidden is shown first (membership pass), then moved by the follow-up order pass.
-Each planned move is announced before it runs: `EngineState.orderMoveNotice` / `orderMoveReasons` ("Moving K: you placed it after L"; Arrange status line
-chain position after `orderNotAppliedNotice`, row `.moving` tooltip via `ArrangeRow.moveReason`) and the log line `order: moving K after L (record order)`.
-A placed key is only dragged when its on-bar position is corroborated by a hosted element (`ObservedOrder.uncorroborated`: join evidence corroborated, Control Center does not list it hidden or not allowed, gdu.94); otherwise the planner keeps its observed slot, reports a skip, and membership (show) comes first. `LiveActuator` refuses the same subjects (and any whose frame overlaps a fresh item) before dragging.
 
-The skip is usually transient (the scanner's join evidence for an item varies scan to scan, so a key `frameAmbiguous` for one pass is `frameUnique` the next), so it is not an `.unsupported` (gdu.105). The engine reports it as `ItemStatus.waitingForPosition(reason)`: never struck, not a failure, cleared on layout change/Retry, replaced by the real outcome once the move is dispatched. While any key waits, the engine schedules ONE follow-up pass (reason `position retry`) with a doubling back-off (`Config.positionRetryBase` 2 s up to `positionRetryCap` 15 s; reset when nothing waits), the same mechanism as the gdu.87 store retry. After `Config.positionWaitTimeout` (60 s) of continuous waiting the status becomes `.unsupported("could not corroborate its position on the bar for 60 s: ...")`, logged once, terminal until a layout change or Retry (no more scheduled retries). The Arrange tracker keeps its spinner on `.waitingForPosition` (the `drop#n done` line appears only on verify/fail/unsupported/timeout); the badge tooltip reads "Waiting for a trustworthy read of its position ...", and the status line counts "Waiting for a trustworthy read of N item(s)".
+## (b) Observation
 
-`Reconciler.plan(observed:layout:capabilities:showHiddenSection:)` (`Reconciler.swift`) is pure: observed `ObservedOrder`
-(on-bar left to right + parked; width<=1 items excluded; stale on-bar items are kept at their last-known x and listed in `staleOnBar`, stale parked items are excluded, gdu.101) and a `Layout` in, a `Plan` out. The engine loops observe -> plan -> act -> verify.
-- Phases: `.membership` returns only hides then shows (one batch; MenuBarAgent picks where a shown item lands, so order cannot
-  be planned yet); `.order` returns only moves; `.converged` returns nothing. Expect at most 3 plans.
-- Anchors never move: `canMove == false` items and items that should be hidden but have `canHide == false` (reported in `skipped`).
-  Anchors are part of the target: the target is the layout's full on-bar order including anchors, so movable items are arranged
-  around them (an anchor the layout does not place keeps its observed slot). Convergence means the observed order equals `desiredOnBar`
-  with anchors included. If the anchors' relative order on the bar differs from the layout's, that part is unreachable: each offending
-  anchor goes into `skipped` ("immovable item is out of layout order"; the engine shows `.unsupported`) and the rest is planned with
-  every anchor in its observed slot. In a membership phase (hides/shows pending) these anchor skips are NOT reported (gdu.44): the bar
-  is about to change and a transient or churned read (e.g. no chevron in that scan) can show anchors out of order that the order pass
-  finds fine, so the order pass decides. Unsettled observations are never planned on by the engine, so no extra suppression is needed.
-- **iStat Menus items are ordinary orderable items (gdu.120; supersedes the gdu.33 "self-positioning owners are anchors" model and gdu.61/gdu.67).** Verified live on 2026-11-06 (macOS 26, iStat Menus 7): a Command-drag of an iStat item takes effect, macOS persists it in `com.apple.MenuBar.plist` and it holds through repeated passes; iStat does not reassert its position. What alternated was whether Sommelier could READ a frame at all: iStat Menus' AX server periodically stops answering for a few seconds (verified live 2026-11-07, build 272: `mbprobe list --repeat 8` showed scan 1 with 9 failed hosted reads, carried items and "AX read failed for iStat Menus Menubar ... kAXErrorCannotComplete", scan 2 with the app-side read still timing out, scans 3-8 complete). In those scans BOTH the app-side and the hosted group read fail, no fresh frame exists anywhere, and the last known frames are carried as `stale` (`hostedComplete=false`, `onBarStale=9`). Carried frames are correct for the engine (it never actuates on them). A fresh hosted frame is preferred whatever the owner; if the hosted copy alone was carried while the owner's own read succeeded, the fresh app-side frame wins (`MenuBarScanner.assemble`, `freshOwnerRead`, self-positioning owners, corroborated join). **Recently verified (display/agreement only):** a carried item whose frame equals the one last read fresh, for at most `ScanState.recentlyVerifiedMaxScans` = 2 consecutive stale full scans and `recentlyVerifiedMaxAge` = 20 s since that fresh read, gets `MenuBarItem.recentlyVerified` / `ObservedOrder.carriedRecently`. `stale` and `staleOnBar` are unchanged, so the planner and the e2 gate treat it as stale (never a move subject or target); only `ArrangeSections` (no `~` badge) and `BarSignature.blockingStale` treat it as fresh. Each full scan with a self-positioning owner logs one line, `observe scan N: self-positioning reads: <owner>: app=<ok|timedOut|failed> hosted=<ok|carried(N)|failedReads(N)>`. The planner treats iStat keys like any key (`Reconciler` has no owner-based anchor, a stale or uncorroborated slot still pins a key, gdu.94); Arrange rows are draggable (no "Positions itself"), order-only drops and crossings are accepted, there is no `normalizedAroundSelfPositioning` and no `ArrangeDrop.positionsItself` / `cannotCross`. **What stays SelfPositioning (read completeness only):** `ReadCompleteness.completeExceptSelfPositioning` and the scanner's attribution of slow iStat groups (gdu.51-54, 81-86), `SettleDetector` (their frames are not compared), `MenuBarObserver` (`BarSignature`: a stale iStat item does not block agreement; the 10 s poll ignores their presence and order), the `LiveActuator` hide-verification / drift exemption, and the engine's gdu.51 gate (an order move whose subject or target is an iStat key waits for a `.complete` read). **Caveat: not tested across an iStat Menus restart or a login.**
-- Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock) is unreachable for third-party
-  items on macOS 26+. A movable key the layout places right of its first item goes into `skipped` ("cannot be placed right of the system
-  items (<anchor>)"; the name is the block's first MODULE, since a self-positioning item can sit at its start, gdu.61) and is relocated in the target to the last slot before the block (relative order kept), so no drag ever has an anchor
-  as subject or a destination in the block (asserted after `moves`). The block is taken from the observed bar BEFORE shown items are
-  appended, so in a membership pass a key the layout puts right of the clock is already skipped and relocated before it in
-  `desiredOnBar` (shows no longer appear right of the clock until the order pass). When anchors are out of layout order, movable keys
-  the layout puts right of a block containing system modules also get their own "cannot be placed right of the system items" skip. Non-trailing anchors (e.g. `module:WiFi` mid-bar) are unaffected.
-  Correspondingly `Layout.move(_, to: .visible, index: nil)` inserts before the trailing run of `.module` keys instead of appending
-  (`Layout.trailingSystemBlock`); an explicit index is literal and `mbprobe layout move` warns when it lands in the block.
-- Hide units: membership is decided per unit before any hide/show is computed. A unit is wanted-hidden only if all its observed
-  layout-listed keys are hidden-listed and the hidden section is not being revealed with `showHiddenSection`; a unit with any `alwaysHidden` key stays hidden even while revealing (its `hidden` keys get a "kept hidden together with <key>: an always-hidden item keeps its app hidden" skip, and `OverflowEntry.pinnedHidden` marks them in the panel); otherwise it is wanted
-  on the bar and each hidden-listed key goes into `skipped` ("hidden together with <ownerKey>: all items of an app hide or show at
-  once"). `hides`/`shows` cover every observed key of the unit, so the actuator batch is complete and never conflicts. Unknown items
-  of a listed unit follow the unit (also when the listed siblings are absent from the observation, gdu.44); a wholly unknown unit follows `newItemPolicy` only if one of its items is on the bar. If a unit
-  must hide but one item cannot (`canHide == false`), none of it is hidden (all anchored, reported in `skipped`). The overflow panel
-  (`OverflowEntry.unit/unitSize`) keeps a unit adjacent, with a divider between units and a count badge plus "Hidden together" tooltip.
-- Unknown keys (not in the layout) follow `newItemPolicy` and are returned in `newItems` (the planner never mutates the layout);
-  a wholly unknown unit that is parked is never shown (a unit the layout lists is
-  decided by its listed siblings, observed or absent, and an unknown key of it follows that decision). Layout keys not observed are listed in `absent` and ignored.
-- Minimality: anchors are always kept; per gap between anchors, a longest increasing subsequence of movables stays put; moves == misplaced items. Moves are emitted
-  left to right in target order, preferring `.after(left neighbour)`, then `.before(right)`, and `.leftmost`/`.rightmost` only as a last resort.
-- `PlanSimulator.apply` replays actions on an `ObservedOrder` (show slot injectable); `ReconcilerRandomTests` uses it for seeded convergence checks.
-- Dev tool: `mbprobe plan [--show-hidden] [--file PATH] [--json]` prints the plan and executes nothing.
+The engine acts only on a **settled** observation: two consecutive full scans that agree on the order of identified on-bar keys, the
+presence of the others, and the parked sets ("Observer" below). An unsettled read is published for display and never planned on.
 
-### Off-bar unnamed hosted elements and no-entry shows (gdu.114)
+- **Scanner.** `MenuBarScanner` reads the tree hosted by `MenuBarAgent` (frames, in the same read as the chevron) and each owner's
+  `AXExtrasMenuBar` (identifiers, titles, descriptions), joins the two, and classifies every item as on the bar or parked. The Control
+  Center store (`isAllowed`) is authoritative for placement when no hosted element is joined ("Placement authority", below).
+- **Corroboration levels.** A frame is only as good as its join with a hosted element. `JoinEvidence`, strongest first: `identifier`,
+  `description`, `frameUnique` (including the exact-frame tie-break in the overflow pile), `elimination` (9o9.10: a contiguous run of
+  hosted elements no stronger join claimed, paired one-to-one left to right with the same number of unclaimed owner items). All four
+  are *corroborated*; `frameAmbiguous` and `none` are not. Claims on an item's frame come only from corroborated joins. A key whose
+  frame is not corroborated, or is carried (stale), is **untrusted** for planning (c).
+- **Read completeness.** `.complete`, `.completeExceptSelfPositioning` (only iStat-type owners' groups failed, attributed by
+  identity) or `.incomplete`. The table in "Observer" says which consumer accepts which level.
+- **Carried frames.** When an owner's AX server stalls (iStat Menus does, for seconds at a time), no fresh frame exists and the
+  last known frame is carried as `stale` (up to 3 scans). A carried frame is correct for the engine because the engine never
+  actuates on it: a stale key is never a move subject or target. A carried item whose frame equals the one last read fresh is
+  *recently verified* for at most `ScanState.recentlyVerifiedMaxScans` = 2 consecutive stale scans and `recentlyVerifiedMaxAge` = 20 s;
+  that flag is display- and agreement-only (no `~` badge, no blocking of agreement), the planner still treats the key as stale.
+  A carried item keeps its pile membership (9o9.17): it is flagged as overflowed when its carried frame is left of, or stacked at, a
+  FRESH chevron of the same read, so the pile does not flip between a complete read and an iStat-stall read.
+- **`stripExpanded`.** `AgentHostedTree.menuBarMinX` is the agent's top-level AXMenuBar minX in the same read as the hosted elements.
+  `MenuBarScanner.assemble` sets `stripExpanded` on the FRESH chevron item when that minX lies more than 2 pt left of the chevron; a
+  carried chevron never carries it, so it can never come from a cache. While the strip is expanded the overflow set and churn zone
+  are empty: every fresh item has a real frame and the chevron is no boundary.
+- **Pile membership.** With a fresh chevron in the read, an item is *in the pile* (overflowed) when its frame lies left of the
+  chevron, centred on it, or stacked on another hosted frame within the chevron's reach (`SystemOverflowRule.isOverflowed`, one rule
+  used by the scanner flag, the verifier and the overflow probe). No chevron, a stale one, or an open strip flags nothing. The
+  overflow set is *settled* only when the last two complete reads agree on it (`SystemOverflowRule.overflowSettled`).
+
+
+
+### Self-positioning owners and carried frames (reference)
+
+**iStat Menus items are ordinary orderable items (gdu.120).** Verified live (see "Live evidence" (2)): a Command-drag of an iStat item takes effect, macOS persists it in `com.apple.MenuBar.plist` and it holds through repeated passes; iStat does not reassert its position. What alternated was whether Sommelier could READ a frame at all: iStat Menus' AX server periodically stops answering for a few seconds In those scans BOTH the app-side and the hosted group read fail, no fresh frame exists anywhere, and the last known frames are carried as `stale` (`hostedComplete=false`, `onBarStale=9`). Carried frames are correct for the engine (it never actuates on them). A fresh hosted frame is preferred whatever the owner; if the hosted copy alone was carried while the owner's own read succeeded, the fresh app-side frame wins (`MenuBarScanner.assemble`, `freshOwnerRead`, self-positioning owners, corroborated join). **Recently verified (display/agreement only):** a carried item whose frame equals the one last read fresh, for at most `ScanState.recentlyVerifiedMaxScans` = 2 consecutive stale full scans and `recentlyVerifiedMaxAge` = 20 s since that fresh read, gets `MenuBarItem.recentlyVerified` / `ObservedOrder.carriedRecently`. `stale` and `staleOnBar` are unchanged, so the planner and the e2 gate treat it as stale (never a move subject or target); only `ArrangeSections` (no `~` badge) and `BarSignature.blockingStale` treat it as fresh. Each full scan with a self-positioning owner logs one line, `observe scan N: self-positioning reads: <owner>: app=<ok|timedOut|failed> hosted=<ok|carried(N)|failedReads(N)>`. The planner treats iStat keys like any key (`Reconciler` has no owner-based anchor, a stale or uncorroborated slot still pins a key, gdu.94); Arrange rows are draggable (no "Positions itself"), order-only drops and crossings are accepted, there is no `normalizedAroundSelfPositioning` and no `ArrangeDrop.positionsItself` / `cannotCross`. **What stays SelfPositioning (read completeness only):** `ReadCompleteness.completeExceptSelfPositioning` and the scanner's attribution of slow iStat groups (gdu.51-54, 81-86), `SettleDetector` (their frames are not compared), `MenuBarObserver` (`BarSignature`: a stale iStat item does not block agreement; the 10 s poll ignores their presence and order), the `LiveActuator` hide-verification / drift exemption, and the engine's gdu.51 gate (an order move whose subject or target is an iStat key waits for a `.complete` read). **Caveat: not tested across an iStat Menus restart or a login.**
+
+
+
+### Off-bar unnamed hosted elements and no-entry shows
 
 The scanner emits no item for an agent-hosted element that has no identifier and no description, is not the overflow chevron, and whose midY lies outside the menu bar strip (`MenuBarScanner.isOffBarNoise`); it is logged once as `ignored off-bar hosted element`. The engine refuses a membership `show` for a key with no Control Center entry (`engine: refusing show of K: no Control Center entry`), withholds it like an actuator refusal (`.unsupported("cannot be shown: no Control Center entry")`), and prunes legacy `heuristic:com.apple.MenuBarAgent::#N` keys (empty fingerprint) from a loaded layout (`Layout.prunedAgentNoise`).
 
-### Observer (`AgreedScanObserver`, gdu.46)
+### Observer (`AgreedScanObserver`)
 
 `observe()` is strict (settled or throws `noAgreement`); `observeDetailed(progress:)` is what the engine uses.
 - **Agreement**: two consecutive full scans must show the same (1) ORDER of on-bar identified keys (AX identifier present, not a heuristic key, not in `volatileKeys`; iStat items are ordinary since gdu.120), (2) PRESENCE of every other on-bar key (identifier-less items count for presence, not order), (3) set of parked keys and set of stale parked keys. A stale item ON the bar blocks agreement, EXCEPT a stale item of a self-positioning owner (gdu.51: non-blocking; it still counts in the order). Width <= 1 items are ignored.
@@ -282,250 +225,125 @@ The scanner emits no item for an agent-hosted element that has no identifier and
 - Every scan logs `observe scan N: hostedComplete=... onBarStale=... agree=...` into the app log (`engine: observer: ...`).
 - First-launch layout creation (`AppModel.startIfReady`) writes a layout only from a settled read; an unsettled one leaves the layout empty (the engine then adopts new items visible at the end) and logs it.
 
-### LayoutEngine
 
-`LayoutEngine` (actor, `LayoutEngine.swift`) runs the observe -> plan -> act -> verify loop; `EngineState` (`@MainActor @Observable`) is the only thing the UI binds to.
 
-- **Pass**: (1) `observeDetailed()` (two agreeing full scans, see "Observer" below; observation moves nothing, so it runs even while the user is busy); (2) if the mouse is down (`busy`), wait up to 3 s polling every 0.1 s, else skip and retry once (after a wait the observation is repeated); (3) plan with failed keys forced to `canMove = canHide = false` (they become anchors); (4) persist `newItems` into the layout (once per pass) per `newItemPolicy`; (5) act; (6) publish.
-- **Two phases**: *membership* is one `applyHiddenBatch` (one agent restart, never called with an empty batch), then re-observe and re-plan; *order* is one `move` at a time, re-planning from the verified snapshot after each. Both continue in the same pass when the post-membership plan is `.order`. At most `maxActionsPerPass` (50) actuator calls per pass; 3 consecutive failed actions end the pass (no chaining; `lastError = .stoppedAfterFailures` only after 3 such passes in a row, see "Robustness"); a membership batch that reports drift ends the pass with `lastError = .batchDrift`, and any other batch failure (e.g. `.mechanismFailed`) with the equally sticky `lastError = .batchFailed(message)` (both cleared only by `clearFailures`/`setLayout`, shown in the Arrange status line; a later successful observe does not clear them); a `.userBusy` batch is handled like a `.userBusy` single action: no key is struck or marked `.failed`, nothing is suppressed, keys it already verified stay in place, and the pass is rescheduled (no retry cap, same as the single-action path) and never chains into drags; at most 2 chained passes. `mbprobe apply` runs the actuator drag-only unless `--allow-fallback`.
-- **Observed truth only**: `EngineState.observed` is set solely from an actuator-returned snapshot or a fresh observe, never from the plan. `perItem` is `.inPlace/.pending/.moving/.failed/.unsupported`; `unsupported` (capability skips) does not block `isConverged`, `failed` does.
-- **Suppression (flapping guard, gdu.21)**: see "Robustness" below. A key that fails is an anchor for the rest of that pass; the same key failing 3 passes in a row stays `.failed` until `setLayout`, `clearFailures()` (Retry) or its app disappears from the bar. `userBusy` is not a failure and is not suppressed.
-- **Fatal errors**: no Accessibility permission or a competing manager (Bartender) sets `lastError`, makes no actuator call and stops the engine until `clearFailures()`.
-- **Unsettled observations (gdu.46)**: when the scans never agree but a complete read exists, the pass publishes it (`EngineState.observed`, `observationSettled = false`, `lastError` cleared only when it was an observe error (permission errors still surface); status line "Observing (unsettled)"), logs `observation unsettled; not actuating`, plans nothing, finishes with `PassReport.Outcome.unsettled` and schedules the next pass (`minPassInterval`). Only a settled observation is ever planned on or acted on. The unsettled pass still increments `passSequence` (it must stay aligned with `passesStarted`), so `ArrangeTracker` ignores unsettled states: it suppresses every tracked key's engine status (capsules stay at the pending spinner), judges nothing and pauses its 90 s clock; judging resumes at the next settled state with `passSequence > dropSequence`. The first non-empty scan of a pass is also published at once as a provisional observation when nothing has been observed yet (log `first observation published (provisional, unsettled)`), so the Arrange window has a bar within a scan or two instead of after agreement.
-- **Pass latency (gdu.46, reworked by gdu.47)**: `setLayout`/`setShowHiddenSection` supersede the running pass: an observation in progress is cancelled between scans (`ObserveError.superseded`) and the pass ends `.superseded`; a membership batch in flight finishes and the pass then ends `.superseded` (see the gdu.47 bullet), and so does an order-phase pass before its next move; the next pass plans from the new layout and a fresh scan. A plain trigger/poll never cancels an observation, or a slow observation would starve forever (other `supersede: true` requests such as `transient reveal ended` and `agent restarted` cancel only the observation and log their own reason). Logs: `pass started N ms after <reason>` for every request, `pass delayed: <reason> N ms` for any wait over 2 s (previous pass running, user busy). Measured: idle 0 ms; superseding an observation ~0.5 s; during a drag 1.4-5 s (the rest of that drag).
-- **Superseded passes, coalescing, fresh snapshots (gdu.47)**: every `setLayout`/`setShowHiddenSection` bumps `layoutGeneration`; a pass remembers the value it started with and ends `PassReport.Outcome.superseded` (log `pass superseded by setLayout`) whenever it differs: (a) during observation (the scan is cancelled; also checked once the observation returns, before planning): nothing planned, no statuses touched, no strikes; (b) while a membership batch is in flight: the actuator finishes THAT batch (its verification stands, against the layout it was planned from), then the engine adopts the batch's snapshot, publishes statuses from a plan for the NEW layout (the batch's keys are `.pending` or `.inPlace`, never `.failed`; no strike, no `batchDrift`) and drops the rest of the stale plan (log `batch finished (...) after the layout changed; not judged against the new layout`); (c) before each order-phase move. The next pass plans from the new layout and a FRESH full scan. A superseded pass still advances `passSequence` (aligned with `passesStarted`). Path (b) publishes honest statuses for the new layout (`.pending`/`.inPlace`, never `.failed`) via `publishObserved`, so `ArrangeTracker` may resolve an EARLIER drop from them (a key `.inPlace` and matching the current layout), but can never fail a drop from a superseded pass; a pass superseded during observation publishes no new statuses. **Coalescing**: `setLayout` publishes and persists the layout at once (stamped revision, gdu.48) but starts its pass after `Config.layoutCoalesce` (300 ms; zero = immediate); another `setLayout` inside the window replaces the pending timer (log `setLayout coalesced`), so only the final layout is planned; `Config.layoutCoalesceMax` (1 s) caps a burst: the pass starts at most that long after the burst's first call even if calls keep coming. A batch that ended because MenuBarAgent was respawned by someone else ends `.agentRestarted`, not `.superseded`. Both drops keep their revision stamps (`passesStartedAtRevision` is the same), the first pass started after them judges BOTH drops' keys against the then-current (final) layout. **Fresh-snapshot rule**: the engine hands the actuator only keys and directions, never a snapshot; `LiveActuator.performBatch` computes `expectations`/`before` from its own scan taken right before the write (log `membership batch: ... pre-write scan`). A batch asking the opposite of a write made < `Config.recentWriteSettle` (1.5 s) ago waits out the remainder and rescans first, so a hide that has not shown up yet cannot make the following show look "already satisfied" (the cause of `not verified: expected membership change, saw unchanged`). An honest "already satisfied" (`batch already satisfied`) still returns `.verified` with `mechanism == nil` and no write.
-- **Engine additions ledger (gdu.52)**: each key the pass appends per `newItemPolicy` is recorded as `(revision, key, section, index)` (revision = the one `publishLayout` stamped for that append; last 50 entries kept). `setLayout(_:basedOn:)` re-adds ledger entries newer than `basedOn` that the submitted layout lacks (a same-hide-unit sibling already in the submitted layout decides the section; units stay whole) BEFORE hide-unit normalization and adoption, logging `setLayout merged N engine-added key(s) composed on revision R` once; `basedOn == nil` replaces wholesale.
-- **Scheduling**: `requestReconcile()` sets a pending flag; concurrent triggers coalesce into one follow-up pass; pass starts are at least 0.5 s apart. `reconcileOnce()` runs exactly one pass (`mbprobe apply`, tests).
-- **Triggers** (`EngineTriggers`, AppKit): app launch/terminate (a burst within 1 s is ONE pass; gdu.56: detected by a pid diff of `NSWorkspace.runningApplications`, driven by KVO (`LiveRunningApps`, covers .accessory/LSUIElement apps) AND by the didLaunch/didTerminate notifications, which AppKit does not reliably post for agent apps; both feed `syncApps()`, which diffs against `known` so one launch/quit = one event whichever path sees it first, while a notification always re-arms the pass so a late-arriving one is not dropped; launch counts for .accessory/.regular only, quit for .accessory/.regular apps that owned an item in the latest scan when `ownerPIDs` is supplied, any such app while ownership is unknown (`AppModel` supplies the owner pids from `EngineState.items`; nil until items exist); the request is `scheduleReconcile(after: 1 s, reason: "app launch/quit")`, trailing-coalesced by the engine; every launch/quit/notification is logged with pid, bundle id and policy), sleep/wake, and a poll (e7t, below); `MenuBarAgentWatcher` (agent respawn) and the app's display-change observer feed the same `scheduleReconcile`. The live `busy` closure is `NSEvent.pressedMouseButtons != 0`. Details: "Robustness".
-  - **Poll (e7t)**: every `PollConfig.interval` (10 s) one fast scan is reduced to `BarSignature.value(...).forPoll(...)` (`MenuBarObserver.swift`),
-    the SAME rule `AgreedScanObserver` uses for two-scan agreement: ORDER of identified, non-heuristic, non-self-positioning on-bar keys; PRESENCE of other
-    on-bar keys; parked set of identified keys. Exempt: volatile modules (WiFi, Focus, "Show Hidden Menu Bar Items"), `heuristic:com.apple.MenuBarAgent` main-menu
-    entries, width<=1 items, stale flags, and (poll only) the presence of self-positioning owners' items (iStat's eight items vanish from the fast scan and
-    return between polls). The reference is the poll signature the ENGINE publishes with each agreed observation (`PollGate.engineSignature`, serial-stamped), else the last quiet poll's scan
-    (the engine's observation omits stale items, so `EngineState.observed` itself cannot be compared): a change after a pass's last observation (an app's item appearing
-    after the launch pass observed) is caught by the next poll, and skips never drop it. A difference is CONFIRMED by a second fast scan `confirmDelay` (1 s) later; only
-    a second scan with the same new signature requests a pass (`requestReconcile(reason: "poll")`, logged `poll: poll change confirmed ...: <diff>`); a one-scan flicker is
-    logged "not confirmed". A signature that already triggered a pass is not re-triggered while the bar keeps reading exactly that signature (loop protection when a pass cannot change what the fast scan sees); any other reading, or a different signature starting a pass, clears the guard, so a recurrence of the same change after the bar was fixed triggers again (steady disagreement costs one extra pass per real change). Fixed 10 s period, no back-off (worst-case
-    detection 11 s; the noise fix alone gave 0 passes). Skipped entirely (no scan) while a pass is running/requested/scheduled, the engine sleeps, a transient reveal hold
-    is active, `observationSettled == false`, or within 5 s of a user-initiated request (`LayoutEngine.pollGate()`).
-    **Cap (gdu.58)**: at most `PollConfig.maxPollPassesPerMinute` (2) poll-triggered passes in any sliding minute (only `reason: "poll"` passes count; launch/quit, wake and user actions are unaffected). **Counting rule (gdu.60)**: a steady fast/full-scan disagreement costs one extra pass after each real change (the bar reads as the old disagreeing signature again, e7t); that pass, the change's single *free confirm*, is triggered but NOT counted. The pre-change signature of a counted change is the reading just before it, provided that reading had been steady (read unchanged) for at least a minute; it is kept (not replaced) while the previous counted change still in the window has its confirm unused, and after that change's confirm restored it. A pass is a free confirm iff its signature equals the pre-change signature and the change's confirm is unused (no age condition on the confirm itself; free confirms are not capped per minute). A return to the pre-change signature after any non-confirm pass is counted. **Repeat horizon**: the signatures of counted changes are kept for `suppressFor` (5 min, pruned on every trigger, cleared by `stop()`); a counted change whose signature already was a counted change within that horizon is a repeat (a flapper, not a new real change): it gets no free confirm, so its return pass is counted too, and it takes two slots of the cap. Observed bounds (PollCapHorizonTests): distinct real changes X, Y, Z each keep their free confirm; two real changes 5 s apart then the confirm are 2 counted + 1 free; a 2-state flapper (10-29 s) is suppressed after 2 passes from fresh and after each window; with a long-steady state S the flapper S a S b S a... (or S a S) is suppressed after 5 passes at most (3 counted + 2 free confirms, i.e. at the first repeat plus one counted return) and within 5 steps of its first change, again after each window; 3-state and irregular cycles earn no free confirm (at most 3 passes); a 2-state flapper with period of 31-59 s is suppressed at its first repeat (3 passes), never more than 2 passes per minute. Cost: an identical real change twice within 5 min takes 2 slots and, if a third pass follows within a minute, suppresses the poll. Real changes are counted as usual: three within a minute still hit the cap. A confirmed change that would exceed it triggers nothing, logs once `poll: suppressed for 5 min — flapping keys: <keys>` (`EngineTriggers.flappingKeys` over the two most recent differing signatures: the minimal set of keys whose membership (on bar / parked / present) or relative position changed, positions via `OrderDiff.changedKeys`, so one item moved far lists only that item) and opens a `PollConfig.suppressFor` (5 min) window: the poll keeps scanning but triggers nothing, even for a genuine single change (launch/quit triggers and user actions still work); afterwards it logs `poll: suppression ended, resuming` and the first change triggers as usual. Published as `EngineState.pollSuppression` (`PollSuppression{until, keys}`, set via `LayoutEngine.setPollSuppression`) and shown in the Arrange status line as `Poll paused 5 min: <names> flapping` (hidden by the view model's 0.25 s tick as soon as `until` has passed, `ArrangeSections.pollPausedNames`, not on the next republish); status line only, not `lastError`, not `.failed`, overflow panel unaffected.
-- **UI binds to**: `observed`, `layout`, `perItem`, `inFlight`, `lastError`, `isConverged`, `lastPassAt`, `passCount`; it changes the bar only via `setLayout` / `setShowHiddenSection`.
+### Placement authority: an app-side frame alone is never "on the bar"
 
-### Robustness: launches, respawns, display changes, sleep (gdu.21)
-Every event becomes a (delayed) `LayoutEngine.requestReconcile`; none of them acts on a read that is not trustworthy.
+After a live hide the owner's own `AXExtrasMenuBar` frame stays where it was (docs/findings-live-trigger.md section 4 and 9). So an `appExtras` item with NO joined hosted MenuBarAgent element (`joinEvidence == .none`) is judged by the Control Center store the agent enforces, in ONE place, the item loop of `MenuBarScanner.assemble` (`MenuBarScanner.swift`, "THE authority rule"), so `mbprobe list`, the engine observation, `LayoutBuilder` and `init-from-current` all read the same classification:
 
-- **Coalescing**: `scheduleReconcile(after:reason:)` keeps ONE pending request per reason; a new call with the same reason replaces it. App launch/quit
-  uses reason `app launch/quit` with a 1 s trailing window (a burst of launches/quits is one pass; a returning app's items go back to their slot by the
-  normal order planning and keep their hidden state, which lives in the Control Center store per app). Display changes use `display change` (1 s), wake
-  `wake` (3 s), agent respawn `agent restarted` (2 s, supersedes an observation in progress).
-- **`MenuBarAgentWatcher`** (`SommelierCore`, main actor): compares the pid of `com.apple.MenuBarAgent` with the last known one on NSWorkspace
-  launch/terminate notifications for that bundle id and on a 2 s poll (live, the notification does not arrive for the agent, so the poll is the
-  detector; absence between terminate and launch is not a change). On a change it logs `agent restarted: pid A -> B` and the app runs
-  `LivePlatform.invalidateAgentState()` (scanner: last hosted tree, stale carry-over, last complete layout, strip, unverified counters; kept: the
-  assumed-hidden records, because the store still says hidden, per-app caches and seen-hosted names; the AX element cache already drops the old agent's
-  elements on a pid change) and `LayoutEngine.agentRestarted()`.
-- **Not-ready guard**: `agentRestarted` sets `notReadyUntil = now + 2 s` and drops transient reveal holds. A pass whose settled observation is
-  obtained inside that window logs `agent restarted moments ago; not acting on this observation` and ends as `.unsettled` (nothing published,
-  planned or done); the delayed reconcile follows. Independent of the watcher: an EMPTY on-bar list is `ObserveError.empty` (never "everything is
-  hidden"), an incomplete hosted read can never be an observation (`hostedReadComplete == false` is not returned as a read), and an unsettled read
-  is published but never planned on; tests: `EngineRobustnessTests`. Live, a pass that spanned a respawn saw `hostedComplete=false`, two complete
-  reads with 4 stale on-bar items, and acted only after two complete agreeing reads, with no action.
-- **Respawn accounting and ownership (corrective pass)**:
-  - A hide/show batch that went through an agent respawn (`MenuBarActuator.lastBatchRespawned`; the hide fallback ignores `allowFallback`) strikes its
-    FAILED keys out at once (`fullStrike`): at most ONE respawn per key per layout change; suppressed until `setLayout`/Retry, logged once. Drags
-    keep the 3-strike rule (bounded, no fallback). The follow-up pass scheduled in `finish()` counts against `maxChainedPasses` (2); a membership
-    batch that reports failure never chains anyway (`endAfterBatchDrift`).
-  - Our own respawns: `LivePlatform.restartAgent` marks itself in progress and remembers the resulting pid (`isOwnAgentPID`). The watcher
-    (`busy:` / `isExpected:`) reports nothing while it runs and absorbs the new pid afterwards (`agent restarted by Sommelier (expected)`): no state
-    invalidation mid-action, no extra reconcile.
-  - Passes spanning a foreign respawn: the engine records the agent pid at pass start (`agentPID`) and checks it after the observation and in
-    `adopt()`. A different, non-own pid discards the observation (nothing published, planned or actuated), logs `agent restarted during the pass`,
-    opens the not-ready window and schedules the reconcile; the pass ends as `PassReport.Outcome.agentRestarted`. After our own respawn the pass
-    re-bases on the new pid and continues.
-  - `MenuBarAgentWatcher.start()` keeps the last KNOWN pid across `stop()` (Bartender pause, permission loss) and compares at once, so a respawn
-    during the pause is reported on resume.
-- **Sleep/wake**: `EngineTriggers` calls `willSleep()` (no new pass starts, pending requests and delayed reconciles are dropped; a running pass ends
-  after the action in flight, re-checked before every move) and `didWake()` (reconcile 3 s later). `triggers.start()` clears a sleep flag left by a
-  missed wake.
-- **Conflicting manager (gdu.35)**: `AppModel` calls `engine.setConflict(who)` (nonisolated, lock-protected) when Bartender is detected; a pass already running checks it before the membership batch and before every order move, issues no further actuator call and ends `.paused` (no failure, strike or suppression), no new pass starts until `setConflict(nil)` on resume.
-- **Display changes** (`AppModel`, `NSApplication.didChangeScreenParametersNotification`): `platform.invalidateStrip()` (the strip is recomputed from
-  the next agent read), the open overflow panel is re-anchored to the status item's screen after 0.4 s (`OverflowPanelController.reposition`; its
-  frame comes from `OverflowPlacement.panelFrame` on the screen under the item), and ONE reconcile after 1 s (bursts of notifications collapse).
-- **New-item notice**: unknown items placed by `newItemPolicy` log `New item: X placed in Visible|Hidden` and set `EngineState.newItemNotice`
-  for 10 s; the Arrange window prefixes its status line with it. No system notification.
-- **Flapping guard**: `strikes[key]` counts passes in a row in which the key failed (one strike per pass; a pass in which it did not fail breaks the
-  streak). Below 3 the key is retried by the next pass (a failing pass schedules one follow-up, bounded by the strikes); at 3 it is logged once
-  (`<key> failed 3 passes in a row ...; marked failed until the layout changes or Retry`), stays `.failed` and an anchor. A deterministic refusal
-  (capability forbids) goes straight to the limit. The whole engine is NOT stopped by one bad key: a pass ends after 3 consecutive failed actions,
-  and only 3 such passes in a row (no action succeeded in between) set `lastError = .stoppedAfterFailures(3)`, cleared by `clearFailures`/`setLayout`.
+- the item's tracked entry (`TrackedEntryResolver`, live `isAllowed` via `ControlCenterTrackedAppsStore.readLive`, injectable `MenuBarScanner.trackedEntries`) says `isAllowed == false`: `isOnMenuBar = false`, `hiddenInControlCenter = true` (`hiddenReason == .controlCenterHidden`);
+- the entry says allowed and the hosted read is complete: `placementUnknown = true` (`hiddenReason == .placementUnknown`), not on the bar, not known to be anywhere;
+- a hosted element joined to the item (any non-`.none` join) stays authoritative: on the bar as before, whatever the flag says;
+- kept on the frame rule: items no tracked entry governs (SystemUIServer's extras cannot be live-hidden) and incomplete hosted reads (a failed group must not turn into "unknown"). An UNREADABLE store (gdu.87: the notarized app denied the group container) is an observation problem instead: store-governed items without a corroborated hosted element are `placementUnknown`, the snapshot carries `trackedStoreProblem`, and the engine refuses the read. This narrows the bead text ("true or unknown and no hosted element => unknown") on purpose; flagged for review.
 
-## (e) What cannot be done, and how the UI shows it
+`LayoutBuilder.build` never writes a `placementUnknown` item into any section; `LayoutBuilder.unknownPlacement` lets callers refuse: `mbprobe layout init-from-current` exits 1 naming each key with its own reason ("placement unknown for N items: key (no hosted element | weak join (frameAmbiguous) with a hosted element in the overflow pile; make room in the bar so the item is drawn, or hide it in Control Center)"; `MenuBarItem.placementReason`); its `.incomplete` refusal appends the scanner's "incomplete: ..." reasons (gdu.51) from `observeDiagnosed().incompleteReasons`, the first-launch build leaves the layout empty. `controlCenterHidden` items are plain hidden. `ObservedOrder.placementUnknown` marks the parked keys the planner must not show (explicit skip).
 
-| Limit | Evidence | UI |
-|---|---|---|
-| Module items (Wi-Fi, Battery, clock, Control Center, Siri): cannot be dragged, cannot be placed right of Control Center/clock; hidden only in System Settings > Menu Bar | findings-positioning C3 (placement limit, measured); no-drag is a self-imposed rule (`ItemResolver.protected`, mbprobe refuses), untested by design since we never drag Control Center/clock; store refuses `module:` (self-imposed guard) | lock icon; `Capability.canMove=false, canHide=false`, reason tooltip, "Open Settings" link |
-| Third-party item cannot go right of Control Center | positioning C3 | drop target clamps; `.rightmost` means just left of Control Center |
-| App without a Control Center tracked entry cannot be hidden | visibility A7/A8 | `canHide=false` + reason "not tracked by Control Center"; entry is auto-created ~0.2-0.3 s after launch, hand-created entries only with the exact system shape (gdu.24, findings-untracked-hide.md) |
-| Apple (`com.apple.*`) apps cannot be hidden by us | store guard | same |
-| Parked item cannot be dragged | drag findings (on-bar only) | reorder of a parked item uses the fallback or is disabled until shown |
-| Stale / heuristic identity | gdu.23, gdu.4 | greyed with "unverified" badge, actions disabled until a fresh full scan |
-| Show/hide is not instant | visibility conclusion | progress state ("applying, ~3 s") then result from the verified snapshot, never optimistic |
-| Failed action | contract (c) | item snaps back in the UI, inline error with the typed `ActuationError` |
+Exact-frame tie-break (gdu.84, `SystemOverflowRule.exactFrameMatch`, the `exactFrame` pass in `MenuBarScanner.assemble` before the loose intersection pass): inside the overflow pile neighbours overlap, so an intersection join is ambiguous even when an unowned hosted element sits exactly on an item's frame (KeepingYouAwake 795/w30 vs #3 795/w30 with TextInputMenuAgent 798/w27 and #4 799/w22 around it). An ALLOWED, non-assumed candidate whose app-side frame equals an unowned hosted element within 1 pt in x and width joins it as `frameUnique` (corroborated, so it is on the bar with `systemOverflow` set), provided no other allowed candidate matches that element exactly and the candidate matches no other element exactly. Flag-false candidates (gdu.79) and the chevron (gdu.69) never take part; two exact matches, or a 2 pt offset, stay ambiguous (unknown inside the pile). **Pile only (gdu.85):** the pass applies only when the unowned hosted element's frame OR the candidate's is overflowed against the chevron (`SystemOverflowRule.isOverflowed`); everywhere else on the bar the gdu.28 mutual-and-exclusive rule remains the only frame join, so a 1 pt coincidence outside the pile is never promoted to `frameUnique` (and so never feeds LiveActuator's frame-order drift check). Incomplete-reason lists (`incompleteReasons`) merge reasons that differ only in their numbers, keeping the highest.
 
-The contract carries per-item `Capability { canMove, canHide, reason }` (`MenuBarActuator.swift`, `CapabilityProvider`, `CapabilityRules`).
-Findings do not conflict dummy-vs-third-party for drag (KeepingYouAwake 10/10); hide was only measured on the dummy (A) and via AXPress
-on third-party (C), so third-party hide is the one capability to confirm in the gdu.9 soak (hide/show one tracked third-party item,
-restore afterwards).
 
-## (f) Permissions and distribution
 
-* **Accessibility**: required (scanning, AXPress, and CGEvent synthesis for drags).
-* **Screen Recording**: only for live images of items in the overflow panel (T17). Everything else works without it.
-* **Not sandboxed**: we write other apps' group-container plists (`com.apple.MenuBar`, `group.com.apple.controlcenter`) and run `killall`
-  on MenuBarAgent. Distribution: Developer ID, not the Mac App Store.
-* Files: `~/Library/Group Containers/com.apple.MenuBar/Library/Preferences/com.apple.MenuBar.plist` (read by plain
-  `PropertyListSerialization`; not visible through CFPreferences) and `~/Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist`.
-  Atomic writes, keep mode, in-memory backup before every write.
+## (c) The reconciler
 
-## Risks
+`Reconciler.plan(observed:layout:capabilities:showHiddenSection:held:...)` (`Reconciler.swift`) is pure: an `ObservedOrder` (on-bar
+left to right plus parked; width <= 1 items excluded; stale on-bar items kept at their last-known x and listed in `staleOnBar`;
+stale parked items excluded) and a `Layout` in, a `Plan` out. The engine loops observe -> plan -> act -> verify.
 
-* **Restart recovery** is typically 2-3 s but up to ~12 s (visibility A2) and ~15 s (positioning C6: a run hit the 10 s timeout and completed ~5 s later) was observed; the hosted AX count is noisy
-  (133-151), so recovery uses a 90% threshold and a cap, then the normal settle.
-* **iStat Menus AX slowness**: reads time out, cached values served as `stale`; stale never verifies (gdu.23).
-* **Fast scan mislabels identifier-less items right after a move** (findings-drag pitfall 2): final verdict = full scan.
-* **Order store contains stale duplicate keys** (`FloTile`/`ie.boboco.FloTile`, old iStat translocated set, inert test keys from gdu.4):
-  writes target only the key the resolver chose; never "clean up" without user request.
-* **Bartender must not run concurrently**: it parks and moves items itself and will fight both mechanisms; the app should detect it
-  (`com.surteesstudios.Bartender`) and refuse to actuate with a clear message.
-* **Dev build owner key is its executable name** (not the bundle id) because it runs outside `/Applications`; keys differ between dev and
-  installed builds.
-* **User's mouse**: drag needs a quiet mouse; restart-based fallback exists, but gives a flash.
-* **Agent restarts re-base stored positions** (docs/findings-restart-collateral.md): the order store values of ALL owners (modules too) are rewritten when the item set changes, which can re-sort items of other apps (iStat, interleaved with others, ended up left of Wi-Fi). `applyHiddenBatch` snapshots the store before the restart and, if the post-restart relative order of the common items drifted, writes the old values back and restarts once more. Duplicate owner-key forms (iStat bundle vs executable) were tested and are not the cause, so they are not touched.
-* **Do not `killall ControlCenter`** (Elgato Control Center shares the process name); only `MenuBarAgent` is restarted.
-* Spacing (NSStatusItemSpacing/SelectionPadding) is not part of the actuation strategy; see the "Spacing (gdu.20)" section below.
-* The OS-26 behavior is assumed identical; unverified.
+**Phases.** `.membership` returns only hides then shows (one batch: MenuBarAgent picks where a shown item lands, so order cannot be
+planned yet); `.order` returns only moves; `.converged` returns nothing. Membership and its hide-unit rules are in the "Hide units"
+bullet below.
 
-## Follow-up beads
+**The target.** The record is the target for every on-bar Visible key: `Layout.visible`, restricted to what is on the bar (keys the
+layout does not list yet follow `newItemPolicy`; the chevron is never part of it). The planner computes
+`layoutTarget(base: observed on-bar order, desired: record, anchors: pinned)`; convergence means the observed drawn order equals it.
 
-* **sommelier-gdu.24** (done): see findings-untracked-hide.md; follow-up: implement the entry-creation recipe for ad-hoc apps, prove the signed-app form first.
-* Not wholly infeasible: nothing else; every required capability (reorder, hide/show, panel activation) has a working mechanism.
-* `mbprobe --fake` plumbing was skipped (not trivial: mbprobe has no actuator subcommands yet; gdu.9 adds `move/hide/show`).
+**Anchors.** Anchors never move and are part of the target. They are the *pinned* keys: `canMove == false` items (Control Center
+modules, the clock, Apple items), the trailing system block, the chevron, and **held** keys. Held keys are those the engine gave up
+on (`cannotPlace`, (e)) and those unverified after a hand drag ((f)); they keep their observed slot silently.
 
-## Code contract
+**Trusted vs untrusted (9o9.3, 9o9.9).** A key is *trusted* when its frame is fresh and corroborated (b). *Untrusted* keys (carried,
+uncorroborated) are **not** anchors: they stay in the target at their record slot, but are never a move subject and never a relation
+target. A trusted subject is spelled against the nearest trusted, already-in-place neighbour in target order (left first, then right,
+stopping at an untrusted key) and may cross an untrusted key only when a simulation lands it on the record's side of every untrusted
+and in-place key. With no safe spelling the subject is skipped. Live case: record CC, MCP, Shield with Shield uncorroborated plans
+exactly one move, MCP `.after(CC)`.
 
-`Sources/SommelierCore/MenuBarActuator.swift`: `MenuBarActuator`, `Relation`, `ActuationResult`, `ActuationError`, `Capability`,
-`CapabilityProvider`, `CapabilityRules` (`ActuationError.conflictingManager(String)` for a running competing manager). `Sources/SommelierCore/FakeActuator.swift`: scriptable in-memory implementation.
-`Tests/SommelierCoreTests/ActuatorTests.swift`.
+**One move per pass.** `Config.maxOrderMovesPerPass` = 1: one drag, then a fresh observation on the chained pass (at most
+`maxChainedPasses` = 2 chained passes; a follow-up is scheduled while the bar still differs). Moves are minimal: per gap between
+anchors a longest increasing subsequence of movable keys stays put; moves are emitted left to right in target order, preferring
+`.after(left neighbour)`, then `.before(right)`, `.leftmost`/`.rightmost` last.
 
-## App shell
-- `AppDelegate` (main actor) creates `AppModel`, `StatusItemController` (NSStatusItem, autosave "Sommelier") and the
-  settings/onboarding windows. The main actor only renders `EngineState` and sends commands to the engine.
-- `LayoutEngine` (actor) does all scanning, planning and dragging off the main thread; `EngineFactory.makeLive` wires it
-  (drag-only: `allowFallback = false`), shared with `mbprobe apply`.
-- Startup: refresh permissions -> if Accessibility missing show onboarding and stop -> if Bartender runs, show "paused" and
-  poll every 5 s -> build engine, `start()` -> no layout file: initialize from one agreed scan (on bar visible, parked hidden)
-  -> `requestReconcile()` once -> `EngineTriggers.start()`.
-- Left click is configurable (Settings > General > "Left click", `revealMode`): the **overflow panel** (default, `panel`) or **show hidden
-  items in the menu bar** (`inline`); right click shows the menu (rebuilt per open). Our own item is never scanned.
-- **"Show the rest", two modes (gdu.15).** Mode 2 is the overflow panel (items stay parked, see "Overflow panel"). Mode 1 is the inline
-  reveal, driven by two engine flags: `LayoutEngine.setReveal(hidden:alwaysHidden:)` sets `showHiddenSection` (hidden section) and
-  `showAlwaysHidden` (always-hidden section too; option-click). The `Reconciler` treats the flagged sections as wanted on the bar, appended
-  right of the visible section in layout order (hidden first, then always-hidden); hide units stay whole (an app with an always-hidden item
-  stays hidden unless `showAlwaysHidden`). A reveal and its re-hide are NORMAL passes (live writes, verification, no respawn, gdu.55).
-  `EngineState.revealedObserved` is the OBSERVED state, written only when a pass ends (converged/incomplete) from the bar it observed:
-  true when a reveal is requested and at least one revealed item is on the bar (a partial reveal counts as shown; the failed items keep
-  their own `perItem` status), and with nothing requested it stays true until the re-hide has landed. The request alone never changes the
-  icon: `StatusItemController` shows `wineglass.fill` when `revealedObserved`, else `wineglass`.
-  `RevealController` (SommelierCore, testable) turns clicks into requests: a click while requested or revealed re-hides at once, option-click
-  also sets `showAlwaysHidden`, clicks within 300 ms of the previous accepted click are ignored, and it logs click -> converged time.
-  `RevealAutoRehide` (app) runs while a reveal is requested: re-hide after `autoRehideSeconds` (0 = never) without pointer activity over
-  the menu bar strip (the clock starts when the reveal is observed), or 0.6 s after the menu of a clicked menu bar item closed (global
-  `NSEvent` monitors: leftMouseDown over the strip arms it and suspends the idle clock; the next click below the strip or Escape is the close; a close
-  never seen ends after 20 s); a reveal that never converges is withdrawn after 20 s (log line plus `EngineState.revealNotice`, shown in the
-  Arrange status line as "Reveal withdrawn: N items could not be shown"). Untracked units: the membership batch is all-or-nothing (`LiveActuator`
-  refuses it when one key has no Control Center entry), so the planner (`Reconciler.plan`, the `gdu.15` block in the unit loop) drops a unit that is
-  pulled onto the bar only by a reveal when one of its parked keys has `canHide == false`, with the skip reason "cannot be shown: not tracked by Control
-  Center" (neutral `.unsupported` status). The other units show; the reveal counts as converged and `revealedObserved` is true (partial = shown).
-  `LiveActuator`'s refusal stays as the belt-and-braces guard.
-  Arrange status line (gdu.73): during a partial reveal (`showHiddenSection || showAlwaysHidden`) `ArrangeSections.revealSkipNotice` adds "N items could not be shown" ("1 item ..." singular) from the per-item `.unsupported("cannot be shown: ...")` statuses; `revealNotice` (withdraw) keeps priority. gdu.111: on a full bar (fresh overflow chevron) every hidden-listed parked key is withheld from the Reconciler in `makePlan` and skipped as "cannot be shown: the bar is full ..." (the panel is the reveal; nothing is shown on the bar); a batch-verification error never prints key lists on the status line (`StatusLine.batchDriftSummary`, raw text stays in the log). A key that "failed earlier" is no longer excluded from the skip (gdu.73): failures are cleared each pass except struck-out keys, and a struck-out key in a reveal batch would fail the all-or-nothing batch again (gdu.72's per-unit refusal covers only actuator refusals, not failures), so it is dropped like an untracked unit (keeps its own `.failed` status) and the other units show.
-- Settings layout convention (gdu.59): a `TabView` of `Form`s with `.formStyle(.grouped)` (labels leading, controls trailing, captions and footnotes in secondary style); one shared width (540 pt) and a per-tab height chosen in `SettingsView.height`, so the window fits each pane with no dead band. New controls go into a Form row, never a fixed-width HStack.
-- Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
-  re-grant calls `clearFailures()` and restarts.
+**Oscillation guard.** An untrusted key whose slot changed since the previous settled observation (advanced past the engine's own
+verified moves) makes crossing moves skip with "neighbour K is moving"; a pass converged only through such skips ends `.incomplete`,
+keeps its last verified move, and re-plans on the position-retry timer, so a flipping neighbour ends in a strike and a give-up (e).
+A move the actuator verified but the next read still plans is struck `.notVerified` before the cap.
 
-### System overflow (gdu.45)
-When the bar is full macOS (MenuBarAgent) hosts a chevron ("<<") and pushes the leftmost items behind it. They stay in the
-hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they are not drawn and a drag on them is a no-op.
-- ONE rule (gdu.69), `SystemOverflowRule.isOverflowed(frame, chevron:, hosted:)` in MenuBarItem.swift, used by the scanner's
-  flag (`SystemOverflow.mark`/`indices`), `ActuationVerifier.overflowed` and `OverflowProbe.isStacked` (gdu.65). With a FRESH
-  chevron (`isOverflowChevron`, found structurally, see docs/findings-drag.md) in the same read, a fresh on-bar frame is
-  overflowed when it lies left of the chevron's minX, or its centre is on the chevron, or it is stacked on another hosted frame
-  (centres within 2 pt) AND starts left of the chevron's maxX (the clipped pile extends past the chevron's minX live). Identical
-  frames far right of the chevron are chance, not overflow (findings-drag incident). No chevron, or a stale one, flags nothing.
-  Before gdu.69 the scanner flagged only items ordered before the chevron while the verifier also named stacked pairs and the
-  probe flagged stacked frames anywhere; worse, the scan often had NO chevron item at all: the hosted-to-candidate frame join
-  (`MenuBarScanner` `pass(.frameAmbiguous)`) paired the chevron element with an app item whose frame overlapped it (Script
-  Menu), so nothing was flagged and the planner kept planning moves of overflowed items. Chevron elements are now never joined.
-  The verifier keeps its pair-local identical-frame pre-drag guard, which never feeds the flag. `ObservedOrder.systemOverflow` /
-  `overflowChevron`, `ItemInfo.systemOverflow` and `ItemStatus.notFitting` carry the flag to the planner and UI.
-- Engine (gdu.69): an actuator refusal whose error `isOverflowRefusal` (`mechanismFailed` containing "is in the menu bar
-  overflow area", raised before any drag) is a skip, not a failure: no strike (`markFailed`), no `consecutiveFailures`; the key is
-  remembered for the pass (`overflowRefused`) and its moves are dropped from the plan (skip `Reconciler.overflowSkipReason`).
-  Statuses: a key flagged `systemOverflow` stays `.notFitting` (never red, never overridden by the skip).
-- Rule: Sommelier orders the drawn bar; macOS decides what overflows (it depends on total width), so a layout's order across the
-  overflow boundary is not a request Sommelier can act on. `Reconciler.plan` drops the overflowed keys and the chevron from
-  `desired` and `base` before the order planning: no drawn key is ever anchored or reported because of them, whatever the layout
-  lists (unknown, pulled-in, normalized or churned). Only an overflowed key the layout places differently relative to the drawn
-  keys gets one skip (reworded in 9o9.11 to "behind the « chevron; its order there is set when the strip is next opened"; agreeing layouts stay silent; the moves across the fold are planned, see "Items behind the chevron (9o9.11)"). No move has an
-  overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost` drop becomes
-  `.before(first drawn item)`); `overflowViolations` asserts this. Membership is unchanged (an overflowed item may still be
-  hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as
-  unsupported. To bring one into view, hide something else or use the future "hide what does not fit" action.
-- Pass structure on a full bar and the churn zone (gdu.80). Incident (gdu.77 live run): revealing two items on a naturally full bar
-  moved items between the drawn bar and the pile, the SAME pass re-planned 8 order moves and dragged real items. Rules:
-  (1) a pass that wrote membership (hide/show, reveal or re-hide) on a bar with a chevron NEVER runs the order phase in that pass
-  (`LayoutEngine.fullBarOrderGate`; log "order deferred: membership changed this pass"; the pass ends `incomplete`, not converged,
-  and a follow-up pass is scheduled). (2) An order pass on a full bar runs only when the overflow set is SETTLED: the last two
-  complete reads (`recentReads`, fed by every adopted `.complete` or `.completeExceptSelfPositioning` observation (9o9.17: carried frames keep pile membership, so a settled self-positioning-lacking read with a fresh chevron is as good for the pile set); incomplete reads are never fed) agree on the pile (`SystemOverflowRule.overflowSettled`);
-  otherwise "order deferred: overflow set unsettled: +[keys] -[keys]" (9o9.17: the symmetric difference of the two piles, newer-only
-  then older-only, at most 10 keys per side; `SystemOverflowRule.unsettledText`; bounded by `maxChainedPasses`). 9o9.17: a CARRIED
-  (stale) item keeps its pile membership: `SystemOverflow.indices` flags an item, fresh or carried, whose frame is left of, or
-  stacked at, a FRESH chevron of the same read (a carried frame is the last known position), so `ChurnRead`, `ActuationVerifier.overflowed`
-  and `ObservedOrder.systemOverflow` agree and the pile no longer flips between a complete read (9 keys) and an iStat-stall read (7 of them
-  carried, 2 flagged). A stale or absent chevron and an open strip still flag nothing; flagging is membership only, the planner never moves a
-  stale key (9o9.3). (3) Reveal passes (showHidden/showAlways) on a
-  full bar plan membership only: when the layout order then differs, no drag, the pass converges and `EngineState.orderNotAppliedNotice`
-  ("Order not applied: bar is full") reaches the Arrange status line below the withdraw and reveal-skip notices. (4) Churn zone
-  (`SystemOverflowRule.churnZone`, MenuBarItem.swift, built from `ChurnRead`): keys in the pile, or within one item-width (widest
-  hosted item, 40 pt fallback) of the first drawn item right of the chevron, in EITHER of the last two complete reads. Until 9o9.11
-  the planner treated them like overflowed keys and the actuator refused them; that kept near-fold DRAWN keys out of record order
-  indefinitely on a full bar (a 400-record simulation left 4 stuck). Since 9o9.12 the planner no longer excludes them
-  (`Reconciler.plan` has no `churn:` input) and `LiveActuator.setChurnZone` only makes the actuator treat a move whose subject, anchor
-  or drop neighbour is in the zone like a move across the fold: it is performed inside a strip session (below), where every frame is
-  real and nothing re-folds until the strip closes; with no chevron to click the zone is stale and the move is dragged as usual.
-  The zone is computed whenever EITHER of the last two reads had a chevron, so a re-hide that empties the pile (chevron gone) still defers and still guards; the gate also keys on a chevron before the write (`fullBefore`). The widest hosted item can be a ~140 pt clock, which widens the zone to 4-5 drawn items (accepted). Bars without a chevron are unchanged: membership and order still run in one pass.
-- Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
-  warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. The Arrange window's
-  "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls
-  `Layout.hideNotFitting(_:)` to move that tail to `hidden`; overflowed items that cannot be hidden (Apple, untracked apps) are
-  listed as staying.
+**Crossings.** See "Crossing the « fold" below: one cross-fold move at most, after the drawn order is settled, pull-out before push-in.
 
-### Items behind the chevron (9o9.11)
-Product rule: everything in Visible is in order, including what macOS hides behind the « chevron; Sommelier opens the « strip for a moment
-when it has to move something across that fold. It never opens the strip just to look.
+**Convergence rule.** With a collapsed strip the bar matches the record when every DRAWN trusted key is in record order AND every
+overflowed key is left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The
+order among overflowed keys is not tracked while collapsed. With the strip open the whole order is compared. A record the widths
+cannot realise (macOS decides by width what folds; the fold cannot be a prefix) is bounded by the one-move-per-pass cap and the
+per-minute cap, not by the per-key give-up.
 
-Live facts (2026-11-07 14:55, macOS 27.0.1, full bar, 9 items behind the chevron; bd memory `system-overflow-strip-command-drag`):
-clicking MenuBarAgent's chevron expands its strip and it stays expanded until clicked again; while expanded the overflowed items are
-DRAWN at real frames at the left of the bar (x 270-570 on the user's bar) and `LiveAccessibilitySource.overflowProbe` reports
-`expanded` with no stacked frames; a Command-drag inside the expanded strip reorders them; a Command-drag ACROSS the chevron (pile ->
-drawn region) works and macOS re-folds by width at once (the first drawn item fell into the pile). Nothing is unreachable. While
-COLLAPSED the stacked frames carry no order (live: stacked x 781/783/786 read Jump, TimeMachine, WiFi while the real order was Jump,
-WiFi, TimeMachine).
-- Observation. `AgentHostedTree.menuBarMinX` is the agent's own top-level AXMenuBar minX in the SAME read as the hosted elements
-  (`agentHostedTree`, the read `overflowProbe` mirrors). `MenuBarScanner.assemble` sets `stripExpanded` on the FRESH chevron item when
-  that minX lies left of the chevron (by more than 2 pt); a carried (stale) chevron never carries it, a read without the AXMenuBar
-  says false. `MenuBarSnapshot.stripExpanded` and `ObservedOrder.stripExpanded` derive from that item, so it can never come from a
-  cache. When expanded, `SystemOverflow.indices` (and so `mark`, `ChurnRead`, `ActuationVerifier.overflowed`) flag NOTHING and the
-  churn zone is empty: every fresh item has a real frame and the chevron is no boundary.
+**Skip reasons and their plain words.** A skipped key is explained, never silently dropped. The engine's technical text stays in the
+log; Arrange shows `ArrangeSections.plainReason` where one exists:
+
+| Skip (log text) | Arrange says |
+|---|---|
+| its position is not corroborated by a hosted element ("... no drag") | Sommelier can't pin down where this item is on the bar |
+| stale frame / position not refreshed; waiting for a fresh read | Position being re-read |
+| neighbour K is moving (9o9.9) | Waiting for K to settle (status line) |
+| no safe move this pass; waiting for the bar to settle | the text as written (row stays "moving") |
+| behind the « chevron; its order there is set when the strip is next opened (or macOS decides what fits) | Behind «; macOS decides what fits |
+| behind the « chevron; cannot be brought out yet: the item it should follow is not trusted on the bar | Behind «; the item it should follow can't be located on the bar yet |
+| behind the « chevron; cannot be brought out yet: its own position has not been read | Behind «; its position hasn't been read yet |
+| cannot be placed right of the system items (<anchor>) | the text as written (a drop into the block is refused with "macOS keeps the system items at the right end") |
+| immovable item is out of layout order | the text as written (neutral `.unsupported`) |
+| blocked by a key the engine gave up on | Blocked by X, which Sommelier can't place — right-click it to try again |
+
+### Plan details (reference)
+
+- Phases: `.membership` returns only hides then shows (one batch; MenuBarAgent picks where a shown item lands, so order cannot
+  be planned yet); `.order` returns only moves; `.converged` returns nothing. Expect at most 3 plans.
+- Anchors never move: `canMove == false` items and items that should be hidden but have `canHide == false` (reported in `skipped`).
+  Anchors are part of the target: the target is the layout's full on-bar order including anchors, so movable items are arranged
+  around them (an anchor the layout does not place keeps its observed slot). Convergence means the observed order equals `desiredOnBar`
+  with anchors included. If the anchors' relative order on the bar differs from the layout's, that part is unreachable: each offending
+  anchor goes into `skipped` ("immovable item is out of layout order"; the engine shows `.unsupported`) and the rest is planned with
+  every anchor in its observed slot. In a membership phase (hides/shows pending) these anchor skips are NOT reported (gdu.44): the bar
+  is about to change and a transient or churned read (e.g. no chevron in that scan) can show anchors out of order that the order pass
+  finds fine, so the order pass decides. Unsettled observations are never planned on by the engine, so no extra suppression is needed.
+
+- Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock) is unreachable for third-party
+  items on macOS 26+. A movable key the layout places right of its first item goes into `skipped` ("cannot be placed right of the system
+  items (<anchor>)"; the name is the block's first MODULE, since a self-positioning item can sit at its start, gdu.61) and is relocated in the target to the last slot before the block (relative order kept), so no drag ever has an anchor
+  as subject or a destination in the block (asserted after `moves`). The block is taken from the observed bar BEFORE shown items are
+  appended, so in a membership pass a key the layout puts right of the clock is already skipped and relocated before it in
+  `desiredOnBar` (shows no longer appear right of the clock until the order pass). When anchors are out of layout order, movable keys
+  the layout puts right of a block containing system modules also get their own "cannot be placed right of the system items" skip. Non-trailing anchors (e.g. `module:WiFi` mid-bar) are unaffected.
+  Correspondingly `Layout.move(_, to: .visible, index: nil)` inserts before the trailing run of `.module` keys instead of appending
+  (`Layout.trailingSystemBlock`); an explicit index is literal and `mbprobe layout move` warns when it lands in the block.
+- Hide units: membership is decided per unit before any hide/show is computed. A unit is wanted-hidden only if all its observed
+  layout-listed keys are hidden-listed and the hidden section is not being revealed with `showHiddenSection`; a unit with any `alwaysHidden` key stays hidden even while revealing (its `hidden` keys get a "kept hidden together with <key>: an always-hidden item keeps its app hidden" skip, and `OverflowEntry.pinnedHidden` marks them in the panel); otherwise it is wanted
+  on the bar and each hidden-listed key goes into `skipped` ("hidden together with <ownerKey>: all items of an app hide or show at
+  once"). `hides`/`shows` cover every observed key of the unit, so the actuator batch is complete and never conflicts. Unknown items
+  of a listed unit follow the unit (also when the listed siblings are absent from the observation, gdu.44); a wholly unknown unit follows `newItemPolicy` only if one of its items is on the bar. If a unit
+  must hide but one item cannot (`canHide == false`), none of it is hidden (all anchored, reported in `skipped`). The overflow panel
+  (`OverflowEntry.unit/unitSize`) keeps a unit adjacent, with a divider between units and a count badge plus "Hidden together" tooltip.
+- Unknown keys (not in the layout) follow `newItemPolicy` and are returned in `newItems` (the planner never mutates the layout);
+  a wholly unknown unit that is parked is never shown (a unit the layout lists is
+  decided by its listed siblings, observed or absent, and an unknown key of it follows that decision). Layout keys not observed are listed in `absent` and ignored.
+- Minimality: anchors are always kept; per gap between anchors, a longest increasing subsequence of movables stays put; moves == items out of place. Moves are emitted
+  left to right in target order, preferring `.after(left neighbour)`, then `.before(right)`, and `.leftmost`/`.rightmost` only as a last resort.
+- `PlanSimulator.apply` replays actions on an `ObservedOrder` (show slot injectable); `ReconcilerRandomTests` uses it for seeded convergence checks.
+- Dev tool: `mbprobe plan [--show-hidden] [--file PATH] [--json]` prints the plan and executes nothing.
+
+
+
+### Crossing the « fold
+
+Product rule: everything in Visible is in order, including what macOS hides behind the « chevron; Sommelier opens the « strip for a moment when it has to move something across that fold. It never opens the strip just to look. Nothing behind « is unreachable: while the strip is expanded the pile is drawn at real frames and a Command-drag inside it, or across the chevron, works; macOS re-folds by width at once after a crossing. While COLLAPSED the stacked frames carry no order. (Live facts: "Live evidence" (3).)
+
 - Planner, collapsed strip (`Reconciler.crossFoldMove`). Overflowed keys are NOT dropped from the record for order purposes any more:
   the record over the on-bar Visible keys (keys the layout does not list yet are excluded) must have the fold as a PREFIX. A
   violation is a pair (drawn Y, pile X) with the record placing Y left of X. After the drawn order is settled (drawn moves always come
@@ -565,7 +383,145 @@ WiFi, TimeMachine).
   (the fold cannot be a prefix) is bounded by the one-move-per-pass cap and the per-minute cap; the per-key give-up does not bound the
   stall (the churn exclusion that caused it is gone, 9o9.12).
 
-### The strip session (9o9.12)
+
+
+## (d) The actuator
+
+`LiveActuator` (behind the `MenuBarActuator` protocol; `FakeActuator` in tests) performs one action at a time and returns a typed
+result only after a settled full scan agrees. The engine hands it keys and directions, never a snapshot; it takes its own scan right
+before acting.
+
+**Drag.** A Command-drag synthesized as CGEvents on `.cghidEventTap` (10 steps, 15 ms apart, 100 ms hold; drop at the hovered item's
+`midX +/- 6 px` on the far side), at least 2 s wait after the mouse-up, verification by a full scan, one retry with a shifted drop
+point. Details and the numbers in "Primary mechanisms" and "Closed-loop contract" below.
+
+**The strip session (9o9.12).** A move whose subject, anchor or drop neighbour is behind the chevron (a crossing, as
+`Reconciler.crossesFold` derives it) or in the churn zone is performed inside ONE strip session: `StripController` clicks the chevron
+(70 ms hold) and waits until the expansion is steady (`stripExpandTimeout` 1.5 s), the actuator takes a fresh full scan with every
+frame real and drags, then the chevron is clicked until the strip reads collapsed (two tries of `stripCollapseTimeout` 1 s; Escape
+does not close it). The strip is closed on EVERY exit after our own open; a close that fails keeps the move's result and adds the
+trace note `overflowStripStillExpanded`. A strip the user already had open is dragged in and left open. A stale subject or target on
+the collapsed pre-scan opens the strip first and the fresh scan taken with it open decides (9o9.23). One session counts as one move
+for the per-minute cap and the one-move-per-pass limit. "The strip session" below has the step list.
+
+**Verification, including the fold rule (9o9.19).** Adjacency (`Relation`) is verified on a settled read. A crossing makes macOS
+re-fold by width, so the relation target can fall into the pile where stacked frames carry no order and adjacency cannot be read.
+The engine hands the actuator the record order before each move (`setRecordOrder`); when adjacency fails on a settled read and the
+target is behind the chevron, `ActuationVerifier.foldVerdict` applies the chevron rule to the subject: drawn, every on-bar record key
+left of it behind the chevron or drawn left of it, none right of it behind the chevron or drawn left of it. Inside our own session the
+verdict is taken from a settled read AFTER the strip closed (`.verified`, no strike; the engine's convergence rule then agrees); a
+strip the user had open is judged on the expanded read at once. A re-plan inside a session re-checks the rule first; if unsatisfied
+and the target is in the pile, the new target is the nearest key left of the subject in the record that is drawn, fresh and
+trustworthy; none: `.failed(.notVerified)` ("no drawn key to aim at"). A drop on the chevron is always refused.
+
+**The expanded strip is never a menu.** In a session (or with the user's strip open) the "menu opened" growth check counts only when
+`ActuatorPlatform.menuOpenByAnotherApp()` agrees: a pop-up-layer window owned by an app other than Sommelier and MenuBarAgent.
+
+**Modifier release (9o9.20).** `DragMover` posts the mouse-up with no flags and a `flagsChanged` key-up for virtual key 0x37 on the
+same tap, so the Command modifier is never left latched in the HID state (0x20100000 was observed live after a strip session).
+`LivePlatform.drag` and `mbprobe drag` re-check `ModifierState` afterwards and post one more key-up if still latched, never looping.
+
+**Menu gate.** Before every drag and every strip session the engine and the actuator wait for a quiet interaction state (e): no open
+menu (a narrower detector since 9o9.8: a pop-up-layer window other than Sommelier's own, bounded at `menuOpenMaxWait` = 120 s), no
+mouse button down, no modifier held, no Arrange or hand drag, screen unlocked and awake. The same gate is checked again by
+`ActuatorPlatform.interactionBlockingReason()` inside the actuator; a reason returns `.failed(.userBusy)` with nothing clicked.
+
+**Fallback never with the strip open.** The order-store fallback (edit `TrailingItemPreferredPositions`, restart the agent) is off in
+the live app (`EngineFactory.makeLive`: `allowFallback = false`) and is never used inside a strip session or while the strip is
+expanded, ours or the user's, because it restarts MenuBarAgent. Where the fallback is allowed (`mbprobe apply --allow-fallback`) it
+runs only after two failed drag verifications.
+
+### Primary mechanisms
+
+| Action | Primary | Evidence |
+|---|---|---|
+| Reorder (on-bar third-party item) | Synthesized Cmd+drag via CGEvent on `.cghidEventTap`: 10 steps, 15 ms apart, 100 ms hold; drop at hovered item's `midX +/- 6 px` on the far side (`DragTarget.dropX`); wait >= 2 s; confirm with a full scan; retry once with the next drop point. No flash (bar changes once at mouse-up +90 ms); MenuBarAgent persists the new order itself, no restart. | findings-drag Exp A 20/20, B 23/23 (>=10 steps; 5-step drags succeed only 1/7, i.e. fail 6/7), C 10/10 on KeepingYouAwake, D (persist + no flash). 53/53 total. |
+| Hide / show | Control Center `trackedApplications[...].isAllowed` flip (`ControlCenterTrackedAppsStore.setAllowed`) + ONE batched `killall MenuBarAgent`. ~2-3 s, 1-2 s bar flash, other items keep slots, shown items return to their previous slot. Only apps that already have a tracked entry. **Live path (gdu.39, primary when the process has the `com.apple.security.application-groups` = `group.com.apple.controlcenter` entitlement, `AppGroupEntitlement`):** `ControlCenterTrackedAppsStore.setAllowedBatchLive` (CFPreferences set + synchronize, read back through CFPreferences), then `LiveActuator` polls full scans every 0.5 s until the first COMPLETE hosted read decides (an unsatisfied complete read gets one more complete read before giving up; hard ceiling 8 scans / 20 s). No respawn, no flash. Live-path timings: see "Live evidence" (1). **No bar flash from hides (gdu.55):** a verification timeout is never a respawn reason. After `setAllowedLive` succeeds the actuator reads `isAllowed` back through CFPreferences (`readAllowedLive`, 3 attempts over 1.5 s; an unreadable store cannot contradict the write). Readback shows the intended values: the batch is APPLIED and the poll only CONFIRMS: confirmed -> `.verified`, mechanism `live`; max scans (8) / timeout (20 s) without a contradiction -> `.verified` with mechanism `liveUnverified` (note `applied per Control Center store; confirmation pending`), the hide's owners recorded assumed-hidden, no respawn, no strike; two complete reads that still show the unit (store applied, agent did not act) or another item leaving the bar -> `.failed(.notVerified)` with mechanism `live`, assumed-hidden cleared (the scanner's `isAllowed` readback clears it too), no respawn, the engine re-plans normally. During a self-positioning streak (previous full read `completeExceptSelfPositioning`, non-self-positioning unit) the confirm polls use the fast hosted read (`scanVisible`, can only confirm) with a full scan every 3rd poll. **Respawn (file write + `killall MenuBarAgent`) only when the live write itself failed:** `liveHideShowAvailable == false`, `setAllowedLive` threw, or the readback never showed the intended value; and only if `LiveActuator.Config.allowAgentRestart` allows it (nil = automatic = `!liveHideShowAvailable`, i.e. on only when the entitlement is missing; `allowAgentRestartProvider` is read per batch and carries the Settings toggle "Allow menu bar restart as a last resort", `@AppStorage("allowAgentRestart")`, default off with the entitlement; `mbprobe hide|show|apply --allow-agent-restart`). Not allowed -> `.failed(.liveWriteFailed(reason))`: the engine logs it, marks the key failed (struck out at once like a respawned batch, not `.unsupported`) and does not restart. `lastBatchUnconfirmed` (`MenuBarActuator`) lets the engine keep `.liveUnverified` keys `.inPlace` and publish them in `EngineState.pendingConfirmation`; the Arrange badge stays a check mark with an orange dot and the tooltip "Applied; confirmation pending" until a later settled complete read confirms (hide: unit off the bar by evidence, not only by assumption; show: on the bar), and the engine does not strike such a key while the read still disagrees. Unit tests: `LiveActuatorTests` (gdu.55 section), `LayoutEngineTests`. The order-store fallback for `move` (`allowFallback`, mbprobe only) and the respawn path itself are unchanged, including the `fullStrike` for genuinely respawned batches. Developer ID/notarized: see findings-live-trigger section 8. The file-read fallback in `setAllowedBatchLive` (when CFPreferences returns nil) and the respawn fallback's file write can push a lagging on-disk blob into cfprefsd; low probability, same as the pre-existing respawn path. **Scanner detection of a live hide has three evidence kinds (of7):** (1) hosted-by-name: an item with an AX identifier (or description) that was seen hosted and is absent from a COMPLETE hosted read is `notHosted` (gdu.38); (2) parked frame (x -1..3, y ~1188), the post-respawn state; (3) write-time hosted-ELEMENT evidence for identifier-less items (Tot, Yoink, Moom; their hosted and app-side elements share no name, only an unreliable frame join): `LiveActuator` takes the attributed hosted tree of the full scan it already made before the write (`MenuBarSnapshot.hostedLayout`; if that read is incomplete: complete scans retried for up to 4 s, then the scanner's last complete tree if at most 10 s old; the trace says which baseline was used), writes, and probes complete hosted reads at 0.3/0.8/1.5/2.5/4/6 s plus the poll's own complete scans. Verified iff the post-write tree equals the pre-write tree minus exactly the unit's joined elements, in order (`HostedEvidence.removedExactly`: same identifiers/descriptions; widths compared only for identifier-less elements, because named readouts change width on their own; modules must still be present), and no other app-side item left the bar. A mere count match is NOT evidence (another element vanishing while one appears has the same count). Only pure-hide batches; a batch that also shows items keeps the complete-read poll alone. Evidence records the owner in `ScanState.assumedHidden` (pid, bundle id, Control Center tracked key, time, hosted count after, item count; persisted in `scan-cache.json`, so `mbprobe list` sees it). `MenuBarScanner` then reports that owner's identifier-less, on-bar-framed items `isOnMenuBar = false`, `hidden = assumedNotHosted`. Cleared by: a live/respawn SHOW by us (actuator and `ItemActivator` clear it at write time), a respawn, the owner quitting, a different bundle id on that pid (reuse guard), the Control Center `isAllowed` readback (CFPreferences, rate-limited to once per 10 s per owner) reading true (someone else showed it), or a 2 h hard safety expiry (logged). There is deliberately NO frame/width/count contradiction rule: a foreign element (our own status item sat on Tot's stale frame with the same width) can overlap a stale frame, and the store is what the agent enforces, so the record stands exactly as long as the store says hidden. If the actuator is asked to hide an identifier-less unit whose store value already reads hidden, it writes nothing, records the owners and returns `.verified` with mechanism `alreadyApplied` (trace "already hidden per Control Center store; recorded assumed-hidden"). Sommelier's own status item button carries `MenuBarScanner.ownStatusItemIdentifier`; the frame join never attributes that hosted element (or an identifier-less one described "Sommelier") to another candidate. Asymmetry: the flag is ONLY set by our own successful write plus element evidence, never inferred from frames or absence alone, so an untouched bar cannot produce a false hidden; a wrongly cleared flag merely restores the old behaviour (reported on-bar, respawn fallback). `ItemActivator` records the flag after its re-hide write when the hosted tree is again exactly the pre-reveal tree, and the activator shares the engine's `LivePlatform` (one scanner, one `ScanState`), so the engine's next pass plans nothing; while a transient reveal hold is active the engine plans no actions and records no new items at all (a revealed element may appear as an unknown heuristic item that must never be dragged). The flag is keyed by pid (the unit is the owner; identifier-less items' own keys are frame-based and move). | findings-visibility A2/A4/A6 (applies only after agent restart; no live reload A1/A3/A5); A7/A8 (hand-made entries are not honored); conclusion. |
+
+Legacy per-app `NSStatusItem Preferred Position` / `Visible` writes are NOT mechanisms on this OS (findings-positioning A/B;
+findings-visibility B1-B5).
+
+
+
+### Fallbacks
+
+
+* **Reorder fallback: order-store edit + agent restart.** `MenuBarOrderStore` writes
+  `TrailingItemPreferredPositions[status:<ownerKey>::<autosave>]` (bigger = further left; only relative order matters; fresh keys are
+  accepted; never `module:`), then `killall MenuBarAgent` (`MenuBarAgentControl.restart`). Used when (1) a drag failed verification
+  twice (the initial try plus the one retry), (2) the mouse is busy for the whole wait window and the user has asked for the change
+  anyway (UI may offer "apply now with flash"), or (3) a plan contains many moves (rule of thumb: >= 4 moves, or a move of a parked
+  item, which cannot be dragged) so one restart beats N sequential 2-3 s drags. Evidence: findings-positioning C1-C4, D, and
+  restart cost C6 (2.4-2.7 s stable, 4.5-5.8 s in 5 runs; two runs hit the 10 s poll timeout, one completing ~5 s later, i.e. ~15 s) and visibility A2 ("~1-12 s").
+  The restart must wait for the order file to be quiescent (poll mtime; drag Exp D: the agent rewrites it 0.85-4 s after mouse-up) or a
+  pending agent write can clobber ours.
+  **Value rule (gdu.25, `OrderStorePlanner`):** the fallback never permutes values among keys and never bails on duplicates. The subject
+  gets one unique value strictly between its new neighbours (`floor((L+R)/2)`; `R+2` / `L-2` at an end); when no integer fits (adjacent
+  integers, equal neighbour values, inverted values) the smallest contiguous run around the slot is re-based between two untouched anchors
+  (spacing >= 2, order kept, never a key outside the run, never `module:`). One write, one respawn, full-scan verification. Refused
+  when the engine config has `allowFallback == false`.
+* **Hide with no tracked entry:** the system creates the entry itself ~0.2-0.3 s after a status-item app launches (gdu.24, findings-untracked-hide.md),
+  so "untracked" is normally transient: re-read `trackedApplications` for >= 1 s before declaring it. If still absent, `Capability.canHide == false` with the reason
+  "cannot be hidden: not tracked by Control Center" and the UI offers "Open System Settings > Menu Bar". Creating the entry ourselves works (entitled cfprefsd write, `isAllowed=false`, honoured and kept)
+  ONLY with the exact system shape including `menuItemLocations` matching the launching executable (wrong shape is overwritten to `isAllowed=true` within ~0.25 s; a shape without `menuItemLocations` makes the system discard the whole blob). Proven for ad-hoc apps only; follow-up
+  (not yet filed): implement the recipe in findings-untracked-hide.md after proving the signed-app `menuItemLocations` form.
+* **Hide for Apple apps / modules:** only through System Settings (store refuses `com.apple.*` and `module:`).
+* **Show-in-place without restart:** none. AXPress on a parked item opens its UI (see "Identity and sections") but does not un-hide it.
+
+
+
+### Closed-loop contract
+
+
+Every `MenuBarActuator` call follows: **precheck -> act -> settle -> verify -> typed result**.
+
+1. **Precheck (no side effects).** Key absent from the latest snapshot -> `.failed(.notFound)`. `Capability` says no ->
+   `.failed(.unsupportedItem(reason))`. No Accessibility -> `.permissionDenied`. Drags only: `NSEvent.pressedMouseButtons != 0` ->
+   re-check for up to 2 s, then `.failed(.userBusy)`.
+2. **Act.** One mechanism (a), or the fallback (b). All actuations serialize through one actor; drags are strictly sequential.
+   `DragMover` must guarantee a mouseUp is posted even when event creation fails after mouseDown (gdu.7 review). After a drag, check
+   for an opened `AXMenu` on the item; if present post Escape and return/count `.mechanismFailed("menu opened")`.
+   Before any actuation, if Bartender 7 (`com.surteesstudios.Bartender`) is running, return `.failed(.conflictingManager("Bartender 7 is running"), nil)`.
+3. **Settle** (`SettleDetector`, gdu.9): poll until two consecutive agreeing scans (same keys, same order, frames within 1 pt). Fast scan
+   (`scanVisible`, sub-second) is for polling only; the **final verdict always uses a full scan** (fast scans mislabel identifier-less
+   items right after a move: findings-drag pitfall 2).
+   **Verdict rule (gdu.27):** after two agreeing fast scans the verdict full scan must itself agree with the last fast observation (`SettleDetector.verdictAgrees`: on-bar key order of items both scans can know; items stale in either scan, noise width <= 1 and self-positioning owners are ignored; parked set only when the fast scan reported parked items). A disagreeing verdict triggers a new fast pair and a new verdict (+ ~0.15 s + 2 fast scans + 1 full scan) until `maxWait` / `maxFullScans` (3 total full scans), then the outcome is not settled (`SettleOutcome.trace`: "verdict disagreed with fast observation"). An incomplete fast read (e.g. an iStat AX-timeout streak) is compared like any other, so it costs no extra full scan. Up to two retries of an empty full scan count toward `maxFullScans` but are not limited by it, so the total can exceed it by two. No extra scan when the verdict agrees.
+   Floors/caps: after a drag wait >= 2.0 s after mouse-up (AX lags 0.4-2.0 s,
+   median 1.0 s) with a ~4 s cap; after an agent restart wait until the hosted count recovers (budget 15 s; typical 2.5-3 s), then the same two-scan rule.
+   **Stale items never count as verified**: if the moved/hidden item (or its neighbor in a relation) has `stale == true`, keep waiting for a
+   fresh read or fall back to a full scan; still stale at the cap -> `.timeout` (gdu.23 review).
+4. **Verify (predicate on the final full scan, resolved to keys by `IdentityResolver`):**
+   * move: strict immediate adjacency per `Relation` (`DragTarget.holds`); `.leftmost`/`.rightmost` = first/last non-module on-bar item. NOTE: the existing `DragTarget.holds` / `DragRelation` only support string-keyed `before`/`after`/`toX`, not `.leftmost`/`.rightmost` and not `ItemKey`; **gdu.9 must extend `DragRelation` to ItemKey-keyed `before`/`after`/`leftmost`/`rightmost` and implement verification for all four**;
+   * hide: item present and `isOnMenuBar == false` (parked); show: on bar;
+   * batch: every key in the batch satisfies its predicate AND no non-batch item changed on-bar state;
+   * a verdict that depends on a `heuristic` key (or an `inferred` one in a stale-prone owner) cannot be `.verified` unless the item is
+     also confirmed by a non-frame attribute (AXIdentifier) in the full scan; otherwise `.notVerified`.
+5. **Result.** `.verified(snapshot)` or `.failed(error, lastSnapshot)`. Mismatch -> `.notVerified(expected:, observed:)`; no convergence ->
+   `.timeout`; anything else (event creation failure, plist write error) -> `.mechanismFailed(String)`.
+   **`.verified` never comes from one full scan (gdu.26).** A move that already looks satisfied on `prepare()`'s single scan is re-observed through `SettleDetector` first (disagreement -> re-plan from the settled observation, or `.timeout` if it keeps flapping); a batch that looks satisfied on one full scan needs a second full scan that agrees (`SettleDetector.agree`) before `batch already satisfied`, and a contradiction restarts the batch once from the newer scan. Cost: one extra settle / full scan (~0.3-1 s) on the no-op paths only. The live-write confirm poll (first complete hosted read after a write; gdu.39/51/55) and the store-based `alreadyApplied` / `liveUnverified` results are different evidence by design (a state change observed after the write, resp. the Control Center store), not a settle claim.
+
+**Retry policy.** Drag: attempt 1 with standard drop point; on `.notVerified` retry once with the drop point shifted (+/-6 px more, or 20
+steps); second failure -> fallback (order store + restart, if allowed by the caller) else `.failed`. Never retry after `.userBusy`,
+`.permissionDenied`, `.unsupportedItem`, `.notFound`. **Overflow guard (gdu.25):** items macOS has pushed into its menu bar overflow (ordered before the agent's `Show Hidden Menu Bar Items`
+chevron, or stacked with identical frame x/width) are reported on-bar but not drawn; drags there fail 27/28 (the one pass was confounded by a display change; 50/50 elsewhere, findings-drag
+"Intermittent adjacent-drag failures"). If the subject, the target or the item under the drop point is overflowed the drags are skipped:
+straight to the fallback when allowed, else `.failed(.mechanismFailed("... overflow area ..."))`. Drag defaults are unchanged (10 steps, 15 ms, 100 ms hold;
+retry 20 steps), no parameter variant helped. Restart-based actions: one retry of the restart if the verifying scan still shows the
+old state AND the plist write is confirmed to have landed; second failure -> `.failed`.
+
+**Live hide/show path found (gdu.36, `docs/findings-live-trigger.md`):** writing `trackedApplications` through cfprefsd under `group.com.apple.controlcenter` (needs the app-group entitlement) hides/shows with no MenuBarAgent respawn; respawn stays the fallback. Verified in gdu.40 (`docs/findings-live-trigger.md` section 8): a Developer ID + hardened runtime + notarized binary with that entitlement gets the live path on the dev machine (macOS 27.0.1); not proven for an app bundle on a fresh Mac or macOS 26, so the respawn fallback stays.
+
+**Batching.** All hide/show changes in a plan are collected into ONE `isAllowed` write + one restart (`applyHiddenBatch`); fallback reorders
+join the same restart. Drags are never batched with each other (sequential, each verified) and run **before** any restart in the same plan
+(a restart blanks the bar for 1-2 s). Restart happens after the agent-store file is quiet. Validation happens before the write (back up the plist in memory); a missing key or conflicting
+requests still fail the whole batch, but units the capability rules refuse (no tracked entry, Apple app, no owner; gdu.72) are split off with their own
+reason (`BatchOutcome.perKey` `.failed(.unsupportedItem)`, `MenuBarActuator.lastBatchRefused`) and the applicable units go out in ONE write; the aggregate
+`result` covers only the applied units (all refused: no write, uniform `.failed(.unsupportedItem)`). The engine records refused units as skips (`.unsupported(reason)`,
+no strike, no `batchFailed`, not retried until `clearFailures`/layout change); a genuine write failure still raises `batchFailed`. Capability snapshot per pass (gdu.74): `LayoutEngine.refreshHideUnits` reads the tracked entries once at the start of each pass and derives BOTH the hide-unit rule and the planner's capability rules from that one snapshot (`Config.capabilitiesFor`; `EngineFactory.makeLive` wires it, tests/mbprobe keep the fixed `makeCapabilityRules(resolver:)`), so an entry appearing or disappearing after launch is seen by planner and actuator alike. Refused-unit re-evaluation: at the start of each pass `reevaluateRefused` drops an `actuatorRefused` key whose item vanished, or which was refused under an older snapshot and whose capability now allows it (it is planned again, no Retry needed); a unit the rules still refuse, or refused under the current snapshot, stays `.unsupported` without a strike. `clearFailures` (Retry/`setLayout`) still clears all. Still-refused parked units are withheld from the Reconciler (to avoid an endless show) and re-added as explicit skips with the refusal reason; the Reconciler's reveal skip reason is taken from `capabilities(k).reason` (Apple app vs not tracked). Verification is per-key. gdu.111: for a SHOW whose Control Center readback confirmed `isAllowed == true` in this batch, a final scan with a fresh overflow chevron and the item absent / not drawn is satisfied ("shown; behind the chevron (bar full)", `visibilityVerdict(barFull:confirmedShown:)`); the pre-write "already satisfied?" check stays strict.
+
+
+
+### The strip session
 `LiveActuator.move` performs a move whose subject, target or drop neighbours are behind the chevron (`ActuationVerifier.overflowed` on
 the collapsed scan, i.e. a cross-fold move as `Reconciler.crossesFold` derives it) or in the churn zone (`setChurnZone` plus
 `ChurnRead`) inside ONE strip session (`stripNeed` = crossesFold || touches the churn zone; nil when the scan already shows the strip
@@ -590,7 +546,7 @@ Sequence in `LiveActuator.stripMove`:
    neighbour, inside one a strip that closed under us, is refused with `.mechanismFailed`; the session's close path still runs).
 4. Close on EVERY exit after our own open (plain sequential flow, no early return between open and close). A close that fails keeps the
    move's result and adds the trace note `overflowStripStillExpanded` (`overflowStripStateUnknown` when the probe is unreadable).
-Verification inside a session (9o9.19; live 2026-11-07 17:41, Jump Desktop Connect after KeepingYouAwake):
+Verification inside a session (9o9.19; "Live evidence" (4)):
 - The expanded strip overlay belongs to MenuBarAgent and is never a menu. In a session (or with the user's strip open) the per-item window
   growth that would read "menu opened" counts only when `ActuatorPlatform.menuOpenByAnotherApp()` agrees: a pop-up-layer window owned by an
   app other than Sommelier and MenuBarAgent (`LiveInteractionSource.menuOpen(excludingPIDs:)`).
@@ -614,7 +570,102 @@ seconds after a drag (findings-drag "The expanded strip"). `FakeActuator.stripEv
 `mbprobe overflow expand|collapse` (write actions; plain `mbprobe overflow` stays read-only) and `mbprobe drag ... --strip` use the same
 controller; `mbprobe move` goes through `LiveActuator` and so gets sessions automatically.
 
-### Hand drags are adopted (9o9.7)
+
+
+## (e) The safety envelope
+
+Ordering moves the real mouse, so it is bounded and the bounds are invisible until they trip. Exact defaults
+(`LayoutEngine.Config`, `LiveActuator.Config`, `ScanState`):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `maxOrderMovesPerPass` | 1 | order drags per pass, then a fresh observation |
+| `maxChainedPasses` | 2 | self-rescheduled incomplete passes before the engine waits for a trigger |
+| `maxActionsPerPass` | 50 | actuator calls per pass |
+| `maxAttemptsPerItem` / `attemptWindow` | 3 / 600 s | per-key give-up |
+| `maxOrderMovesPerMinute` / `orderCapWindow` | 6 / 60 s | sliding-window cap on order drags |
+| `busyWait` (poll `busyPoll` 0.1 s) | 3 s | how long a pass waits for the user to stop interacting |
+| `interactionRetry` ... `interactionRetryMax` | 2 s ... 60 s | paused-pass retry, doubling per episode |
+| `menuOpenMaxWait` | 120 s | an "open menu" reason older than this is ignored until it clears and reappears |
+| `arrangeDragMaxAge` | 30 s | an Arrange or hand-drag flag older than this is treated as lost |
+| `handDragAdoptWait` | 10 s | wait for a settled complete read before adopting a hand drag as unchanged |
+| `noticeLifetime` | 10 s | the new-item, hand-drag and System Settings notices |
+| `stripExpandTimeout` / `stripCollapseTimeout` | 1.5 s / 1 s | strip session open and close |
+| `recentlyVerifiedMaxScans` / `recentlyVerifiedMaxAge` | 2 / 20 s | carried frames shown as fresh (display only) |
+| `maxKeyFailures`, `maxConsecutiveFailures`, `maxAllFailedPasses` | 3, 3, 3 | the older strike rules, below |
+
+**Per-item give-up and retry (9o9.4).** For each key the engine counts an *attempt* for any order move of it (whatever the relation
+or outcome), for a verified move that the bar reverts within 2 passes, and for a failed actuator call. Three attempts within 600 s
+make the key `ItemStatus.cannotPlace(reason:attempts:)`: it is held (a pinned anchor), excluded from planning, keeps its observed slot
+and is logged once, `engine: giving up on <key> after 3 attempts: <reason>`. Nothing is retried automatically. A held key is released
+by: "Try again" on its Arrange row (`LayoutEngine.retry(key:)`: clears attempts, failures and strikes and plans it at once), a layout
+change that touches the key (a section change; `setLayout` clears the give-up of touched keys), its owning app relaunching
+(`appsChanged`), or adopting a hand drag (the old attempts concerned the old record). Sommelier relaunching also clears it: the state
+is in memory. The status line counts held rows ("N items can't be placed — right-click one for why").
+
+**Strikes (older rule, still in force).** A key whose action fails is an anchor for the rest of that pass; the same key failing in
+`maxKeyFailures` (3) passes in a row stays `.failed` until `setLayout`, Retry, or its app leaving the bar. 3 consecutive failed
+actions end a pass; `lastError = .stoppedAfterFailures` needs `maxAllFailedPasses` such passes in a row. A move that was verified but
+is planned again counts as `.notVerified` and escalates to a full strike on the third disagreement. A respawn-based membership batch
+strikes its failed keys at once.
+
+**Per-minute cap.** At most 6 order drags in any sliding 60 s (a strip session is one). Beyond that the pass still runs membership
+and skips the order phase: `engine: order moves capped for 60 s`, `EngineState.orderCapUntil` is published, Arrange reads "Pausing
+order moves for a minute", and the engine schedules a pass for the moment the oldest move leaves the window. Membership (hide, show)
+is never capped.
+
+**Interaction gate and pause.** Before the membership batch and before every order move the engine waits up to `busyWait` (3 s) while
+a menu is open, a mouse button is down, a modifier key is held, an Arrange drag is in flight (`ArrangeDragBox`), a hand Command-drag in
+the menu bar is in progress, or the screen is locked or the display asleep. If it does not clear, the pass ends `.paused`
+(`engine: paused: <reason>`, logged once per episode, shown as "Paused: <reason>" in Arrange), nothing is struck, and it is retried
+after 2 s, then 4, 8 ... up to 60 s per episode (9o9.8). While the screen is locked or the display asleep the retry is a fixed 60 s
+and nothing is observed; unlock, display wake and session-active signals end the backoff and run a pass at once. An unpaused pass
+resets the backoff. Observation continues during a pause; only actuator calls stop.
+
+**Pause Sommelier.** The status item menu's Pause/Resume Sommelier (`EngineState.userPaused`, never persisted): observation
+continues, no actuator call is made, Arrange reads "Paused". Resuming plans again at once.
+
+**Rate honesty.** The envelope never hides a refusal: a held key shows its reason, a cap shows its notice, a pause shows why. The
+status line precedence is in (g).
+
+## (f) Adoption of outside changes
+
+The user decides the order, and the bar is the user's too. Changes the user makes outside the Arrange window are adopted into the
+record instead of being undone; every other bar change is enforced against.
+
+**Upgrade adoption (9o9.2).** A layout from the order-mode era (`orderMode` or `placed` present) decodes with `pendingAdoption` set
+(persisted only while true). The engine logs `layout: legacy order fields found; the bar order will be adopted on the first
+complete, settled observation (no order move is planned until then)`, plans no order action while pending, and adopts the observed
+bar order (`adoptedVisible`: observed order for on-bar keys, off-bar keys keep their relative position, chevron dropped) on the first
+`.complete`, settled observation with no stale on-bar frame (`layout: adopted bar order on upgrade (N keys)`). Until then it logs
+`layout: adoption waiting: <reason> (N stale frames)` once per pass and Arrange reads "Reading your menu bar order…". A drop while
+adoption is pending adopts the last clean observation first and then applies the drop; with no clean read it is refused with the
+callout "Reading your menu bar order…". Nothing moves on upgrade.
+
+**Hand drags and unread keys.** The detailed rules follow in "Hand drags are adopted"; in short: a Command-drag by hand in the menu
+bar pauses the engine while it lasts, and after the mouse-up the next adoptable observation becomes the record (a changed read at
+once; an unchanged read waits for `handDragAdoptWait`, 10 s, while any key is unread). Keys whose frames could not be read (carried
+or uncorroborated) are held back at their record slot and enter the *unverified* set (never a move subject or target; no expiry) until
+a fresh corroborated read places them. The wait and the unverified set persist in `layout.json` (`pendingHandDrag`,
+`unreadAfterHandDrag`) so a relaunch cannot enforce the old record against a drag the user just made.
+
+**System Settings hides (gdu.79, 9o9.25).** A key listed in Visible whose Control Center `isAllowed` reads false was hidden outside
+Sommelier. `LayoutEngine.adoptSystemSettingsHides` (each pass, after hand-drag adoption, before planning; skipped while an adoption
+is pending and for keys under a transient reveal) moves the key with its hide-unit siblings to the END of Hidden, saves the layout,
+logs `layout: adopted System Settings: <key> is hidden there; moved to Hidden` and publishes "Moved <name> to Hidden: it is hidden in
+System Settings" (`systemSettingsNotice`, `noticeLifetime`). No Control Center write is made. A unit with a sibling drawn on the bar
+is left alone (logged). Placement-unknown keys are untouched. A later Arrange drop into Visible shows the item as before
+(`userPlacedVisible`).
+
+**The planner-published partition (9o9.5).** After every pass that planned, the engine publishes `EngineState.lastPlan`
+(`PlanSummary`): `moving` (subjects of the plan's actions, including ones the one-move cap defers), `blocked` (subject -> the untrusted
+or unsteady key in the way), `blockedNoWall` (trusted keys with no safe candidate move), `held` (given up, unverified after a hand drag,
+or at the strike limit) and `passStarted`. Arrange DISPLAYS this partition and never re-derives what the planner would do; the only
+thing it computes itself is whether a drawn key's observed neighbours are the record's (the check's evidence). A dropped row keeps its
+arrows until a plan from a pass that started after the drop is published.
+
+### Hand drags are adopted (detail)
+
 The user decides the order. A Command-drag done by hand in the menu bar is the user changing their mind: the record follows it and the
 engine never undoes it. Any OTHER bar change (macOS, an app) is not adopted; the record wins and is enforced as usual.
 - Detection (`HandDragMonitor.swift`). `LiveHandDragMonitor` uses `NSEvent.addGlobalMonitorForEvents` for left mouse down/up. A drag is
@@ -700,34 +751,80 @@ engine never undoes it. Any OTHER bar change (macOS, an app) is not adopted; the
   moved) and publishes `EngineState.handDragNotice` = "Adopted your menu bar drag" for the Arrange status line (cleared after
   `NewItemNotice.lifetime`). The Arrange window shows it ahead of the new-item notice.
 
-## Arrange window (gdu.19)
+
+
+### System Settings hide adoption (detail)
+
+Engine adoption of System Settings hides (gdu.79, reworked 9o9.25): a parked key that the layout lists in `visible`, that is not in `userPlacedVisible`, not placement-unknown, and whose live Control Center flag (`Config.trackedAllowed`, wired in `EngineFactory.makeLive`) reads false was hidden outside Sommelier (the gdu.77 BoltAI incident: it must never be shown by a layout from disk). Under the system-of-record model that change is ADOPTED, once: `LayoutEngine.adoptSystemSettingsHides` (each pass, after the hand-drag adoption, before `makePlan`; skipped while the upgrade adoption or a hand-drag adoption is pending, and for keys under a transient reveal) moves the key, with its hide-unit siblings (`Layout.move`, gdu.75), to the END of Hidden, saves the layout, logs `layout: adopted System Settings: <key> is hidden there; moved to Hidden` and publishes `EngineState.systemSettingsNotice` ("Moved <name> to Hidden: it is hidden in System Settings", cleared after `Config.noticeLifetime`, 10 s) which the Arrange status line shows between the hand-drag notice and "Menu bar matches" (9o9.5 precedence). It is not a skip, not a warning, and not counted in "can't be placed". During the deferred passes `makePlan` still withholds such keys from the planner (explicit neutral skip). When a hide-unit sibling of the key is on the bar the adoption is skipped for that unit (logged `layout: not adopting System Settings hide of <key>: its sibling <sibling> is on the bar`), since it would hide an item the user did not hide; the neutral skip stays. Placement-unknown keys are untouched (nothing proves they are hidden; their guard stays). `userPlacedVisible` = keys a `setLayout(userPlacement: true)` (Arrange drop, `mbprobe apply`) moved into `visible`, plus (gdu.95) the keys the call names in `moved:` that are in `visible` afterwards, even when the layout already listed them visible: such a key is shown as before (a later drop into Visible re-shows an adopted key); a layout loaded from disk, the first-launch build (`userPlacement: false`), `newItemPolicy` changes and engine-added items are not user placements. A placement is spent once the key is seen on the bar. The upgrade adoption keeps off-bar keys in Visible, and the System Settings adoption above moves the hidden ones to Hidden immediately after ("Adopt current order", `ArrangeDrop.adopt`/`LayoutBuilder`, puts parked keys in Hidden directly); a legacy file that lists one Visible is healed at runtime by the adoption above, never on decode. Every membership write logs `membership write: hide|show <key>; layout=... userPlaced=... ; Control Center <entry> isAllowed=...; <scan evidence>`. Reveal of the hidden section is unaffected (those keys are listed hidden). gdu.110: a drop of a parked key anywhere inside Visible is a show request (`ArrangeDrop.outcome(parked:)`), not a reorder. The parked key's capsule is a ghost; ghosts that are running and movable are draggable and carry the section-move menu (gdu.113, `ArrangeMenuRules.ghostInteractive`).
+
+
+
+## (g) The Arrange window
+
 `ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`
-(`@MainActor @Observable`), which feeds the pure `ArrangeModel.swift` in SommelierCore (`ArrangeSections.make`, `.badge`,
-`.placementMatches`, `ArrangeDrop.drop/step/hideNotFitting/adopt`; unit-tested without AppKit).
+(`@MainActor @Observable`), which feeds the pure `ArrangeModel.swift` in SommelierCore (`ArrangeSections.make`, `.statusLine`,
+`.placementMatches`, `ArrangeDrop.drop/step/hideNotFitting/adopt`; unit-tested without AppKit). The window renders the record and the
+engine's published state; it never computes a claim of its own about the bar.
+
 - Window level during actions (gdu.100). Sommelier is an accessory app, so the engine's Command-drag activates the last regular app (the owner of the displayed menu bar) and its windows would cover Arrange; while `EngineState.inFlight` is set the window floats (`.floating`) and afterwards returns to `.normal`. If Sommelier was active when the action began it re-activates and re-keys Arrange; the decision is the pure `ArrangeWindowGuard`, driven by the 250 ms tick (so the float can lag the action start by up to 250 ms) and by `stop()`.
 - Mouse-control notice (gdu.103). The engine warps the real pointer for a Command-drag (several seconds, may retry) and the user cannot tell. `MouseControlNoticeDriver` (250 ms `.common`-mode timer, started with the engine, independent of the Arrange window) feeds the pure `MouseControlNotice` with `EngineState.inFlight`; a `.move` shows a non-activating, mouse-transparent `.statusBar`-level HUD panel at the top right of the main screen (`MouseControlHUDController`), a key change replaces the text, anything else hides it. Hide/show via Control Center never show it. Setting: `showMouseControlNotice` (default on, Settings toggle).
 - Render cost (gdu.93, gdu.117). `ArrangeViewModel.content` is memoized: built inside `withObservationTracking`, so it is rebuilt only after an observable input it read (engine state, layout, pending, tracker, filter, ...) was written; a tick that changes nothing rebuilds nothing and `logRowsIfChanged` reuses it (`contentGeneration`). The tick writes observed state only on real change: `tracker` is stored out of band and notifies observers only when `ArrangeTracker.renderState` changes (its per-tick bookkeeping `lastUpdate`/`since` is excluded), `pending` is assigned only when it resolves. The 250 ms timer runs while the window is visible or a drop/callout/engine drag is pending and stops itself otherwise (restarted by `start`, a submitted drop, a refused-drop callout). The context menu reads only precomputed row fields: `ArrangeRow.movableTo` (= `ArrangeDrop.canMove` per section), `canStepLeft`/`canStepRight` (= `ArrangeDrop.step` on the strip's filtered rows), filled in `ArrangeSections.make`. Live counters `ArrangeViewModel.renderCount` (body evaluations) and `contentBuilds` are logged as `arrange: renders=N contentBuilds=M` at most once a second and only when they moved, so an idle window writes nothing (tests: `ArrangeIdleCostTests`). The per-row step menu items judge on the rows already built. App display names for hide-unit notes come from a per-pass memo (`AppNameCache`), because a LaunchServices lookup per row per render stalled the main thread.
 - Invariant gesture chain (gdu.116). `CapsuleSlot` attaches `.draggable` to EVERY capsule, in every state; `draggable`, stale, ghost and the Filter are data, never structure. The old `if row.draggable && interactive { cap.draggable } else { cap }` made two view identities: when a row flipped stale<->fresh (iStat rows do on nearly every pass) or the Filter changed during a drag, SwiftUI tore down the view owning the NSDraggingSession, the drop never arrived and later drags were ignored until the app was re-activated. Whether the source could be picked up is judged at DROP time: the payload carries the source (`ArrangePayload.fromGhost`, wire text gets the `#ghost` suffix like `ArrangeRow.id`) and `ArrangeViewModel.drop` asks the pure `ArrangeDrop.sourceRefusal(key:fromGhost:rows:)`, which refuses with a RefusalCallout naming the reason (stale frame, not running, move pending, system item). Under the system-of-record model more rows become draggable; only that data rule changes. Row identity: `ArrangeRow.id` is the key (plus `#ghost` for a ghost) and contains no stale/draggable state, so a row keeps one `ForEach` identity across stale/fresh; ghost -> real is a different id by design (the ghost capsule is replaced by the real one). The Filter no longer toggles the gesture; a drop while filtering is still ignored in `drop`.
-- Stale on-bar items and drops (gdu.101). `ObservedOrder(resolved:)` keeps a STALE item that is on the bar in `onBar` at its last-known x and flags it in `staleOnBar` (also `uncorroborated`: an immovable anchor, never a move subject; a hide of it is skipped with "position not refreshed; waiting for a fresh read"); a stale PARKED item is still excluded. The Visible strip therefore shows every on-bar item (never omitted), the stale ones with the `~` badge (`ArrangeBadge.stale`, `ArrangeRow.staleFrame`, not draggable). A drop into Visible resolves by NEIGHBOUR KEY (`ArrangeDrop.index`: the nearest fresh row left of the slot in the layout -> insert after it, else the nearest right -> before it; never a numeric slot translated against a truncated list) and is refused with "The bar is not fully observed right now; try again in a moment." when the row immediately left or right of the slot (or the capsule a Move left/right would cross) is stale. `Reconciler.placedTarget` never hangs a placed key on a Control Center module and searches outward past modules and self-positioning keys for the nearest eligible key. The view model logs `arrange: drop context: left=... right=... staleOnBar=N settled=...` after each drop.
-- Truthfulness rules. (1) The Visible strip is the OBSERVED bar (`EngineState.observed.onBar`, system modules as greyed,
-  non-draggable anchors) and is never reordered optimistically. A requested move shows a dashed ghost "⟳" at the target slot
-  (the layout neighbours decide the slot), and the real capsule keeps its observed place with "⟳" until BOTH a pass has finished
-  after the drop AND `placementMatches` (the observed drawn order equals the layout order, or the item is off the bar for the
-  hidden sections) AND the engine status is in place; only then does it show "✓". The view model remembers the moved keys
-  (`ArrangeTracker`, pure, in `ArrangeModel.swift`; siblings of the hide unit included). A drop is judged only by a pass that STARTED
-  after it (`passSequence > passesStartedAtRevision`, where the ENGINE stamps every layout it publishes, gdu.48: `EngineState.layoutRevision`
-  increments on `start`, `setLayout` and when a pass appends new items, and `passesStartedAtRevision` is `passesStarted` at that moment;
-  `setLayout` returns the stamp as `LayoutRevision`, the tracker entry waits un-judged (`awaitingStamp`) until it arrives, so a pass that
-  starts right after publication but before any UI tick counts, and one already running at publication never does); older
-  statuses are suppressed and shown as "⟳", so an old failure never appears on a new drop. After 90 s without a match the capsule shows
-  the timeout "⚠", cleared by a later match. Without a trustworthy observation (none yet, or `lastError` is an observe failure) the
-  Visible strip shows "No observation yet - ..." and no capsules, and drops that touch Visible are refused. Capabilities come only from
-  `ItemInfo`; a key without one is unknown and allowed (the engine decides). (2) A badge is "✓" only
-  when the engine status says in place; failed -> "⚠" with the error text as tooltip, `.unsupported` -> "⊘" with the reason,
-  `.notFitting` -> the does-not-fit marker; items whose app is not running carry no badge and sit in a collapsed "Not running (N)"
-  group. Before the first observation rows make no claims. (3) Hidden and Always hidden follow the LAYOUT order and reorder
-  optimistically, because their order is our own data (there is no observation to wait for; only the membership change itself is
-  verified, shown as a ghost in the destination strip and "⟳" on the capsule still on the bar). (4) The layout the window submits
+
+- **Record order (9o9.5).** The Visible strip is `layout.visible` in record order, one row per key. Keys not on the bar are ghosts
+  (dashed circle) at their record slot; keys whose app is not running sit in a collapsed "Not running (N)" group. The strip is never
+  reordered to match the bar, and the system block is drawn as greyed, non-draggable anchors. Hidden and Always hidden follow the
+  layout order too and reorder optimistically, because their order is our own data (only the membership change itself is verified,
+  shown as a ghost in the destination strip and arrows on the capsule still on the bar).
+- **Bar states and badges.** `ArrangeBarState` is the only claim a Visible row makes about the bar, taken from the engine's last plan
+  (`EngineState.lastPlan`, (f)) and the settled observation:
+
+  | State | Badge | Plain words (tooltip) |
+  |---|---|---|
+  | `.matches` | check | In place (verified against the real menu bar) |
+  | `.moving` | arrows | Waiting for the menu bar to change (or the move reason) |
+  | `.cannotPlace(reason)` | warning | the engine's reason in plain words; "Try again" in the context menu |
+  | `.notOnBar` | dashed circle | Not on the menu bar right now: this is where it is going, not where it is. |
+  | `.staleFrame` | tilde | Position being re-read |
+  | `.behindChevron` | « | Behind «: macOS hides it because the bar is full. Drag it right of the fold line to bring it out. |
+  | `.unreadAfterHandDrag` | hourglass | Moved by you in the menu bar; waiting to read its new position |
+  | `.notConfirmed` | none | Not confirmed in place yet |
+
+  The check appears only for a drawn row the plan does not touch, with no hold, hand-drag doubt, skip or failure, whose observed
+  neighbours agree with the record (`placementMatches` plus the neighbour test). A stale or uncorroborated row never shows the check.
+  A pile row consistent with the fold shows « and the fold line is drawn after the last overflowed key; a row whose record position is
+  inconsistent with the fold is never a check. Rows that are none of these are blank with a tooltip. Before the first observation rows
+  make no claims; without a trustworthy observation the strip says "No observation yet" and shows no capsules.
+- **Status line precedence** (`ArrangeSections.statusLine`, first match wins, never the bare engine word): "Paused" (Pause
+  Sommelier) > "Paused: <reason>" (interaction gate) > "Pausing order moves for a minute" (cap) > "Reading your menu bar order…"
+  (adoption pending) > "N items can't be placed — right-click one for why" > "Moving <name>…" (or "Moving N items…") >
+  "Waiting to read N items" > "Waiting for <name> to settle" > the hand-drag notice "Adopted your menu bar drag" > the System Settings
+  notice "Moved <name> to Hidden: it is hidden in System Settings" > "Menu bar matches", which needs a converged, settled engine, no
+  error and every Visible row a check, behind the «, or not on the bar. An error text, the new-item notice and the poll-paused text
+  are added around it; "N failed" counts failures in other strips.
+- **Drop rules.** Every drop inside Visible is accepted and edits the record; the engine decides when it can act. Refused: a drop onto
+  or into the trailing system block ("macOS keeps the system items at the right end"), a source that cannot be picked up (a callout
+  names why: stale frame, not running, move pending, system item - judged at DROP time so the gesture chain is invariant), and, while
+  an upgrade adoption has no clean observation, any change to Visible ("Reading your menu bar order…"). A drop on the row's own
+  position is a no-op. A drop left of the fold line is accepted and flagged ("Dropped left of the overflow boundary: macOS will keep it
+  behind the chevron."). Visible to Hidden or Always hidden needs no observation; Hidden to Visible (or an unlisted key into Visible)
+  is refused without one ("Can't put this item on the menu bar until Sommelier can read the bar."). A drop into Visible resolves by
+  NEIGHBOUR KEY (`ArrangeDrop.index`: insert after the nearest usable row left of the slot, else before the nearest right one, never a
+  numeric slot), clamped after leading anchors and before the trailing system block. A drop of a parked Visible key is a show request
+  (gdu.110).
+- **Names (9o9.15).** `RowNameRule.Namer` is the one naming function for the Arrange strip, the overflow panel, the HUD and the
+  engine's notices: an owner with one item is named by its app; an owner with several (iStat Menus) keeps per-item descriptions when
+  they are real labels, else "<app> (n)" numbered by record order; Apple agents' `com.apple.menuextra` items get human module names
+  (Time Machine, Wi-Fi); an SF Symbol label, a live value ("65%"), a date, a tooltip sentence or a placeholder never beats the app name
+  (`isSymbolOrLiveLabel`); names are capped at 24 characters. The raw description stays in the tooltip and the Filter matches it.
+- **A drop is judged only by a later pass.** The view model remembers moved keys (`ArrangeTracker`, pure; hide-unit siblings
+  included). A drop is judged by a pass that STARTED after it (`passSequence > passesStartedAtRevision`; the engine stamps every layout
+  it publishes, `EngineState.layoutRevision`, and `setLayout` returns the stamp, so a pass that starts right after publication
+  counts and one already running at publication never does). Older statuses are suppressed and shown as arrows, so an old failure
+  never appears on a new drop. After 90 s without a match the capsule shows the timeout warning, cleared by a later match. Unsettled
+  states are ignored (the tracker pauses its clock).
+
+- **Pending layout, revisions and failure clearing.** (4) The layout the window submits
   is shown at once (`PendingLayout`) so consecutive drops build on each other; everything else is the engine's state. The pending
   copy is compared by REVISION, never by equality: it is dropped once every submission has returned its revision and
   `state.layoutRevision >=` the latest. Rebase rule: while pending, `PendingLayout.effective(over: state.layout)` is the base of every
@@ -737,24 +834,267 @@ engine never undoes it. Any OTHER bar change (macOS, an app) is not adopted; the
   in the same pass stays until a later pass), so its badge and the "N failed" status line clear and the tracker's timeout "⚠" resolves;
   `.unsupported` is derived afresh every pass. (6) Capabilities are computed on demand from `state.items` (not only while the window
   is open), so the `SOMMELIER_ARRANGE_MOVE` hook resolves them exactly like a UI drop.
+
 - Units: capsules of one hide unit get a link marker and an outline; the tooltip says "Hides together with ...". A move
   (`Layout.move`) takes the whole unit, and every key it returns shows "⟳" too. Dropping beside a sibling is a no-op.
-- Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange line; items left of it are outlined
-  and marked does-not-fit. Dropping left of it is allowed but flagged ("will stay behind the chevron"). Dropping right of the
-  trailing system block clamps to before it (`ArrangeDrop.index`, which also clamps after the LEADING anchors, e.g. Wi-Fi leftmost, so index 0 = first movable slot; the debug hook
-  `SOMMELIER_ARRANGE_MOVE` goes through the same function, 0-based among movable items); dropping on the item's own position is a no-op.
+
+- Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange fold line after the last key the observation reports as overflowed; rows behind it carry the « badge. Dropping left of the fold line is allowed but flagged. Dropping right of the trailing system block clamps to before it (`ArrangeDrop.index`, which also clamps after the LEADING anchors, e.g. Wi-Fi leftmost, so index 0 = first movable slot; the debug hook `SOMMELIER_ARRANGE_MOVE` goes through the same function, 0-based among movable items); dropping on the item's own position is a no-op.
+
 - Capabilities (`CapabilityRules`, bundle ids from `EngineState.items`): modules cannot be dragged; items that cannot be hidden
   can be reordered but a drop into a hidden strip is rejected with the reason (also shown as a small "⊘" on the capsule).
+
 - Gestures: `draggable`/`dropDestination` with `ArrangePayload` (the store key as plain text); drop gaps between capsules draw the
   insertion bar, dropping on a capsule inserts before/after it by half. Drops are disabled while the filter is active. Context menu:
-  Move to Visible/Hidden/Always hidden, Move left/right (skips anchors, never crosses the trailing block), Retry (failed),
+  Move to Visible/Hidden/Always hidden, Move left/right (skips anchors, never crosses the trailing block), Try again (rows the engine could not place or that failed),
   Reveal in menu bar (section-wide `setShowHiddenSection(true)` with auto re-hide after `autoRehideSeconds`; a per-item transient
   layout would be persisted by `setLayout`). Toolbar: Re-apply layout (`clearFailures` + `requestReconcile`), Adopt current order
   (confirmation; Visible = observed bar verbatim, Hidden = parked, Always hidden kept, not-running keys kept), Hide what does not
   fit, filter. Every engine call is a `Task`; a 0.25 s timer logs "MAIN ACTOR STALL" when it fires more than 100 ms late.
   "Reveal in menu bar" is disabled for Always hidden items.
 
-## Overflow panel
+
+
+## (h) Findings pointers
+
+- Positioning and the order store: `findings-positioning.md`, `findings-prefstore.md`, `findings-restart-collateral.md`.
+- Visibility and live hide/show: `findings-visibility.md`, `findings-live-trigger.md`, `findings-untracked-hide.md`.
+- Drags, the expanded strip and the overflow pile: `findings-drag.md` ("Intermittent adjacent-drag failures", "The expanded strip").
+- Identity and attribution: `findings-identity.md`, `findings-attribution.md`; spacing: `findings-spacing.md`.
+- Manual and live checks: `docs/testing.md` (the live checklist for the record model is "Live checklist: the system of record
+  (9o9.6)").
+
+## Reference: the engine and the platform
+
+### LayoutEngine (the loop)
+
+`LayoutEngine` (actor, `LayoutEngine.swift`) runs the observe -> plan -> act -> verify loop; `EngineState` (`@MainActor @Observable`) is the only thing the UI binds to.
+
+- **Pass**: (1) `observeDetailed()` (two agreeing full scans, see "Observer" below; observation moves nothing, so it runs even while the user is busy); (2) if the mouse is down (`busy`), wait up to 3 s polling every 0.1 s, else skip and retry once (after a wait the observation is repeated); (3) plan with failed keys forced to `canMove = canHide = false` (they become anchors); (4) persist `newItems` into the layout (once per pass) per `newItemPolicy`; (5) act; (6) publish.
+- **Two phases**: *membership* is one `applyHiddenBatch` (one agent restart, never called with an empty batch), then re-observe and re-plan; *order* is one `move` at a time, re-planning from the verified snapshot after each. Both continue in the same pass when the post-membership plan is `.order`. At most `maxActionsPerPass` (50) actuator calls per pass; 3 consecutive failed actions end the pass (no chaining; `lastError = .stoppedAfterFailures` only after 3 such passes in a row, see "Robustness"); a membership batch that reports drift ends the pass with `lastError = .batchDrift`, and any other batch failure (e.g. `.mechanismFailed`) with the equally sticky `lastError = .batchFailed(message)` (both cleared only by `clearFailures`/`setLayout`, shown in the Arrange status line; a later successful observe does not clear them); a `.userBusy` batch is handled like a `.userBusy` single action: no key is struck or marked `.failed`, nothing is suppressed, keys it already verified stay in place, and the pass is rescheduled (no retry cap, same as the single-action path) and never chains into drags; at most 2 chained passes. `mbprobe apply` runs the actuator drag-only unless `--allow-fallback`.
+- **Observed truth only**: `EngineState.observed` is set solely from an actuator-returned snapshot or a fresh observe, never from the plan. `perItem` is `.inPlace/.pending/.moving/.failed/.unsupported/.waitingForPosition/.notFitting/.cannotPlace`; `unsupported` (capability skips) does not block `isConverged`, `failed` does.
+- **Suppression (flapping guard, gdu.21)**: see "Robustness" below. A key that fails is an anchor for the rest of that pass; the same key failing 3 passes in a row stays `.failed` until `setLayout`, `clearFailures()` (Retry) or its app disappears from the bar. `userBusy` is not a failure and is not suppressed.
+- **Fatal errors**: no Accessibility permission or a competing manager (Bartender) sets `lastError`, makes no actuator call and stops the engine until `clearFailures()`.
+- **Unsettled observations (gdu.46)**: when the scans never agree but a complete read exists, the pass publishes it (`EngineState.observed`, `observationSettled = false`, `lastError` cleared only when it was an observe error (permission errors still surface); status line "Observing (unsettled)"), logs `observation unsettled; not actuating`, plans nothing, finishes with `PassReport.Outcome.unsettled` and schedules the next pass (`minPassInterval`). Only a settled observation is ever planned on or acted on. The unsettled pass still increments `passSequence` (it must stay aligned with `passesStarted`), so `ArrangeTracker` ignores unsettled states: it suppresses every tracked key's engine status (capsules stay at the pending spinner), judges nothing and pauses its 90 s clock; judging resumes at the next settled state with `passSequence > dropSequence`. The first non-empty scan of a pass is also published at once as a provisional observation when nothing has been observed yet (log `first observation published (provisional, unsettled)`), so the Arrange window has a bar within a scan or two instead of after agreement.
+- **Pass latency (gdu.46, reworked by gdu.47)**: `setLayout`/`setShowHiddenSection` supersede the running pass: an observation in progress is cancelled between scans (`ObserveError.superseded`) and the pass ends `.superseded`; a membership batch in flight finishes and the pass then ends `.superseded` (see the gdu.47 bullet), and so does an order-phase pass before its next move; the next pass plans from the new layout and a fresh scan. A plain trigger/poll never cancels an observation, or a slow observation would starve forever (other `supersede: true` requests such as `transient reveal ended` and `agent restarted` cancel only the observation and log their own reason). Logs: `pass started N ms after <reason>` for every request, `pass delayed: <reason> N ms` for any wait over 2 s (previous pass running, user busy). Measured: idle 0 ms; superseding an observation ~0.5 s; during a drag 1.4-5 s (the rest of that drag).
+- **Superseded passes, coalescing, fresh snapshots (gdu.47)**: every `setLayout`/`setShowHiddenSection` bumps `layoutGeneration`; a pass remembers the value it started with and ends `PassReport.Outcome.superseded` (log `pass superseded by setLayout`) whenever it differs: (a) during observation (the scan is cancelled; also checked once the observation returns, before planning): nothing planned, no statuses touched, no strikes; (b) while a membership batch is in flight: the actuator finishes THAT batch (its verification stands, against the layout it was planned from), then the engine adopts the batch's snapshot, publishes statuses from a plan for the NEW layout (the batch's keys are `.pending` or `.inPlace`, never `.failed`; no strike, no `batchDrift`) and drops the rest of the stale plan (log `batch finished (...) after the layout changed; not judged against the new layout`); (c) before each order-phase move. The next pass plans from the new layout and a FRESH full scan. A superseded pass still advances `passSequence` (aligned with `passesStarted`). Path (b) publishes honest statuses for the new layout (`.pending`/`.inPlace`, never `.failed`) via `publishObserved`, so `ArrangeTracker` may resolve an EARLIER drop from them (a key `.inPlace` and matching the current layout), but can never fail a drop from a superseded pass; a pass superseded during observation publishes no new statuses. **Coalescing**: `setLayout` publishes and persists the layout at once (stamped revision, gdu.48) but starts its pass after `Config.layoutCoalesce` (300 ms; zero = immediate); another `setLayout` inside the window replaces the pending timer (log `setLayout coalesced`), so only the final layout is planned; `Config.layoutCoalesceMax` (1 s) caps a burst: the pass starts at most that long after the burst's first call even if calls keep coming. A batch that ended because MenuBarAgent was respawned by someone else ends `.agentRestarted`, not `.superseded`. Both drops keep their revision stamps (`passesStartedAtRevision` is the same), the first pass started after them judges BOTH drops' keys against the then-current (final) layout. **Fresh-snapshot rule**: the engine hands the actuator only keys and directions, never a snapshot; `LiveActuator.performBatch` computes `expectations`/`before` from its own scan taken right before the write (log `membership batch: ... pre-write scan`). A batch asking the opposite of a write made < `Config.recentWriteSettle` (1.5 s) ago waits out the remainder and rescans first, so a hide that has not shown up yet cannot make the following show look "already satisfied" (the cause of `not verified: expected membership change, saw unchanged`). An honest "already satisfied" (`batch already satisfied`) still returns `.verified` with `mechanism == nil` and no write.
+- **Engine additions ledger (gdu.52)**: each key the pass appends per `newItemPolicy` is recorded as `(revision, key, section, index)` (revision = the one `publishLayout` stamped for that append; last 50 entries kept). `setLayout(_:basedOn:)` re-adds ledger entries newer than `basedOn` that the submitted layout lacks (a same-hide-unit sibling already in the submitted layout decides the section; units stay whole) BEFORE hide-unit normalization and adoption, logging `setLayout merged N engine-added key(s) composed on revision R` once; `basedOn == nil` replaces wholesale.
+- **Scheduling**: `requestReconcile()` sets a pending flag; concurrent triggers coalesce into one follow-up pass; pass starts are at least 0.5 s apart. `reconcileOnce()` runs exactly one pass (`mbprobe apply`, tests).
+- **Triggers** (`EngineTriggers`, AppKit): app launch/terminate (a burst within 1 s is ONE pass; gdu.56: detected by a pid diff of `NSWorkspace.runningApplications`, driven by KVO (`LiveRunningApps`, covers .accessory/LSUIElement apps) AND by the didLaunch/didTerminate notifications, which AppKit does not reliably post for agent apps; both feed `syncApps()`, which diffs against `known` so one launch/quit = one event whichever path sees it first, while a notification always re-arms the pass so a late-arriving one is not dropped; launch counts for .accessory/.regular only, quit for .accessory/.regular apps that owned an item in the latest scan when `ownerPIDs` is supplied, any such app while ownership is unknown (`AppModel` supplies the owner pids from `EngineState.items`; nil until items exist); the request is `scheduleReconcile(after: 1 s, reason: "app launch/quit")`, trailing-coalesced by the engine; every launch/quit/notification is logged with pid, bundle id and policy), sleep/wake, and a poll (e7t, below); `MenuBarAgentWatcher` (agent respawn) and the app's display-change observer feed the same `scheduleReconcile`. The live `busy` closure is `NSEvent.pressedMouseButtons != 0`. Details: "Robustness".
+  - **Poll (e7t)**: every `PollConfig.interval` (10 s) one fast scan is reduced to `BarSignature.value(...).forPoll(...)` (`MenuBarObserver.swift`),
+    the SAME rule `AgreedScanObserver` uses for two-scan agreement: ORDER of identified, non-heuristic, non-self-positioning on-bar keys; PRESENCE of other
+    on-bar keys; parked set of identified keys. Exempt: volatile modules (WiFi, Focus, "Show Hidden Menu Bar Items"), `heuristic:com.apple.MenuBarAgent` main-menu
+    entries, width<=1 items, stale flags, and (poll only) the presence of self-positioning owners' items (iStat's eight items vanish from the fast scan and
+    return between polls). The reference is the poll signature the ENGINE publishes with each agreed observation (`PollGate.engineSignature`, serial-stamped), else the last quiet poll's scan
+    (the engine's observation omits stale items, so `EngineState.observed` itself cannot be compared): a change after a pass's last observation (an app's item appearing
+    after the launch pass observed) is caught by the next poll, and skips never drop it. A difference is CONFIRMED by a second fast scan `confirmDelay` (1 s) later; only
+    a second scan with the same new signature requests a pass (`requestReconcile(reason: "poll")`, logged `poll: poll change confirmed ...: <diff>`); a one-scan flicker is
+    logged "not confirmed". A signature that already triggered a pass is not re-triggered while the bar keeps reading exactly that signature (loop protection when a pass cannot change what the fast scan sees); any other reading, or a different signature starting a pass, clears the guard, so a recurrence of the same change after the bar was fixed triggers again (steady disagreement costs one extra pass per real change). Fixed 10 s period, no back-off (worst-case
+    detection 11 s; the noise fix alone gave 0 passes). Skipped entirely (no scan) while a pass is running/requested/scheduled, the engine sleeps, a transient reveal hold
+    is active, `observationSettled == false`, or within 5 s of a user-initiated request (`LayoutEngine.pollGate()`).
+    **Cap (gdu.58)**: at most `PollConfig.maxPollPassesPerMinute` (2) poll-triggered passes in any sliding minute (only `reason: "poll"` passes count; launch/quit, wake and user actions are unaffected). **Counting rule (gdu.60)**: a steady fast/full-scan disagreement costs one extra pass after each real change (the bar reads as the old disagreeing signature again, e7t); that pass, the change's single *free confirm*, is triggered but NOT counted. The pre-change signature of a counted change is the reading just before it, provided that reading had been steady (read unchanged) for at least a minute; it is kept (not replaced) while the previous counted change still in the window has its confirm unused, and after that change's confirm restored it. A pass is a free confirm iff its signature equals the pre-change signature and the change's confirm is unused (no age condition on the confirm itself; free confirms are not capped per minute). A return to the pre-change signature after any non-confirm pass is counted. **Repeat horizon**: the signatures of counted changes are kept for `suppressFor` (5 min, pruned on every trigger, cleared by `stop()`); a counted change whose signature already was a counted change within that horizon is a repeat (a flapper, not a new real change): it gets no free confirm, so its return pass is counted too, and it takes two slots of the cap. Observed bounds (PollCapHorizonTests): distinct real changes X, Y, Z each keep their free confirm; two real changes 5 s apart then the confirm are 2 counted + 1 free; a 2-state flapper (10-29 s) is suppressed after 2 passes from fresh and after each window; with a long-steady state S the flapper S a S b S a... (or S a S) is suppressed after 5 passes at most (3 counted + 2 free confirms, i.e. at the first repeat plus one counted return) and within 5 steps of its first change, again after each window; 3-state and irregular cycles earn no free confirm (at most 3 passes); a 2-state flapper with period of 31-59 s is suppressed at its first repeat (3 passes), never more than 2 passes per minute. Cost: an identical real change twice within 5 min takes 2 slots and, if a third pass follows within a minute, suppresses the poll. Real changes are counted as usual: three within a minute still hit the cap. A confirmed change that would exceed it triggers nothing, logs once `poll: suppressed for 5 min — flapping keys: <keys>` (`EngineTriggers.flappingKeys` over the two most recent differing signatures: the minimal set of keys whose membership (on bar / parked / present) or relative position changed, positions via `OrderDiff.changedKeys`, so one item moved far lists only that item) and opens a `PollConfig.suppressFor` (5 min) window: the poll keeps scanning but triggers nothing, even for a genuine single change (launch/quit triggers and user actions still work); afterwards it logs `poll: suppression ended, resuming` and the first change triggers as usual. Published as `EngineState.pollSuppression` (`PollSuppression{until, keys}`, set via `LayoutEngine.setPollSuppression`) and shown in the Arrange status line as `Poll paused 5 min: <names> flapping` (hidden by the view model's 0.25 s tick as soon as `until` has passed, `ArrangeSections.pollPausedNames`, not on the next republish); status line only, not `lastError`, not `.failed`, overflow panel unaffected.
+- **UI binds to**: `observed`, `layout`, `perItem`, `inFlight`, `lastError`, `isConverged`, `lastPassAt`, `passCount`; it changes the bar only via `setLayout` / `setShowHiddenSection`.
+
+
+
+### Robustness: launches, respawns, display changes, sleep
+Every event becomes a (delayed) `LayoutEngine.requestReconcile`; none of them acts on a read that is not trustworthy.
+
+- **Coalescing**: `scheduleReconcile(after:reason:)` keeps ONE pending request per reason; a new call with the same reason replaces it. App launch/quit
+  uses reason `app launch/quit` with a 1 s trailing window (a burst of launches/quits is one pass; a returning app's items go back to their slot by the
+  normal order planning and keep their hidden state, which lives in the Control Center store per app). Display changes use `display change` (1 s), wake
+  `wake` (3 s), agent respawn `agent restarted` (2 s, supersedes an observation in progress).
+- **`MenuBarAgentWatcher`** (`SommelierCore`, main actor): compares the pid of `com.apple.MenuBarAgent` with the last known one on NSWorkspace
+  launch/terminate notifications for that bundle id and on a 2 s poll (live, the notification does not arrive for the agent, so the poll is the
+  detector; absence between terminate and launch is not a change). On a change it logs `agent restarted: pid A -> B` and the app runs
+  `LivePlatform.invalidateAgentState()` (scanner: last hosted tree, stale carry-over, last complete layout, strip, unverified counters; kept: the
+  assumed-hidden records, because the store still says hidden, per-app caches and seen-hosted names; the AX element cache already drops the old agent's
+  elements on a pid change) and `LayoutEngine.agentRestarted()`.
+- **Not-ready guard**: `agentRestarted` sets `notReadyUntil = now + 2 s` and drops transient reveal holds. A pass whose settled observation is
+  obtained inside that window logs `agent restarted moments ago; not acting on this observation` and ends as `.unsettled` (nothing published,
+  planned or done); the delayed reconcile follows. Independent of the watcher: an EMPTY on-bar list is `ObserveError.empty` (never "everything is
+  hidden"), an incomplete hosted read can never be an observation (`hostedReadComplete == false` is not returned as a read), and an unsettled read
+  is published but never planned on; tests: `EngineRobustnessTests`. Live, a pass that spanned a respawn saw `hostedComplete=false`, two complete
+  reads with 4 stale on-bar items, and acted only after two complete agreeing reads, with no action.
+- **Respawn accounting and ownership (corrective pass)**:
+  - A hide/show batch that went through an agent respawn (`MenuBarActuator.lastBatchRespawned`; the hide fallback ignores `allowFallback`) strikes its
+    FAILED keys out at once (`fullStrike`): at most ONE respawn per key per layout change; suppressed until `setLayout`/Retry, logged once. Drags
+    keep the 3-strike rule (bounded, no fallback). The follow-up pass scheduled in `finish()` counts against `maxChainedPasses` (2); a membership
+    batch that reports failure never chains anyway (`endAfterBatchDrift`).
+  - Our own respawns: `LivePlatform.restartAgent` marks itself in progress and remembers the resulting pid (`isOwnAgentPID`). The watcher
+    (`busy:` / `isExpected:`) reports nothing while it runs and absorbs the new pid afterwards (`agent restarted by Sommelier (expected)`): no state
+    invalidation mid-action, no extra reconcile.
+  - Passes spanning a foreign respawn: the engine records the agent pid at pass start (`agentPID`) and checks it after the observation and in
+    `adopt()`. A different, non-own pid discards the observation (nothing published, planned or actuated), logs `agent restarted during the pass`,
+    opens the not-ready window and schedules the reconcile; the pass ends as `PassReport.Outcome.agentRestarted`. After our own respawn the pass
+    re-bases on the new pid and continues.
+  - `MenuBarAgentWatcher.start()` keeps the last KNOWN pid across `stop()` (Bartender pause, permission loss) and compares at once, so a respawn
+    during the pause is reported on resume.
+- **Sleep/wake**: `EngineTriggers` calls `willSleep()` (no new pass starts, pending requests and delayed reconciles are dropped; a running pass ends
+  after the action in flight, re-checked before every move) and `didWake()` (reconcile 3 s later). `triggers.start()` clears a sleep flag left by a
+  missed wake.
+- **Conflicting manager (gdu.35)**: `AppModel` calls `engine.setConflict(who)` (nonisolated, lock-protected) when Bartender is detected; a pass already running checks it before the membership batch and before every order move, issues no further actuator call and ends `.paused` (no failure, strike or suppression), no new pass starts until `setConflict(nil)` on resume.
+- **Display changes** (`AppModel`, `NSApplication.didChangeScreenParametersNotification`): `platform.invalidateStrip()` (the strip is recomputed from
+  the next agent read), the open overflow panel is re-anchored to the status item's screen after 0.4 s (`OverflowPanelController.reposition`; its
+  frame comes from `OverflowPlacement.panelFrame` on the screen under the item), and ONE reconcile after 1 s (bursts of notifications collapse).
+- **New-item notice**: unknown items placed by `newItemPolicy` log `New item: X placed in Visible|Hidden` and set `EngineState.newItemNotice`
+  for 10 s; the Arrange window prefixes its status line with it. No system notification.
+- **Flapping guard**: `strikes[key]` counts passes in a row in which the key failed (one strike per pass; a pass in which it did not fail breaks the
+  streak). Below 3 the key is retried by the next pass (a failing pass schedules one follow-up, bounded by the strikes); at 3 it is logged once
+  (`<key> failed 3 passes in a row ...; marked failed until the layout changes or Retry`), stays `.failed` and an anchor. A deterministic refusal
+  (capability forbids) goes straight to the limit. The whole engine is NOT stopped by one bad key: a pass ends after 3 consecutive failed actions,
+  and only 3 such passes in a row (no action succeeded in between) set `lastError = .stoppedAfterFailures(3)`, cleared by `clearFailures`/`setLayout`.
+
+
+
+### What cannot be done, and how the UI shows it
+
+| Limit | Evidence | UI |
+|---|---|---|
+| Module items (Wi-Fi, Battery, clock, Control Center, Siri): cannot be dragged, cannot be placed right of Control Center/clock; hidden only in System Settings > Menu Bar | findings-positioning C3 (placement limit, measured); no-drag is a self-imposed rule (`ItemResolver.protected`, mbprobe refuses), untested by design since we never drag Control Center/clock; store refuses `module:` (self-imposed guard) | lock icon; `Capability.canMove=false, canHide=false`, reason tooltip, "Open Settings" link |
+| Third-party item cannot go right of Control Center | positioning C3 | drop target clamps; `.rightmost` means just left of Control Center |
+| App without a Control Center tracked entry cannot be hidden | visibility A7/A8 | `canHide=false` + reason "not tracked by Control Center"; entry is auto-created ~0.2-0.3 s after launch, hand-created entries only with the exact system shape (gdu.24, findings-untracked-hide.md) |
+| Apple (`com.apple.*`) apps cannot be hidden by us | store guard | same |
+| Parked item cannot be dragged | drag findings (on-bar only) | reorder of a parked item uses the fallback or is disabled until shown |
+| Stale / heuristic identity | gdu.23, gdu.4 | greyed with "unverified" badge, actions disabled until a fresh full scan |
+| Show/hide is not instant | visibility conclusion | progress state ("applying, ~3 s") then result from the verified snapshot, never optimistic |
+| Failed action | closed-loop contract | item snaps back in the UI, inline error with the typed `ActuationError` |
+
+The contract carries per-item `Capability { canMove, canHide, reason }` (`MenuBarActuator.swift`, `CapabilityProvider`, `CapabilityRules`).
+Findings do not conflict dummy-vs-third-party for drag (KeepingYouAwake 10/10); hide was only measured on the dummy (A) and via AXPress
+on third-party (C), so third-party hide is the one capability to confirm in the gdu.9 soak (hide/show one tracked third-party item,
+restore afterwards).
+
+### Permissions and distribution
+
+* **Accessibility**: required (scanning, AXPress, and CGEvent synthesis for drags).
+* **Screen Recording**: only for live images of items in the overflow panel . Everything else works without it.
+* **Not sandboxed**: we write other apps' group-container plists (`com.apple.MenuBar`, `group.com.apple.controlcenter`) and run `killall`
+  on MenuBarAgent. Distribution: Developer ID, not the Mac App Store.
+* Files: `~/Library/Group Containers/com.apple.MenuBar/Library/Preferences/com.apple.MenuBar.plist` (read by plain
+  `PropertyListSerialization`; not visible through CFPreferences) and `~/Library/Group Containers/group.com.apple.controlcenter/Library/Preferences/group.com.apple.controlcenter.plist`.
+  Atomic writes, keep mode, in-memory backup before every write.
+
+### Risks
+
+* **Restart recovery** is typically 2-3 s but up to ~12 s (visibility A2) and ~15 s (positioning C6: a run hit the 10 s timeout and completed ~5 s later) was observed; the hosted AX count is noisy
+  (133-151), so recovery uses a 90% threshold and a cap, then the normal settle.
+* **iStat Menus AX slowness**: reads time out, cached values served as `stale`; stale never verifies (gdu.23).
+* **Fast scan mislabels identifier-less items right after a move** (findings-drag pitfall 2): final verdict = full scan.
+* **Order store contains stale duplicate keys** (`FloTile`/`ie.boboco.FloTile`, old iStat translocated set, inert test keys from gdu.4):
+  writes target only the key the resolver chose; never "clean up" without user request.
+* **Bartender must not run concurrently**: it parks and moves items itself and will fight both mechanisms; the app should detect it
+  (`com.surteesstudios.Bartender`) and refuse to actuate with a clear message.
+* **Dev build owner key is its executable name** (not the bundle id) because it runs outside `/Applications`; keys differ between dev and
+  installed builds.
+* **User's mouse**: drag needs a quiet mouse; restart-based fallback exists, but gives a flash.
+* **Agent restarts re-base stored positions** (docs/findings-restart-collateral.md): the order store values of ALL owners (modules too) are rewritten when the item set changes, which can re-sort items of other apps (iStat, interleaved with others, ended up left of Wi-Fi). `applyHiddenBatch` snapshots the store before the restart and, if the post-restart relative order of the common items drifted, writes the old values back and restarts once more. Duplicate owner-key forms (iStat bundle vs executable) were tested and are not the cause, so they are not touched.
+* **Do not `killall ControlCenter`** (Elgato Control Center shares the process name); only `MenuBarAgent` is restarted.
+* Spacing (NSStatusItemSpacing/SelectionPadding) is not part of the actuation strategy; see the "Spacing (gdu.20)" section below.
+* The OS-26 behavior is assumed identical; unverified.
+
+### Code contract
+
+`Sources/SommelierCore/MenuBarActuator.swift`: `MenuBarActuator`, `Relation`, `ActuationResult`, `ActuationError`, `Capability`,
+`CapabilityProvider`, `CapabilityRules` (`ActuationError.conflictingManager(String)` for a running competing manager). `Sources/SommelierCore/FakeActuator.swift`: scriptable in-memory implementation.
+`Tests/SommelierCoreTests/ActuatorTests.swift`.
+
+
+
+### App shell
+- `AppDelegate` (main actor) creates `AppModel`, `StatusItemController` (NSStatusItem, autosave "Sommelier") and the
+  settings/onboarding windows. The main actor only renders `EngineState` and sends commands to the engine.
+- `LayoutEngine` (actor) does all scanning, planning and dragging off the main thread; `EngineFactory.makeLive` wires it
+  (drag-only: `allowFallback = false`), shared with `mbprobe apply`.
+- Startup: refresh permissions -> if Accessibility missing show onboarding and stop -> if Bartender runs, show "paused" and
+  poll every 5 s -> build engine, `start()` -> no layout file: initialize from one agreed scan (on bar visible, parked hidden)
+  -> `requestReconcile()` once -> `EngineTriggers.start()`.
+- Left click is configurable (Settings > General > "Left click", `revealMode`): the **overflow panel** (default, `panel`) or **show hidden
+  items in the menu bar** (`inline`); right click shows the menu (rebuilt per open). Our own item is never scanned.
+- **"Show the rest", two modes (gdu.15).** Mode 2 is the overflow panel (items stay parked, see "Overflow panel"). Mode 1 is the inline
+  reveal, driven by two engine flags: `LayoutEngine.setReveal(hidden:alwaysHidden:)` sets `showHiddenSection` (hidden section) and
+  `showAlwaysHidden` (always-hidden section too; option-click). The `Reconciler` treats the flagged sections as wanted on the bar, appended
+  right of the visible section in layout order (hidden first, then always-hidden); hide units stay whole (an app with an always-hidden item
+  stays hidden unless `showAlwaysHidden`). A reveal and its re-hide are NORMAL passes (live writes, verification, no respawn, gdu.55).
+  `EngineState.revealedObserved` is the OBSERVED state, written only when a pass ends (converged/incomplete) from the bar it observed:
+  true when a reveal is requested and at least one revealed item is on the bar (a partial reveal counts as shown; the failed items keep
+  their own `perItem` status), and with nothing requested it stays true until the re-hide has landed. The request alone never changes the
+  icon: `StatusItemController` shows `wineglass.fill` when `revealedObserved`, else `wineglass`.
+  `RevealController` (SommelierCore, testable) turns clicks into requests: a click while requested or revealed re-hides at once, option-click
+  also sets `showAlwaysHidden`, clicks within 300 ms of the previous accepted click are ignored, and it logs click -> converged time.
+  `RevealAutoRehide` (app) runs while a reveal is requested: re-hide after `autoRehideSeconds` (0 = never) without pointer activity over
+  the menu bar strip (the clock starts when the reveal is observed), or 0.6 s after the menu of a clicked menu bar item closed (global
+  `NSEvent` monitors: leftMouseDown over the strip arms it and suspends the idle clock; the next click below the strip or Escape is the close; a close
+  never seen ends after 20 s); a reveal that never converges is withdrawn after 20 s (log line plus `EngineState.revealNotice`, shown in the
+  Arrange status line as "Reveal withdrawn: N items could not be shown"). Untracked units: the membership batch is all-or-nothing (`LiveActuator`
+  refuses it when one key has no Control Center entry), so the planner (`Reconciler.plan`, the `gdu.15` block in the unit loop) drops a unit that is
+  pulled onto the bar only by a reveal when one of its parked keys has `canHide == false`, with the skip reason "cannot be shown: not tracked by Control
+  Center" (neutral `.unsupported` status). The other units show; the reveal counts as converged and `revealedObserved` is true (partial = shown).
+  `LiveActuator`'s refusal stays as the belt-and-braces guard.
+  Arrange status line (gdu.73): during a partial reveal (`showHiddenSection || showAlwaysHidden`) `ArrangeSections.revealSkipNotice` adds "N items could not be shown" ("1 item ..." singular) from the per-item `.unsupported("cannot be shown: ...")` statuses; `revealNotice` (withdraw) keeps priority. gdu.111: on a full bar (fresh overflow chevron) every hidden-listed parked key is withheld from the Reconciler in `makePlan` and skipped as "cannot be shown: the bar is full ..." (the panel is the reveal; nothing is shown on the bar); a batch-verification error never prints key lists on the status line (`StatusLine.batchDriftSummary`, raw text stays in the log). A key that "failed earlier" is no longer excluded from the skip (gdu.73): failures are cleared each pass except struck-out keys, and a struck-out key in a reveal batch would fail the all-or-nothing batch again (gdu.72's per-unit refusal covers only actuator refusals, not failures), so it is dropped like an untracked unit (keeps its own `.failed` status) and the other units show.
+- Settings layout convention (gdu.59): a `TabView` of `Form`s with `.formStyle(.grouped)` (labels leading, controls trailing, captions and footnotes in secondary style); one shared width (540 pt) and a per-tab height chosen in `SettingsView.height`, so the window fits each pane with no dead band. New controls go into a Form row, never a fixed-width HStack.
+- Bartender launch stops triggers and pauses; its termination resumes. `permissionDenied` stops triggers and shows onboarding;
+  re-grant calls `clearFailures()` and restarts.
+
+### System overflow
+When the bar is full macOS (MenuBarAgent) hosts a chevron ("<<") and pushes the leftmost items behind it. They stay in the
+hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they are not drawn and a drag on them is a no-op.
+- ONE rule (gdu.69), `SystemOverflowRule.isOverflowed(frame, chevron:, hosted:)` in MenuBarItem.swift, used by the scanner's
+  flag (`SystemOverflow.mark`/`indices`), `ActuationVerifier.overflowed` and `OverflowProbe.isStacked` (gdu.65). With a FRESH
+  chevron (`isOverflowChevron`, found structurally, see docs/findings-drag.md) in the same read, a fresh on-bar frame is
+  overflowed when it lies left of the chevron's minX, or its centre is on the chevron, or it is stacked on another hosted frame
+  (centres within 2 pt) AND starts left of the chevron's maxX (the clipped pile extends past the chevron's minX live). Identical
+  frames far right of the chevron are chance, not overflow (findings-drag incident). No chevron, or a stale one, flags nothing.
+  Before gdu.69 the scanner flagged only items ordered before the chevron while the verifier also named stacked pairs and the
+  probe flagged stacked frames anywhere; worse, the scan often had NO chevron item at all: the hosted-to-candidate frame join
+  (`MenuBarScanner` `pass(.frameAmbiguous)`) paired the chevron element with an app item whose frame overlapped it (Script
+  Menu), so nothing was flagged and the planner kept planning moves of overflowed items. Chevron elements are now never joined.
+  The verifier keeps its pair-local identical-frame pre-drag guard, which never feeds the flag. `ObservedOrder.systemOverflow` /
+  `overflowChevron`, `ItemInfo.systemOverflow` and `ItemStatus.notFitting` carry the flag to the planner and UI.
+- Engine (gdu.69): an actuator refusal whose error `isOverflowRefusal` (`mechanismFailed` containing "is in the menu bar
+  overflow area", raised before any drag) is a skip, not a failure: no strike (`markFailed`), no `consecutiveFailures`; the key is
+  remembered for the pass (`overflowRefused`) and its moves are dropped from the plan (skip `Reconciler.overflowSkipReason`).
+  Statuses: a key flagged `systemOverflow` stays `.notFitting` (never red, never overridden by the skip).
+- Rule: Sommelier orders the drawn bar; macOS decides what overflows (it depends on total width), so a layout's order across the
+  overflow boundary is not a request Sommelier can act on. `Reconciler.plan` drops the overflowed keys and the chevron from
+  `desired` and `base` before the order planning: no drawn key is ever anchored or reported because of them, whatever the layout
+  lists (unknown, pulled-in, normalized or churned). Only an overflowed key the layout places differently relative to the drawn
+  keys gets one skip (reworded in 9o9.11 to "behind the « chevron; its order there is set when the strip is next opened"; agreeing layouts stay silent; the moves across the fold are planned, see "Items behind the chevron (9o9.11)"). No move has an
+  overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost` drop becomes
+  `.before(first drawn item)`); `overflowViolations` asserts this. Membership is unchanged (an overflowed item may still be
+  hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as
+  unsupported. To bring one into view, hide something else or use the future "hide what does not fit" action.
+- Pass structure on a full bar and the churn zone (gdu.80). Incident (gdu.77 live run): revealing two items on a naturally full bar
+  moved items between the drawn bar and the pile, the SAME pass re-planned 8 order moves and dragged real items. Rules:
+  (1) a pass that wrote membership (hide/show, reveal or re-hide) on a bar with a chevron NEVER runs the order phase in that pass
+  (`LayoutEngine.fullBarOrderGate`; log "order deferred: membership changed this pass"; the pass ends `incomplete`, not converged,
+  and a follow-up pass is scheduled). (2) An order pass on a full bar runs only when the overflow set is SETTLED: the last two
+  complete reads (`recentReads`, fed by every adopted `.complete` or `.completeExceptSelfPositioning` observation (9o9.17: carried frames keep pile membership, so a settled self-positioning-lacking read with a fresh chevron is as good for the pile set); incomplete reads are never fed) agree on the pile (`SystemOverflowRule.overflowSettled`);
+  otherwise "order deferred: overflow set unsettled: +[keys] -[keys]" (9o9.17: the symmetric difference of the two piles, newer-only
+  then older-only, at most 10 keys per side; `SystemOverflowRule.unsettledText`; bounded by `maxChainedPasses`). 9o9.17: a CARRIED
+  (stale) item keeps its pile membership: `SystemOverflow.indices` flags an item, fresh or carried, whose frame is left of, or
+  stacked at, a FRESH chevron of the same read (a carried frame is the last known position), so `ChurnRead`, `ActuationVerifier.overflowed`
+  and `ObservedOrder.systemOverflow` agree and the pile no longer flips between a complete read (9 keys) and an iStat-stall read (7 of them
+  carried, 2 flagged). A stale or absent chevron and an open strip still flag nothing; flagging is membership only, the planner never moves a
+  stale key (9o9.3). (3) Reveal passes (showHidden/showAlways) on a
+  full bar plan membership only: when the layout order then differs, no drag, the pass converges and `EngineState.orderNotAppliedNotice`
+  ("Order not applied: bar is full") reaches the Arrange status line below the withdraw and reveal-skip notices. (4) Churn zone
+  (`SystemOverflowRule.churnZone`, MenuBarItem.swift, built from `ChurnRead`): keys in the pile, or within one item-width (widest
+  hosted item, 40 pt fallback) of the first drawn item right of the chevron, in EITHER of the last two complete reads. Until 9o9.11
+  the planner treated them like overflowed keys and the actuator refused them; that kept near-fold DRAWN keys out of record order
+  indefinitely on a full bar (a 400-record simulation left 4 stuck). Since 9o9.12 the planner no longer excludes them
+  (`Reconciler.plan` has no `churn:` input) and `LiveActuator.setChurnZone` only makes the actuator treat a move whose subject, anchor
+  or drop neighbour is in the zone like a move across the fold: it is performed inside a strip session (below), where every frame is
+  real and nothing re-folds until the strip closes; with no chevron to click the zone is stale and the move is dragged as usual.
+  The zone is computed whenever EITHER of the last two reads had a chevron, so a re-hide that empties the pile (chevron gone) still defers and still guards; the gate also keys on a chevron before the write (`fullBefore`). The widest hosted item can be a ~140 pt clock, which widens the zone to 4-5 drawn items (accepted). Bars without a chevron are unchanged: membership and order still run in one pass.
+- Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
+  warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. The Arrange window's
+  "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls
+  `Layout.hideNotFitting(_:)` to move that tail to `hidden`; overflowed items that cannot be hidden (Apple, untracked apps) are
+  listed as staying.
+
+
+
+### Overflow panel
 - `EngineState.items` (`ItemInfo`, SommelierCore) carries display metadata (title, description, owner, width) for every
   currently known item; the engine refreshes it whenever it adopts a scan (`ItemInfo.merge` keeps the last known
   width of parked items; stale reads keep their previous info; vanished items are dropped).
@@ -763,7 +1103,9 @@ engine never undoes it. Any OTHER bar change (macOS, an app) is not adopted; the
 - `OverflowPanelController` (app target) owns a non-activating `NSPanel` hosting `OverflowBarView`; it re-renders from
   the observed state and closes via monitors, a pointer poll and an inactivity timer (see docs/testing.md).
 
-## Click-forwarding: `ItemActivator` (gdu.17)
+
+
+### Click-forwarding: `ItemActivator`
 Clicking an entry in the overflow panel opens the REAL item's menu or popover. Mechanisms, in the order the activator tries them
 (`ItemActivator`, `SommelierCore`; the app wires it through `AppModel.activate`):
 1. **Reveal + click (`revealClick`, adopted)**: take an engine hold on the item's hide unit (`LayoutEngine.beginTransientReveal`), show the
@@ -810,12 +1152,16 @@ a cancelled task re-hides and releases too.
 Debug: `SOMMELIER_ACTIVATE="<storeKey>[|right]"` (3 s after launch, result in `build/sommelier.log`); `mbprobe activate <key> [--right]
 [--ax-press] [--escape-after S]`.
 
-## Spacing (gdu.20)
+
+
+### Spacing
 `SpacingSettings` (Core) reads/writes `NSStatusItemSpacing` and `NSStatusItemSelectionPadding` in the global domain, current user, current host (same store as `defaults -currentHost write -globalDomain`), clamped to 0...24, behind an injectable backend for tests. Measured on macOS 27: a change applies to each app when it relaunches, not to running apps, and no MenuBarAgent restart is needed (details in `docs/findings-spacing.md`). The Settings Spacing tab writes on slider release, offers "Reset to system default" (removes both keys) and never restarts the agent itself (gdu.55). `mbprobe spacing get|set|reset` is the CLI surface.
 
 Deliberate differences from the 8z5.6 bead text (the existing gdu.20 design was kept): (1) the range is 0...24 (the bead said 1...20); (2) the store is the current host (`-currentHost`) of the global domain (the bead said any host); (3) a value is saved on commit (slider release / Return), there is no Apply button; (4) the change applies when each app relaunches, not after logout (logout was never needed and is not claimed anywhere); (5) the reset control reads "Reset to system default" (the bead said "Reset to macOS default") and removes both keys; the type is `SpacingSettings` rather than `MenuBarSpacing`.
 
-### Tracked entry resolution (gdu.68)
+
+
+### Tracked entry resolution
 Helper processes (Hazel Helper, HoudahSpot Helper, Fantastical Helper, Keyboard Maestro Engine, Little Snitch Agent) have no Control Center entry of their own;
 they are listed in their parent app's `menuItemLocations`, and the parent's `isAllowed` adds/removes the helper's hosted element (docs/testing.md "Helper keys hide through the parent entry").
 `TrackedEntryResolver` maps an item's owner key / bundle id / heuristic bundle id to the governing entry: an own entry wins, else the single non-Apple entry that lists the id
@@ -823,21 +1169,37 @@ they are listed in their parent app's `menuItemLocations`, and the parent's `isA
 actuator's per-entry grouping (one write, all members verified, conflicting requests refused) covers helper + parent. Not done: `ItemKey.hideUnit` is still the owner key, so Layout/Reconciler/Arrange do not yet
 treat a helper and its parent's own item as ONE unit (the actuator refuses a batch that asks them to differ). Untracked non-Apple apps (no entry anywhere) remain unhideable: the gdu.24 entry-creation recipe is not built.
 
-### Placement authority: an app-side frame alone is never "on the bar" (gdu.79)
 
-After a live hide the owner's own `AXExtrasMenuBar` frame stays where it was (docs/findings-live-trigger.md section 4 and 9). So an `appExtras` item with NO joined hosted MenuBarAgent element (`joinEvidence == .none`) is judged by the Control Center store the agent enforces, in ONE place, the item loop of `MenuBarScanner.assemble` (`MenuBarScanner.swift`, "THE authority rule"), so `mbprobe list`, the engine observation, `LayoutBuilder` and `init-from-current` all read the same classification:
 
-- the item's tracked entry (`TrackedEntryResolver`, live `isAllowed` via `ControlCenterTrackedAppsStore.readLive`, injectable `MenuBarScanner.trackedEntries`) says `isAllowed == false`: `isOnMenuBar = false`, `hiddenInControlCenter = true` (`hiddenReason == .controlCenterHidden`);
-- the entry says allowed and the hosted read is complete: `placementUnknown = true` (`hiddenReason == .placementUnknown`), not on the bar, not known to be anywhere;
-- a hosted element joined to the item (any non-`.none` join) stays authoritative: on the bar as before, whatever the flag says;
-- kept on the frame rule: items no tracked entry governs (SystemUIServer's extras cannot be live-hidden) and incomplete hosted reads (a failed group must not turn into "unknown"). An UNREADABLE store (gdu.87: the notarized app denied the group container) is an observation problem instead: store-governed items without a corroborated hosted element are `placementUnknown`, the snapshot carries `trackedStoreProblem`, and the engine refuses the read. This narrows the bead text ("true or unknown and no hosted element => unknown") on purpose; flagged for review.
-
-`LayoutBuilder.build` never writes a `placementUnknown` item into any section; `LayoutBuilder.unknownPlacement` lets callers refuse: `mbprobe layout init-from-current` exits 1 naming each key with its own reason ("placement unknown for N items: key (no hosted element | weak join (frameAmbiguous) with a hosted element in the overflow pile; make room in the bar so the item is drawn, or hide it in Control Center)"; `MenuBarItem.placementReason`); its `.incomplete` refusal appends the scanner's "incomplete: ..." reasons (gdu.51) from `observeDiagnosed().incompleteReasons`, the first-launch build leaves the layout empty. `controlCenterHidden` items are plain hidden. `ObservedOrder.placementUnknown` marks the parked keys the planner must not show (explicit skip).
-
-Exact-frame tie-break (gdu.84, `SystemOverflowRule.exactFrameMatch`, the `exactFrame` pass in `MenuBarScanner.assemble` before the loose intersection pass): inside the overflow pile neighbours overlap, so an intersection join is ambiguous even when an unowned hosted element sits exactly on an item's frame (KeepingYouAwake 795/w30 vs #3 795/w30 with TextInputMenuAgent 798/w27 and #4 799/w22 around it). An ALLOWED, non-assumed candidate whose app-side frame equals an unowned hosted element within 1 pt in x and width joins it as `frameUnique` (corroborated, so it is on the bar with `systemOverflow` set), provided no other allowed candidate matches that element exactly and the candidate matches no other element exactly. Flag-false candidates (gdu.79) and the chevron (gdu.69) never take part; two exact matches, or a 2 pt offset, stay ambiguous (unknown inside the pile). **Pile only (gdu.85):** the pass applies only when the unowned hosted element's frame OR the candidate's is overflowed against the chevron (`SystemOverflowRule.isOverflowed`); everywhere else on the bar the gdu.28 mutual-and-exclusive rule remains the only frame join, so a 1 pt coincidence outside the pile is never promoted to `frameUnique` (and so never feeds LiveActuator's frame-order drift check). Incomplete-reason lists (`incompleteReasons`) merge reasons that differ only in their numbers, keeping the highest.
-
-Engine adoption of System Settings hides (gdu.79, reworked 9o9.25): a parked key that the layout lists in `visible`, that is not in `userPlacedVisible`, not placement-unknown, and whose live Control Center flag (`Config.trackedAllowed`, wired in `EngineFactory.makeLive`) reads false was hidden outside Sommelier (the gdu.77 BoltAI incident: it must never be shown by a layout from disk). Under the system-of-record model that change is ADOPTED, once: `LayoutEngine.adoptSystemSettingsHides` (each pass, after the hand-drag adoption, before `makePlan`; skipped while the upgrade adoption or a hand-drag adoption is pending, and for keys under a transient reveal) moves the key, with its hide-unit siblings (`Layout.move`, gdu.75), to the END of Hidden, saves the layout, logs `layout: adopted System Settings: <key> is hidden there; moved to Hidden` and publishes `EngineState.systemSettingsNotice` ("Moved <name> to Hidden: it is hidden in System Settings", cleared after `Config.noticeLifetime`, 10 s) which the Arrange status line shows between the hand-drag notice and "Menu bar matches" (9o9.5 precedence). It is not a skip, not a warning, and not counted in "can't be placed". During the deferred passes `makePlan` still withholds such keys from the planner (explicit neutral skip). When a hide-unit sibling of the key is on the bar the adoption is skipped for that unit (logged `layout: not adopting System Settings hide of <key>: its sibling <sibling> is on the bar`), since it would hide an item the user did not hide; the neutral skip stays. Placement-unknown keys are untouched (nothing proves they are hidden; their guard stays). `userPlacedVisible` = keys a `setLayout(userPlacement: true)` (Arrange drop, `mbprobe apply`) moved into `visible`, plus (gdu.95) the keys the call names in `moved:` that are in `visible` afterwards, even when the layout already listed them visible: such a key is shown as before (a later drop into Visible re-shows an adopted key); a layout loaded from disk, the first-launch build (`userPlacement: false`), `newItemPolicy` changes and engine-added items are not user placements. A placement is spent once the key is seen on the bar. The upgrade adoption keeps off-bar keys in Visible, and the System Settings adoption above moves the hidden ones to Hidden immediately after ("Adopt current order", `ArrangeDrop.adopt`/`LayoutBuilder`, puts parked keys in Hidden directly); a legacy file that lists one Visible is healed at runtime by the adoption above, never on decode. Every membership write logs `membership write: hide|show <key>; layout=... userPlaced=... ; Control Center <entry> isAllowed=...; <scan evidence>`. Reveal of the hidden section is unaffected (those keys are listed hidden). gdu.110: a drop of a parked key anywhere inside Visible is a show request (`ArrangeDrop.outcome(parked:)`), not a reorder. The parked key's capsule is a ghost; ghosts that are running and movable are draggable and carry the section-move menu (gdu.113, `ArrangeMenuRules.ghostInteractive`).
-
-## Logging (gdu.88)
+### Logging
 
 `AppLog` (`SommelierCore/AppLog.swift`) is the single log sink: `AppLog.log(.category, text)` writes to `os.Logger` (subsystem `ie.boboco.sommelier`, `privacy: .public`), to a rotating file `~/Library/Logs/Sommelier/sommelier.log` (`FileLogSink`: serial queue, 5 MB x 3 old files, drops silently if unwritable after one os_log error, flushed in `applicationWillTerminate`) and to stderr in the old NSLog shape. Engine components receive `AppLog.logger(.engine, prefix: "engine: ")`-style closures. `NSLog` must not be used in `Sources/Sommelier` or `SommelierCore` (unified logging redacts it); `mbprobe` prints to stdout/stderr.
+
+
+
+## Live evidence
+
+Dated measurements that the text above relies on, kept here so the sections stay timeless.
+
+1. **Live hide/show timings (2026-11-04).** MBDummy, Bartender quit, ad-hoc signed: write to verified 0.61-5.15 s over 40 ops (min
+   609 ms, median ~2.0 s, max 5146 ms; scan-bound; implementer soak 40/40 live, MenuBarAgent pid unchanged; the reviewer's run was 4/6
+   live under the old 6 s wall bound because of incomplete-read streaks of 2-3 s scans, hence the scan-count bound); engine `apply`
+   5.6-6.5 s wall incl. ~4.5 s observe, actuation 0.63-0.71 s.
+2. **iStat Menus items are ordinary orderable items (2026-11-06, macOS 26, iStat Menus 7).** A Command-drag of an iStat item takes
+   effect, macOS persists it in `com.apple.MenuBar.plist` and it holds through repeated passes; iStat does not reassert its position.
+   What alternated was whether Sommelier could READ a frame (2026-11-07, build 272: `mbprobe list --repeat 8` showed scan 1 with 9
+   failed hosted reads, carried items and "AX read failed for iStat Menus Menubar ... kAXErrorCannotComplete", scan 2 with the
+   app-side read still timing out, scans 3-8 complete). Not tested across an iStat Menus restart or a login.
+3. **The « strip (2026-11-07 14:55, macOS 27.0.1, full bar, 9 items behind the chevron; bd memory `system-overflow-strip-command-drag`).**
+   Clicking MenuBarAgent's chevron expands its strip and it stays expanded until clicked again; while expanded the overflowed items are
+   DRAWN at real frames at the left of the bar (x 270-570 on the user's bar) and `LiveAccessibilitySource.overflowProbe` reports
+   `expanded` with no stacked frames; a Command-drag inside the expanded strip reorders them; a Command-drag ACROSS the chevron (pile ->
+   drawn region) works and macOS re-folds by width at once (the first drawn item fell into the pile). While COLLAPSED the stacked
+   frames carry no order (stacked x 781/783/786 read Jump, TimeMachine, WiFi while the real order was Jump, WiFi, TimeMachine).
+4. **Verification inside a session (2026-11-07 17:41).** Jump Desktop Connect moved after KeepingYouAwake: the crossing re-folded
+   the relation target into the pile, adjacency could not be read, and the fold rule decided the verdict after the strip closed.
+5. **Command modifier latch (2026-11-07).** After a strip session the HID flags read 0x20100000 until 9o9.20's explicit key-up.
+6. **Idle cost of the Arrange window (gdu.117).** Before: about 30% of a core idle (9 s cputime per 30 s); after: 0.38 s cputime per
+   30 s idle (about 1%), renders equal to passes.
+7. Earlier dated runs (system overflow, reveal, helper keys, placement authority, hysteresis, store denial) are recorded in
+   `docs/testing.md`.
