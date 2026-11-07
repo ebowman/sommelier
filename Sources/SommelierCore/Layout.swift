@@ -35,10 +35,23 @@ public struct Layout: Codable, Equatable, Sendable {
     /// 9o9.18: keys a hand drag left unverified (unread or ambiguous frames): a relaunch must not enforce the record against them.
     /// Absent on disk = empty; written only while non-empty.
     public var unreadAfterHandDrag: [ItemKey]
+    /// 9o9.27: one Arrange drop made while a hand drag awaited adoption (the composed Visible after the drop and the keys it moved).
+    public struct WindowDrop: Equatable, Sendable {
+        public var visible: [ItemKey]
+        public var moved: [ItemKey]
+        public init(visible: [ItemKey], moved: [ItemKey]) { self.visible = visible; self.moved = moved }
+    }
+    /// 9o9.27: the Arrange drops made during the adoption wait and the record before the first one, so a relaunch inside the window
+    /// re-applies them on top of the adopted drag. Absent on disk = empty; written only while `handWindowDrops` is non-empty.
+    public var handWindowBaseline: [ItemKey]
+    public var handWindowDrops: [WindowDrop]
 
     public init(schemaVersion: Int = Layout.currentSchemaVersion, visible: [ItemKey] = [], hidden: [ItemKey] = [],
                 alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, pendingAdoption: Bool = false,
-                pendingHandDrag: Date? = nil, unreadAfterHandDrag: [ItemKey] = []) {
+                pendingHandDrag: Date? = nil, unreadAfterHandDrag: [ItemKey] = [],
+                handWindowBaseline: [ItemKey] = [], handWindowDrops: [WindowDrop] = []) {
+        self.handWindowBaseline = handWindowBaseline
+        self.handWindowDrops = handWindowDrops
         self.pendingAdoption = pendingAdoption
         self.pendingHandDrag = pendingHandDrag
         self.unreadAfterHandDrag = unreadAfterHandDrag
@@ -227,7 +240,7 @@ public struct Layout: Codable, Equatable, Sendable {
 
     // MARK: Codable (keys are stored as their string form)
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, handWindowBaseline, handWindowDrops }
 
     static func isoString(_ d: Date) -> String {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -238,6 +251,14 @@ public struct Layout: Codable, Equatable, Sendable {
         if let d = f.date(from: s) { return d }
         f.formatOptions = [.withInternetDateTime]
         return f.date(from: s)
+    }
+
+    struct WindowDropCoding: Codable {
+        var visible: [String]
+        var moved: [String]
+    }
+    static func windowDrops(_ raw: [WindowDropCoding]?) -> [WindowDrop] {
+        (raw ?? []).map { WindowDrop(visible: $0.visible.compactMap { ItemKey(storeKey: $0) }, moved: $0.moved.compactMap { ItemKey(storeKey: $0) }) }
     }
 
     private static func parse(_ s: String) throws -> ItemKey {
@@ -255,7 +276,9 @@ public struct Layout: Codable, Equatable, Sendable {
             newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd,
             pendingAdoption: try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption) ?? false,
             pendingHandDrag: try c.decodeIfPresent(String.self, forKey: .pendingHandDrag).flatMap(Self.isoDate),
-            unreadAfterHandDrag: try (c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag) ?? []).compactMap { ItemKey(storeKey: $0) })
+            unreadAfterHandDrag: try (c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag) ?? []).compactMap { ItemKey(storeKey: $0) },
+            handWindowBaseline: try (c.decodeIfPresent([String].self, forKey: .handWindowBaseline) ?? []).compactMap { ItemKey(storeKey: $0) },
+            handWindowDrops: Self.windowDrops(try c.decodeIfPresent([WindowDropCoding].self, forKey: .handWindowDrops)))
         var l = raw.dedup().layout
         l.visible.removeAll(where: \.isOverflowChevron)   // 9o9.14 (the warning is reported by `decode`)
         l.hidden.removeAll(where: \.isOverflowChevron)
@@ -273,6 +296,10 @@ public struct Layout: Codable, Equatable, Sendable {
         if pendingAdoption { try c.encode(true, forKey: .pendingAdoption) }   // absent = false
         if let d = pendingHandDrag { try c.encode(Self.isoString(d), forKey: .pendingHandDrag) }
         if !unreadAfterHandDrag.isEmpty { try c.encode(unreadAfterHandDrag.map(\.description), forKey: .unreadAfterHandDrag) }
+        if !handWindowDrops.isEmpty {
+            try c.encode(handWindowBaseline.map(\.description), forKey: .handWindowBaseline)
+            try c.encode(handWindowDrops.map { WindowDropCoding(visible: $0.visible.map(\.description), moved: $0.moved.map(\.description)) }, forKey: .handWindowDrops)
+        }
     }
 
     /// Decodes a layout file, reporting duplicates that were dropped and hide-unit normalization (reported once, here). Does not migrate.
@@ -286,9 +313,11 @@ public struct Layout: Codable, Equatable, Sendable {
             var pendingAdoption: Bool?
             var pendingHandDrag: String?
             var unreadAfterHandDrag: [String]?
+            var handWindowBaseline: [String]?
+            var handWindowDrops: [WindowDropCoding]?
             var legacyOrderMode: Bool
             var legacyPlaced: Bool
-            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, orderMode, placed }
+            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, handWindowBaseline, handWindowDrops, orderMode, placed }
             init(from decoder: any Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion)
@@ -299,6 +328,8 @@ public struct Layout: Codable, Equatable, Sendable {
                 pendingAdoption = try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption)
                 pendingHandDrag = try c.decodeIfPresent(String.self, forKey: .pendingHandDrag)
                 unreadAfterHandDrag = try c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag)
+                handWindowBaseline = try c.decodeIfPresent([String].self, forKey: .handWindowBaseline)
+                handWindowDrops = try c.decodeIfPresent([WindowDropCoding].self, forKey: .handWindowDrops)
                 legacyOrderMode = c.contains(.orderMode)   // 9o9.2: legacy fields are ignored (their value is not even parsed)
                 legacyPlaced = c.contains(.placed)
             }
@@ -333,6 +364,8 @@ public struct Layout: Codable, Equatable, Sendable {
         layout.pendingAdoption = adopt
         layout.pendingHandDrag = r.pendingHandDrag.flatMap(isoDate)
         layout.unreadAfterHandDrag = (r.unreadAfterHandDrag ?? []).compactMap { ItemKey(storeKey: $0) }
+        layout.handWindowBaseline = (r.handWindowBaseline ?? []).compactMap { ItemKey(storeKey: $0) }
+        layout.handWindowDrops = windowDrops(r.handWindowDrops)
         warnings += chevronSections.map { "ignored chevron key in \($0.rawValue)" }
         warnings += d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {

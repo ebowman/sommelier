@@ -65,6 +65,10 @@ public actor LayoutEngine {
         public var noticeLifetime: Duration = NewItemNotice.lifetime
         /// Wall clock for the attempt window and the per-minute cap (tests override it).
         public var now: @Sendable () -> Date = { Date() }
+        /// 9o9.27: the monotonic clock behind the min pass interval and the agent-restart settle (tests drive it explicitly).
+        public var instant: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// 9o9.27: how a scheduled reconcile (`scheduleReconcile`) waits out its delay (tests release it explicitly).
+        public var delaySleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
         public var busyPoll: Duration = .milliseconds(100)
         /// Consecutive self-rescheduled incomplete passes (membership then order) before the engine waits for an external trigger.
         public var maxChainedPasses = 2
@@ -206,8 +210,11 @@ public actor LayoutEngine {
 
     /// 9o9.18: the pending-adoption marker follows `handDragStarted`; saved only when it changed.
     private func persistHandMarker() {
-        guard loaded, layout.pendingHandDrag != handDragStarted else { return }
+        let drops = windowDrops.map { Layout.WindowDrop(visible: $0.visible, moved: $0.moved.sorted { $0.description < $1.description }) }
+        let baseline = drops.isEmpty ? [] : (handBaseline ?? [])
+        guard loaded, layout.pendingHandDrag != handDragStarted || layout.handWindowDrops != drops || layout.handWindowBaseline != baseline else { return }
         layout.pendingHandDrag = handDragStarted
+        layout.handWindowDrops = drops; layout.handWindowBaseline = baseline
         do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
     }
 
@@ -221,6 +228,10 @@ public actor LayoutEngine {
         guard let started = layout.pendingHandDrag else { return }
         let age = max(0, config.now().timeIntervalSince(started))
         handDragStarted = started
+        if !layout.handWindowDrops.isEmpty {
+            handBaseline = layout.handWindowBaseline
+            windowDrops = layout.handWindowDrops.map { ($0.visible, Set($0.moved)) }
+        }
         handAdopt = age < Self.handDragResumeMaxAge ? config.now().addingTimeInterval(windowSeconds(config.handDragAdoptWait)) : config.now()
         log("hand drag: resumed adoption after relaunch (age \(Int(age))s)")
     }
@@ -535,6 +546,7 @@ public actor LayoutEngine {
         // the layout is left as it is (the Arrange window refuses such a drop before it gets here).
         new.pendingAdoption = layout.pendingAdoption
         new.pendingHandDrag = layout.pendingHandDrag   // 9o9.18: engine state, like pendingAdoption
+        new.handWindowBaseline = layout.handWindowBaseline; new.handWindowDrops = layout.handWindowDrops   // 9o9.27 (refreshed below)
         var adoptedPendingNow = false
         if layout.pendingAdoption, userPlacement, new.visible != layout.visible {
             guard let bar = lastCleanBar else {
@@ -574,6 +586,8 @@ public actor LayoutEngine {
                 if handAdopt != nil, userPlacement {
                     if handBaseline == nil { handBaseline = layout.visible }
                     windowDrops.append((new.visible, edited.intersection(new.visible)))
+                    new.handWindowBaseline = handBaseline ?? []
+                    new.handWindowDrops = windowDrops.map { Layout.WindowDrop(visible: $0.visible, moved: $0.moved.sorted { $0.description < $1.description }) }
                 }
             }
         }
@@ -629,6 +643,7 @@ public actor LayoutEngine {
             // The bar holds Sommelier's own move as well as the user's: nothing can be read from it as the user's order.
             log("layout: your menu bar drag was not adopted: Sommelier moved an item during it")
             handBaseline = nil; windowDrops = []   // the drops are already in the record
+            persistHandMarker()
         } else {
             handAdopt = config.now().addingTimeInterval(windowSeconds(config.handDragAdoptWait))
             handDragStarted = config.now()
@@ -961,6 +976,7 @@ public actor LayoutEngine {
         var l = layout
         l.visible = final
         l.pendingHandDrag = nil
+        l.handWindowBaseline = []; l.handWindowDrops = []
         l.unreadAfterHandDrag = handDragUnverified.filter(final.contains).sorted { $0.description < $1.description }
         layout = l
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
@@ -1326,8 +1342,9 @@ public actor LayoutEngine {
     /// notifications or app launches yields ONE pass).
     public func scheduleReconcile(after delay: Duration, reason: String, supersede: Bool = false) {
         delayed[reason]?.cancel()
+        let wait = config.delaySleep
         delayed[reason] = Task { [weak self] in
-            try? await Task.sleep(for: delay)   // wall clock on purpose (the injected `sleep` paces passes)
+            await wait(delay)   // wall clock by default (the injected `sleep` paces passes); tests inject `Config.delaySleep`
             guard !Task.isCancelled else { return }
             await self?.fireDelayed(reason, supersede: supersede)
         }
@@ -1343,7 +1360,7 @@ public actor LayoutEngine {
     /// MenuBarAgent respawned: every AX element is invalid and its first scans are empty or incomplete. Observations are not
     /// acted on for `settle`, transient reveal holds are dropped (the revealed element is gone), and ONE reconcile follows.
     public func agentRestarted(settle: Duration = .seconds(2)) async {
-        notReadyUntil = .now + settle
+        notReadyUntil = config.instant() + settle
         lastAdopted = nil; lastAdoptedSerial = nil; lastAdoptedPolled = false
         let units = Array(transientReveals.keys)
         transientReveals = [:]
@@ -1393,7 +1410,7 @@ public actor LayoutEngine {
     private func drain() async {
         while pending, !stopped, !sleeping, !conflicted {
             if let last = lastStart {
-                let wait = config.minPassInterval - last.duration(to: .now)
+                let wait = config.minPassInterval - last.duration(to: config.instant())
                 if wait > .zero { await sleep(wait) }
             }
             let t0 = ContinuousClock.now
@@ -2039,7 +2056,7 @@ public actor LayoutEngine {
         inPass = true
         defer { inPass = false }
         let generation = layoutGeneration
-        lastStart = .now
+        lastStart = config.instant()
         var actionCount = 0
         await publish { $0.passesStarted += 1; if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil }; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
 
@@ -2110,7 +2127,7 @@ public actor LayoutEngine {
             return r
         }
         if let until = notReadyUntil {
-            if .now < until {
+            if config.instant() < until {
                 log("agent restarted moments ago; not acting on this observation")
                 let r = PassReport(outcome: .unsettled)
                 _ = await finish(r, converged: false)

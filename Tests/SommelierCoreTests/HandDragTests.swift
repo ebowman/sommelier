@@ -687,6 +687,28 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         return r
     }
 
+    @Test func theDropsMadeDuringTheWaitSurviveARelaunchAndAreReapplied() async throws {
+        let r = await dropDuringTheWait(["E", "A", "B", "C", "D"], moved: "E")
+        let saved = r.store.saved
+        #expect(saved.pendingHandDrag != nil)
+        #expect(saved.handWindowDrops == [Layout.WindowDrop(visible: ["E", "A", "B", "C", "D"].map(k), moved: [k("E")])])
+        #expect(saved.handWindowBaseline == names.map(k))
+        // the codec keeps them, and omits them while empty
+        let data = try JSONEncoder().encode(saved)
+        #expect(try Layout.decode(data).layout.handWindowDrops == saved.handWindowDrops)
+        #expect(try JSONDecoder().decode(Layout.self, from: data) == saved)
+        #expect(!String(decoding: try JSONEncoder().encode(abcde()), as: UTF8.self).contains("handWindow"))
+        // relaunch: a new engine over the saved layout; the bar holds the hand drag (A last)
+        let clock = Clock()
+        let r2 = await rig(order: ["B", "C", "D", "E", "A"], layout: saved, modes: true, configure: { $0.now = { clock.now } })
+        #expect(r2.sink.lines.contains { $0.hasPrefix("hand drag: resumed adoption after relaunch") })
+        #expect(await waitUntil { _ = await r2.engine.reconcileOnce(); return r2.sink.lines.contains { $0.contains("re-applied your Arrange drop of") } })
+        #expect(await r2.layoutVisible() == ["E", "B", "C", "D", "A"].map(k))
+        #expect(r2.store.saved.pendingHandDrag == nil)
+        #expect(r2.store.saved.handWindowDrops.isEmpty && r2.store.saved.handWindowBaseline.isEmpty)
+        #expect(!String(decoding: try JSONEncoder().encode(r2.store.saved), as: UTF8.self).contains("handWindow"))
+    }
+
     @Test func anArrangeDropDuringTheWaitIsReappliedOnTopOfTheAdoptedHandDrag() async {
         let r = await dropDuringTheWait(["E", "A", "B", "C", "D"], moved: "E")      // E to the front
         #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return r.sink.lines.contains { $0.contains("re-applied your Arrange drop of") } })

@@ -24,14 +24,35 @@ private final class Logs: @unchecked Sendable {
 
 @MainActor
 private func rig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout, observer: (any MenuBarObserver)? = nil,
-                 logs: Logs = Logs()) async -> (engine: LayoutEngine, state: EngineState, actuator: FakeActuator, store: InMemoryLayoutStore) {
+                 logs: Logs = Logs(), configure: (inout LayoutEngine.Config) -> Void = { _ in }) async -> (engine: LayoutEngine, state: EngineState, actuator: FakeActuator, store: InMemoryLayoutStore) {
     let act = FakeActuator(order: order, hidden: hidden, capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let store = InMemoryLayoutStore(layout)
     let state = EngineState()
+    var cfg = LayoutEngine.Config.multiMove
+    configure(&cfg)
     let engine = LayoutEngine(observer: observer ?? ActuatorObserver(actuator: act), actuator: act, store: store, capabilities: Caps(),
-                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) }, config: .multiMove)
+                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) }, config: cfg)
     await engine.start()
     return (engine, state, act, store)
+}
+
+/// 9o9.27: holds every `scheduleReconcile` delay until the test releases it (injected as `Config.delaySleep`), so no test sleeps on the wall clock.
+private final class DelayGate: @unchecked Sendable {
+    private let lock = NSLock(); private var open = false; private var n = 0
+    var requested: Int { lock.lock(); defer { lock.unlock() }; return n }
+    func release() { lock.lock(); open = true; lock.unlock() }
+    private var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return open }
+    private func note() { lock.lock(); n += 1; lock.unlock() }
+    func sleep(_ d: Duration) async {
+        note()
+        while !isOpen && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(1)) }
+    }
+}
+/// 9o9.27: a monotonic clock the test advances by hand (injected as `Config.instant`).
+private final class ManualInstant: @unchecked Sendable {
+    private let lock = NSLock(); private var t = ContinuousClock.now
+    var now: ContinuousClock.Instant { lock.lock(); defer { lock.unlock() }; return t }
+    func advance(_ d: Duration) { lock.lock(); t = t.advanced(by: d); lock.unlock() }
 }
 
 private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bool {
@@ -105,13 +126,16 @@ private final class PIDBox: @unchecked Sendable {
 
     @Test func settledObservationsAreNotActedOnRightAfterAnAgentRestart() async {
         let logs = Logs()
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)), logs: logs)
+        let gate = DelayGate(), clock = ManualInstant()
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)), logs: logs,
+                          configure: { $0.delaySleep = { await gate.sleep($0) }; $0.instant = { clock.now } })
         await r.engine.agentRestarted(settle: .milliseconds(150))
         let early = await r.engine.reconcileOnce()
         #expect(early.outcome == .unsettled)
         #expect(await r.actuator.calls.isEmpty)
         #expect(logs.all.contains { $0.contains("agent restarted moments ago") })
         // The single delayed reconcile fires after the settle and the engine then converges.
+        clock.advance(.milliseconds(150)); gate.release()
         let state = r.state
         #expect(await waitUntil { await MainActor.run { state.isConverged } })
         #expect(await r.actuator.order == ["B", "A"].map(k))
@@ -154,10 +178,12 @@ private final class PIDBox: @unchecked Sendable {
     }
 
     @Test func burstsWithTheSameReasonBecomeOnePass() async {
-        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)))
+        let gate = DelayGate()
+        let r = await rig(order: ["A", "B"].map(k), layout: Layout.placedAll(visible: ["B", "A"].map(k)),
+                          configure: { $0.delaySleep = { await gate.sleep($0) } })
         for _ in 0..<8 { await r.engine.scheduleReconcile(after: .milliseconds(60), reason: "display change") }
-        try? await Task.sleep(for: .milliseconds(30))
-        #expect(r.state.passCount == 0)
+        #expect(r.state.passCount == 0)      // the delay has not elapsed: the gate is closed
+        gate.release()
         let state = r.state
         #expect(await waitUntil { await MainActor.run { state.passCount >= 1 } })
         try? await Task.sleep(for: .milliseconds(150))

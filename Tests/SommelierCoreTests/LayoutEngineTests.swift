@@ -777,6 +777,8 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     @Test func chainedPassesAreCappedAtTwoAndRespectMinInterval() async {
         var cfg = LayoutEngine.Config()
         cfg.maxActionsPerPass = 1
+        let frozen = ContinuousClock.now
+        cfg.instant = { frozen }                    // 9o9.27: the monotonic clock never advances, so each wait is exactly the min interval
         let names = ["A", "B", "C", "D", "E"]
         let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)), config: cfg)
         await r.engine.requestReconcile()
@@ -785,7 +787,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         try? await Task.sleep(for: .milliseconds(100))
         #expect(r.state.passCount == 3)             // the requested pass plus at most 2 chained ones
         #expect(await r.actuator.calls.count == 3)
-        let gaps = r.sleeps.all.filter { $0 > .milliseconds(400) && $0 <= .milliseconds(500) }
+        let gaps = r.sleeps.all.filter { $0 == .milliseconds(500) }
         #expect(gaps.count >= 2)                    // 500 ms minimum between pass starts, via the injected sleep
     }
 
