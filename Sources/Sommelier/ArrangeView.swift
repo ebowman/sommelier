@@ -57,6 +57,7 @@ struct ArrangeView: View {
     @Bindable var vm: ArrangeViewModel
 
     var body: some View {
+        let _ = vm.renderCount += 1   // gdu.117: idle-render counter (logged by the tick)
         let content = vm.content
         VStack(spacing: 0) {
             toolbar(content)
@@ -259,17 +260,17 @@ struct CapsuleSlot: View {
     }
 
     @ViewBuilder private var menu: some View {
-        Button("Move to Visible") { vm.move(row.key, to: .visible) }.disabled(!vm.canMove(row.key, to: .visible))
-        Button("Move to Hidden") { vm.move(row.key, to: .hidden) }.disabled(!vm.canMove(row.key, to: .hidden))
-        Button("Move to Always hidden") { vm.move(row.key, to: .alwaysHidden) }.disabled(!vm.canMove(row.key, to: .alwaysHidden))
+        Button("Move to Visible") { vm.move(row.key, to: .visible) }.disabled(!row.movableTo.contains(.visible))
+        Button("Move to Hidden") { vm.move(row.key, to: .hidden) }.disabled(!row.movableTo.contains(.hidden))
+        Button("Move to Always hidden") { vm.move(row.key, to: .alwaysHidden) }.disabled(!row.movableTo.contains(.alwaysHidden))
         if let why = ArrangeMenuRules.whyText(row) {
             Divider()
             Button(why) {}.disabled(true)
         }
         if section == .visible && ArrangeMenuRules.showsStepItems() {
             Divider()
-            Button("Move left") { vm.step(row.key, .left) }.disabled(!vm.canStep(row.key, .left, rows: rows))
-            Button("Move right") { vm.step(row.key, .right) }.disabled(!vm.canStep(row.key, .right, rows: rows))
+            Button("Move left") { vm.step(row.key, .left) }.disabled(!row.canStepLeft)
+            Button("Move right") { vm.step(row.key, .right) }.disabled(!row.canStepRight)
         }
         if ArrangeMenuRules.showsTryAgain(row) {
             Divider()

@@ -59,7 +59,21 @@ final class ArrangeViewModel {
     /// Slot currently targeted by a drag, for the insertion indicator.
     var hoverSlot: (section: LayoutSection, slot: Int)?
     /// The waiting state machine (pure, in SommelierCore); this class only feeds it.
-    private(set) var tracker = ArrangeTracker()
+    /// gdu.117: stored out of band so a quiet tick (`update` rewrites its bookkeeping every 250 ms) does not invalidate the view;
+    /// observers are notified only when `renderState` changes (see `editTracker`).
+    @ObservationIgnored private var trackerStore = ArrangeTracker()
+    private(set) var tracker: ArrangeTracker {
+        get { access(keyPath: \.tracker); return trackerStore }
+        set { withMutation(keyPath: \.tracker) { trackerStore = newValue } }
+    }
+    @discardableResult
+    private func editTracker<R>(_ edit: (inout ArrangeTracker) -> R) -> R {
+        var t = trackerStore
+        let before = t.renderState
+        let r = edit(&t)
+        if t.renderState != before { tracker = t } else { trackerStore = t }
+        return r
+    }
     /// gdu.102: `drop#<n>` ids, one per gesture (drop, step, menu move, env move); resets per launch.
     @ObservationIgnored private var dropCounter = 0
     private func nextDropID() -> Int { dropCounter += 1; return dropCounter }
@@ -75,6 +89,13 @@ final class ArrangeViewModel {
     @ObservationIgnored private var windowGuard = ArrangeWindowGuard()
     @ObservationIgnored var onWindowCommand: ((ArrangeWindowGuard.Command) -> Void)?
     @ObservationIgnored private var lastSignature = ""
+    @ObservationIgnored private var loggedGeneration = -1
+    /// gdu.117 live counters: `ArrangeView.body` evaluations and `ArrangeSections.make` runs. Logged (`arrange: renders=...`) at most once
+    /// a second and only when they moved, so an idle window writes nothing.
+    @ObservationIgnored var renderCount = 0
+    @ObservationIgnored private(set) var contentBuilds = 0
+    @ObservationIgnored private var loggedCounts = (0, 0)
+    @ObservationIgnored private var lastCountLog = Date.distantPast
     @ObservationIgnored private var lastTick: Date?
     @ObservationIgnored private var revealTask: Task<Void, Never>?
     static let timeoutSeconds: TimeInterval = 90
@@ -106,7 +127,37 @@ final class ArrangeViewModel {
         return appNames.name(for: bundleID)
     }
 
+    /// gdu.117: bumped (and observers notified) when an input the cached `content` read changes; SwiftUI re-reads `content` then.
+    private var contentRevision = 0
+    @ObservationIgnored private var cachedContent: ArrangeContent?
+    @ObservationIgnored private var contentDirty = true
+    /// Counts rebuilds; equal values mean `content` is the same cached instance (the rows log and tests use it).
+    @ObservationIgnored private(set) var contentGeneration = 0
+
+    /// The rows, memoized: rebuilt only after an observable input it read (engine state, layout, pending, tracker, filter, ...) was
+    /// written, tracked with `withObservationTracking` so no input can be forgotten. A tick that changes nothing never rebuilds it.
     var content: ArrangeContent {
+        _ = contentRevision   // the view's dependency; the inputs themselves are tracked by the builder below
+        if let c = cachedContent, !contentDirty { return c }
+        var built: ArrangeContent?
+        withObservationTracking {
+            built = buildContent()
+        } onChange: { [weak self] in
+            MainActor.assumeIsolated { self?.contentInvalidated() }
+        }
+        contentDirty = false
+        contentBuilds += 1; contentGeneration += 1
+        cachedContent = built
+        return built!
+    }
+
+    private func contentInvalidated() {
+        guard !contentDirty else { return }
+        contentDirty = true
+        contentRevision &+= 1
+    }
+
+    private func buildContent() -> ArrangeContent {
         ArrangeSections.make(observed: state.observed, layout: layout, items: state.items, perItem: state.perItem,
                              capabilities: cap, showHiddenSection: state.showHiddenSection,
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
@@ -166,6 +217,8 @@ final class ArrangeViewModel {
         }
     }
 
+    /// The 250 ms tick runs only while it has a job: window visible, a drop awaited / pending, a callout showing, or the engine dragging.
+    /// It is restarted by `start`, `apply` and a refused drop's callout.
     private func ensureTimer() {
         guard timer == nil else { return }
         // Common run loop modes: the tick (rows log, pause expiry, stall detector) keeps running during drag tracking (gdu.93).
@@ -182,7 +235,12 @@ final class ArrangeViewModel {
         capabilities = ArrangeCapabilities.rules(items: state.items, resolver: EngineFactory.currentTrackedResolver())
     }
 
-    private func tick() {
+    private func stopTimerIfIdle() {
+        guard !windowVisible, trackerStore.isEmpty, !pending.isActive, refusal == nil, state.inFlight == nil else { return }
+        timer?.invalidate(); timer = nil; lastTick = nil
+    }
+
+    func tick() {
         let t = Date()
         if let last = lastTick, t.timeIntervalSince(last) - 0.25 > 0.1 {
             AppLog.log(.arrange, "arrange: MAIN ACTOR STALL: timer \(String(format: "%.0f", (t.timeIntervalSince(last) - 0.25) * 1000)) ms late")
@@ -192,24 +250,36 @@ final class ArrangeViewModel {
         if let until = state.pollSuppression?.until, until <= t, windowVisible { state.pollSuppression = nil }
         driveWindowGuard()
         if let r = refusal, !r.isActive(at: t) { refusal = nil }
-        guard windowVisible || !tracker.isEmpty || pending.isActive || refusal != nil else { return }
+        guard windowVisible || !trackerStore.isEmpty || pending.isActive || refusal != nil else { stopTimerIfIdle(); return }
         refreshCapabilities()
-        pending.resolve(stateRevision: state.layoutRevision)
+        // Write the observed `pending` only when it actually resolves (an assignment invalidates the view even when equal).
+        if pending.isActive { var p = pending; if p.resolve(stateRevision: state.layoutRevision) { pending = p } }
         guard !pending.isActive else { if windowVisible { logRowsIfChanged() }; return }
-        for line in tracker.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
-                                   showHiddenSection: state.showHiddenSection, now: t,
-                                   observationSettled: state.observationSettled, planPass: state.lastPlan.passStarted) {
-            AppLog.log(.arrange, "arrange: \(line)")
+        if !trackerStore.isEmpty {
+            let lines: [String] = editTracker {
+                $0.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
+                          showHiddenSection: state.showHiddenSection, now: t,
+                          observationSettled: state.observationSettled, planPass: state.lastPlan.passStarted)
+            }
+            for line in lines { AppLog.log(.arrange, "arrange: \(line)") }
         }
-        if windowVisible { logRowsIfChanged() }
+        if windowVisible { logRowsIfChanged(); logCountsIfChanged(t) }
+    }
+
+    private func logCountsIfChanged(_ now: Date) {
+        guard (renderCount, contentBuilds) != loggedCounts, now.timeIntervalSince(lastCountLog) >= 1 else { return }
+        loggedCounts = (renderCount, contentBuilds); lastCountLog = now
+        AppLog.log(.arrange, "arrange: renders=\(renderCount) contentBuilds=\(contentBuilds)")
     }
 
     /// One line per change of what the window shows (the "truth log" used for live verification).
     private func logRowsIfChanged() {
+        let c = content
+        guard loggedGeneration != contentGeneration else { return }
+        loggedGeneration = contentGeneration
         func line(_ s: ArrangeStrip) -> String {
             s.rows.map { r in (r.isBoundary ? "|OVERFLOW|" : r.title + (r.isGhost ? "(ghost)" : "") + r.badge.glyph) }.joined(separator: " ")
         }
-        let c = content
         let sig = "V[\(line(c.visible))] H[\(line(c.hidden))] A[\(line(c.alwaysHidden))]"
         guard sig != lastSignature else { return }
         lastSignature = sig
@@ -253,12 +323,9 @@ final class ArrangeViewModel {
     }
 
     func canMove(_ key: ItemKey, to section: LayoutSection) -> Bool {
-        let parked = Set(state.observed.parked)
-        // already there (menu item stays disabled), except a parked key listed Visible: Move to Visible is a show request (gdu.110)
-        guard layout.section(of: key) != section || (section == .visible && parked.contains(key)) else { return false }
-        if case .move = ArrangeDrop.outcome(layout: layout, key: key, to: section, index: nil, capabilities: cap,
-                                            observationAvailable: observationAvailable, units: units, parked: parked) { return true }
-        return false
+        // The menu reads the precomputed `ArrangeRow.movableTo`; this is the same rule (ArrangeDrop.canMove) for other callers.
+        ArrangeDrop.canMove(layout: layout, key: key, to: section, capabilities: cap, observationAvailable: observationAvailable,
+                            units: units, parked: Set(state.observed.parked))
     }
 
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
@@ -352,7 +419,7 @@ final class ArrangeViewModel {
     /// and submits in the same main-actor turn, so it passes the current revision; a confirm dialog passes the revision from when it opened.
     private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = [], dropID: Int? = nil, intent: DropIntent? = nil) {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
-        let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true, dropID: dropID, intent: intent)
+        let ticket = editTracker { $0.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true, dropID: dropID, intent: intent) }
         pending.submit(l)
         ensureTimer()
         Task { [weak self] in   // never block the main actor on the engine
@@ -362,7 +429,7 @@ final class ArrangeViewModel {
     }
 
     private func published(_ stamp: LayoutRevision, ticket: Int) {
-        tracker.stamp(ticket: ticket, passesStartedAtRevision: stamp.passesStarted)
+        editTracker { $0.stamp(ticket: ticket, passesStartedAtRevision: stamp.passesStarted) }
         pending.submitted(revision: stamp.revision)
         pending.resolve(stateRevision: state.layoutRevision)
     }
@@ -371,14 +438,14 @@ final class ArrangeViewModel {
 
     func reapply() {
         guard let engine = model.engine else { return }
-        tracker.retry(passesStarted: state.passesStarted, now: Date())
+        editTracker { $0.retry(passesStarted: state.passesStarted, now: Date()) }
         Task { await engine.clearFailures(); await engine.requestReconcile() }
     }
 
     /// "Try again" on one row: clears the engine's give-up / failure history of `key` and plans it again (`LayoutEngine.retry(key:)`).
     func retry(_ key: ItemKey) {
         guard let engine = model.engine else { return }
-        tracker.retry(passesStarted: state.passesStarted, now: Date())
+        editTracker { $0.retry(passesStarted: state.passesStarted, now: Date()) }
         Task { await engine.retry(key: key) }
     }
 
@@ -396,7 +463,7 @@ final class ArrangeViewModel {
         switch c {
         case .adopt(let l, let base):
             AppLog.log(.arrange, "arrange: adopt current order")
-            tracker.removeAll()
+            editTracker { $0.removeAll() }
             apply(l, basedOn: base)
         case .hideNotFitting(let l, let titles, _, let base):
             AppLog.log(.arrange, "arrange: hide what does not fit: \(titles.joined(separator: ", "))")

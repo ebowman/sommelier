@@ -152,6 +152,12 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var capabilityNote: String?
     /// 9o9.15: the raw description (else title) the app reports; the tooltip's second line and part of what Filter matches.
     public var detail: String = ""
+    /// gdu.117: the sections the context menu's "Move to ..." items are enabled for (`ArrangeDrop.canMove`), computed once when the
+    /// content is built instead of on every render. Empty for anchors and the fold line.
+    public var movableTo: Set<LayoutSection> = []
+    /// gdu.117: whether "Move left" / "Move right" are enabled (`ArrangeDrop.step` yields a move); Visible rows only.
+    public var canStepLeft = false
+    public var canStepRight = false
     public var id: String { isGhost ? key.description + "#ghost" : key.description }
 
     public var unitTooltip: String? { HideUnitNames.unitNote(mates: unitMates, app: unitApp) }
@@ -352,6 +358,11 @@ public enum ArrangeSections {
                               unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? nil : cap.reason)
             r.staleFrame = stale
             r.detail = namer.detail(k)
+            if !anchor {
+                r.movableTo = Set(LayoutSection.allCases.filter {
+                    ArrangeDrop.canMove(layout: layout, key: k, to: $0, capabilities: capabilities, observationAvailable: hasObs, units: units, parked: parked)
+                })
+            }
             if b == .moving, !ghost { r.moveReason = moveReasons[k] }
             return r
         }
@@ -451,7 +462,7 @@ public enum ArrangeSections {
             if !pile.isEmpty, !observed.stripExpanded,
                let last = vRows.lastIndex(where: { !$0.isGhost && pile.contains($0.key) }) {
                 var line = row(observed.overflowChevron ?? .overflowChevron, ghost: false, running: true)
-                line.isBoundary = true; line.badge = .none; line.barState = nil; line.draggable = false
+                line.isBoundary = true; line.badge = .none; line.barState = nil; line.draggable = false; line.movableTo = []
                 vRows.insert(line, at: last + 1)
             }
         }
@@ -481,6 +492,22 @@ public enum ArrangeSections {
                 st.rows = st.rows.filter(keep); st.notRunning = st.notRunning.filter(keep)
                 switch s { case .visible: out.visible = st; case .hidden: out.hidden = st; case .alwaysHidden: out.alwaysHidden = st }
             }
+        }
+        // gdu.117: Move left / right enablement, judged on the strip's final (filtered) rows exactly like `ArrangeViewModel.step`.
+        if hasObs, ArrangeMenuRules.showsStepItems() {
+            let stepRows = out.visible.rows
+            func name(_ k: ItemKey) -> String { items[k] != nil ? namer.name(k) : "\(k)" }
+            func can(_ k: ItemKey, _ d: ArrangeDrop.Direction) -> Bool {
+                if case .move = ArrangeDrop.step(layout: layout, rows: stepRows, key: k, d, capabilities: capabilities, observationAvailable: hasObs,
+                                                 bar: observed.onBar, displayName: name, units: units) { return true }
+                return false
+            }
+            func flag(_ r: ArrangeRow) -> ArrangeRow {
+                guard !r.isAnchor, !r.isBoundary else { return r }
+                var r = r; r.canStepLeft = can(r.key, .left); r.canStepRight = can(r.key, .right); return r
+            }
+            out.visible.rows = out.visible.rows.map(flag)
+            out.visible.notRunning = out.visible.notRunning.map(flag)
         }
         return out
     }
@@ -712,6 +739,16 @@ public enum ArrangeDrop {
         /// `moved` lists every key that moves (the unit's siblings come along, `key` first). `willNotFit`: the target is left
         /// of the overflow boundary, so the item will land behind macOS's chevron.
         case move(layout: Layout, moved: [ItemKey], willNotFit: Bool)
+    }
+
+    /// Whether the context menu's "Move to `section`" is enabled for `key`: not already there (except a parked key listed Visible, where
+    /// it is a show request, gdu.110) and `outcome` is a move. The single source for `ArrangeRow.movableTo` and `ArrangeViewModel.canMove`.
+    public static func canMove(layout: Layout, key: ItemKey, to section: LayoutSection, capabilities: (ItemKey) -> Capability,
+                               observationAvailable: Bool = true, units: HideUnitRule = .ownerKeys, parked: Set<ItemKey> = []) -> Bool {
+        guard layout.section(of: key) != section || (section == .visible && parked.contains(key)) else { return false }
+        if case .move = outcome(layout: layout, key: key, to: section, index: nil, capabilities: capabilities,
+                                observationAvailable: observationAvailable, units: units, parked: parked) { return true }
+        return false
     }
 
     /// Applies the move with capability checks. `index` is a position in `section` AFTER the unit is lifted out
@@ -954,6 +991,16 @@ public struct ArrangeTracker: Equatable, Sendable {
 
     public var awaiting: Set<ItemKey> { Set(entries.keys) }
     public var isEmpty: Bool { entries.isEmpty }
+
+    /// gdu.117: everything the Arrange window renders from the tracker (which keys wait, their judging gate, the timed-out set). The
+    /// bookkeeping `update` rewrites every tick (`lastUpdate`, `since`) is not part of it, so a quiet tick leaves it equal.
+    public struct RenderState: Equatable, Sendable {
+        var gates: [ItemKey: [Int]]
+        var timedOut: Set<ItemKey>
+    }
+    public var renderState: RenderState {
+        RenderState(gates: entries.mapValues { [$0.dropSequence, $0.awaitingStamp ? 1 : 0] }, timedOut: timedOut)
+    }
 
     /// Keys whose current engine status predates their judging pass.
     /// While the observation is unsettled (gdu.46) no engine status can be trusted (an unsettled pass refreshes none), so every
