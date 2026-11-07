@@ -354,6 +354,21 @@ private func refoldWorld() -> StripWorld {
     #expect((await a.trace).contains { $0.contains("no drawn trusted key left of") })
 }
 
+@Test func aBeforeSpelledPullOutOpensTheStripDragsAndVerifiesByTheFoldRuleWithTheUntrustedKeyDrawnLeftOfTheSubject() async {
+    // 9o9.28: record [TM, Jump, Gate]; TM is drawn (untrusted for planning), Jump is in the pile: Jump .before(Gate).
+    let w = StripWorld(pile: ["Jump"], drawn: ["TM", "Gate"])
+    let a = await actuator(w, record: ["TM", "Jump", "Gate"])
+    let r = await a.move(key("Jump"), relation: .before(key("Gate")))
+    #expect(r.isVerified)
+    #expect(w.events == ["open", "drag", "close"])
+    #expect(!w.expanded && !w.dragWhileCollapsed)
+    let chevronFrame = w.frames().first { $0.name == chev }!.frame
+    #expect(w.dragTargets.allSatisfy { !chevronFrame.insetBy(dx: -2, dy: 0).contains(CGPoint(x: $0, y: chevronFrame.midY)) })
+    #expect(w.all.firstIndex(of: "TM")! < w.all.firstIndex(of: "Jump")!)
+    #expect(w.all.firstIndex(of: "Jump")! < w.all.firstIndex(of: "Gate")!)
+    #expect(!(await a.trace).contains { $0.contains("drop refused") })
+}
+
 @Test func theExpandedStripOverlayIsNeverAMenuInsideASession() async {
     let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
     w.windowGrowth = true            // the owner's window count grows around the drag: the strip overlay, not a menu

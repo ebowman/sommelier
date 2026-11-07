@@ -151,11 +151,12 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 
 @Test func anUntrustedOrStaleDrawnKeyIsNeverTheSubjectOrTheTargetOfACrossFoldMoveButAPileKeyMayBe() {
     // a is the only drawn key left of x1 in the record. Stale (a carried frame): no pull-out target, no push-in subject.
-    let stale = obs(["x1", "ch", "a", "b"], ovf: ["x1"], stale: ["a"])
+    // 9o9.28: b (right of x1) is untrusted too here; a trusted b would be a `.before(b)` target.
+    let stale = obs(["x1", "ch", "a", "b"], ovf: ["x1"], stale: ["a", "b"])
     let p = Reconciler().plan(observed: stale, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(p.actions.isEmpty)
     #expect(p.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingSkipReason])
-    let unc = obs(["x1", "ch", "a", "b"], ovf: ["x1"], uncorroborated: ["a"])
+    let unc = obs(["x1", "ch", "a", "b"], ovf: ["x1"], uncorroborated: ["a", "b"])
     let up = Reconciler().plan(observed: unc, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(up.actions.isEmpty)
     #expect(up.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingSkipReason])
@@ -256,4 +257,39 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     #expect(ArrangeSections.foldBaseStatus(k("d3"), layout: l, observed: o) == .inPlace)
     let line = ArrangeSections.statusLine(perItem: [k("x"): .pending, k("d1"): .pending], lastError: nil, isConverged: true, inFlight: false)
     #expect(!line.contains("matches"))
+}
+
+// MARK: 9o9.28: a pull-out may be spelled `.before(B)` with B the nearest trusted drawn key RIGHT of X when none is trusted on the left
+
+@Test func aPullOutWithNoTrustedKeyOnTheLeftDropsBeforeTheNearestTrustedDrawnKeyOnTheRight() {
+    // The live 21:03 shape: record [p1, TimeMachine(drawn, uncorroborated), Jump(pile, ambiguous), GateOpener(drawn, trusted)].
+    let o = obs(["p1", "jump", "ch", "tm", "gate"], ovf: ["p1", "jump"], uncorroborated: ["tm", "jump"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
+    #expect(p.phase == .order && p.actions == [.move(k("jump"), .before(k("gate")))], "actions=\(p.actions) skipped=\(p.skipped)")
+    #expect(!p.skipped.contains { $0.key == k("jump") })
+    #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("p1"), k("jump")]))
+}
+
+@Test func aTrustedDrawnKeyOnTheLeftStillWinsOverOneOnTheRight() {
+    let o = obs(["p1", "jump", "ch", "tm", "gate"], ovf: ["p1", "jump"], uncorroborated: ["jump"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
+    #expect(p.actions == [.move(k("jump"), .after(k("tm")))], "actions=\(p.actions) skipped=\(p.skipped)")
+}
+
+@Test func aPullOutWithNoTrustedDrawnKeyOnEitherSideKeepsTheNoCrossingReason() {
+    let o = obs(["p1", "jump", "ch", "tm", "gate"], ovf: ["p1", "jump"], uncorroborated: ["tm", "gate", "jump"])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
+    #expect(p.actions.isEmpty)
+    #expect(p.skipped.contains { $0.key == k("jump") && $0.reason == Reconciler.noCrossingSkipReason }, "skipped=\(p.skipped)")
+}
+
+@Test func aBeforeTargetIsNeverInTheTrailingBlock() {
+    let rec = ["tm", "x1", "gate"].map(k)
+    let m = Reconciler.crossFoldMove(record: rec, drawn: [k("tm"), k("gate")], pile: [k("x1")], excluded: [k("tm")], canMove: { $0 != k("gate") },
+                                     blockStart: 1)
+    #expect(m == nil)
+}
+
+@Test func theBeforeSpelledPullOutIsALegalFoldMove() {
+    #expect(Reconciler.isLegalFoldMove(.move(k("jump"), .before(k("gate"))), overflow: [k("jump")], chevron: k("ch")))
 }

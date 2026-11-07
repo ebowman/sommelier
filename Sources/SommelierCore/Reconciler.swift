@@ -523,7 +523,7 @@ public struct Reconciler: Sendable {
     /// 9o9.11: the one move across the fold the record asks for, or nil. With a collapsed strip the fold must be a PREFIX of the record:
     /// every key behind the chevron sits left of every drawn key. A violation is a pair (drawn Y, pile X) with the record placing Y
     /// left of X. It is repaired by a pull-out first (9o9.22): `X .after(A)` (X behind the chevron and movable, A the nearest trusted
-    /// drawn key left of X in the record, not in the trailing block); else a push-in `Y .before(X)` (Y trusted, drawn, movable, X the
+    /// drawn key left of X in the record, not in the trailing block); else (9o9.28) `X .before(B)` with B the nearest trusted drawn key RIGHT of X when none exists on the left; else a push-in `Y .before(X)` (Y trusted, drawn, movable, X the
     /// record-first pile key right of Y). `excluded`: keys never chosen as subject or target (drawn keys that are untrusted
     /// (uncorroborated / stale / held) and pile keys that are held; churn-zone keys are allowed, the strip session covers them). A stale pile key is NOT excluded: the actuator
     /// opens the strip and the fresh read taken with it open decides (9o9.23). The order among pile keys is never touched.
@@ -551,6 +551,13 @@ public struct Reconciler: Sendable {
                     return true
                 }.max { rec[$0.element]! < rec[$1.element]! }
                 if let a { return .move(x, .after(a.element)) }
+                // 9o9.28: no trusted drawn key left of X: the nearest trusted drawn key RIGHT of X in the record (outside the trailing block)
+                // works as `X .before(B)`: X lands left of B, and everything the record puts left of X is already left or in the pile.
+                let b = drawn.enumerated().filter { (i, d) in
+                    guard let id = rec[d], id > ix, i < blockStart, !excluded.contains(d), !pileSet.contains(d) else { return false }
+                    return true
+                }.min { rec[$0.element]! < rec[$1.element]! }
+                if let b { return .move(x, .before(b.element)) }
             }
             return nil
         }

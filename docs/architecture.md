@@ -349,7 +349,7 @@ Product rule: everything in Visible is in order, including what macOS hides behi
   violation is a pair (drawn Y, pile X) with the record placing Y left of X. After the drawn order is settled (drawn moves always come
   first, unchanged: one move per pass, 9o9.9 trusted/untrusted rule, anchors, `lands`), at most ONE cross-fold move is planned, on
   the pull-out first: `X .after(A)` (X movable, behind the chevron; A the nearest trusted drawn key left of X in the record, not in the
-  trailing block); the push-in `Y .before(X)` (Y trusted, movable, drawn, not in the trailing block; X the record-first pile key right
+  trailing block), or, when no trusted drawn key exists on the left, `X .before(B)` with B the nearest trusted drawn key RIGHT of X in the record (not in the trailing block; 9o9.28: X then lands left of B, and the untrusted key left of X stays drawn left of it, which the fold rule verifies); the push-in `Y .before(X)` (Y trusted, movable, drawn, not in the trailing block; X the record-first pile key right
   of Y) is only the fallback when no pull-out exists (9o9.22: the pull-out moves the key the user dragged; the old smaller-side
   heuristic chose push-in on every full bar). Trust rule for crossings (9o9.22): DRAWN keys keep the full requirement (fresh and
   corroborated, never held), so a stale frame left of the chevron is never touched; a PILE key is excluded only when HELD

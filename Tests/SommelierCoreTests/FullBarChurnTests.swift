@@ -97,6 +97,8 @@ struct FullBarChurnRuleTests {
 private final class Geometry: @unchecked Sendable {
     private let lock = NSLock()
     private var _pile = 3
+    /// 9o9.28: keys whose identity is heuristic (no AX identifier): uncorroborated for the planner.
+    nonisolated(unsafe) var blind: Set<String> = []
     private var _alternate = false
     private var reads = 0
     enum Chevron { case fixed(Bool), dropsOnceSomethingIsHidden, appearsOnceSomethingIsHidden }
@@ -138,8 +140,9 @@ private final class Lines: @unchecked Sendable {
 private func snapshot(_ g: Geometry, order: [ItemKey], hidden: Set<ItemKey>) -> MenuBarSnapshot {
     let chevron = g.hasChevron(hidden: hidden)
     func item(_ key: ItemKey, _ frame: CGRect, onBar: Bool, chev: Bool = false) -> MenuBarItem {
-        MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: key.description, axDescription: "", axIdentifier: key.description,
-                    frame: frame, source: .appExtras, isOnMenuBar: onBar, isOverflowChevron: chev, joinEvidence: .identifier)
+        MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: key.description, axDescription: "", axIdentifier: g.blind.contains(key.description) ? "" : key.description,
+                    frame: frame, source: .appExtras, isOnMenuBar: onBar, isOverflowChevron: chev,
+                    joinEvidence: g.blind.contains(key.description) ? JoinEvidence.none : .identifier)
     }
     var items: [MenuBarItem] = []
     let bar = order.filter { !hidden.contains($0) && $0 != chevKey }
@@ -160,7 +163,15 @@ private struct GeoObserver: MenuBarObserver {
     let geo: Geometry
     func observe() async throws -> [ResolvedItem] {
         let order = await actuator.order, hidden = await actuator.hidden
-        return FakeMenuBar.resolve(snapshot(geo, order: order, hidden: hidden))
+        return resolveBlind(snapshot(geo, order: order, hidden: hidden))
+    }
+}
+
+/// `FakeMenuBar.resolve`, except an item with no AX identifier keeps its key (from the title) at heuristic confidence.
+private func resolveBlind(_ s: MenuBarSnapshot) -> [ResolvedItem] {
+    s.items.compactMap { i in
+        if i.axIdentifier.isEmpty { return ItemKey(storeKey: i.title).map { ResolvedItem(item: i, key: $0, confidence: .heuristic) } }
+        return ItemKey(storeKey: i.axIdentifier).map { ResolvedItem(item: i, key: $0, confidence: .exact) }
     }
 }
 
@@ -174,8 +185,9 @@ private struct ChevRig {
 
 @MainActor
 private func chevRig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout, chevron: Bool = true,
-                     reveal: Bool = false, mode: Geometry.Chevron? = nil) async -> ChevRig {
+                     reveal: Bool = false, mode: Geometry.Chevron? = nil, blind: Set<String> = []) async -> ChevRig {
     let geo = Geometry()
+    geo.blind = blind
     let lines = Lines()
     geo.chevron = mode ?? .fixed(chevron)
     let act = FakeActuator(order: order, hidden: hidden, capabilities: Caps(),
@@ -183,7 +195,7 @@ private func chevRig(order: [ItemKey], hidden: Set<ItemKey> = [], layout: Layout
     let state = EngineState()
     let engine = LayoutEngine(observer: GeoObserver(actuator: act, geo: geo), actuator: act,
                               store: InMemoryLayoutStore(layout), capabilities: Caps(), state: state,
-                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { lines.add($0) },
+                              resolveSnapshot: { resolveBlind($0) }, sleep: { _ in }, log: { lines.add($0) },
                               showHiddenSection: reveal, config: .multiMove)
     await engine.start()
     return ChevRig(engine: engine, state: state, actuator: act, geo: geo, lines: lines)
@@ -256,6 +268,28 @@ struct FullBarChurnEngineTests {
         let after = await r.actuator.order
         let pile: Set<ItemKey> = Set(after.prefix(3))
         #expect(pile.contains(k("D1")))   // the target really did re-fold
+        let observed = ObservedOrder(onBar: after + [chevKey], parked: [], systemOverflow: pile, overflowChevron: chevKey)
+        var t = ArrangeTracker()
+        let now = Date()
+        t.record([k("P3")], passesStarted: 1, now: now, awaitingStamp: false, dropID: 9, intent: DropIntent(key: k("P3"), left: k("D1"), right: k("D2")))
+        _ = t.update(observed: observed, layout: layout, perItem: [k("P3"): .inPlace], passSequence: 1, showHiddenSection: false, now: now)
+        #expect(t.timedOut.isEmpty)
+    }
+
+    /// 9o9.28: the live 21:03 drop. D1 (drawn, first) is uncorroborated, so the pull-out is `P3 .before(D2)`; the tracker reports applied.
+    @Test func aBeforeSpelledPullOutPastAnUntrustedDrawnKeyIsPlannedOnceAndTheTrackerReportsApplied() async {
+        let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("D1"), k("P3"), k("D2"), k("D3"), k("D4")])
+        let r = await chevRig(order: order, layout: layout, blind: [k("D1").description])
+        for _ in 0..<5 { _ = await r.engine.reconcileOnce() }
+        let ms = moves(await r.actuator.calls)
+        #expect(ms == [.move(k("P3"), .before(k("D2")))], "moves=\(ms)")
+        #expect(!r.lines.has("struck"))
+        let after = await r.actuator.order
+        let idx = { (x: String) in after.firstIndex(of: k(x))! }
+        #expect(idx("D1") < idx("P3") && idx("P3") < idx("D2"))
+        let pile: Set<ItemKey> = Set(after.prefix(3))
+        #expect(!pile.contains(k("P3")))
         let observed = ObservedOrder(onBar: after + [chevKey], parked: [], systemOverflow: pile, overflowChevron: chevKey)
         var t = ArrangeTracker()
         let now = Date()
