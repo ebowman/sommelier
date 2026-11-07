@@ -323,6 +323,27 @@ extension SystemOverflowRule {
         guard r.count == 2, let a = r.first, let b = r.last else { return false }
         return a.hasChevron == b.hasChevron && a.overflow == b.overflow
     }
+
+    /// 9o9.17: why the last two reads disagree: keys in the newer read's pile only (+) and in the older read's only (-). Sorted by
+    /// description so the log line is stable.
+    public static func overflowDifference(_ reads: [ChurnRead]) -> (added: [ItemKey], removed: [ItemKey]) {
+        let r = reads.suffix(2)
+        guard r.count == 2, let a = r.first, let b = r.last else { return ([], []) }
+        func sorted(_ s: Set<ItemKey>) -> [ItemKey] { s.sorted { $0.description < $1.description } }
+        return (sorted(b.overflow.subtracting(a.overflow)), sorted(a.overflow.subtracting(b.overflow)))
+    }
+
+    /// 9o9.17: the "order deferred" log line naming the symmetric difference (at most `limit` keys per side).
+    public static func unsettledText(_ reads: [ChurnRead], limit: Int = 10) -> String {
+        let d = overflowDifference(reads)
+        func list(_ k: [ItemKey]) -> String {
+            let head = k.prefix(limit).map(\.description).joined(separator: ", ")
+            return "[" + head + (k.count > limit ? ", +\(k.count - limit) more" : "") + "]"
+        }
+        var t = "order deferred: overflow set unsettled: +\(list(d.added)) -\(list(d.removed))"
+        if reads.suffix(2).count == 2, let a = reads.suffix(2).first, let b = reads.suffix(2).last, a.hasChevron != b.hasChevron { t += " (chevron \(a.hasChevron) -> \(b.hasChevron))" }
+        return t
+    }
 }
 
 /// One element of MenuBarAgent's hosted tree on the strip (non-stale, width > 1), as read by one scan (of7).
@@ -442,8 +463,8 @@ public enum SystemOverflow {
         }
     }
 
-    /// Indices (into `order`, the on-bar items left to right) that macOS overflowed: the FRESH items for which
-    /// `SystemOverflowRule` holds against a FRESH chevron of the same read (gdu.69: left of / on the chevron, or stacked within
+    /// Indices (into `order`, the on-bar items left to right) that macOS overflowed: the items (fresh, or stale with a carried frame,
+    /// 9o9.17) for which `SystemOverflowRule` holds against a FRESH chevron of the same read (gdu.69: left of / on the chevron, or stacked within
     /// its reach). Nothing else flags (gdu.45 corrective: coincidental identical frames on a normal bar and a chevron missed by
     /// a partial read must not cascade); a stale or absent chevron flags nothing.
     public static func indices(order: [Entry]) -> Set<Int> {
@@ -451,9 +472,12 @@ public enum SystemOverflow {
         // 9o9.11: an open strip draws the overflowed items at real frames; nothing is flagged and the chevron is no boundary.
         if order[c].stripExpanded { return [] }
         let chevron = order[c].frame
-        let fresh = order.indices.filter { $0 != c && !order[$0].isChevron && !order[$0].stale }
-        let frames = fresh.map { order[$0].frame }
-        return Set(fresh.filter { SystemOverflowRule.isOverflowed(order[$0].frame, chevron: chevron, hosted: frames) })
+        // 9o9.17: a STALE (carried) item keeps its pile membership: its carried frame is its last known position, so a frame left of,
+        // or stacked at, the fresh chevron flags it like a fresh one (otherwise the pile flips between reads as an owner's AX server
+        // stalls). Flagging is membership only: the planner still never moves a stale key (9o9.3).
+        let cand = order.indices.filter { $0 != c && !order[$0].isChevron }
+        let frames = cand.map { order[$0].frame }
+        return Set(cand.filter { SystemOverflowRule.isOverflowed(order[$0].frame, chevron: chevron, hosted: frames) })
     }
 
     /// Sets `systemOverflow` on a snapshot's items. Expects the on-bar items first and sorted left to right (the

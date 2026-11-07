@@ -74,7 +74,14 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     }
     #expect(SystemOverflow.indices(order: [entry(1), entry(40), entry(80, chevron: true, stale: true), entry(120)]).isEmpty)
     #expect(SystemOverflow.indices(order: [entry(1), entry(40), entry(120)]).isEmpty)
-    #expect(SystemOverflow.indices(order: [entry(1), entry(40, stale: true), entry(80, chevron: true), entry(120)]) == [0])
+}
+
+@Test func aCarriedItemLeftOfAFreshChevronIsFlagged() {
+    func entry(_ x: CGFloat, chevron: Bool = false, stale: Bool = false) -> SystemOverflow.Entry {
+        .init(frame: bar(x), stale: stale, isChevron: chevron)
+    }
+    // 9o9.17: a carried frame left of a fresh chevron keeps its pile membership
+    #expect(SystemOverflow.indices(order: [entry(1), entry(40, stale: true), entry(80, chevron: true), entry(120)]) == [0, 1])
 }
 
 @Test func aMissedChevronYieldsNoFlagsEvenWithStackedFrames() {

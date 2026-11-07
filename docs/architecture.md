@@ -485,8 +485,14 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   (1) a pass that wrote membership (hide/show, reveal or re-hide) on a bar with a chevron NEVER runs the order phase in that pass
   (`LayoutEngine.fullBarOrderGate`; log "order deferred: membership changed this pass"; the pass ends `incomplete`, not converged,
   and a follow-up pass is scheduled). (2) An order pass on a full bar runs only when the overflow set is SETTLED: the last two
-  complete reads (`recentReads`, fed by every adopted complete observation) agree on the pile (`SystemOverflowRule.overflowSettled`);
-  otherwise "order deferred: overflow set unsettled" (bounded by `maxChainedPasses`). (3) Reveal passes (showHidden/showAlways) on a
+  complete reads (`recentReads`, fed by every adopted `.complete` or `.completeExceptSelfPositioning` observation (9o9.17: carried frames keep pile membership, so a settled self-positioning-lacking read with a fresh chevron is as good for the pile set); incomplete reads are never fed) agree on the pile (`SystemOverflowRule.overflowSettled`);
+  otherwise "order deferred: overflow set unsettled: +[keys] -[keys]" (9o9.17: the symmetric difference of the two piles, newer-only
+  then older-only, at most 10 keys per side; `SystemOverflowRule.unsettledText`; bounded by `maxChainedPasses`). 9o9.17: a CARRIED
+  (stale) item keeps its pile membership: `SystemOverflow.indices` flags an item, fresh or carried, whose frame is left of, or
+  stacked at, a FRESH chevron of the same read (a carried frame is the last known position), so `ChurnRead`, `ActuationVerifier.overflowed`
+  and `ObservedOrder.systemOverflow` agree and the pile no longer flips between a complete read (9 keys) and an iStat-stall read (7 of them
+  carried, 2 flagged). A stale or absent chevron and an open strip still flag nothing; flagging is membership only, the planner never moves a
+  stale key (9o9.3). (3) Reveal passes (showHidden/showAlways) on a
   full bar plan membership only: when the layout order then differs, no drag, the pass converges and `EngineState.orderNotAppliedNotice`
   ("Order not applied: bar is full") reaches the Arrange status line below the withdraw and reveal-skip notices. (4) Churn zone
   (`SystemOverflowRule.churnZone`, MenuBarItem.swift, built from `ChurnRead`): keys in the pile, or within one item-width (widest
@@ -545,7 +551,9 @@ WiFi, TimeMachine).
   with the fold (a pile key with a drawn key left of it in the record, or a drawn key with a pile key right of it) is NEVER `.inPlace`
   (`ArrangeSections.foldBaseStatus`): it is `.pending` unless a failure, `cannotPlace` or waiting-for-position verdict says otherwise,
   so there is no check badge and the status line cannot read "Menu bar matches" while a crossing is outstanding (this includes the
-  keys of a push-in in flight). A pull-out or push-in subject is `.pending` like any move.
+  keys of a push-in in flight). A pull-out or push-in subject is `.pending` like any move. 9o9.17: a key in the pile never takes the
+  gdu.105 "position not corroborated for 60 s; marked unsupported" path (stacked frames overlap, so its join is ambiguous by construction):
+  pile keys never reach the uncorroborated / stale / moving-neighbour skips because the planner leaves them out of the reorder base (Reconciler); a pile key whose own position has not been read is `.pending` (skip `noCrossingOwnPositionSkipReason`); one whose neighbour is untrusted is `.unsupported` with the reason. Pile keys keep `foldBaseStatus` (`.notFitting` when fold-consistent, `.pending` otherwise) and leave it when drawn again.
 - Convergence rule. With a collapsed strip the bar matches when every DRAWN trusted key is in record order AND every overflowed key is
   left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The order among
   overflowed keys is not tracked while collapsed. Caveat: macOS decides by width what folds, so a record the widths cannot realise

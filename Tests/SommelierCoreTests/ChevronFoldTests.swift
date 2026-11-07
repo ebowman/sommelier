@@ -133,13 +133,13 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     let ux = obs(["x1", "ch", "a", "b"], ovf: ["x1"], uncorroborated: ["x1"])
     let uxp = Reconciler().plan(observed: ux, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(uxp.actions.isEmpty)
-    #expect(uxp.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingSkipReason])
+    #expect(uxp.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingOwnPositionSkipReason])
     // Only the order among pile keys differs (fold-consistent): the gdu.69 wording stays, never the no-crossing one.
     let among = obs(["x1", "x2", "ch", "a"], ovf: ["x1", "x2"])
     let ap = Reconciler().plan(observed: among, layout: lay(v: ["x2", "x1", "a"]), capabilities: anchorCh)
     #expect(ap.actions.isEmpty)
     #expect(ap.skipped.contains { $0.reason == Reconciler.overflowSkipReason })
-    #expect(!ap.skipped.contains { $0.reason == Reconciler.noCrossingSkipReason })
+    #expect(!ap.skipped.contains { $0.reason == Reconciler.noCrossingSkipReason || $0.reason == Reconciler.noCrossingOwnPositionSkipReason })
     // With a trusted drawn key the stale one is passed over: x1 goes after the trusted b, never after the stale a.
     let two = obs(["x1", "ch", "a", "b", "c"], ovf: ["x1"], stale: ["a"])
     let q = Reconciler().plan(observed: two, layout: lay(v: ["a", "b", "x1", "c"]), capabilities: anchorCh)

@@ -217,7 +217,7 @@ struct FullBarChurnEngineTests {
         r.geo.alternate = true                                   // the pile keeps changing between reads
         for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
         #expect(moves(await r.actuator.calls).isEmpty)
-        #expect(r.lines.has("order deferred: overflow set unsettled"))
+        #expect(r.lines.has("order deferred: overflow set unsettled: +["))   // 9o9.17: names the symmetric difference
         r.geo.alternate = false                                  // the bar settles
         for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
         #expect(!moves(await r.actuator.calls).isEmpty)

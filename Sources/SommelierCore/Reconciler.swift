@@ -45,6 +45,7 @@ public struct ObservedOrder: Equatable, Sendable {
         var bar: [(CGFloat, ItemKey)] = []
         var off: [ItemKey] = []
         var ovf = Set<ItemKey>()
+        var staleOvf = Set<ItemKey>()
         var unknown = Set<ItemKey>()
         var uncorr = Set<ItemKey>()
         var stale = Set<ItemKey>()
@@ -56,13 +57,15 @@ public struct ObservedOrder: Equatable, Sendable {
             if r.item.isOnMenuBar {
                 if r.item.stale { stale.insert(r.key); uncorr.insert(r.key); if r.item.recentlyVerified { recent.insert(r.key) } }
                 bar.append((r.item.frame.minX, r.key))
-                if r.item.systemOverflow, !r.item.stale { ovf.insert(r.key) }
+                if r.item.systemOverflow { ovf.insert(r.key); if r.item.stale { staleOvf.insert(r.key) } }
                 if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key; if r.item.stripExpanded { expanded = true } }
                 // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
                 if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
                     || r.item.hiddenInControlCenter { uncorr.insert(r.key) }
             } else { off.append(r.key); if r.item.placementUnknown { unknown.insert(r.key) } }
         }
+        // 9o9.17: a stale item keeps its pile flag (carried frame), but only against a fresh chevron of the read (gdu.45).
+        if chevron == nil { ovf.subtract(staleOvf) }
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
         self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr, staleOnBar: stale)
@@ -406,7 +409,7 @@ public struct Reconciler: Sendable {
                         guard let ik = rec[k], drawnRec.contains(where: { $0 < ik }) else { continue }
                         // The gdu.69 wording promises the strip will be opened for this key; here nothing will, so the truer reason replaces it.
                         skipped.removeAll { $0.key == k }
-                        skipped.append(SkippedAction(k, Reconciler.noCrossingSkipReason))
+                        skipped.append(SkippedAction(k, cannot.contains(k) ? Reconciler.noCrossingOwnPositionSkipReason : Reconciler.noCrossingSkipReason))
                     }
                 }
             }
@@ -464,6 +467,8 @@ public struct Reconciler: Sendable {
 
     /// 9o9.11: why a key behind the chevron that the record places right of a drawn key is not pulled out.
     public static let noCrossingSkipReason = "behind the « chevron; cannot be brought out yet: the item it should follow is not trusted on the bar"
+    /// Same, when the pile key ITSELF is the one whose position is unread (carried / uncorroborated / held).
+    public static let noCrossingOwnPositionSkipReason = "behind the « chevron; cannot be brought out yet: its own position has not been read"
 
     /// 9o9.11: whether a move crosses the fold: exactly one of its subject and relation target is behind the chevron (in `overflow`).
     /// The actuator opens the « strip for such a move (derived from the observation, never carried on the action).

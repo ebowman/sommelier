@@ -352,9 +352,11 @@ public actor LayoutEngine {
     /// gdu.80: the last two COMPLETE reads' churn data (pile + first-drawn neighbourhood). The churn zone is their union; the
     /// overflow set is settled when both agree. A pass that changed membership on a full bar never orders; the order phase waits
     /// for two agreeing complete reads.
-    private var recentReads: [ChurnRead] = []
-    private func noteChurn(_ items: [ResolvedItem], _ completeness: ReadCompleteness) {
-        guard completeness == .complete else { return }
+    private(set) var recentReads: [ChurnRead] = []
+    func noteChurn(_ items: [ResolvedItem], _ completeness: ReadCompleteness) {
+        // 9o9.17: carried frames keep pile membership, so a read that lacks only self-positioning items is as good as a complete one for
+        // the pile set; an incomplete read still says nothing.
+        guard completeness != .incomplete else { return }
         recentReads.append(ChurnRead(resolved: items))
         if recentReads.count > 2 { recentReads.removeFirst(recentReads.count - 2) }
     }
@@ -1481,7 +1483,7 @@ public actor LayoutEngine {
         for k in obs.onBar + obs.parked where transientReveals[rule.unit(of: k)] != nil { out[k] = .pending }
         var waiting = Set<ItemKey>()
         let now = ContinuousClock.now
-        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting {
+        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting && s.reason != Reconciler.noCrossingOwnPositionSkipReason {   // own position unread = temporary unknown: keeps its .pending base
             if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason || Reconciler.isMovingNeighbourSkip(s.reason) {   // gdu.105: transient, see positionWaitTimeout
                 let since = positionWaitSince[s.key] ?? now
                 positionWaitSince[s.key] = since
@@ -2312,7 +2314,7 @@ public actor LayoutEngine {
             return await end(.incomplete, converged: false, retry: true)
         }
         if !SystemOverflowRule.overflowSettled(recentReads) {
-            log("order deferred: overflow set unsettled")
+            log(SystemOverflowRule.unsettledText(recentReads))
             return await end(.unsettled, converged: false, retry: true)
         }
         return nil
