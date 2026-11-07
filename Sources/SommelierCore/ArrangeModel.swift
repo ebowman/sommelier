@@ -288,6 +288,8 @@ public enum ArrangeSections {
                     while s > 0, case .module = vRows[s - 1].key { s -= 1 }
                     insertAt = s
                 }
+                // gdu.119: a ghost beside its own real row says nothing the real row does not (it would show the item twice).
+                if onBar.contains(k), let realAt = vRows.firstIndex(where: { $0.key == k && !$0.isGhost }), insertAt! == realAt || insertAt! == realAt + 1 { continue }
                 vRows.insert(g, at: insertAt!)
             }
         }
@@ -586,8 +588,18 @@ public enum ArrangeDrop {
                 return lifted.firstIndex(of: r.key)
             }
             let at = min(max(0, slot), rows.count)
-            for j in stride(from: at - 1, through: 0, by: -1) { if let p = usable(rows[j]) { return clamp(p + 1, in: lifted, section: section) } }
-            for j in at..<rows.count { if let p = usable(rows[j]) { return clamp(p, in: lifted, section: section) } }
+            var right: Int?
+            for j in at..<rows.count where right == nil { right = usable(rows[j]) }
+            for j in stride(from: at - 1, through: 0, by: -1) {
+                if let p = usable(rows[j]) {
+                    // gdu.119: right after the left neighbour, unless only anchors (modules, e.g. the chevron module) sit between it and
+                    // the real right neighbour: then land directly before that neighbour so the layout records both drop neighbours.
+                    var i = p + 1
+                    if let r = right, r > i, lifted[i..<r].allSatisfy({ if case .module = $0 { return true } else { return false } }) { i = r }
+                    return clamp(i, in: lifted, section: section)
+                }
+            }
+            if let r = right { return clamp(r, in: lifted, section: section) }
             return nil
         }
         var idx: Int?
@@ -729,9 +741,34 @@ public enum ArrangeDrop {
 /// engine status alone. (3) A failed/unsupported status from a judging pass ends the wait (the badge then shows it).
 /// (4) After `timeout` seconds without a match the capsule shows the timeout "⚠"; a later match clears it.
 /// (5) Retry resets the sequence so the retry is judged by a fresh pass.
+/// gdu.119: what a Visible drop asked for, as neighbour KEYS: the nearest real row left and right of the slot (nil = start / end).
+public struct DropIntent: Equatable, Sendable {
+    public var key: ItemKey
+    public var left: ItemKey?
+    public var right: ItemKey?
+    public init(key: ItemKey, left: ItemKey?, right: ItemKey?) { self.key = key; self.left = left; self.right = right }
+
+    /// Real rows (ghosts, the boundary and the dragged key skipped) left and right of `slot`.
+    public static func from(rows: [ArrangeRow], slot: Int, key: ItemKey) -> DropIntent {
+        let at = min(max(0, slot), rows.count)
+        return DropIntent(key: key, left: rows[..<at].last { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key,
+                          right: rows[at...].first { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key)
+    }
+
+    /// True when the observed bar has `key` directly between `left` and `right` (the overflow chevron is not a neighbour; a nil
+    /// side is unconstrained). False when the key is not on the bar.
+    public func holds(in o: ObservedOrder) -> Bool {
+        let bar = o.onBar.filter { $0 != o.overflowChevron }
+        guard let i = bar.firstIndex(of: key), !o.staleOnBar.contains(key) else { return false }
+        if let l = left, !(i > 0 && bar[i - 1] == l) { return false }
+        if let r = right, !(i + 1 < bar.count && bar[i + 1] == r) { return false }
+        return left != nil || right != nil
+    }
+}
+
 public struct ArrangeTracker: Equatable, Sendable {
     public static let timeout: TimeInterval = 90
-    public static let timeoutText = "Arrange window timeout: the menu bar still does not match the layout after 90 s (the engine may still be working)"
+    public static let timeoutText = "Arrange window timeout: the menu bar still does not match the layout after 90 s (the engine may still be working, or other items' saved order disagrees with the bar)"
 
     /// `awaitingStamp`: the drop's layout has been submitted but the engine has not yet reported the revision it produced
     /// (`stamp`); such an entry is never judged. `ticket` identifies the submission.
@@ -742,6 +779,8 @@ public struct ArrangeTracker: Equatable, Sendable {
         public var ticket: Int = 0
         /// gdu.102: the `drop#<n>` of the gesture that created this entry (nil for actions that are not drops).
         public var dropID: Int?
+        /// gdu.119: the neighbours the user dropped between. When the bar already shows the key between them the drop is applied.
+        public var intent: DropIntent?
     }
     private var nextTicket = 0
     public private(set) var entries: [ItemKey: Entry] = [:]
@@ -766,17 +805,18 @@ public struct ArrangeTracker: Equatable, Sendable {
     /// supplies the engine's `passesStartedAtRevision` for the revision this drop produced (gdu.48). The returned ticket names
     /// this submission. Without it, `passesStarted` is the stamp (an action that publishes no layout).
     @discardableResult
-    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date, awaitingStamp: Bool = false, dropID: Int? = nil) -> Int {
+    public mutating func record(_ keys: [ItemKey], passesStarted: Int, now: Date, awaitingStamp: Bool = false, dropID: Int? = nil, intent: DropIntent? = nil) -> Int {
         nextTicket += 1
         for k in keys {
-            entries[k] = Entry(dropSequence: passesStarted, since: now, awaitingStamp: awaitingStamp, ticket: nextTicket, dropID: dropID)
+            entries[k] = Entry(dropSequence: passesStarted, since: now, awaitingStamp: awaitingStamp, ticket: nextTicket, dropID: dropID,
+                               intent: k == intent?.key ? intent : nil)
             timedOut.remove(k)
         }
         return nextTicket
     }
 
     public mutating func retry(passesStarted: Int, now: Date) {
-        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now, ticket: entries[k]?.ticket ?? 0, dropID: entries[k]?.dropID) }
+        for k in entries.keys { entries[k] = Entry(dropSequence: passesStarted, since: now, ticket: entries[k]?.ticket ?? 0, dropID: entries[k]?.dropID, intent: entries[k]?.intent) }
         timedOut = []
     }
 
@@ -813,6 +853,17 @@ public struct ArrangeTracker: Equatable, Sendable {
         for (k, e) in entries {
             guard layout.section(of: k) != nil else { entries[k] = nil; timedOut.remove(k); continue }
             let dt = now.timeIntervalSince(e.since)
+            // gdu.119: the bar already shows the key between the neighbours the user dropped it between: nothing to wait for
+            // (mode-independent; the whole-layout comparison below can disagree over items the drop did not touch).
+            if let i = e.intent, i.holds(in: observed) {
+                var blocked = false
+                switch perItem[k] { case .failed?, .unsupported?: blocked = true; default: break }
+                if !blocked {
+                    entries[k] = nil; timedOut.remove(k)
+                    log.append(line(e, k, "applied (already between the dropped neighbours, \(String(format: "%.1f", dt))s after the drop)"))
+                    continue
+                }
+            }
             if !e.awaitingStamp, passSequence > e.dropSequence {
                 switch perItem[k] {
                 case .failed(let err)?:

@@ -14,9 +14,8 @@ public struct DropTrace {
     /// left and right of the slot, plus the observation state at that moment.
     public static func intentLine(id: Int, key: ItemKey, section: LayoutSection, slot: Int, rows: [ArrangeRow],
                                   observed: ObservedOrder, settled: Bool, displayName: (ItemKey) -> String) -> String {
-        let at = min(max(0, slot), rows.count)
-        let left = rows[..<at].last { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key
-        let right = rows[at...].first { !$0.isGhost && !$0.isBoundary && $0.key != key }?.key
+        let intent = DropIntent.from(rows: rows, slot: slot, key: key)
+        let left = intent.left, right = intent.right
         let l = left.map { label($0, displayName) } ?? "start"
         let r = right.map { label($0, displayName) } ?? "end"
         return "\(tag(id)) intent: \(label(key, displayName)) -> \(section.rawValue) slot \(slot); between \(l) and \(r); "

@@ -227,7 +227,7 @@ final class ArrangeViewModel {
         AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot)")
         AppLog.log(.arrange, "arrange: " + DropTrace.intentLine(id: id, key: key, section: section, slot: slot, rows: rows, observed: state.observed,
                                                               settled: state.observationSettled, displayName: displayName))
-        return submit(outcome, key: key, dropID: id)
+        return submit(outcome, key: key, dropID: id, intent: section == .visible ? DropIntent.from(rows: rows, slot: slot, key: key) : nil)
     }
 
     func move(_ key: ItemKey, to section: LayoutSection) {
@@ -307,7 +307,7 @@ final class ArrangeViewModel {
     }
 
     @discardableResult
-    private func submit(_ outcome: ArrangeDrop.Outcome, key: ItemKey, dropID: Int? = nil) -> Bool {
+    private func submit(_ outcome: ArrangeDrop.Outcome, key: ItemKey, dropID: Int? = nil, intent: DropIntent? = nil) -> Bool {
         switch outcome {
         case .noop:
             message = nil
@@ -340,7 +340,7 @@ final class ArrangeViewModel {
             track = keysToTrack(moved: moved, old: old, new: l)   // hidden-strip reorders and (macOSOwns) Visible stayers are not tracked
             AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
             if let dropID { AppLog.log(.arrange, "arrange: " + DropTrace.layoutLine(id: dropID, key: key, layout: l)) }
-            apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved), dropID: dropID)
+            apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved), dropID: dropID, intent: intent)
             return true
         }
     }
@@ -349,9 +349,9 @@ final class ArrangeViewModel {
     /// engine stamps on `l` (the stamp arrives with `setLayout`'s return).
     /// `basedOn`: the layout revision `l` was composed on (gdu.52); the engine re-adds items it appended after it. A drop composes
     /// and submits in the same main-actor turn, so it passes the current revision; a confirm dialog passes the revision from when it opened.
-    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = [], dropID: Int? = nil) {
+    private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = [], dropID: Int? = nil, intent: DropIntent? = nil) {
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
-        let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true, dropID: dropID)
+        let ticket = tracker.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true, dropID: dropID, intent: intent)
         pending.submit(l)
         ensureTimer()
         Task { [weak self] in   // never block the main actor on the engine
