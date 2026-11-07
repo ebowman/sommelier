@@ -233,7 +233,7 @@ public enum ArrangeSections {
             // macOSOwns: a Visible key already on the bar is never "moving" (nothing reorders it); only arrival (ghost) is pending.
             let orderFree = !layout.enforcesOrder && layout.section(of: k) == .visible && onBar.contains(k)
             let pending = ghost || (awaiting.contains(k) && !orderFree)
-            let stale = !ghost && observed.staleOnBar.contains(k)
+            let stale = !ghost && observed.staleOnBar.contains(k) && !observed.carriedRecently.contains(k)   // gdu.120: recently verified rows look ordinary
             var b = hasObs
                 ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k),
                         pendingConfirmation: pendingConfirmation.contains(k))

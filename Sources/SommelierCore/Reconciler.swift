@@ -18,6 +18,9 @@ public struct ObservedOrder: Equatable, Sendable {
     /// has not answered a position read. Always also in `uncorroborated` when built from a scan. Shown (flagged) by the Arrange window,
     /// never a move subject, never hidden on a stale frame alone.
     public var staleOnBar: Set<ItemKey>
+    /// gdu.120: the subset of `staleOnBar` that was `recentlyVerified` (carried briefly with an unchanged frame). DISPLAY only: the
+    /// planner reads `staleOnBar`, so these keys are still never a move subject or target.
+    public var carriedRecently: Set<ItemKey> = []
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
                 placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = [], staleOnBar: Set<ItemKey> = []) {
         self.staleOnBar = staleOnBar
@@ -42,11 +45,12 @@ public struct ObservedOrder: Equatable, Sendable {
         var unknown = Set<ItemKey>()
         var uncorr = Set<ItemKey>()
         var stale = Set<ItemKey>()
+        var recent = Set<ItemKey>()
         var chevron: ItemKey?
         for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
             guard seen.insert(r.key).inserted else { continue }
             if r.item.isOnMenuBar {
-                if r.item.stale { stale.insert(r.key); uncorr.insert(r.key) }
+                if r.item.stale { stale.insert(r.key); uncorr.insert(r.key); if r.item.recentlyVerified { recent.insert(r.key) } }
                 bar.append((r.item.frame.minX, r.key))
                 if r.item.systemOverflow, !r.item.stale { ovf.insert(r.key) }
                 if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key }
@@ -58,6 +62,7 @@ public struct ObservedOrder: Equatable, Sendable {
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
         self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr, staleOnBar: stale)
+        self.carriedRecently = recent
     }
 }
 

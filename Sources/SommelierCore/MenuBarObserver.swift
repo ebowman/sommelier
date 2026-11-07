@@ -309,6 +309,7 @@ public struct AgreedScanObserver: MenuBarObserver {
             let compareSig = (scans == 1 && seed != nil && seedItems != nil) ? signature(Self.dedupe(seed!.normalize(res)).items) : sig
             let onBarStale = res.filter { $0.item.stale && $0.item.isOnMenuBar }.map { $0.key.description }
             let level = snap.completeness
+            if let reads = snap.selfPositioningReads { log("observe scan \(scans): self-positioning reads: \(reads)") }
             log("observe scan \(scans): hostedComplete=\(snap.hostedReadComplete.map(String.init) ?? "n/a") level=\(level.rawValue) items=\(res.count) onBarStale=\(onBarStale.count) agree=\(compareSig != nil && compareSig == prevSig)\(scans == 1 && seedItems != nil ? " (against the adopted observation)" : "")")
             if ProcessInfo.processInfo.environment["SOMMELIER_DEBUG_OBSERVE"] != nil {
                 FileHandle.standardError.write(Data("observe scan \(scans): blocked=\(sig == nil) agree=\(sig != nil && sig == prevSig) \(sig?.joined.count ?? 0)\n".utf8))
@@ -406,7 +407,7 @@ public struct BarSignature: Sendable {
     /// The on-bar stale items that make a scan unusable for agreement (after the shared non-item/noise exclusions).
     public func blockingStale(_ all: [ResolvedItem]) -> [ResolvedItem] {
         all.filter { !LayoutBuilder.isNonItem($0) && !volatileKeys.contains($0.key) && !Self.isAgentNoise($0.key) }
-            .filter { $0.item.stale && $0.item.isOnMenuBar && !isSelfPositioning($0) }
+            .filter { $0.item.stale && !$0.item.recentlyVerified && $0.item.isOnMenuBar && !isSelfPositioning($0) }   // gdu.120: recently verified counts as fresh here
     }
 
     /// What a stale item in an AGREED scan means for writing a layout (`mbprobe layout init-from-current`, gdu.30). Non-items

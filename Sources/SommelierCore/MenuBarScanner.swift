@@ -30,6 +30,8 @@ public struct MenuBarScanner {
     /// The Control Center tracked entries with their live `isAllowed`; injectable for tests. Consulted at most once per scan (gdu.79).
     /// `.unreadable` (live scanner, store denied) is an observation problem, never a frame rule (gdu.87); `.notConfigured` = hermetic.
     public var trackedEntries: @Sendable () -> TrackedStoreRead = { .notConfigured }
+    /// The clock for the `recentlyVerified` age bound (gdu.120); injectable for tests.
+    public var now: @Sendable () -> Date = Date.init
     private let state: ScanState
 
     /// - Parameter cacheURL: when set, the scan cache is loaded from / saved to this file, so a new process starts warm.
@@ -119,6 +121,8 @@ public struct MenuBarScanner {
         state.lastCompleteLayout = nil
         state.lastStrip = nil
         state.unverifiedCount = [:]
+        state.staleRun = [:]
+        state.lastFresh = [:]
         log("scanner: agent state invalidated")
     }
 
@@ -489,17 +493,22 @@ public struct MenuBarScanner {
         var failedApps: [RunningAppInfo] = []
         var candidates: [Candidate] = []
         let now = Date()
+        state.appReadOutcome = [:]
         for (app, read) in zip(toRead, reads) {
+            func outcome(_ o: String) { state.appReadOutcome[app.pid] = (app.name, app.bundleID, o) }
             switch read {
             case .items(let infos)?:
+                outcome("ok")
                 state.perApp[app.pid] = CachedApp(app: app, infos: infos)
                 state.emptyAt[app.pid] = infos.isEmpty ? now : nil
                 for info in infos { candidates.append(Candidate(app: app, info: info)) }
             case .failed(let why)?:
                 log("AX read failed for \(app.name) (\(app.bundleID ?? "?"), pid \(app.pid)): \(why)")
+                outcome(why.contains("timed out") || why.contains("CannotComplete") ? "timedOut" : "failed")
                 fallBack(app, &candidates, &failedApps)
             case nil:
                 log("extras budget (\(Int(extrasBudget * 1000)) ms) missed for \(app.name) (\(app.bundleID ?? "?"), pid \(app.pid))")
+                outcome("timedOut")
                 fallBack(app, &candidates, &failedApps)
             }
         }
@@ -914,11 +923,41 @@ public struct MenuBarScanner {
         // Apple's own overflow (gdu.45): items left of the chevron, or stacked on one another, are reported on the bar but
         // not drawn. Flagged here, once, so every consumer (resolver, planner, verifier, UI) reads the same truth.
         // Our own hosted status item is counted in `hostedLayout` (evidence) but is not an item to report (unless asked for).
-        let reported = (on + off).map(\.element).filter { includeSelf || $0.axIdentifier != Self.ownStatusItemIdentifier }
+        var reported = (on + off).map(\.element).filter { includeSelf || $0.axIdentifier != Self.ownStatusItemIdentifier }
+        // gdu.120: carried-frame tolerance (display and agreement only; `stale` is untouched and the engine never actuates on it).
+        // An item read fresh remembers its frame; a full scan that carries it stale with that SAME frame, within
+        // `recentlyVerifiedMaxScans` consecutive stale scans and `recentlyVerifiedMaxAge` seconds of the fresh read, is `recentlyVerified`.
+        if !verifiedOnly {
+            let now = self.now()
+            for i in reported.indices where reported[i].isOnMenuBar && reported[i].frame.width > 1 {
+                let it = reported[i]
+                let ident = !it.axIdentifier.isEmpty ? "id:" + it.axIdentifier : (!it.axDescription.isEmpty ? "desc:" + it.axDescription : "")
+                guard !ident.isEmpty else { continue }
+                let key = "\(it.ownerPID)|\(ident)"
+                if !it.stale {
+                    state.lastFresh[key] = (it.frame, now); state.staleRun[key] = nil
+                } else {
+                    let run = (state.staleRun[key] ?? 0) + 1
+                    state.staleRun[key] = run
+                    if let f = state.lastFresh[key], f.frame == it.frame, run <= ScanState.recentlyVerifiedMaxScans,
+                       now.timeIntervalSince(f.at) <= ScanState.recentlyVerifiedMaxAge { reported[i].recentlyVerified = true }
+                }
+            }
+        }
         let marked = SystemOverflow.mark(reported)
         var snapshot = MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
                                        incompleteOnlyForSelfPositioning: spOnly)
         snapshot.completenessReason = hostedComplete || spOnly ? nil : reason
+        // gdu.120: how each self-positioning owner's reads fared in this scan (one line per scan, built by the observer's log).
+        if !verifiedOnly {
+            let parts: [String] = state.appReadOutcome.sorted { $0.key < $1.key }.compactMap { pid, rec in
+                guard running.contains(pid), SelfPositioning.matches(bundleID: rec.bundleID, name: rec.name, owners: spOwners) else { return nil }
+                let prefixes = rec.bundleID.map { SelfPositioning.prefixes($0) } ?? []
+                let carried = hosted.filter { h in h.stale && prefixes.contains { h.identifier.hasPrefix($0) } }.count
+                return "\(rec.name): app=\(rec.outcome) hosted=" + (carried > 0 ? "carried(\(carried))" : tree.failedReads > 0 ? "failedReads(\(tree.failedReads))" : "ok")
+            }
+            if !parts.isEmpty { snapshot.selfPositioningReads = parts.joined(separator: "; ") }
+        }
         if let why = trackedProblem {
             // gdu.87: a distinct condition (never merged with the numeric gdu.85 reasons); the read is not usable as membership evidence.
             snapshot.trackedStoreProblem = why

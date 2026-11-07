@@ -98,6 +98,10 @@ public struct MenuBarItem: @unchecked Sendable {
     public var stale: Bool
     /// Consecutive scans this item has been carried forward (0 when fresh).
     public var staleCount: Int
+    /// gdu.120: a CARRIED (stale) item whose frame equals the one last read fresh, carried for at most `ScanState.recentlyVerifiedMaxScans`
+    /// scans and `recentlyVerifiedMaxAge` seconds. DISPLAY and agreement only: `stale` stays true and the engine never actuates on it.
+    /// Set by the scanner, not serialized.
+    public var recentlyVerified = false
     /// How the owner item and its hosted frame were paired (gdu.28). Not part of the item's identity.
     public var joinEvidence: JoinEvidence
 
@@ -383,6 +387,9 @@ public struct MenuBarSnapshot: Codable, Sendable {
     /// gdu.87: why Control Center's tracked-applications store could not be read (nil = readable or not consulted). Not serialized.
     /// While set, no item's hidden/visible state is known: the engine refuses to act and says so.
     public var trackedStoreProblem: String?
+    /// gdu.120: one line, per running self-positioning owner, of how its app-side and hosted reads fared in this full scan
+    /// ("iStat Menus Menubar: app=timedOut hosted=carried(9)"); nil on the fast path / without such an owner. Not serialized.
+    public var selfPositioningReads: String?
 
     /// `hostedReadComplete` stays true only for `.complete` (compatibility); membership consumers use this level.
     public var completeness: ReadCompleteness {

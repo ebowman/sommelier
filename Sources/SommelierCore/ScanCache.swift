@@ -43,6 +43,15 @@ struct SPGroup: Codable, Equatable {
 /// budget-miss fallback), the last hosted tree (for stale carry-forward) and the strip frame. Optionally persisted
 /// to disk so a fresh process (e.g. `mbprobe list --fast`) starts warm.
 final class ScanState: @unchecked Sendable {
+    /// gdu.120: tolerance for a briefly carried item (display/agreement only): at most this many consecutive stale full scans AND this
+    /// many seconds since the item's frame was last read fresh, with that frame unchanged.
+    static let recentlyVerifiedMaxScans = 2
+    static let recentlyVerifiedMaxAge: TimeInterval = 20
+    /// Per item ("pid|identity"): the frame last read fresh and when; consecutive stale full scans since (in-memory only).
+    var lastFresh: [String: (frame: CGRect, at: Date)] = [:]
+    var staleRun: [String: Int] = [:]
+    /// How each app's extras read fared in the last full scan ("ok" / "timedOut" / "failed" / "skipped"), by pid (in-memory only).
+    var appReadOutcome: [pid_t: (name: String, bundleID: String?, outcome: String)] = [:]
     var perApp: [pid_t: CachedApp] = [:]
     /// Pids whose last read succeeded with no extras, with the time of that read (in-memory only).
     var emptyAt: [pid_t: Date] = [:]
