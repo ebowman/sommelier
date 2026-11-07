@@ -189,3 +189,17 @@ closure then flagged 19-20 of 25 items; on a full bar two DRAWN items right of t
 flagged. Identical frames occur by chance, so rules 2-4 were removed from the scanner: it flags only fresh items left of a fresh
 chevron of the same read; a partial scan that misses the chevron flags nothing. The identical-frame test survives only as the
 actuator's local pre-drag guard (it names just that pair, as in gdu.25).
+
+### The expanded strip (9o9.12, observed 2026-11-07)
+macOS 27.0.1, full bar, 9 items behind the chevron (bd memory `system-overflow-strip-command-drag`).
+- A click on MenuBarAgent's chevron (70 ms hold) expands the strip and it STAYS expanded until the chevron is clicked again; Escape does
+  not close it. `OverflowProbe.expanded` is true and the app-side frames follow the strip a moment later.
+- While expanded the formerly folded items are DRAWN at real frames at the left of the bar (x 270-570 on the user's bar), left of the
+  chevron; nothing is stacked.
+- A Command-drag inside the expanded strip reorders its items, and a Command-drag ACROSS the chevron works in both directions; macOS
+  re-folds by width at once when the drawn region no longer fits (the first drawn item fell into the pile), so a move near the fold is
+  only predictable while the strip is open.
+- The order store (`com.apple.MenuBar.plist`) is written lazily, a few seconds after the drag.
+- Stacked x carries NO order: while collapsed, stacked frames x 781/783/786 read Jump, TimeMachine, WiFi while the real order was Jump,
+  WiFi, TimeMachine. Only an open strip shows the order of the pile.
+- Hence the actuator's strip session (docs/architecture.md "The strip session (9o9.12)"): open, fresh re-scan, drag, close.

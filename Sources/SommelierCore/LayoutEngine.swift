@@ -977,7 +977,7 @@ public actor LayoutEngine {
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads), held: Set(cannotPlace.keys),
+                                         held: Set(cannotPlace.keys),
                                          unsteady: unsteadyKeys)
         // 9o9.2: until the upgrade adoption completes no order action is planned (the record is the legacy saved order, not the bar's).
         if layout.pendingAdoption, p.phase == .order { p.actions = []; p.phase = .converged }
@@ -1308,7 +1308,9 @@ public actor LayoutEngine {
             scheduleStoreRetry()
             return false
         }
-        if let snap {
+        // 9o9.12: a snapshot taken with the « strip open describes a bar that no longer exists once the actuator has closed the strip again
+        // (stacked frames are back): never adopt it directly; observe afresh. A strip the user left open costs one full observation.
+        if let snap, !snap.stripExpanded {
             let resolved = resolveSnapshot(snap)
             let o = ObservedOrder(resolved: resolved)
             if !o.onBar.isEmpty {

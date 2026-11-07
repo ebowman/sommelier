@@ -68,6 +68,10 @@ public actor LiveActuator: MenuBarActuator {
         /// it believes its pre-write scan: the earlier write may not be visible yet, and a stale scan would make the new batch
         /// look "already satisfied" or compute expectations against the wrong starting state (gdu.47).
         public var recentWriteSettle: TimeInterval = 1.5
+        /// 9o9.12: the « strip session around a drag across (or near) the fold: wait for it to show expanded and steady; for it to close.
+        public var stripExpandTimeout: TimeInterval = 1.5
+        public var stripCollapseTimeout: TimeInterval = 1.0
+        public var stripPoll: TimeInterval = 0.05
         public var dragSteps = 10
         /// Second drag attempt uses more steps (docs/findings-drag: >=10 always worked, 20 is the next parameter).
         public var retrySteps = 20
@@ -150,11 +154,15 @@ public actor LiveActuator: MenuBarActuator {
 
     /// gdu.94: nil when the subject's frame may be dragged at; otherwise why not. Two items cannot share a slot, so a frame that
     /// overlaps (by more than half of the subject's own width) a FRESH on-bar item of another key is a stale frame.
-    static func frameTrustworthy(subject: ResolvedItem, among resolved: [ResolvedItem]) -> String? {
+    static func frameTrustworthy(subject: ResolvedItem, among resolved: [ResolvedItem], collapsedPile: Bool = false) -> String? {
         let i = subject.item
         if i.stale { return "stale (carried forward from an earlier scan)" }
         if i.hiddenInControlCenter { return "hidden in Control Center" }
         if i.controlCenterAllowed == false { return "Control Center does not allow it (isAllowed=false)" }
+        // 9o9.12: a subject behind the chevron has a STACKED frame by design (the pile overlaps itself). ONLY the collapsed pre-scan that
+        // `stripNeed` evaluates (`collapsedPile`) is exempt: the strip session makes the frame real, and every scan a drag is computed
+        // from keeps the full overlap / identical-frame refusal.
+        if collapsedPile, resolved.contains(where: { $0.item.isOverflowChevron && !$0.item.stale }), ActuationVerifier.overflowed(resolved).contains(subject.key) { return nil }
         for o in resolved where o.key != subject.key && !o.item.stale && o.item.isOnMenuBar && o.item.frame.width > 1 {
             let w = i.frame.intersection(o.item.frame).width
             if !i.frame.intersection(o.item.frame).isNull, w > i.frame.width * 0.5 {
@@ -164,7 +172,7 @@ public actor LiveActuator: MenuBarActuator {
         return nil
     }
 
-    private func lookup(_ key: ItemKey, _ relation: Relation, _ snap: MenuBarSnapshot) -> Lookup {
+    private func lookup(_ key: ItemKey, _ relation: Relation, _ snap: MenuBarSnapshot, allowStacked: Bool = false) -> Lookup {
         let resolved = platform.resolve(snap)
         guard !snap.onBarLeftToRight.isEmpty else { return .absent("empty scan") }
         guard let subject = resolved.first(where: { $0.key == key }) else { return .absent("item absent") }
@@ -177,24 +185,24 @@ public actor LiveActuator: MenuBarActuator {
         }
         guard ActuationVerifier.onBar(subject) else { return .parkedSubject }
         // A stale subject is rescanned by `prepare` (and times out if it stays stale); every other doubt is a refusal.
-        if !subject.item.stale, let why = Self.frameTrustworthy(subject: subject, among: resolved) { return .untrustedFrame(why) }
+        if !subject.item.stale, let why = Self.frameTrustworthy(subject: subject, among: resolved, collapsedPile: allowStacked && !snap.stripExpanded) { return .untrustedFrame(why) }
         return .ok(Plan(snapshot: snap, resolved: resolved, subject: subject, target: target))
     }
 
     /// Looks up subject/target; a single scan that misses them is never believed: it is confirmed with a fast scan after
     /// 300 ms and then a full scan before `.notFound` / `.unsupportedItem` is returned. Re-scans (up to 3 times) while
     /// the frames are stale.
-    private func prepare(_ key: ItemKey, _ relation: Relation, from first: MenuBarSnapshot?) async -> (Plan?, ActuationResult?) {
+    private func prepare(_ key: ItemKey, _ relation: Relation, from first: MenuBarSnapshot?, allowStacked: Bool = false) async -> (Plan?, ActuationResult?) {
         var snap: MenuBarSnapshot
         if let first { snap = first } else { snap = await scanNonEmpty() }
         for round in 0...3 {
-            var found = lookup(key, relation, snap)
+            var found = lookup(key, relation, snap, allowStacked: allowStacked)
             if case .ok = found {} else {
                 let first = snap
                 await platform.sleep(0.3)
                 let fast = await platform.scanVisible()
-                if case .ok = lookup(key, relation, fast) { snap = await scanNonEmpty(); found = lookup(key, relation, snap) }   // fast saw it: trust only a full scan
-                else { snap = await scanNonEmpty(); found = lookup(key, relation, snap) }
+                if case .ok = lookup(key, relation, fast, allowStacked: allowStacked) { snap = await scanNonEmpty(); found = lookup(key, relation, snap, allowStacked: allowStacked) }   // fast saw it: trust only a full scan
+                else { snap = await scanNonEmpty(); found = lookup(key, relation, snap, allowStacked: allowStacked) }
                 note("prepare: first scan missed (\(first.onBarLeftToRight.count) on-bar); confirmed with fast+full scan")
             }
             switch found {
@@ -274,11 +282,23 @@ public actor LiveActuator: MenuBarActuator {
     private func performMove(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         trace = []
         if let f = globalPrecheck() { return f }
-        let (planOpt, early) = await prepare(key, relation, from: nil)
+        let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback)
         if let early { return early }
         var plan = planOpt!
         let cap = CapabilityRules(hasTrackedEntry: { _ in true }).capability(for: key)
         guard cap.canMove else { return .failed(.unsupportedItem(reason: cap.reason ?? "cannot move"), plan.snapshot) }
+        // 9o9.12: a move that crosses the fold or touches the churn zone (macOS may re-fold what it touches) is performed inside a strip
+        // session: open the « strip, re-scan, drag with every frame real, close it again. Not with `forceFallback` (no drag at all).
+        if !config.forceFallback, let need = stripNeed(plan, relation) {
+            return await stripMove(key, relation, plan: plan, need: need)
+        }
+        return await moveCore(key, relation, plan: plan, avoid: nil, inStrip: false)
+    }
+
+    /// The satisfied-check, the drag attempts with their verification, and (outside a strip session) the order-store fallback.
+    /// `avoid`: a frame no drop may land on (the chevron, inside a strip session). `inStrip`: the strip is open around this call.
+    private func moveCore(_ key: ItemKey, _ relation: Relation, plan startPlan: Plan, avoid: CGRect?, inStrip: Bool) async -> ActuationResult {
+        var plan = startPlan
         if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
             // gdu.26: prepare() took ONE full scan; `.verified` needs the settle rule (two agreeing scans), so confirm first.
             var obs = await observe(key, relation, subjectPID: plan.subject.item.ownerPID)
@@ -289,6 +309,7 @@ public actor LiveActuator: MenuBarActuator {
             let (p, e) = await prepare(key, relation, from: obs.snapshot)
             if let e { return e }
             plan = p!
+            if let r = foldRefusal(key, relation, plan: plan, inStrip: inStrip) { return r }
             if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
                 return .failed(.timeout, plan.snapshot)   // flapping between scans: nothing is settled, claim nothing
             }
@@ -297,32 +318,17 @@ public actor LiveActuator: MenuBarActuator {
         var lastSnapshot = plan.snapshot
         var menuOpenedLast = false
 
-        // gdu.25: items macOS has pushed into its menu bar overflow are reported on-bar but are not drawn, so a drag
-        // cannot reach them (1/28 real drags there, 0/24 clean, the one pass confounded by a display change; 50/50 elsewhere). Skip the doomed drags; fail fast and honestly
-        // unless the order-store fallback is allowed.
-        var dragBlocked: String?
+        // gdu.25 / 9o9.12: items macOS folded behind the chevron, and the churn zone beside it, are never dragged on the COLLAPSED bar: such a
+        // move was routed to `stripMove` above, and arrives here with the strip open (every frame real).
         if !config.forceFallback {
-            let ovf = ActuationVerifier.overflowed(plan.resolved)
-            let churn = churnZone.union(ChurnRead(resolved: plan.resolved).zone).subtracting(ovf)
-            var involved = [plan.subject.key]
-            if let t = plan.target { involved.append(t.key) }
-            if let x = Self.dropX(relation, plan: plan) {
-                involved += ActuationVerifier.barOrder(plan.resolved).filter { $0.item.frame.minX <= x && x <= $0.item.frame.maxX }.map(\.key)
-            }
-            if let hit = involved.first(where: { ovf.contains($0) || churn.contains($0) }) {
-                dragBlocked = ovf.contains(hit)
-                    ? "\(hit) \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
-                    : "\(hit) \(SystemOverflowRule.churnRefusalMarker); a drag cannot be trusted there"
-                note("drag skipped: \(dragBlocked!)")
-                lastError = .mechanismFailed(dragBlocked!)
-            }
-        }
-
-        if !config.forceFallback && dragBlocked == nil {
             for attempt in 1...2 {
                 guard await waitMouseIdle() else { return .failed(.userBusy, lastSnapshot) }
                 guard let x = Self.dropX(relation, plan: plan) else {
                     return .failed(.notVerified(expected: "\(key) \(relation)", observed: "no neighbor to aim at"), plan.snapshot)
+                }
+                if let avoid, avoid.insetBy(dx: -2, dy: 0).contains(CGPoint(x: x, y: avoid.midY)) {
+                    note("drop refused: x=\(Int(x)) lies on the « chevron \(avoid)")
+                    return .failed(.notVerified(expected: "\(key) \(relation)", observed: "the drop point lies on the « chevron"), plan.snapshot)
                 }
                 let steps = attempt == 1 ? config.dragSteps : config.retrySteps
                 let pid = plan.subject.item.ownerPID
@@ -361,6 +367,7 @@ public actor LiveActuator: MenuBarActuator {
                     let (p, e) = await prepare(key, relation, from: obs.snapshot)
                     if let e { return e }
                     plan = p!
+                    if let r = foldRefusal(key, relation, plan: plan, inStrip: inStrip) { return r }
                     if attempt == 1, ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok, obs.settled {
                         // gdu.26: the settled observation said "not in place" and one fresh scan says "in place": a
                         // contradiction, not a verdict. Only a new settled observation may earn `.verified`.
@@ -373,9 +380,118 @@ public actor LiveActuator: MenuBarActuator {
             }
         }
 
-        guard config.allowFallback else { return .failed(lastError, lastSnapshot) }
+        guard config.allowFallback, !inStrip else { return .failed(lastError, lastSnapshot) }   // never restart the agent with the strip open
         note("fallback: order store + agent restart")
         return await fallbackMove(key, relation, plan: plan, previous: lastError, menuOpened: menuOpenedLast)
+    }
+
+    // MARK: - strip session (9o9.12)
+
+    /// A drag is never computed from a collapsed scan. After a re-plan: outside a session, refuse when the subject, target or a drop
+    /// neighbour is folded behind the chevron on the new (collapsed) scan; inside a session, refuse when the strip closed under us.
+    private func foldRefusal(_ key: ItemKey, _ relation: Relation, plan: Plan, inStrip: Bool) -> ActuationResult? {
+        if plan.snapshot.stripExpanded { return nil }
+        if inStrip {
+            note("re-plan refused: the strip closed under the session")
+            return .failed(.mechanismFailed("the « strip closed during the move"), plan.snapshot)
+        }
+        let ovf = ActuationVerifier.overflowed(plan.resolved)
+        var involved = [plan.subject.key]
+        if let t = plan.target { involved.append(t.key) }
+        if let x = Self.dropX(relation, plan: plan) {
+            involved += ActuationVerifier.barOrder(plan.resolved).filter { $0.item.frame.minX <= x && x <= $0.item.frame.maxX }.map(\.key)
+        }
+        guard let hit = involved.first(where: { ovf.contains($0) }) else { return nil }
+        note("re-plan refused: \(hit) is folded behind the « chevron on the new scan")
+        return .failed(.mechanismFailed("\(hit) is folded behind the « chevron; a drag is never computed from a collapsed scan"), plan.snapshot)
+    }
+
+    /// Why a move needs the « strip open: its subject, target or drop neighbours are behind the chevron (pile), or in the churn zone
+    /// (the first drawn key and its neighbours, which macOS re-folds by width when anything moves). `pile` says a pile key is involved.
+    /// nil when the strip is already open (every frame is real; the user opened it) or nothing involved is near the fold.
+    private func stripNeed(_ plan: Plan, _ relation: Relation) -> (why: String, pile: Bool)? {
+        if plan.snapshot.stripExpanded { return nil }
+        let ovf = ActuationVerifier.overflowed(plan.resolved)
+        let churn = churnZone.union(ChurnRead(resolved: plan.resolved).zone).subtracting(ovf)
+        var involved = [plan.subject.key]
+        if let t = plan.target { involved.append(t.key) }
+        if let x = Self.dropX(relation, plan: plan) {
+            involved += ActuationVerifier.barOrder(plan.resolved).filter { $0.item.frame.minX <= x && x <= $0.item.frame.maxX }.map(\.key)
+        }
+        guard let hit = involved.first(where: { ovf.contains($0) || churn.contains($0) }) else { return nil }
+        let pile = involved.contains { ovf.contains($0) }
+        return (ovf.contains(hit) ? "\(hit) is behind the « chevron" : "\(hit) is in the churn zone beside the fold", pile)
+    }
+
+    /// One strip session around one drag: gate, open, fresh scan, `moveCore` with the strip open, close. The close runs on EVERY exit
+    /// after the strip was opened by us (a strip the user had open is left open). At most one session per call.
+    private func stripMove(_ key: ItemKey, _ relation: Relation, plan: Plan, need: (why: String, pile: Bool)) async -> ActuationResult {
+        note("strip: needed (\(need.why))")
+        // The same conditions the engine gates a drag on, asked again right before the chevron is clicked.
+        guard await waitMouseIdle() else { return .failed(.userBusy, plan.snapshot) }
+        if let why = platform.interactionBlockingReason() {
+            note("strip: not opened: \(why)")
+            return .failed(.userBusy, plan.snapshot)
+        }
+        let probe0 = await platform.overflowProbe()
+        guard let chevron = probe0?.chevron else {
+            // No chevron on the bar: nothing is folded. A zone that outlived the chevron is stale and the frames are real.
+            if !need.pile {
+                note("strip: no chevron on the bar; the churn zone is stale, dragging as usual")
+                return await moveCore(key, relation, plan: plan, avoid: nil, inStrip: false)
+            }
+            note("strip: no chevron to click")
+            return .failed(.mechanismFailed("could not open the « strip"), plan.snapshot)
+        }
+        let p = platform
+        let controller = StripController(click: { p.clickChevron(at: $0) }, probe: { await p.overflowProbe() },
+                                         pressedButtons: { p.pressedMouseButtons() }, sleep: { await p.sleep($0) }, now: { p.now() },
+                                         timing: .init(expandTimeout: config.stripExpandTimeout, collapseTimeout: config.stripCollapseTimeout, poll: config.stripPoll))
+        let t0 = p.now()
+        func ms() -> Int { Int(p.now().timeIntervalSince(t0) * 1000) }
+        let outcome = await controller.openSteady(chevron: chevron, say: { [self] in note($0) })
+        let session: StripController.Session
+        switch outcome {
+        case .ready(let s): session = s
+        case .mouseBusy: return .failed(.userBusy, plan.snapshot)
+        case .clickFailed:
+            note("strip: could not post the chevron click")
+            return .failed(.mechanismFailed("could not open the « strip"), plan.snapshot)
+        case .timedOut(let s), .cancelled(let s):
+            note("strip: did not show as expanded and settled within \(Int(config.stripExpandTimeout * 1000)) ms")
+            if let n = await controller.close(s, say: { [self] in note($0) }) { note("note: \(n)") }
+            return .failed(.mechanismFailed("could not open the « strip"), plan.snapshot)
+        }
+        if session.openedByUs { note("phase strip: open t=\(ms())") }
+        // Every frame left of the chevron changed: plan again from a FRESH scan taken with the strip open.
+        var result: ActuationResult
+        var fresh = await scanNonEmpty()
+        var rescans = 0
+        while !fresh.stripExpanded && rescans < 3 && !Task.isCancelled {
+            rescans += 1
+            await p.sleep(0.3)
+            fresh = await scanNonEmpty()
+        }
+        if !fresh.stripExpanded {
+            note("strip: the fresh scan does not show the strip open")
+            result = .failed(.mechanismFailed("could not open the « strip"), fresh)
+        } else {
+            let (planOpt, early) = await prepare(key, relation, from: fresh)
+            if let early { result = early }
+            else {
+                let open = planOpt!
+                let chevronFrame = open.resolved.first(where: { $0.item.isOverflowChevron && !$0.item.stale })?.item.frame ?? chevron
+                result = await moveCore(key, relation, plan: open, avoid: chevronFrame, inStrip: true)
+            }
+        }
+        if session.openedByUs {
+            let left = await controller.close(session, say: { [self] in note($0) })
+            note("phase strip: closed t=\(ms())")
+            if let left { note("note: \(left)") }
+        } else {
+            note("strip: left open (the user had it open)")
+        }
+        return result
     }
 
     /// Order-store edit + one agent restart. Only the values already present in the store are permuted, so unrelated

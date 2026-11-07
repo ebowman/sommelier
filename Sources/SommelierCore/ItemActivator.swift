@@ -402,57 +402,44 @@ public actor ItemActivator {
             _ = await rehide(tracked: tracked, unit: unit, say: say)
             return .failed(e)
         }
-        if platform.pressedMouseButtons() != 0 { return await fail(.unavailable("a mouse button is pressed; click refused")) }
-        let chevronPoint = CGPoint(x: chevron.midX, y: chevron.midY)
-        guard platform.click(at: chevronPoint, button: .left) else { return await fail(.unavailable("could not post the click event")) }
-        let clickedAt = platform.now()
-        say("phase overflow: chevron clicked at \(Int(chevronPoint.x)),\(Int(chevronPoint.y)); waiting for the expanded strip")
+        let strip = stripController()
         var real: CGRect?
         var previous: CGRect?
-        while true {
-            if Task.isCancelled { break }
+        let outcome = await strip.open(chevron: chevron, checkAlreadyExpanded: false, ready: { [platform] in
             if let f = platform.frame(of: t), Self.isSettledOnBar(f), abs(f.minX - stacked.minX) > 2,
                !chevron.insetBy(dx: -2, dy: -2).contains(CGPoint(x: f.midX, y: f.midY)) {
-                if let p = previous, Self.sameFrame(p, f) { real = f; break }
+                if let p = previous, Self.sameFrame(p, f) { real = f; return true }
                 previous = f
             } else { previous = nil }
-            if platform.now().timeIntervalSince(clickedAt) > config.overflowExpandTimeout { break }
-            await platform.sleep(config.revealPoll)
+            return false
+        }, say: say)
+        let session: StripController.Session?
+        switch outcome {
+        case .mouseBusy: return await fail(.unavailable("a mouse button is pressed; click refused"))
+        case .clickFailed: return await fail(.unavailable("could not post the click event"))
+        case .ready(let s): session = s
+        case .timedOut(let s), .cancelled(let s): session = s
         }
+        let clickedAt = session?.openedAt ?? platform.now()
         guard let real else {
             say("phase overflow: the expanded strip did not show the item within \(Int(config.overflowExpandTimeout * 1000)) ms")
-            _ = await collapseOverflow(chevronAt: chevronPoint, say: say)
+            _ = await strip.close(session, say: say)
             return await fail(Task.isCancelled ? .cancelled : .behindOverflowChevron)
         }
         say("phase overflow: expanded strip shows the item at \(real), \(Int(platform.now().timeIntervalSince(clickedAt) * 1000)) ms after the chevron click")
         var moved = t
         moved.frame = real
         return await clickAndWait(moved, button: button, mechanism: .revealClick, t0: t0, revealMS: revealMS, revealed: true, say: say, tracked: tracked,
-                                  afterClose: { [self] in await collapseOverflow(chevronAt: chevronPoint, say: say) })
+                                  afterClose: { await strip.close(session, say: say) })
     }
 
-    /// Closes the expanded strip with a click on the chevron (Escape does not close it, seen live). Returns a note when it is still
-    /// open afterwards; nil when it is closed or was not open.
-    private func collapseOverflow(chevronAt point: CGPoint, say: (String) -> Void) async -> String? {
-        guard let probe = await platform.overflowProbe() else {
-            say("overflow: probe unavailable at collapse; strip state unknown")
-            return "overflowStripStateUnknown"
-        }
-        guard probe.expanded else { return nil }
-        let at = probe.chevron.map { CGPoint(x: $0.midX, y: $0.midY) } ?? point
-        for attempt in 1...2 {
-            guard platform.click(at: at, button: .left) else { break }
-            let start = platform.now()
-            while platform.now().timeIntervalSince(start) < config.overflowCollapseTimeout {
-                await platform.sleep(config.revealPoll)
-                if let p = await platform.overflowProbe(), !p.expanded {
-                    say("phase overflow: strip collapsed (\(attempt) click\(attempt == 1 ? "" : "s"))")
-                    return nil
-                }
-            }
-        }
-        say("phase overflow: strip still expanded after the closing clicks")
-        return "overflowStripStillExpanded"
+    /// The shared strip helper (9o9.12) wired to this activator's platform and timeouts.
+    private func stripController() -> StripController {
+        let p = platform
+        return StripController(click: { p.click(at: $0, button: .left) }, probe: { await p.overflowProbe() },
+                               pressedButtons: { p.pressedMouseButtons() }, sleep: { await p.sleep($0) }, now: { p.now() },
+                               timing: .init(expandTimeout: config.overflowExpandTimeout, collapseTimeout: config.overflowCollapseTimeout,
+                                             poll: config.revealPoll))
     }
 
     static func isOnBarStrip(_ f: CGRect) -> Bool { f.width > 1 && f.minY < 30 && f.minX > 10 }
@@ -742,7 +729,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     public func hostedBarCount() async -> Int? { await platform.hostedBarCount() }
     public func hostedGroupCount() -> Int? { platform.hostedGroupCount() }
     public func hostedLayout() async -> [HostedEntry]? { await platform.hostedLayout() }
-    public func overflowProbe() async -> OverflowProbe? { platform.overflowProbe() }
+    public func overflowProbe() async -> OverflowProbe? { await platform.overflowProbe() }
     public func recordAssumedHidden(_ owners: [AssumedHiddenOwner], hostedAfter: Int?) { platform.recordAssumedHidden(owners, hostedAfter: hostedAfter) }
     public func clearAssumedHidden(pids: Set<pid_t>) { platform.clearAssumedHidden(pids: pids) }
 
@@ -758,21 +745,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
         return CGRect(origin: pt, size: sz)
     }
 
-    public func click(at point: CGPoint, button: ClickButton) -> Bool {
-        let (down, up, b): (CGEventType, CGEventType, CGMouseButton) =
-            button == .left ? (.leftMouseDown, .leftMouseUp, .left) : (.rightMouseDown, .rightMouseUp, .right)
-        guard let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left),
-              let d = CGEvent(mouseEventSource: nil, mouseType: down, mouseCursorPosition: point, mouseButton: b),
-              let u = CGEvent(mouseEventSource: nil, mouseType: up, mouseCursorPosition: point, mouseButton: b) else { return false }
-        d.setIntegerValueField(.mouseEventClickState, value: 1)
-        u.setIntegerValueField(.mouseEventClickState, value: 1)
-        move.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.03)
-        d.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.07)   // hosted status items drop clicks held under ~40 ms (docs/testing.md, gdu.62)
-        u.post(tap: .cghidEventTap)
-        return true
-    }
+    public func click(at point: CGPoint, button: ClickButton) -> Bool { SyntheticClick.post(at: point, button: button) }
 
     public func axPress(_ t: ActivationTarget) -> Int32 {
         guard let el = t.element else { return AXError.invalidUIElement.rawValue }

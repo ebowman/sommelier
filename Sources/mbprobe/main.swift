@@ -16,10 +16,12 @@ func usage() -> Never {
            mbprobe watch [--seconds N]
            mbprobe pixelwatch --seconds N --out PATH [--fps 15] [--interval-ms 500]      (read-only measurement: menu bar strip pixels vs scanner frames; needs Screen Recording; see docs/testing.md)
            mbprobe agent-restart
+           mbprobe overflow                      (read-only: chevron, expanded, hosted frames)
+           mbprobe overflow expand | collapse    (WRITE: click the « chevron through the shared StripController; collapse only when expanded)
            mbprobe set-visible <bundleID> <autosaveName> <0|1> [--host]
            mbprobe cc-allowed list
            mbprobe cc-allowed set <appKey> <0|1> [--restart] [--create] [--restart-cc] [--live]
-           mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--steps N] [--hold-ms N] [--step-ms N]
+           mbprobe drag <item> --before <item> | --after <item> | --to-x <n> [--strip] [--steps N] [--hold-ms N] [--step-ms N]
                     [--arm-ms N] [--pre-up-ms N] [--max-step-px N] [--drop-x N] [--trace]
            mbprobe move <key> --before <key> | --after <key> | --leftmost | --rightmost [--force-fallback] [--no-fallback]
            mbprobe hide [--allow-agent-restart] <key...> | mbprobe show <key...>      (keys as printed by `list`, e.g. status:ie.boboco.mbdummy::Dummy-A)
@@ -349,6 +351,68 @@ func runPress(_ a: [String]) {
     }
 }
 
+/// 9o9.12: the « strip through the SAME helper the actuator uses (`StripController`). Write actions; plain `mbprobe overflow` stays read-only.
+final class MBStripState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var session: StripController.Session?
+    func set(_ s: StripController.Session?) { lock.lock(); session = s; lock.unlock() }
+    func take() -> StripController.Session? { lock.lock(); defer { lock.unlock() }; let s = session; session = nil; return s }
+}
+let mbStripState = MBStripState()
+
+final class MBOut<V>: @unchecked Sendable { var v: V?; init() {} }
+
+func mbBlocking<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+    let sem = DispatchSemaphore(value: 0)
+    let out = MBOut<T>()
+    Task.detached { out.v = await body(); sem.signal() }
+    sem.wait()
+    return out.v!
+}
+
+func mbStripController() -> StripController? {
+    guard let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first else { return nil }
+    let pid = agent.processIdentifier
+    return StripController(click: { SyntheticClick.post(at: $0, button: .left) },
+                           probe: { LiveAccessibilitySource().overflowProbe(agentPID: pid) },
+                           pressedButtons: { Int(NSEvent.pressedMouseButtons) },
+                           sleep: { try? await Task.sleep(for: .seconds($0)) }, now: { Date() })
+}
+
+/// Opens the strip (unless the user already did: then it is left alone). `closeAtExit`: collapse it when the process ends.
+func mbOpenStrip(closeAtExit: Bool) -> Bool {
+    guard let c = mbStripController(), let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first,
+          let chevron = LiveAccessibilitySource().overflowProbe(agentPID: agent.processIdentifier)?.chevron else {
+        print("strip: no chevron on the bar (nothing is folded)"); return false
+    }
+    let outcome = mbBlocking { await c.openSteady(chevron: chevron, say: { print($0) }) }
+    switch outcome {
+    case .ready(let s):
+        print(s.openedByUs ? "strip: expanded" : "strip: was already expanded; will be left open")
+        if closeAtExit, s.openedByUs {
+            mbStripState.set(s)
+            atexit { if let s = mbStripState.take(), let c = mbStripController() { _ = mbBlocking { await c.close(s, say: { print($0) }) } } }
+        }
+        return true
+    case .timedOut(let s), .cancelled(let s):
+        print("strip: did not show as expanded and steady")
+        if let s, let n = mbBlocking({ await c.close(s, say: { print($0) }) }) { print("strip: \(n)") }
+        return false
+    case .mouseBusy: print("strip: a mouse button is pressed; refused"); return false
+    case .clickFailed: print("strip: could not post the click"); return false
+    }
+}
+
+func mbCollapseStrip() -> Bool {
+    guard let c = mbStripController(), let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first else { print("strip: agent not running"); return false }
+    let pid = agent.processIdentifier
+    guard let p = LiveAccessibilitySource().overflowProbe(agentPID: pid), let chevron = p.chevron else { print("strip: no chevron on the bar"); return false }
+    if !p.expanded { print("strip: already collapsed"); return true }
+    let note = mbBlocking { await c.collapse(chevronAt: CGPoint(x: chevron.midX, y: chevron.midY), say: { print($0) }) }
+    print(note.map { "strip: \($0)" } ?? "strip: collapsed")
+    return note == nil
+}
+
 func runDrag(_ a: [String]) {
     var pos: [String] = []
     var relation: DragRelation? = nil
@@ -357,7 +421,7 @@ func runDrag(_ a: [String]) {
     var armMS = 0.0, preUpMS = 0.0
     var dropXOverride: CGFloat? = nil
     var maxStepPx: CGFloat? = nil
-    var quiet = false, trace = false, fullPoll = false
+    var quiet = false, trace = false, fullPoll = false, useStrip = false
     var i = 0
     func val() -> String { i += 1; guard i < a.count else { usage() }; return a[i] }
     while i < a.count {
@@ -372,6 +436,7 @@ func runDrag(_ a: [String]) {
         case "--arm-ms": guard let n = Double(val()), n >= 0 else { usage() }; armMS = n
         case "--pre-up-ms": guard let n = Double(val()), n >= 0 else { usage() }; preUpMS = n
         case "--max-step-px": guard let n = Double(val()), n > 0 else { usage() }; maxStepPx = CGFloat(n)
+        case "--strip": useStrip = true   // 9o9.12: open the « strip first (through StripController), close it again when the process ends
         case "--quiet": quiet = true
         case "--trace": trace = true
         case "--full": fullPoll = true
@@ -381,6 +446,7 @@ func runDrag(_ a: [String]) {
     }
     guard pos.count == 1, let relation else { usage() }
     if NSEvent.pressedMouseButtons != 0 { fail("a mouse button is pressed (user is using the mouse); aborting") }
+    if useStrip && !mbOpenStrip(closeAtExit: true) { fail("could not open the « strip; aborting") }
     let scanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL)
     var snap = scanner.scan()
 
@@ -925,7 +991,15 @@ case "agent-restart": runAgentRestart()
 case "keys": runKeys(Array(args.dropFirst()))
 case "list": runList(Array(args.dropFirst()))
 case "overflow":
-    // Read-only: the agent's top-level overflow probe (chevron frame, expanded, hosted group frames), gdu.69.
+    // `mbprobe overflow`: READ-ONLY, the agent's top-level overflow probe (chevron frame, expanded, hosted group frames), gdu.69.
+    // `mbprobe overflow expand` / `collapse` (9o9.12): WRITE actions, they click the chevron through the shared StripController.
+    if args.count >= 2 {
+        switch args[1] {
+        case "expand": exit(mbOpenStrip(closeAtExit: false) ? 0 : 1)
+        case "collapse": exit(mbCollapseStrip() ? 0 : 1)
+        default: usage()
+        }
+    }
     guard let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first,
           let p = LiveAccessibilitySource().overflowProbe(agentPID: agent.processIdentifier) else { print("overflow probe: unreadable"); exit(1) }
     print("chevron=\(p.chevron.map { "\($0)" } ?? "none") expanded=\(p.expanded) hosted=\(p.hosted.count)")

@@ -490,10 +490,13 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   full bar plan membership only: when the layout order then differs, no drag, the pass converges and `EngineState.orderNotAppliedNotice`
   ("Order not applied: bar is full") reaches the Arrange status line below the withdraw and reveal-skip notices. (4) Churn zone
   (`SystemOverflowRule.churnZone`, MenuBarItem.swift, built from `ChurnRead`): keys in the pile, or within one item-width (widest
-  hosted item, 40 pt fallback) of the first drawn item right of the chevron, in EITHER of the last two complete reads. The planner
-  treats them like overflowed keys (`Reconciler.plan(churn:)`: never move subject or anchor; skip "bar is full; macOS decides what
-  fits") and `LiveActuator.setChurnZone` makes the actuator refuse a move whose subject or anchor is in it (an overflow refusal:
-  skip, no strike). The zone is computed whenever EITHER of the last two reads had a chevron, so a re-hide that empties the pile (chevron gone) still defers and still guards; the gate also keys on a chevron before the write (`fullBefore`). The widest hosted item can be a ~140 pt clock, which widens the zone to 4-5 drawn items (accepted). Bars without a chevron are unchanged: membership and order still run in one pass.
+  hosted item, 40 pt fallback) of the first drawn item right of the chevron, in EITHER of the last two complete reads. Until 9o9.11
+  the planner treated them like overflowed keys and the actuator refused them; that kept near-fold DRAWN keys out of record order
+  indefinitely on a full bar (a 400-record simulation left 4 stuck). Since 9o9.12 the planner no longer excludes them
+  (`Reconciler.plan` has no `churn:` input) and `LiveActuator.setChurnZone` only makes the actuator treat a move whose subject, anchor
+  or drop neighbour is in the zone like a move across the fold: it is performed inside a strip session (below), where every frame is
+  real and nothing re-folds until the strip closes; with no chevron to click the zone is stale and the move is dragged as usual.
+  The zone is computed whenever EITHER of the last two reads had a chevron, so a re-hide that empties the pile (chevron gone) still defers and still guards; the gate also keys on a chevron before the write (`fullBefore`). The widest hosted item can be a ~140 pt clock, which widens the zone to 4-5 drawn items (accepted). Bars without a chevron are unchanged: membership and order still run in one pass.
 - Policy: display-only. The overflow panel lists these items after the hidden ones (`OverflowEntry.kind == .notFitting`, divider,
   warning marker, tooltip "Does not fit; macOS moved it into its overflow"). Nothing is auto-hidden. The Arrange window's
   "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls
@@ -524,12 +527,11 @@ WiFi, TimeMachine).
   the smaller side: a push-in `Y .before(X)` (Y trusted, movable, drawn, not in the trailing system block; X the record-first
   trusted pile key right of Y) or a pull-out `X .after(A)` (X trusted and movable; A the nearest trusted drawn key left of X in the
   record, not in the trailing block). Untrusted keys (uncorroborated, stale/carried, held) are never subject or
-  target, so a stale frame left of the chevron is never touched. The gdu.80 churn rule does NOT apply to a crossing: it exists because a
-  drag near the fold on a COLLAPSED bar lands in a region whose frames shift when macOS re-folds, but a cross-fold move is performed
-  (9o9.12) with the strip OPEN after a fresh re-scan, where every frame is real and nothing re-folds until the strip closes. So a
-  churn-zone drawn trusted key may be the pull-out target or the push-in subject (on a full bar the churn zone is the first drawn key and
-  its neighbours, exactly where crossings land; excluding them stalled the real bar). Every non-crossing move keeps the churn
-  exclusion. A crossing is judged against the real pile (`systemOverflow`), not the churn set. A pile key the record places right of a
+  target, so a stale frame left of the chevron is never touched. The gdu.80 churn rule used to exclude churn-zone keys: a
+  drag near the fold on a COLLAPSED bar lands in a region whose frames shift when macOS re-folds. Since 9o9.12 neither a crossing nor
+  any other move touching the zone is excluded: the actuator performs it with the strip OPEN after a fresh re-scan, where every frame
+  is real and nothing re-folds until the strip closes (a churn-zone drawn trusted key may be the pull-out target or the push-in
+  subject, and a drawn key in the zone is ordered like any other; excluding them stalled the real bar). A crossing is judged against the real pile (`systemOverflow`), not the churn set. A pile key the record places right of a
   drawn key for which no crossing can be planned is skipped with `Reconciler.noCrossingSkipReason` ("... cannot be brought out yet: the item it should follow is not trusted on the bar"), never silently; it REPLACES the gdu.69 wording for that key, since nothing will open the strip for it. A move whose subject AND target are both behind the chevron is
   never planned: such a key is skipped with `Reconciler.overflowSkipReason` = "behind the « chevron; its order there is set when the
   strip is next opened" (also used for a pile key whose only problem is its order among other pile keys). Cross-fold actions are not tagged on `PlannedAction`: `Reconciler.crossesFold(action, overflow:)` derives them (exactly one
@@ -548,7 +550,40 @@ WiFi, TimeMachine).
   left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The order among
   overflowed keys is not tracked while collapsed. Caveat: macOS decides by width what folds, so a record the widths cannot realise
   (the fold cannot be a prefix) is bounded by the one-move-per-pass cap and the per-minute cap; the per-key give-up does not bound the
-  stall (the churn exclusion that caused it is gone for crossings).
+  stall (the churn exclusion that caused it is gone, 9o9.12).
+
+### The strip session (9o9.12)
+`LiveActuator.move` performs a move whose subject, target or drop neighbours are behind the chevron (`ActuationVerifier.overflowed` on
+the collapsed scan, i.e. a cross-fold move as `Reconciler.crossesFold` derives it) or in the churn zone (`setChurnZone` plus
+`ChurnRead`) inside ONE strip session (`stripNeed` = crossesFold || touches the churn zone; nil when the scan already shows the strip
+open, `MenuBarSnapshot.stripExpanded`, which is the user's doing). The mechanism is the shared `StripController` (StripController.swift;
+`ItemActivator`'s gdu.65 path uses the same expand/collapse code): click the chevron (70 ms hold, `SyntheticClick`), poll until
+`OverflowProbe.expanded` and the chevron and every hosted frame are equal on two polls (`openSteady`; timeout `stripExpandTimeout`
+1.5 s), act, then click the chevron until `expanded == false` (two tries of `stripCollapseTimeout` 1 s each; Escape does not close it).
+Sequence in `LiveActuator.stripMove`:
+1. Gate, exactly as before a drag: `waitMouseIdle` (no button down) and `ActuatorPlatform.interactionBlockingReason()` (the
+   `LiveInteractionSource` conditions: menu open, button down, modifier held, screen locked, display asleep; a reason returns
+   `.failed(.userBusy)`, nothing clicked). The engine has already awaited the same source and holds an Arrange drag in flight.
+2. Open the strip. `StripController.Session.openedByUs` remembers whether WE opened it: a strip the user already had open
+   (`alreadyExpandedByUser`) is dragged in and left open. No chevron on the probe: a pile key involved -> `.failed(.mechanismFailed(
+   "could not open the « strip"))`; only a stale churn zone -> plain drag. An expansion failure (click not posted, never steady,
+   fresh scan does not show `stripExpanded`) closes whatever we opened and returns `.failed(.mechanismFailed("could not open the « strip"))`
+   without dragging (the engine strikes it like any failed move).
+3. Fresh full scan (every frame left of the chevron changed), `prepare` from it, then `moveCore` (the usual satisfied-check, 2 drag
+   attempts with verification and settle) while still expanded. A drop x on the chevron frame is refused (`.notVerified`). The
+   order-store fallback is never used inside a session (it restarts the agent).
+   A drag is never computed from a collapsed scan: the stacked-frame exemption in `frameTrustworthy` applies only to the collapsed pre-scan
+   `stripNeed` reads (`collapsedPile`), and every re-plan re-checks the fold (`foldRefusal`: outside a session a folded subject/target/drop
+   neighbour, inside one a strip that closed under us, is refused with `.mechanismFailed`; the session's close path still runs).
+4. Close on EVERY exit after our own open (plain sequential flow, no early return between open and close). A close that fails keeps the
+   move's result and adds the trace note `overflowStripStillExpanded` (`overflowStripStateUnknown` when the probe is unreadable).
+Trace lines `phase strip: open t=<ms>` / `phase strip: closed t=<ms>`. One session per `move` call and one order move per pass, so the
+session counts as one move for the per-minute cap. The result's snapshot is the expanded one; `LayoutEngine.adopt` never adopts a
+`stripExpanded` snapshot directly (the strip is closed again by then) and observes afresh, so the next pass sees the stacked
+frames and the 9o9.11 convergence rule (fold prefix, drawn order) judges the moved key. The order store is written lazily a few
+seconds after a drag (findings-drag "The expanded strip"). `FakeActuator.stripEvents` / `setStripPolicy` record sessions for engine tests.
+`mbprobe overflow expand|collapse` (write actions; plain `mbprobe overflow` stays read-only) and `mbprobe drag ... --strip` use the same
+controller; `mbprobe move` goes through `LiveActuator` and so gets sessions automatically.
 
 ## Arrange window (gdu.19)
 `ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`

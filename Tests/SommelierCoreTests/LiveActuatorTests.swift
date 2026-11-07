@@ -1169,22 +1169,22 @@ private final class FakePrefs: @unchecked Sendable {
 
 // MARK: - overflow area (gdu.25)
 
-@Test func moveOfAnOverflowedItemSkipsDragsAndFailsHonestly() async {
+@Test func moveOfAnOverflowedItemWithNoStripToOpenFailsHonestlyWithoutDragging() async {
     let w = World(["A", "B", "Show Hidden Menu Bar Items", "C", "D"])
     w.modules = ["Show Hidden Menu Bar Items"]
     let r = await actuator(w, fallback: false).move(key("A"), relation: .after(key("B")))
     guard case .failed(.mechanismFailed(let why), _)? = Optional(r) else { Issue.record("expected mechanismFailed, got \(r)"); return }
-    #expect(why.contains("overflow"))
+    #expect(why == "could not open the « strip")   // 9o9.12: the chevron cannot be clicked here (no probe), so nothing is dragged
     #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)
 }
 
-@Test func moveToAnOverflowedTargetFallsBackWhenAllowed() async {
+@Test func moveToAnOverflowedTargetNeverFallsBackToTheOrderStoreWhenTheStripCannotBeOpened() async {
     let w = World(["A", "B", "Show Hidden Menu Bar Items", "C", "D"])
     w.modules = ["Show Hidden Menu Bar Items"]
     let r = await actuator(w).move(key("D"), relation: .before(key("B")))
-    #expect(r.isVerified)
-    #expect(w.dragCalls.isEmpty)
-    #expect(w.restarts == 1 && w.storeWrites.count == 1)
+    guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
+    #expect(why == "could not open the « strip")
+    #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)   // the agent is never restarted for a move behind the fold
 }
 
 @Test func overflowedDetectsItemsBeforeTheChevronAndStackedFrames() {
@@ -1523,20 +1523,17 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
 
 // MARK: - churn zone guard (gdu.80)
 
-@Test func moveWhoseAnchorOrSubjectIsInTheChurnZoneIsRefusedBeforeAnyDrag() async {
+@Test func moveWhoseAnchorOrSubjectIsInAStaleChurnZoneDragsAsUsualWhenThereIsNoChevron() async {
+    // 9o9.12: the zone used to refuse the drag. Now a zone key starts a strip session; with no chevron to click the zone is stale
+    // (it outlived the chevron) and every frame is real, so the move is dragged as usual.
     for (subject, rel) in [("D", Relation.before(key("C"))), ("C", Relation.after(key("D")))] {
         let w = World(["A", "B", "C", "D"])
         let a = await actuator(w, fallback: false)
         await a.setChurnZone([key("C")])
         let r = await a.move(key(subject), relation: rel)
-        guard case .failed(let e, _) = r else { Issue.record("expected a refusal for \(subject), got \(r)"); return }
-        #expect(e.isOverflowRefusal)
-        #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)
+        #expect(r.isVerified, "\(subject)")
+        #expect(!w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)
     }
-    // without the zone the same move is attempted
-    let w = World(["A", "B", "C", "D"])
-    _ = await actuator(w, fallback: false).move(key("D"), relation: .before(key("C")))
-    #expect(!w.dragCalls.isEmpty)
 }
 
 // gdu.111: a confirmed show on a full bar is satisfied behind the chevron.

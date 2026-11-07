@@ -62,35 +62,33 @@ struct FullBarChurnRuleTests {
         #expect(SystemOverflowRule.overflowSettled([a, a]))
     }
 
-    @Test func plannerNeverMovesOrAnchorsOnAChurnZoneItem() {
+    /// 9o9.12: the planner no longer keeps the churn zone out of the plan; the actuator performs such a move inside a strip session.
+    @Test func plannerPlansAMoveOfAChurnZoneItemBecauseTheActuatorOpensTheStrip() {
         let read = rv65Read()
         let churn = SystemOverflowRule.churnZone([read])
         let on = [k("P1"), k("P2"), k("P3"), chevKey, k("D1"), k("D2"), k("D3"), k("D4")]
         let observed = ObservedOrder(onBar: on, parked: [], systemOverflow: read.overflow, overflowChevron: chevKey)
-        // The layout wants D1 last and D4 first: without the rule the plan drags D1 / anchors on it.
+        // The layout wants D1 last and D4 first: D1 is in the churn zone (the first drawn key).
         let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D4"), k("D2"), k("D3"), k("D1")])
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
-        let without = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
-        let with = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: churn)
+        let plan = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
         func involved(_ p: Plan) -> Set<ItemKey> {
             Set(p.actions.flatMap { a -> [ItemKey] in
                 guard case .move(let s, let rel) = a else { return [] }
                 switch rel { case .before(let t), .after(let t): return [s, t]; default: return [s] }
             })
         }
-        #expect(!involved(without).isDisjoint(with: [k("D1")]))
-        #expect(involved(with).isDisjoint(with: churn))
-        #expect(with.skipped.contains { $0.key == k("D1") && $0.reason == SystemOverflowRule.churnSkipReason })
+        #expect(churn.contains(k("D1")))
+        #expect(!involved(plan).isDisjoint(with: churn))
+        #expect(!plan.skipped.contains { $0.reason == SystemOverflowRule.churnSkipReason })
     }
 
-    @Test func anEmptyChurnSetChangesNothing() {
+    @Test func anOrdinaryBarStillPlansItsMoveWithoutAnyChurnInput() {
         let on = [k("A"), k("B"), k("C")]
         let observed = ObservedOrder(onBar: on, parked: [])
         let layout = Layout.placedAll(visible: [k("C"), k("B"), k("A")])
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
         let plain = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
-        let withStale = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: [])
-        #expect(plain == withStale)
         #expect(!plain.actions.isEmpty)
     }
 }
@@ -263,18 +261,57 @@ struct FullBarChurnEngineTests {
         #expect(!moves(calls).isEmpty)
     }
 
-    @Test func theEngineNeverDragsAChurnZoneItemEvenWhenTheOrderPhaseRuns() async {
+    /// 9o9.12: touching the churn zone is no longer refused; the move is performed inside ONE strip session (open, drag, close).
+    @Test func theEngineDragsAChurnZoneItemInsideExactlyOneStripSession() async {
         // settled full bar: D1 is the first drawn item (churn zone); the layout wants it last.
         let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
         let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D2"), k("D3"), k("D4"), k("D1")])
         let r = await chevRig(order: order, layout: layout)
+        await r.actuator.setStripPolicy { _, key, rel in
+            if key == k("D1") { return true }
+            switch rel { case .before(let t), .after(let t): return t == k("D1"); default: return false }
+        }
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         let touched = moves(await r.actuator.calls).flatMap { c -> [ItemKey] in
             guard case .move(let s, let rel) = c else { return [] }
             switch rel { case .before(let t), .after(let t): return [s, t]; default: return [s] }
         }
-        #expect(!touched.contains(k("D1")))
+        #expect(touched.contains(k("D1")))
         #expect(!touched.contains(k("P3")))
+        let events = await r.actuator.stripEvents
+        #expect(events.filter { $0 == .expanded }.count == 1)
+        #expect(events.filter { $0 == .collapsed }.count == 1)
+        #expect(events.first == .expanded && events.last == .collapsed && events.count == 3)
+    }
+
+    @Test func aFailedStripDragStillClosesTheStripExactlyOnce() async {
+        let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D2"), k("D3"), k("D4"), k("D1")])
+        let r = await chevRig(order: order, layout: layout)
+        await r.actuator.setStripPolicy { _, _, _ in true }
+        await r.actuator.failOnCall(1, .mechanismFailed("injected drag failure"))
+        for _ in 0..<3 { _ = await r.engine.reconcileOnce() }   // the full-bar gate needs two agreeing reads before the first drag
+        let events = await r.actuator.stripEvents
+        #expect(events.count >= 3)
+        #expect(events.first == .expanded)
+        #expect(events.filter { $0 == .expanded }.count == events.filter { $0 == .collapsed }.count)   // every open has its close
+        if case .moved? = events.dropFirst().first {} else { Issue.record("expected the drag between open and close: \(events)") }
+        #expect(events.dropFirst(2).first == .collapsed)
+    }
+
+    @Test func aMoveInsideTheDrawnRegionOpensNoStripSession() async {
+        let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D4"), k("D3")])
+        let r = await chevRig(order: order, layout: layout)
+        await r.actuator.setStripPolicy { _, key, rel in
+            // the policy a real actuator applies: only the fold/churn neighbourhood needs the strip
+            let zone: Set<ItemKey> = [k("P1"), k("P2"), k("P3"), k("D1")]
+            if zone.contains(key) { return true }
+            switch rel { case .before(let t), .after(let t): return zone.contains(t); default: return false }
+        }
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(!moves(await r.actuator.calls).isEmpty)
+        #expect(await r.actuator.stripEvents.isEmpty)
     }
 }
 
@@ -314,7 +351,7 @@ struct FullBarChevronChangeTests {
         #expect(!moves(await r.actuator.calls).isEmpty)
     }
 
-    @Test func theChurnZoneSurvivesTheVanishedChevronForPlannerAndEngine() {
+    @Test func theChurnZoneNoLongerExcludesThePlannerWhenTheChevronVanishes() {
         let on = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3")]
         let observed = ObservedOrder(onBar: on, parked: [])
         let layout = Layout.placedAll(visible: [k("P3"), k("P2"), k("P1"), k("D1"), k("D3"), k("D2")])
@@ -322,15 +359,13 @@ struct FullBarChevronChangeTests {
         #expect(zone.contains(k("P3")) && zone.contains(k("D1")))
         let caps: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
         let open = Reconciler().plan(observed: observed, layout: layout, capabilities: caps)
-        let guarded = Reconciler().plan(observed: observed, layout: layout, capabilities: caps, churn: zone)
         func ks(_ p: Plan) -> Set<ItemKey> {
             Set(p.actions.flatMap { a -> [ItemKey] in
                 guard case .move(let s, let rel) = a else { return [] }
                 switch rel { case .before(let t), .after(let t): return [s, t]; default: return [s] }
             })
         }
-        #expect(!ks(open).isDisjoint(with: zone))
-        #expect(ks(guarded).isDisjoint(with: zone))
+        #expect(!ks(open).isDisjoint(with: zone))   // the zone is the ACTUATOR's guard now (it opens the strip, or finds no chevron and drags)
     }
 }
 

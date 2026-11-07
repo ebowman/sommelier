@@ -199,22 +199,24 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     #expect(ArrangeSections.foldConsistent(k("zz"), layout: lay(v: ["a", "x1", "x2", "b"]), observed: o))   // not in the record
 }
 
-// MARK: corrective pass: churn does not apply to crossings
+// MARK: churn does not exclude crossings or (9o9.12) any other move
 
 @Test func aChurnZoneDrawnKeyIsTheTargetOfAPullOutOnAFullBar() {
     let o = obs(["p1", "x", "ch", "d1", "d2", "d3", "d4"], ovf: ["p1", "x"])
     let l = lay(v: ["p1", "d1", "d2", "x", "d3", "d4"])
-    let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh, churn: [k("d1"), k("d2")])
+    let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
     #expect(p.phase == .order && p.actions == [.move(k("x"), .after(k("d2")))])
 }
 
-@Test func aChurnKeyIsStillNeverTheTargetOfANonCrossingMove() {
+@Test func aChurnZoneKeyMayBeTheTargetOfANonCrossingMoveBecauseTheStripSessionCoversIt() {
     let o = obs(["ch", "a", "b", "c"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["c", "a", "b"]), capabilities: anchorCh, churn: [k("a")])
+    let p = Reconciler().plan(observed: o, layout: lay(v: ["c", "a", "b"]), capabilities: anchorCh)
+    var touchesA = false
     for case .move(let s, let rel) in p.actions {
-        #expect(s != k("a"))
-        switch rel { case .before(let t), .after(let t): #expect(t != k("a")); default: break }
+        if s == k("a") { touchesA = true }
+        switch rel { case .before(let t), .after(let t): if t == k("a") { touchesA = true }; default: break }
     }
+    #expect(touchesA)
 }
 
 @Test func keysInconsistentWithTheFoldAreNeverInPlace() {

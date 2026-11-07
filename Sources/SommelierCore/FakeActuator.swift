@@ -13,6 +13,21 @@ public actor FakeActuator: MenuBarActuator {
     public private(set) var order: [ItemKey]
     public private(set) var hidden: Set<ItemKey>
     public private(set) var calls: [Call] = []
+    /// 9o9.12: what the « strip did around the moves (the real actuator opens it for a move across or near the fold).
+    public enum StripEvent: Equatable, Sendable {
+        case expanded
+        case moved(ItemKey, Relation)
+        case collapsed
+    }
+    /// Every strip event in order. A move the strip policy selects records `.expanded`, `.moved`, `.collapsed` (the close is recorded
+    /// also when the move fails, as the real actuator closes the strip on every exit).
+    public private(set) var stripEvents: [StripEvent] = []
+    private var stripPolicy: (@Sendable ([ItemKey], ItemKey, Relation) -> Bool)?
+    /// Decides, from the current order and the move, whether the move needs a strip session (nil = never).
+    public func setStripPolicy(_ f: (@Sendable ([ItemKey], ItemKey, Relation) -> Bool)?) { stripPolicy = f }
+    /// The churn zone the engine last handed over (`setChurnZone`).
+    public private(set) var churnZone: Set<ItemKey> = []
+    public func setChurnZone(_ keys: Set<ItemKey>) async { churnZone = keys }
     private var scripted: [Int: ActuationError] = [:]
     private var drift: [Int: (String, String)] = [:]
     private let capabilities: any CapabilityProvider
@@ -82,6 +97,9 @@ public actor FakeActuator: MenuBarActuator {
     }
 
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        let strip = stripPolicy?(order, key, relation) ?? false
+        if strip { stripEvents.append(.expanded); stripEvents.append(.moved(key, relation)) }
+        defer { if strip { stripEvents.append(.collapsed) } }
         if let f = begin(.move(key, relation)) { return f }
         guard let from = order.firstIndex(of: key) else { return .failed(.notFound, snapshot()) }
         let cap = capabilities.capability(for: key)

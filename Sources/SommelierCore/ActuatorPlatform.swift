@@ -67,6 +67,14 @@ public protocol ActuatorPlatform: SnapshotScanning {
     /// The unit owned by `pids` is about to be hidden: its hosted elements are expected to vanish (gdu.51). Cleared with the batch.
     func expectToVanish(pids: Set<pid_t>)
     func clearExpectedToVanish()
+    /// 9o9.12: MenuBarAgent's chevron and hosted frames (a top-level read, milliseconds); nil when unreadable or unsupported.
+    func overflowProbe() async -> OverflowProbe?
+    /// 9o9.12: a synthetic left click (70 ms hold) at `point`; false when the events could not be created. Used ONLY to open and close
+    /// the « strip.
+    func clickChevron(at point: CGPoint) -> Bool
+    /// 9o9.12: the same user-interaction gate the engine uses (`InteractionSource.blockingReason`): a menu is open, the mouse button is
+    /// down, a modifier is held, the screen is locked, the display is asleep. nil = nothing in the way. Asked BEFORE the strip is opened.
+    func interactionBlockingReason() -> String?
 }
 
 public struct AssumedHiddenOwner: Equatable, Sendable {
@@ -90,6 +98,9 @@ extension ActuatorPlatform {
     public func clearAssumedHidden(pids: Set<pid_t>) {}
     public func expectToVanish(pids: Set<pid_t>) {}
     public func clearExpectedToVanish() {}
+    public func overflowProbe() async -> OverflowProbe? { nil }
+    public func clickChevron(at point: CGPoint) -> Bool { false }
+    public func interactionBlockingReason() -> String? { nil }
 }
 
 private final class ScannerBox: @unchecked Sendable { let v: MenuBarScanner; init(_ v: MenuBarScanner) { self.v = v } }
@@ -346,6 +357,9 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
               let agent = NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).first else { return nil }
         return live.hostedGroupCount(agentPID: agent.processIdentifier)
     }
+
+    public func clickChevron(at point: CGPoint) -> Bool { SyntheticClick.post(at: point, button: .left) }
+    public func interactionBlockingReason() -> String? { LiveInteractionSource().blockingReason() }
 
     /// Chevron + hosted frames from top-level agent reads (gdu.65); nil when unreadable.
     public func overflowProbe() -> OverflowProbe? {
