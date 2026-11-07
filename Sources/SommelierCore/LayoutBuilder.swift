@@ -58,6 +58,7 @@ public enum LayoutBuilder {
                 excluded.append("\(r.key) (\(r.item.title))")
                 continue
             }
+            if r.item.isOverflowChevron || r.key.isOverflowChevron { continue }   // 9o9.14: the chevron is the agent's control, never a record key
             if r.item.placementUnknown { continue }   // never guessed into a section (gdu.79); callers refuse first
             if !seen.insert(r.key).inserted { continue }
             if r.item.isOnMenuBar { layout.visible.append(r.key) } else { layout.hidden.append(r.key) }

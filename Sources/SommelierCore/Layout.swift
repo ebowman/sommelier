@@ -234,7 +234,11 @@ public struct Layout: Codable, Equatable, Sendable {
             alwaysHidden: try (c.decodeIfPresent([String].self, forKey: .alwaysHidden) ?? []).map(Self.parse),
             newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd,
             pendingAdoption: try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption) ?? false)
-        self = raw.dedup().layout
+        var l = raw.dedup().layout
+        l.visible.removeAll(where: \.isOverflowChevron)   // 9o9.14 (the warning is reported by `decode`)
+        l.hidden.removeAll(where: \.isOverflowChevron)
+        l.alwaysHidden.removeAll(where: \.isOverflowChevron)
+        self = l
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -279,7 +283,18 @@ public struct Layout: Codable, Equatable, Sendable {
             alwaysHidden: try (r.alwaysHidden ?? []).map(parse),
             newItemPolicy: r.newItemPolicy ?? .visibleAtEnd,
             pendingAdoption: false)
-        let d = raw.dedup()
+        // 9o9.14: heal files that recorded the overflow chevron; the warning is emitted here, once, and the key is gone from every section.
+        var stripped = raw
+        var chevronSections: [LayoutSection] = []
+        for s in LayoutSection.allCases where raw.keys(in: s).contains(where: \.isOverflowChevron) {
+            chevronSections.append(s)
+            switch s {
+            case .visible: stripped.visible.removeAll(where: \.isOverflowChevron)
+            case .hidden: stripped.hidden.removeAll(where: \.isOverflowChevron)
+            case .alwaysHidden: stripped.alwaysHidden.removeAll(where: \.isOverflowChevron)
+            }
+        }
+        let d = stripped.dedup()
         let n = d.layout.normalizedHideUnits()
         var warnings: [String] = []
         if r.legacyOrderMode { warnings.append("ignored legacy field orderMode") }
@@ -288,6 +303,7 @@ public struct Layout: Codable, Equatable, Sendable {
         let adopt = r.legacyOrderMode || r.legacyPlaced || (r.pendingAdoption ?? false)
         var layout = n.layout
         layout.pendingAdoption = adopt
+        warnings += chevronSections.map { "ignored chevron key in \($0.rawValue)" }
         warnings += d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {
             warnings.append("hide units normalized: " + n.moved.map(\.description).joined(separator: ", ")

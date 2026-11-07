@@ -661,13 +661,13 @@ public enum ArrangeDrop {
     public static func adopt(observed: ObservedOrder, current: Layout, units: HideUnitRule = .ownerKeys) -> Layout {
         var l = Layout(newItemPolicy: current.newItemPolicy)
         var seen = Set<ItemKey>()
-        for k in observed.onBar where seen.insert(k).inserted { l.visible.append(k) }
+        for k in observed.onBar where !k.isOverflowChevron && k != observed.overflowChevron && seen.insert(k).inserted { l.visible.append(k) }
         let always = Set(current.alwaysHidden)
-        for k in observed.parked where seen.insert(k).inserted {
+        for k in observed.parked where !k.isOverflowChevron && seen.insert(k).inserted {
             if always.contains(k) { l.alwaysHidden.append(k) } else { l.hidden.append(k) }
         }
         for s in LayoutSection.allCases {
-            for k in current.keys(in: s) where seen.insert(k).inserted {
+            for k in current.keys(in: s) where !k.isOverflowChevron && seen.insert(k).inserted {
                 switch s {
                 case .visible:
                     var at = l.visible.count   // before the trailing system block: right of it is unreachable

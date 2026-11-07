@@ -685,7 +685,7 @@ public actor LayoutEngine {
     /// stacked frames of the keys behind the chevron carry no order (9o9.11), so those keys keep their record order among
     /// themselves in the slots they occupy; with the strip open every frame is real and the observation is used as it is.
     static func handDragBar(_ obs: ObservedOrder, record: [ItemKey]) -> [ItemKey] {
-        var bar = obs.onBar.filter { $0 != obs.overflowChevron }
+        var bar = obs.onBar.filter { $0 != obs.overflowChevron && !$0.isOverflowChevron }
         guard !obs.stripExpanded, !obs.systemOverflow.isEmpty else { return bar }
         let slots = bar.indices.filter { obs.systemOverflow.contains(bar[$0]) }
         let rank = Dictionary(record.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
@@ -883,7 +883,9 @@ public actor LayoutEngine {
 
     /// Pure: `visible` reordered so its on-bar keys follow `bar`; off-bar keys stay after their nearest preceding neighbour in `visible`
     /// (the one that precedes them in the old order, after that neighbour's move), or lead when none precedes them.
-    static func adoptedVisible(_ visible: [ItemKey], bar: [ItemKey]) -> [ItemKey] {
+    static func adoptedVisible(_ visibleIn: [ItemKey], bar barIn: [ItemKey]) -> [ItemKey] {
+        let visible = visibleIn.filter { !$0.isOverflowChevron }   // 9o9.14: the chevron is never a record key
+        let bar = barIn.filter { !$0.isOverflowChevron }
         let inVisible = Set(visible)
         var seen = Set<ItemKey>()
         let order = bar.filter { inVisible.contains($0) && seen.insert($0).inserted }

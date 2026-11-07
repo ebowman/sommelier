@@ -59,6 +59,11 @@ public struct HideUnit: Hashable, Sendable, CustomStringConvertible {
 }
 
 extension ItemKey {
+    /// 9o9.14: the overflow chevron's key. The chevron is MenuBarAgent's own control, never an item: it must not be a record key in any
+    /// section. THE one predicate every adoption path, `Layout.decode` and `LayoutBuilder` use.
+    public static let overflowChevron = ItemKey.module(name: MenuBarItem.overflowChevronName)
+    public var isOverflowChevron: Bool { self == Self.overflowChevron }
+
     /// The OWNER-KEY unit: the fallback for a key with no tracked entry. Code that groups keys must go through a
     /// `HideUnitRule` instead (the planner and the actuator share one, gdu.75).
     public var hideUnit: HideUnit {
