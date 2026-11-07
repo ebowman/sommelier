@@ -657,6 +657,25 @@ engine never undoes it. Any OTHER bar change (macOS, an app) is not adopted; the
   Known limit: a hand drag that BEGINS during Sommelier's own actuator call (including a strip session) is ignored as ours; the
   interaction gate waits for an idle mouse before every drag, and `flightBox.begin()` is raised the moment `awaitQuiet` returns clear
   (before the status publishes), so this needs the user to start dragging mid-drag.
+- Persistence across a relaunch (9o9.18). The adoption wait and the unverified set are saved in the layout file, like `pendingAdoption`,
+  and only while they apply: `Layout.pendingHandDrag` (ISO 8601 time the mouse went up) is written at the mouse-up (`handDragEnded`)
+  and cleared by the same save that writes the adopted record, or by the deadline "unchanged" adoption; `Layout.unreadAfterHandDrag`
+  (the keys of `handDragUnverified`) is written whenever that set changes and is absent while it is empty (`setLayout` keeps both
+  fields as the engine's, never the caller's). On launch (`start()`), a marker younger than 60 s resumes the wait exactly as it was
+  (order phase suppressed, membership deferred, the first adoptable read decides; the deadline restarts at `handDragAdoptWait`); an
+  OLDER marker is still adopted from at the first adoptable read (its deadline is already due), never enforced first. Both log
+  `hand drag: resumed adoption after relaunch (age Ns)`. The saved unread keys re-enter `handDragUnverified` (those still Visible), so a
+  relaunch cannot enforce the record against a key that was still unread.
+- Two refinements (9o9.18). (1) Late placement also waits when a held-back key (fresh ambiguous, or unverified and still stale) sits in the
+  record right beside the slot the late key would take: directly after its preceding observed anchor (the key removed), or directly
+  before its following anchor, or anywhere in the record between the anchor and the key. Such a key may be the dragged one, merely
+  misread at a distant slot (record A B C D E, A unverified, C read ambiguous at slot 3: A is not placed as B A C D E, then C moved);
+  A is placed when C reads clean. (2) When no single key explains the change (`movedByDrag` of the whole bar is nil: two moves before
+  one adoptable read), the held-back ambiguous keys are not placed by their record neighbours: the moved keys go to their observed
+  slots first, then each held-back key goes after its nearest UNMOVED record predecessor (else any record predecessor, else before its
+  successor), never to the front because its neighbours moved. In a changed adoption they also enter the unverified set, so they
+  are placed only by a clean read and the planner makes no move meanwhile (record A B C D E, C ambiguous, B to the end and D to the front:
+  bar D A C E B is kept, C placed when it reads clean; the swap A D C B E likewise).
 - Adoptable read (9o9.9 follow-up). A read is adoptable when it is settled AND `.complete` OR `.completeExceptSelfPositioning` (the
   bar's normal level: iStat's frames are carried, `onBarStale` > 0). A read whose order differs from the record is adopted at once.
 - Verbatim rule. Adoption takes the OBSERVED on-bar order verbatim for every on-bar key: trusted or stale (fresh ambiguous keys are held back at their record slot, see above). A carried

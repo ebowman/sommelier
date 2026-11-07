@@ -29,10 +29,19 @@ public struct Layout: Codable, Equatable, Sendable {
     /// order into `visible` (so nothing moves on first launch). Persisted so a relaunch before adoption keeps the pending state.
     /// Absent on disk = false; written only while true.
     public var pendingAdoption: Bool
+    /// 9o9.18: when a hand drag ended and its result is not adopted yet (the engine's adoption wait). A relaunch resumes the wait instead of
+    /// enforcing the pre-drag record. Absent on disk = nil; written only while set (ISO 8601).
+    public var pendingHandDrag: Date?
+    /// 9o9.18: keys a hand drag left unverified (unread or ambiguous frames): a relaunch must not enforce the record against them.
+    /// Absent on disk = empty; written only while non-empty.
+    public var unreadAfterHandDrag: [ItemKey]
 
     public init(schemaVersion: Int = Layout.currentSchemaVersion, visible: [ItemKey] = [], hidden: [ItemKey] = [],
-                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, pendingAdoption: Bool = false) {
+                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, pendingAdoption: Bool = false,
+                pendingHandDrag: Date? = nil, unreadAfterHandDrag: [ItemKey] = []) {
         self.pendingAdoption = pendingAdoption
+        self.pendingHandDrag = pendingHandDrag
+        self.unreadAfterHandDrag = unreadAfterHandDrag
         self.schemaVersion = schemaVersion
         self.visible = visible
         self.hidden = hidden
@@ -218,7 +227,18 @@ public struct Layout: Codable, Equatable, Sendable {
 
     // MARK: Codable (keys are stored as their string form)
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag }
+
+    static func isoString(_ d: Date) -> String {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: d)
+    }
+    static func isoDate(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
+    }
 
     private static func parse(_ s: String) throws -> ItemKey {
         guard let k = ItemKey(storeKey: s) else { throw LayoutError.badKey(s) }
@@ -233,7 +253,9 @@ public struct Layout: Codable, Equatable, Sendable {
             hidden: try (c.decodeIfPresent([String].self, forKey: .hidden) ?? []).map(Self.parse),
             alwaysHidden: try (c.decodeIfPresent([String].self, forKey: .alwaysHidden) ?? []).map(Self.parse),
             newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd,
-            pendingAdoption: try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption) ?? false)
+            pendingAdoption: try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption) ?? false,
+            pendingHandDrag: try c.decodeIfPresent(String.self, forKey: .pendingHandDrag).flatMap(Self.isoDate),
+            unreadAfterHandDrag: try (c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag) ?? []).compactMap { ItemKey(storeKey: $0) })
         var l = raw.dedup().layout
         l.visible.removeAll(where: \.isOverflowChevron)   // 9o9.14 (the warning is reported by `decode`)
         l.hidden.removeAll(where: \.isOverflowChevron)
@@ -249,6 +271,8 @@ public struct Layout: Codable, Equatable, Sendable {
         try c.encode(alwaysHidden.map(\.description), forKey: .alwaysHidden)
         try c.encode(newItemPolicy, forKey: .newItemPolicy)
         if pendingAdoption { try c.encode(true, forKey: .pendingAdoption) }   // absent = false
+        if let d = pendingHandDrag { try c.encode(Self.isoString(d), forKey: .pendingHandDrag) }
+        if !unreadAfterHandDrag.isEmpty { try c.encode(unreadAfterHandDrag.map(\.description), forKey: .unreadAfterHandDrag) }
     }
 
     /// Decodes a layout file, reporting duplicates that were dropped and hide-unit normalization (reported once, here). Does not migrate.
@@ -260,9 +284,11 @@ public struct Layout: Codable, Equatable, Sendable {
             var alwaysHidden: [String]?
             var newItemPolicy: NewItemPolicy?
             var pendingAdoption: Bool?
+            var pendingHandDrag: String?
+            var unreadAfterHandDrag: [String]?
             var legacyOrderMode: Bool
             var legacyPlaced: Bool
-            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, orderMode, placed }
+            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, orderMode, placed }
             init(from decoder: any Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion)
@@ -271,6 +297,8 @@ public struct Layout: Codable, Equatable, Sendable {
                 alwaysHidden = try c.decodeIfPresent([String].self, forKey: .alwaysHidden)
                 newItemPolicy = try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy)
                 pendingAdoption = try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption)
+                pendingHandDrag = try c.decodeIfPresent(String.self, forKey: .pendingHandDrag)
+                unreadAfterHandDrag = try c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag)
                 legacyOrderMode = c.contains(.orderMode)   // 9o9.2: legacy fields are ignored (their value is not even parsed)
                 legacyPlaced = c.contains(.placed)
             }
@@ -303,6 +331,8 @@ public struct Layout: Codable, Equatable, Sendable {
         let adopt = r.legacyOrderMode || r.legacyPlaced || (r.pendingAdoption ?? false)
         var layout = n.layout
         layout.pendingAdoption = adopt
+        layout.pendingHandDrag = r.pendingHandDrag.flatMap(isoDate)
+        layout.unreadAfterHandDrag = (r.unreadAfterHandDrag ?? []).compactMap { ItemKey(storeKey: $0) }
         warnings += chevronSections.map { "ignored chevron key in \($0.rawValue)" }
         warnings += d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {

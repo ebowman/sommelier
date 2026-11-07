@@ -175,12 +175,50 @@ public actor LayoutEngine {
     private nonisolated let flightBox = ActuatorFlightBox()
     /// A hand drag ended and its result is not adopted yet: the time the wait for a settled read ends (the wait itself never ends until one comes).
     private var handAdopt: Date?
+    /// 9o9.18: when that hand drag ended (persisted as `Layout.pendingHandDrag` while the adoption is pending).
+    private var handDragStarted: Date?
     /// The last settled, complete observation taken since the hand drag ended (adopted at the deadline when no clean one came).
     private var handAgreeing: ObservedOrder?
     private var handWaitLogged = false
     /// Keys whose frames were stale or uncorroborated when a hand drag was adopted as "unchanged" at the deadline: when they were stamped.
     private var handDragUnverified: Set<ItemKey> = [] {
-        didSet { if handDragUnverified != oldValue { Task { [weak self] in await self?.publishUnverified() } } }
+        didSet {
+            if handDragUnverified != oldValue {
+                persistUnverified()
+                Task { [weak self] in await self?.publishUnverified() }
+            }
+        }
+    }
+
+    /// 9o9.18: the unverified keys are part of the saved layout (only while non-empty), so a relaunch cannot enforce the record against a
+    /// key still unread. Writes only when the saved value differs.
+    private func persistUnverified() {
+        guard loaded else { return }
+        let keys = handDragUnverified.sorted { $0.description < $1.description }
+        guard layout.unreadAfterHandDrag != keys else { return }
+        layout.unreadAfterHandDrag = keys
+        do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
+    }
+
+    /// 9o9.18: the pending-adoption marker follows `handDragStarted`; saved only when it changed.
+    private func persistHandMarker() {
+        guard loaded, layout.pendingHandDrag != handDragStarted else { return }
+        layout.pendingHandDrag = handDragStarted
+        do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
+    }
+
+    /// 9o9.18: a relaunch with the hand-drag markers set: the adoption wait resumes (order phase suppressed, membership deferred, the
+    /// first adoptable read decides). A marker older than `handDragResumeMaxAge` is adopted from anyway: never enforce the pre-drag record.
+    static let handDragResumeMaxAge: TimeInterval = 60
+    private func resumeHandDragState() {
+        let keys = Set(layout.unreadAfterHandDrag).intersection(layout.visible)
+        if !keys.isEmpty { handDragUnverified = keys }
+        persistUnverified()
+        guard let started = layout.pendingHandDrag else { return }
+        let age = max(0, config.now().timeIntervalSince(started))
+        handDragStarted = started
+        handAdopt = age < Self.handDragResumeMaxAge ? config.now().addingTimeInterval(windowSeconds(config.handDragAdoptWait)) : config.now()
+        log("hand drag: resumed adoption after relaunch (age \(Int(age))s)")
     }
     private var publishedUnverified: Set<ItemKey> = []
     /// 9o9.5: publishes `handDragUnverified` as `EngineState.unverifiedAfterHandDrag` whenever it changed (the Arrange row shows it).
@@ -438,6 +476,7 @@ public actor LayoutEngine {
             }
             loaded = true
             stopped = false
+            resumeHandDragState()
         } catch {
             loaded = false
             stopped = true
@@ -491,6 +530,7 @@ public actor LayoutEngine {
         // top of it (it must not enforce the legacy saved order, which could reorder unrelated items). With no clean observation yet
         // the layout is left as it is (the Arrange window refuses such a drop before it gets here).
         new.pendingAdoption = layout.pendingAdoption
+        new.pendingHandDrag = layout.pendingHandDrag   // 9o9.18: engine state, like pendingAdoption
         var adoptedPendingNow = false
         if layout.pendingAdoption, userPlacement, new.visible != layout.visible {
             guard let bar = lastCleanBar else {
@@ -528,6 +568,7 @@ public actor LayoutEngine {
                 handDragUnverified.subtract(edited)
             }
         }
+        new.unreadAfterHandDrag = handDragUnverified.filter(new.visible.contains).sorted { $0.description < $1.description }
         layout = new
         loaded = true
         noteSupersede("setLayout")
@@ -580,6 +621,8 @@ public actor LayoutEngine {
             log("layout: your menu bar drag was not adopted: Sommelier moved an item during it")
         } else {
             handAdopt = config.now().addingTimeInterval(windowSeconds(config.handDragAdoptWait))
+            handDragStarted = config.now()
+            persistHandMarker()
             log("engine: you finished a menu bar drag; adopting the resulting order")
         }
         pauseRetry = nil
@@ -590,7 +633,10 @@ public actor LayoutEngine {
     }
     static let handDragReason = "hand drag adopt"
 
-    private func endHandAdoption() {
+    /// `persist: false` when the caller is about to adopt: the marker then clears in the very save that writes the adopted record.
+    private func endHandAdoption(persist: Bool = true) {
+        handDragStarted = nil
+        if persist { persistHandMarker() }
         handAdopt = nil; handAgreeing = nil; handWaitLogged = false; handWaitLoggedAt = nil
         delayed[Self.handDragReason]?.cancel(); delayed[Self.handDragReason] = nil
     }
@@ -616,7 +662,7 @@ public actor LayoutEngine {
         if readIsAdoptable {
             let old = layout.visible
             let unchanged = Self.handDragAdopted(obs, record: old).visible == old
-            if !unchanged || unreadOnBarKeys(obs).isEmpty { endHandAdoption(); await adoptHandDrag(obs); return }
+            if !unchanged || unreadOnBarKeys(obs).isEmpty { endHandAdoption(persist: false); await adoptHandDrag(obs); return }
             handAgreeing = obs
         }
         if !handWaitLogged {
@@ -632,7 +678,7 @@ public actor LayoutEngine {
     private func expireHandDragAdoption() async {
         guard let deadline = handAdopt, config.now() >= deadline else { return }
         if let last = handAgreeing {
-            endHandAdoption()
+            endHandAdoption(persist: false)
             log("layout: hand drag: no clean observation within \(config.handDragAdoptWait); adopting the last settled one")
             await adoptHandDrag(last, atDeadline: true)
             return
@@ -662,12 +708,24 @@ public actor LayoutEngine {
             guard let fi = seen.firstIndex(of: k), visible.contains(k), let ai = full.firstIndex(of: k) else { handDragUnverified.remove(k); continue }
             // An ambiguous key right beside it makes its slot unreadable (it may be the dragged one): wait for a clean read.
             if (ai > 0 && ambiguous.contains(full[ai - 1])) || (ai + 1 < full.count && ambiguous.contains(full[ai + 1])) { continue }
-            handDragUnverified.remove(k)
             var next = visible
             next.removeAll { $0 == k }
-            if let p = seen[..<fi].last(where: { next.contains($0) }), let pi = next.firstIndex(of: p) { next.insert(k, at: pi + 1) }
-            else if let n = seen[(fi + 1)...].first(where: { next.contains($0) }), let ni = next.firstIndex(of: n) { next.insert(k, at: ni) }
-            else { continue }
+            let anchor: ItemKey
+            if let p = seen[..<fi].last(where: { next.contains($0) }) { anchor = p }
+            else if let n = seen[(fi + 1)...].first(where: { next.contains($0) }) { anchor = n }
+            else { handDragUnverified.remove(k); continue }
+            // 9o9.18 (P1b): a held-back key (ambiguous, or unverified and unread) whose RECORD slot lies between the anchor and this key
+            // may be the dragged one misread at a distant slot: wait for it to read clean.
+            let heldBack = ambiguous.union(handDragUnverified.intersection(stale)).subtracting([k])
+            if let r0 = visible.firstIndex(of: k), let r1 = visible.firstIndex(of: anchor),
+               heldBack.contains(where: { h in visible.firstIndex(of: h).map { min(r0, r1) < $0 && $0 < max(r0, r1) } ?? false }) { continue }
+            guard let ai2 = next.firstIndex(of: anchor) else { continue }
+            let after = seen[..<fi].contains(anchor)
+            // The insertion gap itself: held-back keys right beside the slot the key would take sit where it may really belong.
+            if after { if next[(ai2 + 1)...].first.map(heldBack.contains) ?? false { continue } }
+            else if ai2 > 0, heldBack.contains(next[ai2 - 1]) { continue }
+            handDragUnverified.remove(k)
+            next.insert(k, at: after ? ai2 + 1 : ai2)
             if next != visible { visible = next; adopted.append(k) }
         }
         guard !adopted.isEmpty else { return }
@@ -721,18 +779,22 @@ public actor LayoutEngine {
         let oldT = record.filter { base.contains($0) && trusted.contains($0) }
         let newT = base.filter { oldT.contains($0) }
         var moved = Set<ItemKey>()
+        var multi = false   // 9o9.18: more than one key moved: held-back keys are placed after the moved ones
         if oldT != newT {
             // Prefer the mover that explains the WHOLE bar (held-back keys included): a drag past an ambiguous key is one move.
             let oldAll = record.filter { barAll.contains($0) }, newAll = barAll.filter { record.contains($0) }
             if let mf = movedByDrag(old: oldAll, new: newAll), !deferred.contains(mf.key),
                oldT.filter({ $0 != mf.key }) == newT.filter({ $0 != mf.key }) {
                 moved = [mf.key]
-            } else if let m = movedByDrag(old: oldT, new: newT) { moved = [m.key] } else { moved = Set(oldT).subtracting(keptInOrder(oldT, newT)) }
+            } else if let m = movedByDrag(old: oldT, new: newT) { moved = [m.key]; multi = movedByDrag(old: oldAll, new: newAll) == nil } else {
+                moved = Set(oldT).subtracting(keptInOrder(oldT, newT))
+                multi = true
+            }
         }
         // Unmoved keys, held-back ones included, keep their record order; each moved key then goes to its observed slot.
         var out = base.filter { !moved.contains($0) }
         var placed: [ItemKey: Int] = [:]
-        for (i, k) in record.enumerated() where deferred.contains(k) {
+        for (i, k) in record.enumerated() where deferred.contains(k) && !multi {
             if let a = record[..<i].last(where: { out.contains($0) && !deferred.contains($0) }), let ai = out.firstIndex(of: a) {
                 out.insert(k, at: ai + placed[a, default: 0] + 1); placed[a, default: 0] += 1
             } else if let n = record[(i + 1)...].first(where: { out.contains($0) && !deferred.contains($0) }), let ni = out.firstIndex(of: n) {
@@ -744,6 +806,15 @@ public actor LayoutEngine {
             if let p = barAll[..<bi].last(where: { out.contains($0) }), let pi = out.firstIndex(of: p) { out.insert(m, at: pi + 1) }
             else if let n = barAll[(bi + 1)...].first(where: { out.contains($0) }), let ni = out.firstIndex(of: n) { out.insert(m, at: ni) }
             else { out.insert(m, at: min(base.firstIndex(of: m) ?? out.count, out.count)) }
+        }
+        if multi {
+            // After every moved key has its observed slot: a held-back key follows its nearest record predecessor wherever that went
+            // (else precedes its nearest record successor), unmoved neighbours first; it is never the first key just because its neighbours were moved.
+            for (i, d) in record.enumerated() where deferred.contains(d) {
+                if let p = record[..<i].last(where: { out.contains($0) && !moved.contains($0) }) ?? record[..<i].last(where: { out.contains($0) }), let pi = out.firstIndex(of: p) { out.insert(d, at: pi + 1) }
+                else if let n = record[(i + 1)...].first(where: { out.contains($0) }), let ni = out.firstIndex(of: n) { out.insert(d, at: ni) }
+                else { out.append(d) }
+            }
         }
         return (out, deferred)
     }
@@ -837,10 +908,13 @@ public actor LayoutEngine {
                 log("hand drag: left the order unchanged as far as Sommelier can see; \(unread.count) item(s) still unread")
                 handDragUnverified.formUnion(unread)
             } else { log("layout: your menu bar drag left the order unchanged") }
+            persistUnverified(); persistHandMarker()
             return
         }
         var l = layout
         l.visible = new
+        l.pendingHandDrag = nil
+        l.unreadAfterHandDrag = handDragUnverified.filter(new.contains).sorted { $0.description < $1.description }
         layout = l
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
@@ -848,6 +922,12 @@ public actor LayoutEngine {
         // An unread key next to the drop may be the real mover (or the real neighbour): its slot is not trusted, so it is placed when read.
         let nearDrop = Self.unreadNearDrop(old: old, new: new, bar: Self.handDragBar(obs, record: old), unread: unread)
         handDragUnverified.formUnion(nearDrop)
+        // 9o9.18: more than one key moved (no single mover explains the change): an ambiguous key's slot among the moved ones is a
+        // guess, so it is held back (never planned against) and placed only when it reads clean.
+        if !adopted.deferred.isEmpty, Self.movedByDrag(old: old, new: new) == nil {
+            handDragUnverified.formUnion(adopted.deferred.filter(new.contains))
+            if nearDrop.isEmpty { log("hand drag: adopted; \(adopted.deferred.count) ambiguous item(s) among several moved keys will be placed when read") }
+        }
         if let u = nearDrop.sorted(by: { $0.description < $1.description }).first {
             log("hand drag: adopted; \(name(u)) next to the drop is unread and will be placed when read")
         } else if let m = Self.movedByDrag(old: old, new: new) {

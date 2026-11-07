@@ -484,6 +484,148 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         #expect(await noMoves(r))
     }
 
+    // MARK: 9o9.18 persistence across relaunch
+
+    @Test func theHandDragMarkersRoundTripAndAreAbsentWhileUnset() throws {
+        let enc = JSONEncoder()
+        let plain = String(decoding: try enc.encode(abcde()), as: UTF8.self)
+        #expect(!plain.contains("pendingHandDrag") && !plain.contains("unreadAfterHandDrag"))
+        let when = Date(timeIntervalSince1970: 1_234_567.25)
+        let l = Layout(visible: names.map(k), pendingHandDrag: when, unreadAfterHandDrag: [k("A"), k("C")])
+        let data = try enc.encode(l)
+        #expect(String(decoding: data, as: UTF8.self).contains("pendingHandDrag"))
+        let back = try Layout.decode(data).layout
+        #expect(back.pendingHandDrag == when)
+        #expect(back.unreadAfterHandDrag == [k("A"), k("C")])
+        #expect(try JSONDecoder().decode(Layout.self, from: data) == l)
+    }
+
+    @Test func aRelaunchDuringTheAdoptionWaitAdoptsTheDragInsteadOfEnforcingTheOldRecord() async {
+        let clock = Clock()
+        var l = abcde(); l.pendingHandDrag = clock.now.addingTimeInterval(-5)
+        let r = await rig(order: ["B", "C", "D", "E", "A"], layout: l, configure: { $0.now = { clock.now } })
+        #expect(r.sink.lines.contains { $0.hasPrefix("hand drag: resumed adoption after relaunch (age 5s)") })
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.layoutVisible() == ["B", "C", "D", "E", "A"].map(k))
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(r.store.saved.pendingHandDrag == nil)
+        #expect(r.store.saved.visible == ["B", "C", "D", "E", "A"].map(k))
+    }
+
+    @Test func aStaleHandDragMarkerStillAdoptsTheFirstAdoptableReadAndNeverEnforces() async {
+        let clock = Clock()
+        var l = abcde(); l.pendingHandDrag = clock.now.addingTimeInterval(-3600)
+        let r = await rig(order: ["B", "C", "D", "E", "A"], layout: l, configure: { $0.now = { clock.now } })
+        #expect(r.sink.lines.contains { $0.hasPrefix("hand drag: resumed adoption after relaunch (age 3600s)") })
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.layoutVisible() == ["B", "C", "D", "E", "A"].map(k))
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(r.store.saved.pendingHandDrag == nil)
+    }
+
+    @Test func theMarkerIsSavedAtMouseUpAndClearedByTheAdoption() async {
+        let r = await rig(order: names, layout: abcde(), modes: true)
+        r.observer.mode = .unsettled
+        r.drags.fire(.began)
+        await r.actuator.displace(k("A"), toIndex: 4)
+        r.drags.fire(.ended)
+        #expect(await waitUntil { r.store.saved.pendingHandDrag != nil })
+        #expect(r.store.saved.visible == names.map(k))
+        r.observer.mode = .good
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return r.store.saved.visible == ["B", "C", "D", "E", "A"].map(k) })
+        #expect(r.store.saved.pendingHandDrag == nil)
+        #expect(await r.actuator.calls.isEmpty)
+    }
+
+    @Test func theMarkerIsClearedByTheDeadlineUnchangedAdoption() async {
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .staleComplete(k("A"))
+        r.drags.fire(.began)
+        r.drags.fire(.ended)
+        #expect(await waitUntil { r.store.saved.pendingHandDrag != nil })
+        clock.advance(11)
+        _ = await r.engine.reconcileOnce()
+        #expect(await waitUntil { r.store.saved.pendingHandDrag == nil })
+    }
+
+    @Test func unreadKeysArePersistedAndARelaunchDoesNotEnforceTheRecordAgainstThem() async {
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .carried([k("A")], .completeExceptSelfPositioning)
+        r.drags.fire(.began)
+        await r.actuator.displace(k("A"), toIndex: 4)
+        r.drags.fire(.ended)
+        #expect(await waitUntil { r.sink.lines.contains { $0.hasPrefix("layout: hand drag adoption waiting") } })
+        clock.advance(11)
+        _ = await r.engine.reconcileOnce()
+        #expect(r.sink.lines.contains { $0.contains("still unread") })
+        #expect(await waitUntil { r.store.saved.unreadAfterHandDrag == [k("A")] })
+        #expect(r.store.saved.pendingHandDrag == nil)
+        // relaunch: a second engine over the saved layout and the same bar, A still unread
+        let r2 = await rig(order: ["B", "C", "D", "E", "A"], layout: r.store.saved, modes: true, configure: { $0.now = { clock.now } })
+        r2.observer.mode = .carried([k("A")], .completeExceptSelfPositioning)
+        for _ in 0..<4 { _ = await r2.engine.reconcileOnce() }
+        #expect(await r2.actuator.calls.isEmpty)
+        r2.observer.mode = .good
+        #expect(await waitUntil { _ = await r2.engine.reconcileOnce(); return await r2.layoutVisible() == ["B", "C", "D", "E", "A"].map(k) })
+        #expect(await r2.actuator.calls.isEmpty)
+        #expect(r2.store.saved.unreadAfterHandDrag.isEmpty)
+    }
+
+    // MARK: 9o9.18 held-back keys
+
+    @Test func aLateKeyWaitsWhenAnAmbiguousKeyOfItsRecordSlotIsMisreadAtADistantSlot() async {
+        // A dragged between C and D (true bar B C A D E), unverified past the deadline; then C reads ambiguous at a DISTANT slot.
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .carried([k("A")], .completeExceptSelfPositioning)
+        r.drags.fire(.began)
+        await r.actuator.displace(k("A"), toIndex: 2)
+        r.drags.fire(.ended)
+        #expect(await waitUntil { r.sink.lines.contains { $0.hasPrefix("layout: hand drag adoption waiting") } })
+        clock.advance(11)
+        _ = await r.engine.reconcileOnce()
+        // record is A B C D E; the late read misplaces C at slot 3 (between D and E), not beside A
+        r.observer.mode = .ambiguous([k("C"): 3])
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.layoutVisible() == names.map(k))
+        #expect(!r.sink.lines.contains { $0.contains("(read late)") })
+        #expect(await noMoves(r))
+        r.observer.mode = .good
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return await r.layoutVisible() == ["B", "C", "A", "D", "E"].map(k) })
+        #expect(await noMoves(r))
+    }
+
+    private func twoMoves(_ build: @escaping @Sendable (FakeActuator) async -> Void, bar: [String], cSlot: Int) async {
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .ambiguous([k("C"): cSlot])
+        r.drags.fire(.began)
+        await build(r.actuator)
+        r.drags.fire(.ended)
+        #expect(await waitUntil { await r.layoutVisible() != names.map(k) })
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.actuator.order == bar.map(k))
+        #expect(await noMoves(r))
+        let held = await r.layoutVisible()
+        #expect(held.first == k(bar[0]))                       // the held-back key is never put at the front
+        r.observer.mode = .good
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return await r.layoutVisible() == bar.map(k) })
+        for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.layoutVisible() == bar.map(k))
+        #expect(await noMoves(r))
+        #expect(await r.state.unverifiedAfterHandDrag.isEmpty)
+    }
+
+    @Test func twoMovesBeforeOneAdoptableReadPlaceTheAmbiguousKeyOnlyAfterACleanRead() async {
+        await twoMoves({ a in await a.displace(k("B"), toIndex: 4); await a.displace(k("D"), toIndex: 0) }, bar: ["D", "A", "C", "E", "B"], cSlot: 2)
+    }
+
+    @Test func theSwapVariantOfTwoMovesLikewise() async {
+        await twoMoves({ a in await a.displace(k("D"), toIndex: 1); await a.displace(k("B"), toIndex: 3) }, bar: ["A", "D", "C", "B", "E"], cSlot: 2)
+    }
+
     @Test func anArrangeDropNextToAnUnverifiedKeyDoesNotClearIt() async {
         let clock = Clock()
         let r = await unverifiedA(clock)               // record A B C D E, bar B C D E A, A unverified
