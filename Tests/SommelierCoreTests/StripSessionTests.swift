@@ -253,6 +253,23 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     #expect(!w.expanded)
 }
 
+@Test func aDrawnSubjectIsRefusedInsideTheSessionWhenTheStripClosesAfterAttempt1() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.dragScript = [false]
+    w.afterDrag = { w.expanded = false }       // the strip closes under the session after attempt 1
+    let a = actuator(w)
+    let r = await a.move(key("C"), relation: .before(key("X1")))
+    guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
+    #expect(why == "the « strip closed during the move")
+    let trace = await a.trace
+    #expect(trace.contains("re-plan refused: the strip closed under the session"))
+    #expect(w.events.filter { $0 == "drag" }.count == 1)
+    // the world closed the strip itself, so the session's close finds it collapsed: no click, and the trace says so
+    #expect(w.events.filter { $0 == "close" }.isEmpty)
+    #expect(trace.contains("phase strip: already closed"))
+    #expect(!trace.contains { $0.hasPrefix("phase strip: closed t=") })
+}
+
 @Test func anOpenStripWithIdenticalFreshFramesIsRefusedForOverlap() async {
     let w = StripWorld(pile: [], drawn: ["A", "B", "C", "D"])
     w.expanded = true

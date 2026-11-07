@@ -558,8 +558,12 @@ public actor LiveActuator: MenuBarActuator {
             }
         }
         if session.openedByUs {
-            let left = await controller.close(session, say: { [self] in note($0) })
-            note("phase strip: closed t=\(ms())")
+            var alreadyClosed = false
+            let left = await controller.close(session, say: { [self] in
+                if $0 == "phase strip: already closed" { alreadyClosed = true }
+                note($0)
+            })
+            if !alreadyClosed { note("phase strip: closed t=\(ms())") }
             if let left { note("note: \(left)") }
             if foldCandidate {
                 // 9o9.19: the settled read AFTER the strip closed decides (the expanded read only nominated the candidate).

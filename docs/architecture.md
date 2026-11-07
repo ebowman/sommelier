@@ -562,7 +562,7 @@ Verification inside a session (9o9.19; "Live evidence" (4)):
 - A re-plan inside a session re-checks that rule first. If it is not satisfied and the target is in the pile, the new target is the nearest
   key left of the subject in the record that is drawn, fresh and passes `frameTrustworthy` (`.after(k)`); none: `.failed(.notVerified)`
   ("no drawn key to aim at"), no further drag. A drop on the chevron is still refused. Still one session per move and one order move per pass.
-Trace lines `phase strip: open t=<ms>` / `phase strip: closed t=<ms>`. One session per `move` call and one order move per pass, so the
+Trace lines `phase strip: open t=<ms>` / `phase strip: closed t=<ms>` (`phase strip: already closed` instead when the strip was found collapsed and no click was posted). One session per `move` call and one order move per pass, so the
 session counts as one move for the per-minute cap. The result's snapshot is the expanded one; `LayoutEngine.adopt` never adopts a
 `stripExpanded` snapshot directly (the strip is closed again by then) and observes afresh, so the next pass sees the stacked
 frames and the 9o9.11 convergence rule (fold prefix, drawn order) judges the moved key. The order store is written lazily a few

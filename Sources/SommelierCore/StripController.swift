@@ -107,7 +107,7 @@ public struct StripController: Sendable {
             say("overflow: probe unavailable at collapse; strip state unknown")
             return "overflowStripStateUnknown"
         }
-        guard probe.expanded else { return nil }
+        guard probe.expanded else { say("phase strip: already closed"); return nil }   // found collapsed: no click was posted
         let at = probe.chevron.map { CGPoint(x: $0.midX, y: $0.midY) } ?? point
         for attempt in 1...2 {
             guard click(at) else { break }
