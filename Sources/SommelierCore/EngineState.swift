@@ -114,6 +114,8 @@ public final class EngineState {
     public var newItemNotice: String?
     /// 9o9.7: "Adopted your menu bar drag" for the Arrange status line after a hand Command-drag became the record (cleared after a few seconds).
     public var handDragNotice: String?
+    /// 9o9.25: "Moved X to Hidden: it is hidden in System Settings" after a Control Center hide was adopted into the record (cleared after 10 s).
+    public var systemSettingsNotice: String?
     /// 9o9.5: keys the user moved by hand in the menu bar whose new position is still unread (stale or ambiguous): held out of planning
     /// by the engine, shown by Arrange as "Moved by you in the menu bar; waiting to read its new position". Never a check.
     public var unverifiedAfterHandDrag: Set<ItemKey> = []
@@ -171,6 +173,14 @@ public enum OrderMoveNotice {
 /// 9o9.7: wording of the hand-drag notice.
 public enum HandDragNotice {
     public static let text = "Adopted your menu bar drag"
+}
+
+/// 9o9.25: wording of the System Settings adoption notice.
+public enum SystemSettingsNotice {
+    public static func text(_ names: [String]) -> String {
+        names.count == 1 ? "Moved \(names[0]) to Hidden: it is hidden in System Settings"
+                         : "Moved \(names.joined(separator: ", ")) to Hidden: they are hidden in System Settings"
+    }
 }
 
 /// Wording of the transient new-item notice.

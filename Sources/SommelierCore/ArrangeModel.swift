@@ -513,12 +513,14 @@ public enum ArrangeSections {
         public var adoptionPending = false
         /// The transient "Adopted your menu bar drag" notice.
         public var handDragNotice: String?
+        /// 9o9.25: the transient "Moved X to Hidden: it is hidden in System Settings" notice.
+        public var systemSettingsNotice: String?
         /// Display name of the item the engine is moving right now, when known.
         public var movingName: String?
         public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
-                    handDragNotice: String? = nil, movingName: String? = nil) {
+                    handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
             self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
-            self.adoptionPending = adoptionPending; self.handDragNotice = handDragNotice; self.movingName = movingName
+            self.adoptionPending = adoptionPending; self.handDragNotice = handDragNotice; self.movingName = movingName; self.systemSettingsNotice = systemSettingsNotice
         }
     }
 
@@ -570,6 +572,7 @@ public enum ArrangeSections {
         else if waiting > 0 { primary = waitingToReadText(waiting) }
         else if let w = blockedRows.first?.waitingOn { primary = waitingToSettleText(w) }
         else if let n = context.handDragNotice { primary = n }
+        else if let n = context.systemSettingsNotice { primary = n }
         else if lastError == nil, base == "Converged", content?.observedAvailable == true,
                 vStates.allSatisfy({ $0 == .matches || $0 == .behindChevron || $0 == .notOnBar }) {
             primary = menuBarMatches

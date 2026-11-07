@@ -131,6 +131,14 @@ private struct ActObserver: MenuBarObserver {
         FakeMenuBar.resolve(FakeMenuBar.snapshot(order: await actuator.order, hidden: await actuator.hidden))
     }
 }
+private struct UnknownObserver: MenuBarObserver {
+    let actuator: FakeActuator
+    func observe() async throws -> [ResolvedItem] {
+        var r = FakeMenuBar.resolve(FakeMenuBar.snapshot(order: await actuator.order, hidden: await actuator.hidden))
+        for i in r.indices where r[i].key == k("A") { r[i].item.placementUnknown = true }
+        return r
+    }
+}
 private final class Lines: @unchecked Sendable {
     private let l = NSLock(); private var v: [String] = []
     func add(_ s: String) { l.lock(); v.append(s); l.unlock() }
@@ -138,10 +146,12 @@ private final class Lines: @unchecked Sendable {
 }
 
 @MainActor
-private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], lines: Lines = Lines()) async -> (LayoutEngine, FakeActuator, EngineState, Lines) {
-    let act = FakeActuator(order: [k("A"), k("B")], hidden: [k("A")], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], lines: Lines = Lines(), order: [ItemKey] = [k("A"), k("B")],
+                      noticeLifetime: Duration = .seconds(10)) async -> (LayoutEngine, FakeActuator, EngineState, Lines) {
+    let act = FakeActuator(order: order, hidden: [k("A")], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     var cfg = LayoutEngine.Config()
     cfg.layoutCoalesce = .zero
+    cfg.noticeLifetime = noticeLifetime
     cfg.trackedResolver = { TrackedEntryResolver(entries: ["com.x.A", "com.x.B"].map { entry($0, !flagFalse.contains($0)) }) }
     cfg.trackedAllowed = { flagFalse.contains($0) ? false : true }
     let state = EngineState()
@@ -153,14 +163,74 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
 
 @MainActor
 @Suite struct AuthorityRuleEngineTests {
-    @Test func aLayoutFromDiskListingAFlagFalseKeyVisibleIsSkippedWithEvidenceAndNoWrite() async {
+    // 9o9.25: a flag-false Visible key the user did not place here is ADOPTED into Hidden once (no skip, no show write).
+    @Test func aFlagFalseVisibleKeyIsAdoptedIntoHiddenOnceWithLogAndNotice() async {
         let (e, act, state, lines) = await guardRig(layout: Layout(visible: [k("A"), k("B")]))
+        _ = await e.reconcileOnce()
         _ = await e.reconcileOnce()
         #expect(await act.calls.isEmpty)
         #expect(await act.hidden == [k("A")])
-        if case .unsupported(let why)? = state.perItem[k("A")] { #expect(why == "Hidden in Control Center. Drop it into Visible (or use Move to Visible) to show it.") }
-        else { Issue.record("expected an unsupported skip, got \(String(describing: state.perItem[k("A")]))") }
-        #expect(lines.all.contains { $0.contains("not showing") && $0.contains("isAllowed=false") && $0.contains("source=appExtras") && $0.contains("frame=") })
+        #expect(state.layout.hidden == [k("A")] && state.layout.visible == [k("B")])
+        if case .unsupported? = state.perItem[k("A")] { Issue.record("must not be a skip") }
+        let adopted = lines.all.filter { $0 == "layout: adopted System Settings: \(k("A")) is hidden there; moved to Hidden" }
+        #expect(adopted.count == 1)
+        #expect(state.systemSettingsNotice?.hasPrefix("Moved ") == true && state.systemSettingsNotice?.hasSuffix(" to Hidden: it is hidden in System Settings") == true)
+    }
+
+    @Test func systemSettingsNoticeTextAndStatusLine() {
+        #expect(SystemSettingsNotice.text(["Foo"]) == "Moved Foo to Hidden: it is hidden in System Settings")
+        #expect(SystemSettingsNotice.text(["Foo", "Bar"]) == "Moved Foo, Bar to Hidden: they are hidden in System Settings")
+        var ctx = ArrangeSections.StatusContext()
+        ctx.systemSettingsNotice = SystemSettingsNotice.text(["Foo"])
+        let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx)
+        #expect(line.contains("Moved Foo to Hidden: it is hidden in System Settings"))
+        ctx.systemSettingsNotice = nil
+        #expect(!ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx).contains("Moved Foo"))
+        ctx.handDragNotice = "Adopted your menu bar drag"; ctx.systemSettingsNotice = "SS"
+        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx).contains("Adopted your menu bar drag"))
+    }
+
+    @Test func theNoticeClearsAfterItsLifetime() async {
+        let (e, _, state, _) = await guardRig(layout: Layout(visible: [k("A"), k("B")]), noticeLifetime: .milliseconds(50))
+        _ = await e.reconcileOnce()
+        let cleared = await waitUntil { await MainActor.run { state.systemSettingsNotice == nil } }
+        #expect(cleared)
+    }
+
+    @Test func hideUnitSiblingsMoveToHiddenTogether() async {
+        let a2 = ItemKey.status(ownerKey: "com.x.A", autosaveName: "A2")
+        let (e, _, state, _) = await guardRig(layout: Layout(visible: [k("A"), k("B"), a2]))
+        _ = await e.reconcileOnce()
+        #expect(Set(state.layout.hidden) == [k("A"), a2] && state.layout.visible == [k("B")])
+        let n = state.systemSettingsNotice ?? ""
+        #expect(n.hasPrefix("Moved ") && n.hasSuffix("they are hidden in System Settings"))   // plural wording: the sibling is named too
+    }
+
+    // 9o9.25: a drawn sibling means the user did not hide the whole unit: the adoption is skipped for it.
+    @Test func aDrawnSiblingOfAHiddenKeyPreventsTheAdoption() async {
+        let a2 = ItemKey.status(ownerKey: "com.x.A", autosaveName: "A2")
+        let (e, _, state, lines) = await guardRig(layout: Layout(visible: [k("A"), k("B"), a2]), order: [k("A"), k("B"), a2])
+        _ = await e.reconcileOnce()
+        #expect(state.layout.visible == [k("A"), k("B"), a2] && state.layout.hidden.isEmpty)
+        #expect(state.systemSettingsNotice == nil)
+        #expect(lines.all.contains { $0 == "layout: not adopting System Settings hide of \(k("A")): its sibling \(a2) is on the bar" })
+    }
+
+    @Test func aPlacementUnknownKeyIsNotAdopted() async {
+        let act = FakeActuator(order: [k("A"), k("B")], hidden: [k("A")], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
+        var cfg = LayoutEngine.Config()
+        cfg.layoutCoalesce = .zero
+        cfg.trackedResolver = { TrackedEntryResolver(entries: ["com.x.A", "com.x.B"].map { entry($0, $0 != "com.x.A") }) }
+        cfg.trackedAllowed = { $0 == "com.x.A" ? false : true }
+        let lines = Lines(), st = EngineState()
+        let e = LayoutEngine(observer: UnknownObserver(actuator: act), actuator: act, store: InMemoryLayoutStore(Layout(visible: [k("A"), k("B")])),
+                             capabilities: AllCaps(), state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
+                             log: { lines.add($0) }, config: cfg)
+        await e.start()
+        _ = await e.reconcileOnce()
+        #expect(st.layout.visible == [k("A"), k("B")])
+        #expect(!lines.all.contains { $0.contains("adopted System Settings") })
+        #expect(await act.calls.isEmpty)
     }
 
     @Test func aUserPlacementIntoVisibleShowsAsBefore() async {
@@ -179,17 +249,13 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
         #expect(await act.calls.isEmpty)
     }
 
-    // gdu.95: a drop of a key the layout already lists visible (parked, isAllowed=false) is a user placement.
+    // gdu.95: a drop of a key the layout lists visible (parked, isAllowed=false) is a user placement when moved.
     @Test func aDropOfAnAlreadyListedVisibleKeyIsAPlacementOnlyWhenMoved() async {
         let (e, act, _, lines) = await guardRig(layout: Layout(visible: [k("A"), k("B")]))
         _ = await e.reconcileOnce()
-        #expect(await act.hidden == [k("A")])                       // (a) guard holds without a placement
-        await e.setLayout(Layout(visible: [k("A"), k("B")]), userPlacement: true)
-        _ = await e.reconcileOnce()
-        #expect(await act.hidden == [k("A")])                       // (c) no `moved`: still guarded
-        #expect(!lines.all.contains { $0.contains("membership write: show") })
+        #expect(await act.hidden == [k("A")])                       // adopted into Hidden, not shown
         await e.setLayout(Layout(visible: [k("A"), k("B")]), userPlacement: true, moved: [k("A")])
-        let ok = await waitUntil { await act.hidden.isEmpty }       // (b)
+        let ok = await waitUntil { await act.hidden.isEmpty }
         #expect(ok)
         #expect(lines.all.contains { $0.contains("membership write: show") && $0.contains("userPlaced=true") })
     }

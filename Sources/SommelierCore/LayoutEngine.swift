@@ -61,6 +61,8 @@ public actor LayoutEngine {
         /// 9o9.7: after a hand Command-drag in the menu bar ends, the engine waits this long for a settled complete observation to adopt
         /// (it never enforces the old record meanwhile); at the limit it adopts the last settled complete observation taken since the drag.
         public var handDragAdoptWait: Duration = .seconds(10)
+        /// How long the transient notices (new item, hand drag, System Settings adoption) stay up (tests shorten it).
+        public var noticeLifetime: Duration = NewItemNotice.lifetime
         /// Wall clock for the attempt window and the per-minute cap (tests override it).
         public var now: @Sendable () -> Date = { Date() }
         public var busyPoll: Duration = .milliseconds(100)
@@ -190,6 +192,7 @@ public actor LayoutEngine {
     }
     private var handWaitLoggedAt: Date?
     private var handNoticeSerial = 0
+    private var systemNoticeSerial = 0
     /// Test hook: pretends a clean observation of `bar` was read (the pass records it and adopts in the same step, so a pending adoption never coexists with one in production).
     func setCleanBarForTesting(_ bar: [ItemKey]?) { lastCleanBar = bar }
     /// Keys applied by a `.liveUnverified` batch and not yet confirmed by a settled complete read; value = hidden (gdu.55).
@@ -684,8 +687,9 @@ public actor LayoutEngine {
         handNoticeSerial += 1
         let serial = handNoticeSerial
         await publish { $0.handDragNotice = HandDragNotice.text }
+        let lifetime = config.noticeLifetime
         Task { [weak self] in
-            try? await Task.sleep(for: NewItemNotice.lifetime)
+            try? await Task.sleep(for: lifetime)
             await self?.clearHandNotice(serial)
         }
     }
@@ -1292,6 +1296,65 @@ public actor LayoutEngine {
     /// Number of keys withheld by the last pass's full-bar rule (log once per change, not once per pass).
     private var fullBarLogged = 0
 
+    /// 9o9.25: parked keys the layout lists Visible that Control Center hides (`isAllowed == false`) and the user did not place through
+    /// Sommelier. Placement-unknown keys never qualify (nothing proves they are hidden).
+    private func systemHiddenVisible(_ obs: ObservedOrder) -> [(key: ItemKey, tracked: String)] {
+        var out: [(key: ItemKey, tracked: String)] = []
+        for k in obs.parked where layout.section(of: k) == .visible && !userPlacedVisible.contains(k) && !obs.placementUnknown.contains(k) {
+            guard let tk = resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID), config.trackedAllowed(tk) == false else { continue }
+            out.append((k, tk))
+        }
+        return out
+    }
+
+    /// 9o9.25: a change the user made outside Sommelier is adopted into the record (like a hand drag, 9o9.7): a Visible key that Control
+    /// Center hides and the user did not place here moves ONCE to the end of Hidden (hide-unit siblings along), the layout is saved and
+    /// a transient notice is published. Skipped while the upgrade adoption or a hand-drag adoption is pending, and under a transient reveal.
+    private func adoptSystemSettingsHides(_ obs: ObservedOrder) async {
+        guard !layout.pendingAdoption, handAdopt == nil else { return }
+        let adoptObs = withoutTransient(obs)
+        let onBar = Set(adoptObs.onBar)
+        var found: [(key: ItemKey, tracked: String)] = []
+        for f in systemHiddenVisible(adoptObs) {
+            // A drawn sibling means the user did not hide the whole unit: adopting would hide an item they left on the bar.
+            let unit = rule.unit(of: f.key)
+            if let sib = layout.allKeys.first(where: { $0 != f.key && rule.unit(of: $0) == unit && onBar.contains($0) }) {
+                log("layout: not adopting System Settings hide of \(f.key): its sibling \(sib) is on the bar")
+                continue
+            }
+            found.append(f)
+        }
+        guard !found.isEmpty else { return }
+        var l = layout
+        var moved: [ItemKey] = []
+        for (k, tk) in found {
+            guard l.section(of: k) == .visible else { continue }
+            for m in l.move(k, to: .hidden, units: rule) where !moved.contains(m) { moved.append(m) }
+            log("layout: adopted System Settings: \(k) is hidden there; moved to Hidden")
+            log("engine: Control Center \(tk) isAllowed=false; evidence: \(evidence[k] ?? "none")")
+        }
+        guard !moved.isEmpty else { return }
+        layout = l
+        userPlacedVisible.subtract(moved)
+        do { try store.save(l) } catch { log("cannot save layout: \(error)") }
+        _ = await publishLayout(l)
+        let names = moved.map { itemInfo[$0].map(OverflowEntries.displayName) ?? $0.description }
+        systemNoticeSerial += 1
+        let serial = systemNoticeSerial
+        let text = SystemSettingsNotice.text(names)
+        await publish { $0.systemSettingsNotice = text }
+        let lifetime = config.noticeLifetime
+        Task { [weak self] in
+            try? await Task.sleep(for: lifetime)
+            await self?.clearSystemNotice(serial)
+        }
+    }
+
+    private func clearSystemNotice(_ serial: Int) async {
+        guard serial == systemNoticeSerial else { return }
+        await publish { $0.systemSettingsNotice = nil }
+    }
+
     private func makePlan(_ obs: ObservedOrder) -> Plan {
         refreshHideUnits()
         reevaluateRefused(obs)
@@ -1305,11 +1368,10 @@ public actor LayoutEngine {
         for k in planObs.parked where planObs.placementUnknown.contains(k) {
             guarded.append((k, "placement unknown (app-side frame only, no hosted element)"))
         }
-        let flagCandidates = planObs.parked.filter { layout.section(of: $0) == .visible && !userPlacedVisible.contains($0) && !planObs.placementUnknown.contains($0) }
-        for k in flagCandidates {
-            guard let tk = resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID), config.trackedAllowed(tk) == false else { continue }
+        // 9o9.25: such keys are normally adopted into Hidden before planning (`adoptSystemSettingsHides`); this guard only covers the
+        // passes where that adoption is deferred (upgrade adoption pending, a hand drag being read): never show them meanwhile.
+        for (k, _) in systemHiddenVisible(planObs) {
             guarded.append((k, "Hidden in Control Center. Drop it into Visible (or use Move to Visible) to show it."))
-            log("engine: not showing \(k): Control Center \(tk) isAllowed=false, layout lists it visible but not by a user placement; evidence: \(evidence[k] ?? "none")")
         }
         if !guarded.isEmpty { let g = Set(guarded.map(\.key)); planObs.parked.removeAll { g.contains($0) } }
         // gdu.72: parked units the actuator still refuses (after `reevaluateRefused`) are withheld from the Reconciler so it does not
@@ -1915,6 +1977,8 @@ public actor LayoutEngine {
         if handAdopt != nil { await considerHandDragAdoption(obs) }
         else { await adoptLateHandDrags(obs) }
 
+        await adoptSystemSettingsHides(obs)   // 9o9.25
+
         // (c) plan
         var plan = makePlan(obs)
         // 9o9.4: a verified move of a key that a plan within the next 2 passes wants made again was reverted: one more attempt.
@@ -2356,8 +2420,9 @@ public actor LayoutEngine {
         noticeSerial += 1
         let serial = noticeSerial
         await publish { $0.newItemNotice = text }
+        let lifetime = config.noticeLifetime
         Task { [weak self] in
-            try? await Task.sleep(for: NewItemNotice.lifetime)
+            try? await Task.sleep(for: lifetime)
             await self?.clearNotice(serial)
         }
     }
