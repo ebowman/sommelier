@@ -122,8 +122,6 @@ public struct ArrangeContent: Equatable, Sendable {
 }
 
 public enum ArrangeSections {
-    /// Shown for self-positioning items (iStat Menus): Sommelier never drags them and does not manage their order.
-    public static let positionsItselfNote = "Positions itself: Sommelier does not manage this item's order."
     /// Text for a failed/unsupported engine error.
     public static func describe(_ e: ActuationError) -> String {
         switch e {
@@ -245,7 +243,7 @@ public enum ArrangeSections {
                               ownerPID: info?.ownerPID, badge: b, draggable: cap.canMove && !stale, canHide: cap.canHide, isAnchor: anchor,
                               isGhost: ghost, isBoundary: observed.overflowChevron == k,
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
-                              unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? (SelfPositioning.isSelfPositioning(k) ? ArrangeSections.positionsItselfNote : nil) : cap.reason)
+                              unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? nil : cap.reason)
             r.staleFrame = stale
             r.isPlaced = layout.placed.contains(k)
             r.placementInert = r.isPlaced && !layout.enforcesOrder
@@ -461,10 +459,6 @@ public enum ArrangeCapabilities {
 }
 
 public enum ArrangeDrop {
-    /// Refusal for an order-only drop of a self-positioning row (gdu.61): the planner treats it as an anchor and would ignore the order.
-    public static let positionsItself = "This item positions itself: Sommelier does not manage its order. You can still hide or show it."
-    /// gdu.67: refusal text for an order-only drop that would put a movable row on the other side of a self-positioning row.
-    public static func cannotCross(_ name: String) -> String { "cannot cross \(name): it positions itself; move it in iStat Menus instead" }
     /// sommelier-8z5.3: refusal for a pure reorder inside Visible while macOS owns the order.
     public static let orderFollowsMacOS = "Order follows macOS here. Command-drag the item in the menu bar to move it, or turn on \"Let Sommelier keep an order for items I place\"."
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
@@ -519,11 +513,6 @@ public enum ArrangeDrop {
         let cap = capabilities(key)
         guard cap.canMove else { return .rejected(cap.reason ?? "This item cannot be moved.") }
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
-        // Reordering within Visible is ignored by the planner for a self-positioning item (an anchor, gdu.33): refuse it
-        // instead of saving a layout that would never be applied. Changing section (hide/show) stays accepted.
-        if !showRequest, section == .visible, layout.section(of: key) == .visible, SelfPositioning.isSelfPositioning(key) {
-            return .rejected(positionsItself)
-        }
         // sommelier-8z5.3: while macOS owns the order a pure reorder inside Visible (any index, any step) is refused. Evaluated after
         // the observation/capability/self-positioning refusals so their messages win; before the move so nothing is computed or saved.
         if !showRequest, !layout.enforcesOrder, section == .visible, layout.section(of: key) == .visible { return .rejected(orderFollowsMacOS) }
@@ -534,14 +523,6 @@ public enum ArrangeDrop {
         // Order-only drops inside Hidden/Always hidden are our own data and create none (and a hide drops the key's obligation: `move`).
         // sommelier-8z5.3: only when Sommelier enforces order; in macOSOwns `placed` stays untouched (inert).
         if section == .visible, layout.enforcesOrder { l.markPlaced(moved) }
-        // gdu.67: a planner anchor keeps its observed slot, so an order-only move that puts a movable row on the far side of a
-        // self-positioning row (relative to the OBSERVED bar) is never reached: the next pass re-plans around the anchor. Refuse it.
-        // Only a move that changes the row's side of the anchor in the layout AND disagrees with the bar is a crossing; a layout
-        // that already straddles (older layout.json) can still be moved back to agree with the bar.
-        if !showRequest, section == .visible, layout.section(of: key) == .visible,
-           let anchor = crossedSelfPositioning(old: layout, new: l, moved: moved, bar: bar) {
-            return .rejected(cannotCross(displayName(anchor)))
-        }
         return .move(layout: l, moved: moved, willNotFit: willNotFit && section == .visible)
     }
 
@@ -553,22 +534,6 @@ public enum ArrangeDrop {
         var l = layout
         l.placed.removeAll { keys.contains($0) }
         return .unplaced(l, keys)
-    }
-
-    /// The first self-positioning key on `bar` that a moved key passes in `new` (vs `old`) and that ends on the other side of
-    /// it than the key's observed slot. nil when none (also when the moved key or the anchor is not on the bar).
-    static func crossedSelfPositioning(old: Layout, new: Layout, moved: [ItemKey], bar: [ItemKey]) -> ItemKey? {
-        let anchors = bar.filter { SelfPositioning.isSelfPositioning($0) }
-        guard !anchors.isEmpty else { return nil }
-        for k in moved where !SelfPositioning.isSelfPositioning(k) {
-            guard let kb = bar.firstIndex(of: k), let ko = old.visible.firstIndex(of: k), let kn = new.visible.firstIndex(of: k) else { continue }
-            for a in anchors {
-                guard let ab = bar.firstIndex(of: a), let ao = old.visible.firstIndex(of: a), let an = new.visible.firstIndex(of: a) else { continue }
-                let sideOld = ko < ao, sideNew = kn < an, sideBar = kb < ab
-                if sideOld != sideNew, sideNew != sideBar { return a }
-            }
-        }
-        return nil
     }
 
     /// The `Layout.move` index for dropping into the gap `slot` (0...rows.count) of a strip: the position of the first row

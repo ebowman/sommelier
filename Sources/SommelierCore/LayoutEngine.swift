@@ -50,9 +50,8 @@ public actor LayoutEngine {
         public var maxKeyFailures = 3
         /// Consecutive passes in which every action failed (each ended by `maxConsecutiveFailures`) before the engine reports `stoppedAfterFailures`.
         public var maxAllFailedPasses = 3
-        /// Owners (iStat Menus) whose stale items do not block a pass (gdu.51: a move that drops next to one is only actuated on a
-        /// COMPLETE read) and which the planner treats as ANCHORS: never moved, never planned by the layout, their observed slot is
-        /// authoritative (gdu.33). Hiding and showing them is unaffected.
+        /// Owners (iStat Menus) whose stale items do not block a pass (gdu.51: a move of or next to one is only actuated on a
+        /// COMPLETE read). READ COMPLETENESS only (gdu.120): they are ordinary orderable items, not anchors.
         public var selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners
         /// `setLayout` calls closer together than this are one request: only the last layout is planned (gdu.47). Zero = no window.
         public var layoutCoalesce: Duration = .milliseconds(300)
@@ -741,7 +740,7 @@ public actor LayoutEngine {
         }
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
-                                         selfPositioningOwners: config.selfPositioningOwners, units: rule,
+                                         units: rule,
                                          churn: SystemOverflowRule.churnZone(recentReads), placed: layout.enforcesOrder ? layout.placedSet : [])   // 8z5.2: macOS owns the order -> nothing is placed, nothing may move
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
@@ -1288,13 +1287,14 @@ public actor LayoutEngine {
 
         func isConverged() -> Bool { failures.isEmpty }
 
-        // (e2) ORDER actuation that involves a self-positioning owner (a move's relation target) waits for a COMPLETE
+        // (e2) ORDER actuation that involves a self-positioning owner (a move's subject or relation target) waits for a COMPLETE
         // read: with their items stale, their frames and slots are not trusted (gdu.51). Membership is not affected.
+        // Read completeness only (gdu.120): iStat items are ordinary orderable items, the wait is for fresh frames.
         if plan.phase == .order, observedCompleteness != .complete {
             let owners = config.selfPositioningOwners
-            // Only the relation TARGET can be a self-positioning item: the planner never moves one (they are anchors, gdu.33).
             let involved = plan.actions.contains { a in
-                guard case .move(_, let rel) = a else { return false }
+                guard case .move(let subject, let rel) = a else { return false }
+                if SelfPositioning.isSelfPositioning(subject, owners: owners) { return true }
                 switch rel {
                 case .before(let t), .after(let t): return SelfPositioning.isSelfPositioning(t, owners: owners)
                 case .leftmost, .rightmost: return false
@@ -1313,7 +1313,6 @@ public actor LayoutEngine {
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
-            if ok { _ = await normalizeAroundSelfPositioning(obs, generation: generation) }
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
@@ -1569,7 +1568,6 @@ public actor LayoutEngine {
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
-            if ok { _ = await normalizeAroundSelfPositioning(obs, generation: generation) }
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
@@ -1607,22 +1605,6 @@ public actor LayoutEngine {
         return nil
     }
     static let orderNotAppliedText = "Order not applied: bar is full"
-
-    /// gdu.67: a persisted layout that straddles a self-positioning item ([B, iStat, A] while the bar is [A, iStat, B]) is not
-    /// reachable: the planner keeps iStat as an anchor and ends [B, A, iStat]. Once a pass has converged on a complete read, the
-    /// layout is rewritten to the order the bar actually has around that item (it is moved in the layout, never on the bar), so
-    /// the straddle does not re-trigger every pass. The moved self-positioning keys are recorded as `lastNormalization` (the
-    /// Arrange status line says so). Returns true when the layout was rewritten.
-    private func normalizeAroundSelfPositioning(_ obs: ObservedOrder, generation: Int) async -> Bool {
-        guard generation == layoutGeneration, observedCompleteness == .complete, transientReveals.isEmpty, failures.isEmpty else { return false }
-        let (new, moved) = layout.normalizedAroundSelfPositioning(observed: obs, owners: config.selfPositioningOwners)
-        guard !moved.isEmpty else { return false }
-        log("layout: straddled self-positioning item(s) \(moved.map(\.description).joined(separator: ", ")); the layout follows the bar around them")
-        layout = new
-        do { try store.save(new) } catch { log("cannot save layout: \(error)") }
-        await publishLayout(new, normalized: moved)
-        return true
-    }
 
     /// Log line and a transient Arrange-window notice for unknown items placed by the new-item policy (no system notification).
     private func noteNewItems(_ items: [NewItem]) async {
@@ -1735,31 +1717,5 @@ final class ConflictBox: @unchecked Sendable {
     var value: String? {
         get { lock.lock(); defer { lock.unlock() }; return v }
         set { lock.lock(); v = newValue; lock.unlock() }
-    }
-}
-
-extension Layout {
-    /// gdu.67: moves each self-positioning key of `visible` that the layout places on the other side of a movable, drawn bar
-    /// item than the bar does to the slot the bar has (before the first following on-bar key). Returns the keys moved.
-    /// Overflowed keys, the chevron, modules and other self-positioning keys do not count.
-    func normalizedAroundSelfPositioning(observed: ObservedOrder, owners: Set<String>) -> (Layout, moved: [ItemKey]) {
-        let bar = observed.onBar
-        let ignored = observed.systemOverflow.union(observed.overflowChevron.map { [$0] } ?? [])
-        var l = self
-        var moved: [ItemKey] = []
-        for a in visible where SelfPositioning.isSelfPositioning(a, owners: owners) {
-            guard let ab = bar.firstIndex(of: a), !ignored.contains(a), let ai = l.visible.firstIndex(of: a) else { continue }
-            let straddles = l.visible.enumerated().contains { i, k in
-                guard k != a, !SelfPositioning.isSelfPositioning(k, owners: owners), !ignored.contains(k), let kb = bar.firstIndex(of: k) else { return false }
-                if case .module = k { return false }
-                return (i < ai) != (kb < ab)
-            }
-            guard straddles else { continue }
-            l.visible.remove(at: ai)
-            let at = l.visible.firstIndex { k in !ignored.contains(k) && (bar.firstIndex(of: k).map { $0 > ab } ?? false) } ?? l.visible.count
-            l.visible.insert(a, at: at)
-            if l.visible != visible { moved.append(a) }
-        }
-        return (l, moved)
     }
 }

@@ -52,7 +52,7 @@ private func ri(_ name: String, x: CGFloat, w: CGFloat = 24, stale: Bool = false
     #expect(d.changedKeys == ["status:o::B"])
 }
 
-@Test func staleVerdictSelfPositioningWrittenOrdinaryRefused() {
+@Test func staleVerdictAnyStaleItemRefusedNoOwnerExempt() {
     let rule = BarSignature()   // default self-positioning owners
     let owner = SelfPositioning.defaultOwners.sorted().first!
     func mine(_ n: String, stale: Bool) -> ResolvedItem {
@@ -61,9 +61,9 @@ private func ri(_ name: String, x: CGFloat, w: CGFloat = 24, stale: Bool = false
         return r
     }
     #expect(rule.staleVerdict([ri("A", x: 10), mine("I1", stale: false)]) == .clean)
-    #expect(rule.staleVerdict([ri("A", x: 10), mine("I1", stale: true)]) == .selfPositioningOnly(["status:\(owner)::I1"]))
+    #expect(rule.staleVerdict([ri("A", x: 10), mine("I1", stale: true)]) == .refuse(["status:\(owner)::I1"]))   // gdu.120: was written as selfPositioningOnly
     var parkedStale = ri("P", x: -1000, stale: true); parkedStale.item.isOnMenuBar = false
-    #expect(rule.staleVerdict([ri("A", x: 10), mine("I1", stale: true), parkedStale]) == .refuse(["status:o::P"]))
+    #expect(rule.staleVerdict([ri("A", x: 10), mine("I1", stale: true), parkedStale]) == .refuse(["status:\(owner)::I1", "status:o::P"]))
     // an agreed scan can contain a stale parked ordinary item (the rule only blocks on-bar ones), so the refusal is reachable
     #expect(rule.value([ri("A", x: 10), parkedStale]) != nil)
 }

@@ -52,7 +52,9 @@ private let full = tree([dummyEl, otherEl, cpu, mem])
 
 @Test func staleSelfPositioningOnlyIsCompleteExceptSelfPositioning() {
     // Named timeouts (the live source remembers what the failed groups held).
-    let s = source([full, tree([dummyEl, otherEl], failed: 2, timedOut: [stale(cpu), stale(mem)])])
+    // gdu.120: iStat's own app-side read is failing too (nothing fresh exists for either side), so its items stay stale. With a FRESH
+    // app-side read the items are not stale (`freshAppSideFrameBeatsCarriedHostedFrame`); the completeness level is unaffected.
+    let s = source([full, tree([dummyEl, otherEl], failed: 2, timedOut: [stale(cpu), stale(mem)])], failing: [20])
     let scanner = MenuBarScanner(source: s)
     #expect(scanner.scan().completeness == .complete)
     let r = scanner.scan()
@@ -214,7 +216,7 @@ private final class Lines: @unchecked Sendable { let l = NSLock(); var v: [Strin
 @Test func incompleteReasonIsLoggedOncePerTenSeconds() {
     let lines = Lines()
     let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem)], unnamed: 1)
-    let scanner = MenuBarScanner(source: source([full, t, t, t]), log: { lines.add($0) })
+    let scanner = MenuBarScanner(source: source([full, t, t, t], failing: [20]), log: { lines.add($0) })   // gdu.120: iStat's app read fails, so its items are stale
     for _ in 0..<4 { _ = scanner.scan() }
     #expect(lines.v.filter { $0.hasPrefix("incomplete: ") } == ["incomplete: 1 unnamed timeouts, persisted self-positioning groups absent: 0, previous-tree absent: 0"])
 }
@@ -309,7 +311,7 @@ private let noise = AXElementInfo(frame: CGRect(x: 0, y: 29, width: 0, height: 0
 @Test func noiseIsLoggedOnceAtDebugLevel() {
     let lines = Lines()
     let t = tree([dummyEl, otherEl], failed: 3, timedOut: [stale(cpu), stale(mem), stale(noise)])
-    let scanner = MenuBarScanner(source: source([full, t, t, t]), log: { lines.add($0) })
+    let scanner = MenuBarScanner(source: source([full, t, t, t], failing: [20]), log: { lines.add($0) })   // gdu.120: iStat's app read fails, so its items are stale
     for _ in 0..<4 { _ = scanner.scan() }
     #expect(lines.v.filter { $0.hasPrefix("ignored noise element") }.count == 1)
 }

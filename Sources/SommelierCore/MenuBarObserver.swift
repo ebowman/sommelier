@@ -356,11 +356,14 @@ public struct BarSignature: Sendable {
         }
         /// The poll's view (e7t): the same components, but parked = identified keys only (a heuristic parked key is noise) and
         /// no stale-parked component (a stale flag is not a change).
-        /// Presence also drops the self-positioning owners' items: their fast-scan presence flaps with their staleness (e7t:
-        /// all eight iStat items vanish and return between polls), and they position themselves.
+        /// Presence and order also drop the self-positioning owners' items: their fast-scan presence flaps with their staleness (e7t:
+        /// all eight iStat items vanish and return between polls). READ-flap handling only (gdu.120).
         public func forPoll(selfPositioningOwners: Set<String>) -> Value {
             let selfKeys = selfPositioningOwners.map { ItemKey.statusPrefix + $0 + ItemKey.separator }
-            return Value(order: order,
+            // gdu.120: iStat items are ordinary orderable items in the AGREED signature (`value`), but the 10 s poll still ignores their
+            // order: the fast scan drops and re-adds the whole group with the owner's read staleness (e7t), which is a read artefact,
+            // not a user change. A real reorder is picked up by the next pass's full, agreed observation.
+            return Value(order: order.filter { k in !selfKeys.contains { k.hasPrefix($0) } },
                          presence: presence.filter { k in !selfKeys.contains { k.hasPrefix($0) } },
                          parked: parked.filter { !$0.hasPrefix(ItemKey.heuristicPrefix) }, staleParked: [])
         }
@@ -397,8 +400,7 @@ public struct BarSignature: Sendable {
 
     private func orderable(_ r: ResolvedItem) -> Bool {
         if volatileKeys.contains(r.key) || r.confidence == .heuristic || r.item.axIdentifier.isEmpty { return false }
-        if case .status(let owner, _) = r.key, selfPositioningOwners.contains(owner) { return false }
-        return true
+        return true   // gdu.120: iStat Menus items are ordinary orderable items
     }
 
     /// The on-bar stale items that make a scan unusable for agreement (after the shared non-item/noise exclusions).
@@ -408,21 +410,18 @@ public struct BarSignature: Sendable {
     }
 
     /// What a stale item in an AGREED scan means for writing a layout (`mbprobe layout init-from-current`, gdu.30). Non-items
-    /// and our own hosted item are ignored (the layout never contains them). Stale items of self-positioning owners are
-    /// normal and written (they are visible anchors); any other stale item is refused. An on-bar one cannot occur in an agreed
-    /// scan (`value` is nil for it), but a stale PARKED one can, so the refusal is a live guard, not dead code.
+    /// and our own hosted item are ignored (the layout never contains them). gdu.120: no owner is exempt any more (iStat Menus
+    /// items are ordinary orderable items whose frames are expected fresh); every stale item is refused. An on-bar one cannot
+    /// occur in an agreed scan unless it is a self-positioning owner's (`value` tolerates those for agreement only, gdu.51),
+    /// so the refusal is a live guard.
     public enum StaleVerdict: Equatable, Sendable {
         case clean
-        case selfPositioningOnly([String])
         case refuse([String])
     }
 
     public func staleVerdict(_ all: [ResolvedItem]) -> StaleVerdict {
-        let stale = all.filter { $0.item.stale && !LayoutBuilder.isNonItem($0) && !EngineFactory.isOwnHosted($0) }
-        let other = stale.filter { !isSelfPositioning($0) }.map { $0.key.description }
-        if !other.isEmpty { return .refuse(Set(other).sorted()) }
-        let own = stale.map { $0.key.description }
-        return own.isEmpty ? .clean : .selfPositioningOnly(Set(own).sorted())
+        let stale = all.filter { $0.item.stale && !LayoutBuilder.isNonItem($0) && !EngineFactory.isOwnHosted($0) }.map { $0.key.description }
+        return stale.isEmpty ? .clean : .refuse(Set(stale).sorted())
     }
 
     /// nil = this scan cannot be used (a stale item of a non-self-positioning owner is on the bar).

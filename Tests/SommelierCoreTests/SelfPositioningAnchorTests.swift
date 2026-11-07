@@ -7,25 +7,23 @@ private func s(_ n: String) -> ItemKey { .status(ownerKey: "com.bjango.istatmenu
 private func free(_: ItemKey) -> Capability { Capability(canMove: true, canHide: true) }
 
 struct SelfPositioningAnchorTests {
-    @Test func selfPositioningKeyIsNeverMovedAndOrderIsIgnored() {
-        // Observed: s1 a s2 b. Layout wants b s2 a s1 (iStat items in the "wrong" slots).
+    // gdu.120: iStat Menus items are ordinary orderable items (Command-drag verified live). These two replace
+    // selfPositioningKeyIsNeverMovedAndOrderIsIgnored and onlySelfPositioningOutOfOrderIsConverged, which encoded the anchor model.
+    @Test func iStatKeysAreOrderedLikeAnyOtherKey() {
+        // Observed: s1 a s2 b. Layout wants b s2 a s1.
         let o = ObservedOrder(onBar: [s("1"), k("a"), s("2"), k("b")], parked: [])
         let l = Layout(visible: [k("b"), s("2"), k("a"), s("1")], hidden: [], alwaysHidden: [], newItemPolicy: .visibleAtEnd)
         let p = Reconciler().plan(observed: o, layout: l, capabilities: free)
-        for a in p.actions {
-            guard case .move(let subject, let rel) = a else { continue }
-            #expect(!SelfPositioning.isSelfPositioning(subject))
-            _ = rel   // a relation TARGET may be an anchor: it stays put, so the drop slot is stable
-        }
-        #expect(p.actions.contains { if case .move(let x, _) = $0 { return x == k("a") || x == k("b") } else { return false } })
+        #expect(p.desiredOnBar == [k("b"), s("2"), k("a"), s("1")])
+        #expect(p.actions.contains { if case .move(let x, _) = $0 { return SelfPositioning.isSelfPositioning(x) } else { return false } })
         #expect(p.skipped.isEmpty)
-        #expect(p.desiredOnBar.first == s("1")); #expect(p.desiredOnBar[2] == s("2"))
     }
-    @Test func onlySelfPositioningOutOfOrderIsConverged() {
+    @Test func iStatOnlyOutOfOrderIsNotConverged() {
         let o = ObservedOrder(onBar: [s("1"), s("2"), k("a")], parked: [])
         let l = Layout(visible: [s("2"), s("1"), k("a")], hidden: [], alwaysHidden: [], newItemPolicy: .visibleAtEnd)
         let p = Reconciler().plan(observed: o, layout: l, capabilities: free)
-        #expect(p.phase == .converged); #expect(p.actions.isEmpty); #expect(p.skipped.isEmpty)
+        #expect(p.phase != .converged); #expect(!p.actions.isEmpty)
+        #expect(p.desiredOnBar == [s("2"), s("1"), k("a")])
     }
     @Test func hidingASelfPositioningItemStillWorks() {
         let o = ObservedOrder(onBar: [k("a"), s("1")], parked: [])

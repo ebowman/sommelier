@@ -108,7 +108,6 @@ public struct Reconciler: Sendable {
 
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
-                     selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners,
                      units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = [], placed: Set<ItemKey>? = nil) -> Plan {
         // gdu.89: `placed` = the keys whose position the user chose (`Layout.placed`). Only they create an order obligation: the order
         // target is the OBSERVED order with each placed key moved next to its neighbour as the layout records it; every other key
@@ -116,15 +115,9 @@ public struct Reconciler: Sendable {
         // (the whole of `Layout.visible`), which is what `placed == Set(layout.visible)` asks for; production callers (the engine,
         // mbprobe) always pass `layout.placed`.
         let userOrder = placed != nil
-        // Self-positioning owners (iStat Menus) move between slots on their own, so they are ANCHORS: never dragged,
-        // never targeted by a relation that needs them to move, and their slot is authoritative (gdu.33). Hide/show
-        // capability is untouched. The actuator's drift exemption uses the same set (`SelfPositioning.defaultOwners`).
-        let isSP: (ItemKey) -> Bool = { SelfPositioning.isSelfPositioning($0, owners: selfPositioningOwners) }
-        func capabilities(_ k: ItemKey) -> Capability {
-            var c = rawCapabilities(k)
-            if isSP(k) { c.canMove = false }
-            return c
-        }
+        // gdu.120: iStat Menus items are ordinary orderable items (verified live: a Command-drag takes effect and holds); there is
+        // no anchor treatment by owner. Only the capability the caller reports (and stale/uncorroborated slots, below) pins a key.
+        func capabilities(_ k: ItemKey) -> Capability { rawCapabilities(k) }
         // Defensive dedup: first occurrence wins; a key on the bar is never also parked.
         var seen = Set<ItemKey>()
         let onBar = observed.onBar.filter { seen.insert($0).inserted }
@@ -267,7 +260,7 @@ public struct Reconciler: Sendable {
                 skipped.append(SkippedAction(k, churnKeys.contains(k) ? SystemOverflowRule.churnSkipReason : Reconciler.overflowSkipReason))
             }
         }
-        desired = desired.filter { !ovf.contains($0) && $0 != chevron && !isSP($0) }
+        desired = desired.filter { !ovf.contains($0) && $0 != chevron }
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
         let base = kept + shows
         // gdu.94: an on-bar key whose slot is not corroborated by a hosted element (or that Control Center lists hidden) keeps its observed

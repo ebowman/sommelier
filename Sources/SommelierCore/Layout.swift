@@ -28,8 +28,8 @@ public struct Layout: Codable, Equatable, Sendable {
     /// gdu.89: the keys the USER placed in Visible (a drop in Arrange, including a drop from Hidden into Visible). Only these create an
     /// order obligation on the real bar; every other visible key follows whatever order macOS gives it (the layout merely records it).
     /// Optional on disk (absent = empty, so every layout written before this field plans no moves). A key enters only through
-    /// `markPlaced` (Arrange's submit); builders, "Adopt current order", "Hide what does not fit", new-item appends and
-    /// `normalizedAroundSelfPositioning` never add to it. A key that leaves the layout (or Visible) leaves `placed`. The array order is
+    /// `markPlaced` (Arrange's submit); builders, "Adopt current order", "Hide what does not fit" and new-item appends
+    /// never add to it. A key that leaves the layout (or Visible) leaves `placed`. The array order is
     /// not meaningful (the planner uses the order of `visible`).
     public var placed: [ItemKey]
     /// The planner's view of `placed`.

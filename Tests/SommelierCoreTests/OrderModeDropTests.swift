@@ -101,7 +101,7 @@ struct OrderModeDropTests {
         let l = Layout(visible: [k("A"), istat, k("C")], orderMode: .macOSOwns)
         guard case .move(_, let moved, _) = ArrangeDrop.outcome(layout: l, key: istat, to: .visible, index: 0, capabilities: free, parked: [istat]) else { Issue.record("expected move"); return }
         #expect(moved.contains(istat))
-        #expect(ArrangeDrop.outcome(layout: l, key: istat, to: .visible, index: 0, capabilities: free) == .rejected(ArrangeDrop.positionsItself))
+        #expect(ArrangeDrop.outcome(layout: l, key: istat, to: .visible, index: 0, capabilities: free) == .rejected(ArrangeDrop.orderFollowsMacOS))   // gdu.120: iStat is no special case; macOSOwns refuses every reorder
     }
 
     @Test func placedOnlyParkedKeyShowMarksPlaced() {

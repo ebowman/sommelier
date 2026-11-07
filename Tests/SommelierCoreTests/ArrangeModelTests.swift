@@ -345,20 +345,6 @@ private func caps67(_ key: ItemKey) -> Capability {
 }
 private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(key)" }
 
-@Test func aDropAcrossASelfPositioningRowIsRefusedInBothDirections() {
-    let bar = [k("a"), istat67, k("b"), clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
-    // b before istat (index 0 among [a, istat, clock] lifted: before a)
-    let left = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 1, capabilities: caps67, bar: bar, displayName: crossName)
-    #expect(left == .rejected("cannot cross CPU: it positions itself; move it in iStat Menus instead"))
-    // a after istat
-    let right = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 2, capabilities: caps67, bar: bar, displayName: crossName)
-    #expect(right == .rejected("cannot cross CPU: it positions itself; move it in iStat Menus instead"))
-    // a straddling layout can be moved back to agree with the bar
-    let straddled = Layout(visible: [k("b"), istat67, k("a"), clock]).withOrderMode(.placedOnly)
-    if case .move = ArrangeDrop.outcome(layout: straddled, key: k("a"), to: .visible, index: 0, capabilities: caps67, bar: bar, displayName: crossName) {} else { Issue.record("moving back must be allowed") }
-}
-
 @Test func aDropThatDoesNotCrossASelfPositioningRowIsAllowed() {
     let bar = [k("a"), k("c"), istat67, k("b"), clock]
     let layout = Layout(visible: bar).withOrderMode(.placedOnly)
@@ -372,11 +358,20 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
     if case .move = ArrangeDrop.outcome(layout: Layout(visible: [k("a"), istat67, k("b"), clock]).withOrderMode(.placedOnly), key: k("b"), to: .visible, index: 0, capabilities: caps67, bar: noBar) {} else { Issue.record("istat off the bar") }
 }
 
-@Test func twoAdjacentSelfPositioningRowsAreEachRefused() {
+// gdu.120 (replaces aDropAcrossASelfPositioningRowIsRefusedInBothDirections, twoAdjacentSelfPositioningRowsAreEachRefused,
+// stepAcrossASelfPositioningRowIsRefusedAndNotStepable): iStat rows are ordinary, so crossing one is accepted, in both directions,
+// by drop and by step, and two adjacent iStat rows impose no restriction either.
+@Test func aDropOrStepAcrossAnIStatRowIsAcceptedLikeAnyOtherRow() {
     let bar = [k("a"), istat67, istat67b, k("b"), clock]
     let layout = Layout(visible: bar).withOrderMode(.placedOnly)
-    guard case .rejected = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 1, capabilities: caps67, bar: bar) else { Issue.record("first"); return }
-    guard case .rejected = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 1, capabilities: caps67, bar: bar) else { Issue.record("second"); return }
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 1, capabilities: caps, bar: bar) {
+        #expect(l.visible.firstIndex(of: k("b"))! < l.visible.firstIndex(of: istat67)!)
+    } else { Issue.record("left across iStat must be accepted") }
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 2, capabilities: caps, bar: bar) {
+        #expect(l.visible.firstIndex(of: k("a"))! > l.visible.firstIndex(of: istat67)!)
+    } else { Issue.record("right across iStat must be accepted") }
+    // the iStat row itself is draggable (capability is the ordinary one) and can be stepped
+    if case .move = ArrangeDrop.step(layout: layout, rows: rows(layout), key: istat67, .right, capabilities: caps, bar: bar) {} else { Issue.record("iStat row must be stepable") }
 }
 
 @Test func aDropAcrossAModuleAnchorKeepsItsExistingBehaviour() {
@@ -385,21 +380,6 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 1, capabilities: caps67, bar: bar) {
         #expect(l.visible == [k("b"), k("a"), cc, clock])
     } else { Issue.record("module anchors are not self-positioning rows") }
-}
-
-@Test func stepAcrossASelfPositioningRowIsRefusedAndNotStepable() {
-    let bar = [k("a"), istat67, k("b"), clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
-    let r = rows(layout)
-    #expect(ArrangeDrop.step(layout: layout, rows: r, key: k("b"), .left, capabilities: caps67, bar: bar, displayName: crossName)
-            == .rejected("cannot cross CPU: it positions itself; move it in iStat Menus instead"))
-    guard case .rejected = ArrangeDrop.step(layout: layout, rows: r, key: k("a"), .right, capabilities: caps67, bar: bar) else { Issue.record("right"); return }
-    // not crossing: allowed
-    let bar2 = [k("a"), k("c"), istat67, k("b"), clock]
-    let l2 = Layout(visible: bar2).withOrderMode(.placedOnly)
-    if case .move(let l, _, _) = ArrangeDrop.step(layout: l2, rows: rows(l2), key: k("c"), .left, capabilities: caps67, bar: bar2) {
-        #expect(l.visible == [k("c"), k("a"), istat67, k("b"), clock])
-    } else { Issue.record("step not crossing must be allowed") }
 }
 
 // MARK: toolbar actions
@@ -557,13 +537,14 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
 
 // MARK: self-positioning rows (gdu.61)
 
-@Test func orderOnlyDropOfASelfPositioningRowIsRefusedButHideShowIsAccepted() {
+@Test func orderOnlyDropOfAnIStatRowIsAcceptedLikeAnyOtherAndHideShowToo() {   // gdu.120: was refused as "positions itself"
     let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
     let layout = Layout(visible: [k("a"), istat, k("b")], hidden: [k("h")]).withOrderMode(.placedOnly)
     let free: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
-    // order-only inside Visible: refused with the truthful reason, layout untouched
-    #expect(ArrangeDrop.outcome(layout: layout, key: istat, to: .visible, index: 0, capabilities: free) == .rejected(ArrangeDrop.positionsItself))
-    #expect(ArrangeDrop.positionsItself.contains("positions itself"))
+    // order-only inside Visible: accepted and placed, like any ordinary item
+    if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: istat, to: .visible, index: 0, capabilities: free) {
+        #expect(l.visible.first == istat && l.placed.contains(istat))
+    } else { Issue.record("an iStat row must be draggable inside Visible") }
     // hide (section change) is accepted
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: istat, to: .hidden, index: nil, capabilities: free) {
         #expect(l.hidden.contains(istat) && !l.visible.contains(istat))

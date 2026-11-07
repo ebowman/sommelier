@@ -156,14 +156,6 @@ struct LayoutPlacedModelTests {
         #expect(LayoutBuilder.build(from: res).layout.placed.isEmpty)
     }
 
-    @Test func selfPositioningNormalizationKeepsPlaced() {
-        let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
-        let l = Layout(visible: [k("B"), istat, k("A")], placed: [k("B")])
-        let (n, moved) = l.normalizedAroundSelfPositioning(observed: ObservedOrder(onBar: [k("A"), istat, k("B")], parked: []), owners: SelfPositioning.defaultOwners)
-        #expect(!moved.isEmpty)
-        #expect(n.placed == [k("B")])
-    }
-
     @Test func leavingTheLayoutOrVisibleDropsThePlacement() {
         var l = Layout(visible: [k("a"), k("b")], hidden: [k("c")], placed: [k("a"), k("b")])
         l.move(k("a"), to: .hidden)

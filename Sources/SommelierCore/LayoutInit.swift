@@ -24,8 +24,6 @@ public enum LayoutInit {
         switch BarSignature().staleVerdict(r.items) {
         case .clean: break
         case .refuse(let keys): return .refuse("stale items in the agreed scan, not writing: " + keys.joined(separator: ", "))
-        case .selfPositioningOnly(let keys):
-            notes.append("note: \(keys.count) self-positioning items were stale in the agreed scan (" + keys.joined(separator: ", ") + "); written as they were observed")
         }
         // The union over every scan the agreement loop considered, plus the final result.
         var unknown = r.unknownSeen

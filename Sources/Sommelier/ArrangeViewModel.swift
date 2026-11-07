@@ -114,16 +114,9 @@ final class ArrangeViewModel {
     var statusText: String {
         ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice ?? selfPositioningNote,
+                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice,
                                    pollPausedNames: pollPausedNames,
                                    orderMode: state.layout.orderMode, placedCount: state.layout.placed.count)
-    }
-    /// gdu.67: shown after the engine rewrote a layout that straddled a self-positioning item (`lastNormalization` holds only those keys then).
-    private var selfPositioningNote: String? {
-        let keys = state.lastNormalization
-        guard !keys.isEmpty, keys.allSatisfy({ SelfPositioning.isSelfPositioning($0) }) else { return nil }
-        let names = keys.map { displayName($0) }.joined(separator: ", ")
-        return "Layout adjusted around \(names): it positions itself, so items cannot sit on both sides of it."
     }
     /// Display names of the items whose flapping paused the poll, nil when it is not paused (gdu.58).
     private var pollPausedNames: [String]? {

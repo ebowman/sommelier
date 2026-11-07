@@ -74,7 +74,7 @@ private let kPlaced = it("K", x: 140)
     #expect(items.count == 2)
 }
 
-@Test func initWritesSelfPositioningStaleAgreedReadWithNote() async {
+@Test func initRefusesAStaleIStatItemLikeAnyOtherStaleItem() async {
     let owner = SelfPositioning.defaultOwners.sorted().first!
     let sp = MenuBarItem(ownerPID: 2, ownerBundleID: owner, ownerName: owner, title: "I1", axDescription: "", axIdentifier: "I1",
                          frame: CGRect(x: 200, y: 0, width: 24, height: 24), source: .appExtras, isOnMenuBar: true, stale: true)
@@ -83,6 +83,7 @@ private let kPlaced = it("K", x: 140)
     let o = AgreedScanObserver(scanner: Scripted(box: box), resolve: { s in
         s.items.map { ResolvedItem(item: $0, key: .status(ownerKey: $0.ownerName, autosaveName: $0.title), confidence: .exact) }
     }, maxScans: 6, deadline: 15, accessibilityTrusted: { true }, sleep: { _ in })
-    guard case .build(_, _, let notes) = await LayoutInit.evaluate(observer: o) else { Issue.record("expected build"); return }
-    #expect(notes.count == 1 && notes[0].contains("self-positioning items were stale"))
+    // gdu.120: no owner is exempt; init-from-current no longer writes iStat items as stale (was: build with a note)
+    guard case .refuse(let m) = await LayoutInit.evaluate(observer: o) else { Issue.record("expected refusal"); return }
+    #expect(m.contains("stale items in the agreed scan") && m.contains("I1"))
 }

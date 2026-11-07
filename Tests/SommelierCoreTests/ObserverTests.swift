@@ -69,9 +69,9 @@ private func bar(_ items: [MenuBarItem], complete: Bool? = nil) -> MenuBarSnapsh
     #expect(r.first { $0.key.description == "status:A::A" }?.item.frame.minX == 100)
 }
 
-@Test func selfPositioningAndIdentifierlessOrderNoiseStillAgrees() async throws {
+@Test func identifierlessOrderNoiseStillAgreesButIStatOrderIsReal() async throws {   // gdu.120: S1/S2 are ordinary; only the identifier-less N flips
     let s1 = bar([plain("A", x: 100), plain("S1", x: 140), plain("S2", x: 170), plain("N1", x: 200, id: false), plain("N2", x: 230, id: false), plain("B", x: 260)])
-    let s2 = bar([plain("A", x: 100), plain("S2", x: 140), plain("S1", x: 170), plain("N2", x: 200, id: false), plain("N1", x: 230, id: false), plain("B", x: 260)])
+    let s2 = bar([plain("A", x: 100), plain("S1", x: 140), plain("S2", x: 170), plain("N2", x: 200, id: false), plain("N1", x: 230, id: false), plain("B", x: 260)])
     let (o, box) = obs([s1, s2])
     let r = try await o.observeDetailed(progress: nil)
     #expect(r.settled)
@@ -229,4 +229,14 @@ private func seedOf(_ s: MenuBarSnapshot, level: ReadCompleteness = .complete, n
     let r = try await o.observeDetailed(progress: nil, seed: seedOf(seedScan, normalize: drop))
     #expect(r.settled && r.scans == 1 && box.i == 1)
     #expect(r.items.count == 3)                                   // the observation itself stays raw; the wrapper filters it
+}
+
+@Test func anIStatReorderBetweenScansIsARealDisagreement() async throws {   // gdu.120
+    let s1 = bar([plain("A", x: 100), plain("S1", x: 140), plain("S2", x: 170), plain("B", x: 260)])
+    let s2 = bar([plain("A", x: 100), plain("S2", x: 140), plain("S1", x: 170), plain("B", x: 260)])
+    let (o, box) = obs([s1, s2, s2])
+    let r = try await o.observeDetailed(progress: nil)
+    #expect(r.settled)
+    #expect(box.i == 3)   // s1 vs s2 disagree; s2 vs s2 agree
+    #expect(r.items.filter { $0.key.description.contains("S") }.map(\.item.title).prefix(2) == ["S2", "S1"])
 }

@@ -315,7 +315,7 @@ struct CapsuleView: View {
                 Image(systemName: sym).font(.system(size: 9)).foregroundStyle(.secondary).help(row.placementNote ?? "")
             }
             if let n = row.capabilityNote {
-                Image(systemName: n == ArrangeSections.positionsItselfNote ? "questionmark.circle" : "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
+                Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
             }
             if !row.unitMates.isEmpty {
                 Image(systemName: "link").font(.system(size: 9)).foregroundStyle(.secondary)

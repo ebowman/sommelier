@@ -836,14 +836,22 @@ public struct MenuBarScanner {
                 unknown = true; h = nil
                 why2 = "Control Center's hidden-item list is unreadable (\(why))"
             }
-            let frame = h?.frame ?? c.info.frame
+            // gdu.120: the joined hosted element was only CARRIED (its group timed out, `h.stale`), while the owner's own AX answered in
+            // THIS scan (`c` is a fresh read, not a cache fallback or the fast path's cache): the fresh frame beats the carried one and
+            // the item is not stale. This is how iStat Menus items flipped to stale on every other full scan (the agent forwards its
+            // group reads to the slow owner, so the hosted copy is the one that times out). Only for the slow-owner set (`selfPositioningOwners`: other owners keep
+            // the carried-as-stale rule), and needs a corroborated join so a bare frame overlap can never hand a fresh frame to the wrong element. A FRESH hosted element is always preferred, regardless of owner.
+            let freshOwnerRead = !verifiedOnly && !c.stale && h?.stale == true && ev.corroborated
+                && SelfPositioning.matches(bundleID: c.app.bundleID, name: c.app.name, owners: spOwners) && c.info.frame.width > 1 && onBar(c.info.frame)
+                && !reportNotHosted && !ccHidden && !unknown
+            let frame = freshOwnerRead ? c.info.frame : (h?.frame ?? c.info.frame)
             var built = MenuBarItem(
                 ownerPID: c.app.pid, ownerBundleID: c.app.bundleID, ownerName: c.app.name,
                 title: c.info.title, axDescription: c.info.axDescription,
                 axIdentifier: c.info.identifier, frame: frame,
                 source: .appExtras, isOnMenuBar: onBar(frame) && !reportNotHosted && !ccHidden && !unknown, axElement: c.info.element,
-                stale: h == nil ? (c.stale || carriedCount > 0) : h!.stale,
-                staleCount: h?.staleCount ?? carriedCount,
+                stale: h == nil ? (c.stale || carriedCount > 0) : (freshOwnerRead ? false : h!.stale),
+                staleCount: freshOwnerRead ? 0 : (h?.staleCount ?? carriedCount),
                 notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
                 joinEvidence: h == nil ? .none : ev,
                 hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed)

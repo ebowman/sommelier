@@ -191,19 +191,22 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(ArrangeSections.describe(.liveWriteFailed("readback")).contains("readback"))
     }
 
-    // gdu.33: self-positioning owners are planner anchors, so a layout that lists them "elsewhere" no longer makes the
-    // order depend on a complete read (formerly orderInvolvingSelfPositioningOwnerWaitsForACompleteRead): the iStat item
-    // is never moved, the others are ordered around it.
-    @Test func layoutOrderOfSelfPositioningOwnerIsIgnoredNotWaitedFor() async {
+    // gdu.120 (was layoutOrderOfSelfPositioningOwnerIsIgnoredNotWaitedFor, gdu.33 anchors): iStat is an ordinary orderable item. The
+    // layout [B, A, iStat] is enforced INCLUDING iStat's slot, but a move of iStat waits for a complete read (gdu.51 gate, now also
+    // for the move's subject), then the bar ends in the layout's order.
+    @Test func layoutOrderOfAnIStatItemIsEnforcedOnACompleteRead() async {
         let order = [istat, k("A"), k("B")]
         let layout = Layout.placedAll(visible: [k("B"), k("A"), istat])
         let box = ActuatorBox()
-        let r = await rig(order: order, layout: layout, observer: LevelObserver(box: box, level: .completeExceptSelfPositioning))
+        let obs = MutableLevelObserver(box: box, level: .completeExceptSelfPositioning)
+        let r = await rig(order: order, layout: layout, observer: obs)
         box.actuator = r.actuator
-        _ = await r.engine.reconcileOnce()
-        let final = await r.actuator.order
-        #expect(final.first == istat)
-        #expect(final == [istat, k("B"), k("A")])
+        let first = await r.engine.reconcileOnce()
+        #expect(first.outcome == .unsettled)
+        #expect(await r.actuator.calls.isEmpty)
+        obs.level = .complete
+        for _ in 0..<4 where await r.actuator.order != [k("B"), k("A"), istat] { _ = await r.engine.reconcileOnce() }
+        #expect(await r.actuator.order == [k("B"), k("A"), istat])
     }
 
     // gdu.61: the gdu.51 gate. A move of an ordinary item whose relation target is a self-positioning item waits for a
@@ -228,27 +231,16 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(await r.actuator.order != order)
     }
 
-    // gdu.67: a persisted layout that straddles the self-positioning item is unreachable. The planner still ends [B, A, istat] and
-    // converges; the engine then rewrites the layout to that order, records it once, and the next pass has nothing to normalize.
-    @Test func aStraddlingLayoutIsNormalizedAroundTheSelfPositioningItemOnce() async {
+    // gdu.120 (was aStraddlingLayoutIsNormalizedAroundTheSelfPositioningItemOnce): a layout that straddles the iStat item is just a
+    // layout. The bar is moved to it; the layout is never rewritten around iStat (no normalization exists any more).
+    @Test func aStraddlingLayoutIsEnforcedNotNormalizedAroundIStat() async {
         let order = [k("A"), istat, k("B")]
         let layout = Layout.placedAll(visible: [k("B"), istat, k("A")])
         let r = await rig(order: order, layout: layout)
-        var passes = 0
-        while passes < 4 {
-            passes += 1
-            if await r.engine.reconcileOnce().outcome == .converged, !r.state.lastNormalization.isEmpty || passes > 1 { break }
-        }
-        #expect(await r.actuator.order == [k("B"), k("A"), istat])
-        #expect(r.state.layout.visible == [k("B"), k("A"), istat])
-        #expect((try? r.store.load())?.visible == [k("B"), k("A"), istat])
-        #expect(r.state.lastNormalization == [istat])
-        let revision = r.state.layoutRevision
-        let calls = await r.actuator.calls.count
-        let rep = await r.engine.reconcileOnce()
-        #expect(rep.outcome == .converged)
-        #expect(r.state.layoutRevision == revision)           // not re-triggered
-        #expect(await r.actuator.calls.count == calls)
+        for _ in 0..<5 where await r.actuator.order != layout.visible { _ = await r.engine.reconcileOnce() }
+        #expect(await r.actuator.order == [k("B"), istat, k("A")])
+        #expect(r.state.layout.visible == [k("B"), istat, k("A")])
+        #expect(r.state.lastNormalization.isEmpty)
     }
 
     @Test func aLayoutThatAgreesWithTheBarAroundTheSelfPositioningItemIsNotNormalized() async {
