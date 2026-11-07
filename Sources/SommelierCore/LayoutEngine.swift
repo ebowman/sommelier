@@ -843,7 +843,8 @@ public actor LayoutEngine {
         l.visible = new
         layout = l
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
-        func name(_ k: ItemKey) -> String { itemInfo[k].map(OverflowEntries.displayName) ?? k.description }
+        let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
+                func name(_ k: ItemKey) -> String { itemInfo[k] != nil ? namer.name(k) : k.description }
         // An unread key next to the drop may be the real mover (or the real neighbour): its slot is not trusted, so it is placed when read.
         let nearDrop = Self.unreadNearDrop(old: old, new: new, bar: Self.handDragBar(obs, record: old), unread: unread)
         handDragUnverified.formUnion(nearDrop)
@@ -1338,7 +1339,8 @@ public actor LayoutEngine {
         userPlacedVisible.subtract(moved)
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         _ = await publishLayout(l)
-        let names = moved.map { itemInfo[$0].map(OverflowEntries.displayName) ?? $0.description }
+        let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
+        let names = moved.map { itemInfo[$0] != nil ? namer.name($0) : $0.description }
         systemNoticeSerial += 1
         let serial = systemNoticeSerial
         let text = SystemSettingsNotice.text(names)
@@ -2309,7 +2311,8 @@ public actor LayoutEngine {
             }
             lastAction = action
             do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
-                func name(_ k: ItemKey) -> String { itemInfo[k].map(OverflowEntries.displayName) ?? k.description }
+                let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
+                func name(_ k: ItemKey) -> String { itemInfo[k] != nil ? namer.name(k) : k.description }
                 var target: ItemKey?
                 switch rel { case .before(let t), .after(let t): target = t; default: break }
                 let text = OrderMoveNotice.text(name: name(key), relation: rel, target: target.map(name))
@@ -2414,7 +2417,8 @@ public actor LayoutEngine {
 
     /// Log line and a transient Arrange-window notice for unknown items placed by the new-item policy (no system notification).
     private func noteNewItems(_ items: [NewItem]) async {
-        let named = items.map { n in (name: itemInfo[n.key].map(OverflowEntries.displayName) ?? n.key.description, section: n.section) }
+        let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
+        let named = items.map { n in (name: itemInfo[n.key] != nil ? namer.name(n.key) : n.key.description, section: n.section) }
         guard let text = NewItemNotice.text(named) else { return }
         log(text)
         noticeSerial += 1

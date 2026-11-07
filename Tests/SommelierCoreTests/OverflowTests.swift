@@ -23,14 +23,17 @@ private func info(_ k: ItemKey, desc: String = "", title: String = "", owner: St
         #expect(OverflowEntries.make(layout: l, items: items, includeAlwaysHidden: true).map(\.key) == [a, b])
     }
 
-    @Test func nameFallbackAndTruncation() {
-        #expect(OverflowEntries.displayName(info(a, desc: " D ", title: "T")) == "D")
-        #expect(OverflowEntries.displayName(info(a, desc: "  ", title: "T")) == "T")
-        #expect(OverflowEntries.displayName(info(a)) == "Owner")
+    @Test func soleItemOwnerShowsAppNameNotDescription() {
+        let s = ItemKey.status(ownerKey: "o.k", autosaveName: "i")
+        // 9o9.15: the app name wins for a lone item; the description is only the fallback when the app name is empty.
+        #expect(OverflowEntries.displayName(info(s, desc: " D ", title: "T")) == "Owner")
+        #expect(OverflowEntries.displayName(info(s, desc: " D ", title: "T", owner: " ")) == "D")
+        #expect(OverflowEntries.displayName(info(s, desc: "  ", title: "T", owner: "")) == "T")
+        #expect(OverflowEntries.displayName(info(s)) == "Owner")
         let long = String(repeating: "x", count: 40)
-        let n = OverflowEntries.displayName(info(a, desc: long))
+        let n = OverflowEntries.displayName(info(s, owner: long))
         #expect(n.count == 24 && n.hasSuffix("…"))
-        #expect(OverflowEntries.displayName(info(a, desc: String(repeating: "y", count: 24))).count == 24)
+        #expect(OverflowEntries.displayName(info(s, owner: String(repeating: "y", count: 24))).count == 24)
     }
 
     @Test func widthDefault() {

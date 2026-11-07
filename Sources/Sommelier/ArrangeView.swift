@@ -327,6 +327,7 @@ struct CapsuleView: View {
 
     private var tooltip: String {
         var parts = [row.title]
+        if !row.detail.isEmpty, row.detail != row.title { parts.append(row.detail) }
         if let u = row.unitTooltip { parts.append(u) }
         if row.isGhost { parts.append("Waiting for the menu bar: this is where it is going, not where it is.") }
         if row.notFitting { parts.append(ArrangeBadge.notFitting.tooltip) }

@@ -353,6 +353,11 @@ struct OverflowEntryView: View {
     }
 
     private var helpText: String {
+        let raw = entry.detail.isEmpty || entry.detail == entry.displayName ? "" : "\n" + entry.detail
+        return baseHelpText + raw
+    }
+
+    private var baseHelpText: String {
         if entry.kind == .notFitting { return "Does not fit; macOS moved it into its overflow" }
         if entry.pinnedHidden { return "Kept hidden (always-hidden sibling): " + (together.isEmpty ? entry.displayName : together.joined(separator: ", ")) }
         return together.isEmpty ? entry.displayName : "Hidden together: " + together.joined(separator: ", ")

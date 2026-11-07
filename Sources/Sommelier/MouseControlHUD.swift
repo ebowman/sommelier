@@ -87,8 +87,9 @@ final class MouseControlNoticeDriver {
     private func tick() {
         let enabled = UserDefaults.standard.object(forKey: "showMouseControlNotice") as? Bool ?? true
         let items = state.items
+        let namer = RowNameRule.Namer(layout: state.layout, items: items)
         let name: (ItemKey) -> String = { key in
-            let n = items[key].map(OverflowEntries.displayName) ?? "\(key)"
+            let n = items[key] != nil ? namer.name(key) : "\(key)"
             return n
         }
         switch notice.update(inFlight: state.inFlight, enabled: enabled, displayName: name) {

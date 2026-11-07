@@ -23,8 +23,11 @@ public struct OverflowEntry: Equatable, Sendable {
         case notFitting
     }
     public var kind: Kind
+    /// 9o9.15: the raw description (else title) the app reports, for the tooltip; may differ from `displayName`.
+    public var detail: String = ""
     public init(key: ItemKey, displayName: String, ownerBundleID: String?, ownerPID: pid_t, width: CGFloat, isOnBar: Bool,
-                unit: HideUnit? = nil, unitSize: Int = 1, pinnedHidden: Bool = false, kind: Kind = .hiddenByUs) {
+                unit: HideUnit? = nil, unitSize: Int = 1, pinnedHidden: Bool = false, kind: Kind = .hiddenByUs, detail: String = "") {
+        self.detail = detail
         self.kind = kind
         self.pinnedHidden = pinnedHidden
         self.unit = unit ?? key.hideUnit; self.unitSize = unitSize
@@ -34,17 +37,18 @@ public struct OverflowEntry: Equatable, Sendable {
 }
 
 public enum OverflowEntries {
-    public static let maxNameLength = 24
+    public static let maxNameLength = RowNameRule.maxNameLength
     public static let minWidth: CGFloat = 28
 
     public static func make(layout: Layout, items: [ItemKey: ItemInfo], includeAlwaysHidden: Bool = false, units: HideUnitRule = .ownerKeys) -> [OverflowEntry] {
         let keys = layout.hidden + (includeAlwaysHidden ? layout.alwaysHidden : [])
         var seen = Set<ItemKey>()
         var out: [OverflowEntry] = []
+        let namer = RowNameRule.Namer(layout: layout, items: items)
         for k in keys where seen.insert(k).inserted {
             guard let i = items[k] else { continue }
-            out.append(OverflowEntry(key: k, displayName: displayName(i), ownerBundleID: i.ownerBundleID,
-                                     ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar))
+            out.append(OverflowEntry(key: k, displayName: namer.name(k), ownerBundleID: i.ownerBundleID,
+                                     ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar, detail: namer.detail(k)))
         }
         let pinnedUnits = Set(layout.alwaysHidden.map { units.unit(of: $0) })
         out = out.map { var e = $0; e.pinnedHidden = layout.hidden.contains(e.key) && pinnedUnits.contains(units.unit(of: e.key)); return e }
@@ -53,8 +57,8 @@ public enum OverflowEntries {
         var rest: [OverflowEntry] = []
         for k in layout.visible where !hiddenKeys.contains(k) && seen.insert(k).inserted {
             guard let i = items[k], i.systemOverflow else { continue }
-            rest.append(OverflowEntry(key: k, displayName: displayName(i), ownerBundleID: i.ownerBundleID,
-                                      ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar, kind: .notFitting))
+            rest.append(OverflowEntry(key: k, displayName: namer.name(k), ownerBundleID: i.ownerBundleID,
+                                      ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar, kind: .notFitting, detail: namer.detail(k)))
         }
         return grouped(out, units) + grouped(rest, units)
     }
@@ -72,12 +76,8 @@ public enum OverflowEntries {
         return grouped
     }
 
-    public static func displayName(_ i: ItemInfo) -> String {
-        let candidates = [i.axDescription, i.title, i.ownerName].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let name = candidates.first { !$0.isEmpty } ?? ""
-        if name.count <= maxNameLength { return name }
-        return String(name.prefix(maxNameLength - 1)) + "…"
-    }
+    /// Context-free name of one item (no siblings known): the app name. Callers that know the layout use `RowNameRule.Namer` (9o9.15).
+    public static func displayName(_ i: ItemInfo) -> String { RowNameRule.soleName(i) }
 }
 
 public enum OverflowPlacement {

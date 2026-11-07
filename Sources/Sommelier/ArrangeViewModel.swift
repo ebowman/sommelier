@@ -249,7 +249,7 @@ final class ArrangeViewModel {
 
     /// Item name for refusal texts: the engine's `ItemInfo` when known, else the key.
     private var displayName: (ItemKey) -> String {
-        { [items = state.items] k in items[k].map(OverflowEntries.displayName) ?? "\(k)" }
+        { [namer = RowNameRule.Namer(layout: layout, items: state.items), items = state.items] k in items[k] != nil ? namer.name(k) : "\(k)" }
     }
 
     func canMove(_ key: ItemKey, to section: LayoutSection) -> Bool {

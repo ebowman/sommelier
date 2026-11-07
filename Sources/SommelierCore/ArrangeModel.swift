@@ -150,6 +150,8 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var waitingOn: String? = nil
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
     public var capabilityNote: String?
+    /// 9o9.15: the raw description (else title) the app reports; the tooltip's second line and part of what Filter matches.
+    public var detail: String = ""
     public var id: String { isGhost ? key.description + "#ghost" : key.description }
 
     public var unitTooltip: String? { HideUnitNames.unitNote(mates: unitMates, app: unitApp) }
@@ -328,7 +330,8 @@ public enum ArrangeSections {
             return at(recordDrawn, i - 1) == at(barRecordKeys, j - 1) && at(recordDrawn, i + 1) == at(barRecordKeys, j + 1)
         }
 
-        func title(_ k: ItemKey) -> String { items[k].map(OverflowEntries.displayName) ?? fallbackTitle(k) }
+        let namer = RowNameRule.Namer(layout: layout, items: items)
+        func title(_ k: ItemKey) -> String { namer.name(k) }
         func mates(_ k: ItemKey) -> [String] { layout.allKeys.filter { $0 != k && units.unit(of: $0) == units.unit(of: k) }.map(title) }
 
         func row(_ k: ItemKey, ghost: Bool, running: Bool) -> ArrangeRow {
@@ -348,6 +351,7 @@ public enum ArrangeSections {
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
                               unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? nil : cap.reason)
             r.staleFrame = stale
+            r.detail = namer.detail(k)
             if b == .moving, !ghost { r.moveReason = moveReasons[k] }
             return r
         }
@@ -470,7 +474,7 @@ public enum ArrangeSections {
         let f = filter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !f.isEmpty {
             func keep(_ r: ArrangeRow) -> Bool {
-                r.title.lowercased().contains(f) || r.ownerName.lowercased().contains(f) || (r.ownerBundleID?.lowercased().contains(f) ?? false)
+                r.title.lowercased().contains(f) || r.detail.lowercased().contains(f) || r.ownerName.lowercased().contains(f) || (r.ownerBundleID?.lowercased().contains(f) ?? false)
             }
             for s in LayoutSection.allCases {
                 var st = out.strip(s)
