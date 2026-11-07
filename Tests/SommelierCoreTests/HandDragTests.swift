@@ -635,8 +635,118 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         await twoMoves({ a in await a.displace(k("B"), toIndex: 4); await a.displace(k("D"), toIndex: 0) }, bar: ["D", "A", "C", "E", "B"], cSlot: 2)
     }
 
+    /// 9o9.26: the same two-move drags with C (ambiguous) misread at ANY slot: nothing planned while C is ambiguous, the user's bar is the record after a clean read.
+    private func twoMovesMisread(_ build: @escaping @Sendable (FakeActuator) async -> Void, bar: [String], cSlot: Int) async {
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .ambiguous([k("C"): cSlot])
+        r.drags.fire(.began)
+        await build(r.actuator)
+        r.drags.fire(.ended)
+        #expect(await waitUntil { await r.layoutVisible() != names.map(k) })
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.actuator.order == bar.map(k), "slot \(cSlot)")
+        #expect(await noMoves(r), "slot \(cSlot)")
+        r.observer.mode = .good
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return await r.layoutVisible() == bar.map(k) }, "slot \(cSlot)")
+        for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.layoutVisible() == bar.map(k), "slot \(cSlot)")
+        #expect(await noMoves(r), "slot \(cSlot)")
+        #expect(await r.state.unverifiedAfterHandDrag.isEmpty, "slot \(cSlot)")
+    }
+
+    @Test func theSwapWithTheAmbiguousKeyMisreadAtEverySlotPlansNothingAndEndsCorrect() async {
+        for slot in 0..<5 {
+            await twoMovesMisread({ a in await a.displace(k("D"), toIndex: 1); await a.displace(k("B"), toIndex: 3) }, bar: ["A", "D", "C", "B", "E"], cSlot: slot)
+        }
+    }
+
+    @Test func theDACEBShapeWithTheAmbiguousKeyMisreadAtEverySlotPlansNothingAndEndsCorrect() async {
+        for slot in 0..<5 {
+            await twoMovesMisread({ a in await a.displace(k("B"), toIndex: 4); await a.displace(k("D"), toIndex: 0) }, bar: ["D", "A", "C", "E", "B"], cSlot: slot)
+        }
+    }
+
+    // MARK: 9o9.26 an Arrange drop during the adoption wait
+
+    private func movesOf(_ r: R, _ key: String) async -> Int {
+        await r.actuator.calls.filter { if case .move(let kk, _) = $0 { return kk == k(key) }; return false }.count
+    }
+
+    /// A is dragged by hand to the end (B C D E A) but the read stays unsettled; `drop` is made in Arrange meanwhile; then the bar reads clean.
+    private func dropDuringTheWait(_ drop: [String], moved: String) async -> R {
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .unsettled
+        r.drags.fire(.began)
+        await r.actuator.displace(k("A"), toIndex: 4)
+        r.drags.fire(.ended)
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.setLayout(Layout(visible: drop.map(k)), userPlacement: true, moved: [k(moved)])
+        r.observer.mode = .good
+        return r
+    }
+
+    @Test func anArrangeDropDuringTheWaitIsReappliedOnTopOfTheAdoptedHandDrag() async {
+        let r = await dropDuringTheWait(["E", "A", "B", "C", "D"], moved: "E")      // E to the front
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return r.sink.lines.contains { $0.contains("re-applied your Arrange drop of") } })
+        // the record holds the hand drag (A last) AND the drop (E first)
+        #expect(await r.layoutVisible() == ["E", "B", "C", "D", "A"].map(k))
+        #expect(r.sink.lines.contains { $0.hasPrefix("layout: re-applied your Arrange drop of ") && $0.hasSuffix(" after the menu bar drag was adopted") })
+        for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.layoutVisible() == ["E", "B", "C", "D", "A"].map(k))
+        #expect(await movesOf(r, "A") == 0)                                          // the hand-dragged key is never moved back
+        #expect(await r.actuator.order == ["E", "B", "C", "D", "A"].map(k))          // the drop is carried out
+    }
+
+    @Test func anArrangeDropOfTheKeyTheUserDraggedByHandWins() async {
+        let r = await dropDuringTheWait(["B", "A", "C", "D", "E"], moved: "A")      // A dropped after B, later than its hand drag to the end
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return r.sink.lines.contains { $0.contains("re-applied your Arrange drop of") } })
+        #expect(await r.layoutVisible() == ["B", "A", "C", "D", "E"].map(k))
+        for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.layoutVisible() == ["B", "A", "C", "D", "E"].map(k))
+        #expect(await r.actuator.order == ["B", "A", "C", "D", "E"].map(k))
+    }
+
+    @Test func aDropDuringTheWaitWithNoHandDragChangeKeepsTheDropWithoutClaimingADrag() async {
+        let clock = Clock()
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+        r.observer.mode = .unsettled
+        r.drags.fire(.began); r.drags.fire(.ended)
+        _ = await r.engine.reconcileOnce()
+        _ = await r.engine.setLayout(Layout(visible: ["B", "A", "C", "D", "E"].map(k)), userPlacement: true, moved: [k("B")])
+        r.observer.mode = .good
+        for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.layoutVisible() == ["B", "A", "C", "D", "E"].map(k))
+        #expect(!r.sink.lines.contains { $0.contains("adopted your menu bar drag") })
+        #expect(await r.actuator.order == ["B", "A", "C", "D", "E"].map(k))
+    }
+
     @Test func theSwapVariantOfTwoMovesLikewise() async {
         await twoMoves({ a in await a.displace(k("D"), toIndex: 1); await a.displace(k("B"), toIndex: 3) }, bar: ["A", "D", "C", "B", "E"], cSlot: 2)
+    }
+
+    /// 9o9.26: swap A D C B E with C ambiguous; during the wait the user drops C (the held-back key) to the front in Arrange: the drop is kept.
+    @Test func aDropOfTheHeldBackKeyDuringTheWaitIsKeptAfterTheCleanRead() async {
+        for slot in 0..<5 {
+            let clock = Clock()
+            let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+            r.observer.mode = .unsettled
+            r.drags.fire(.began)
+            await r.actuator.displace(k("D"), toIndex: 1); await r.actuator.displace(k("B"), toIndex: 3)
+            r.drags.fire(.ended)
+            _ = await r.engine.reconcileOnce()
+            _ = await r.engine.setLayout(Layout(visible: ["C", "A", "B", "D", "E"].map(k)), userPlacement: true, moved: [k("C")])
+            r.observer.mode = .ambiguous([k("C"): slot])
+            #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return r.sink.lines.contains { $0.contains("re-applied your Arrange drop of") } }, "slot \(slot)")
+            let want = ["C", "A", "D", "B", "E"].map(k)
+            #expect(await r.layoutVisible() == want, "slot \(slot)")
+            r.observer.mode = .good
+            for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
+            #expect(await r.layoutVisible() == want, "slot \(slot)")
+            #expect(await r.actuator.order == want, "slot \(slot)")
+            #expect(await r.state.unverifiedAfterHandDrag.isEmpty, "slot \(slot)")
+        }
     }
 
     @Test func anArrangeDropNextToAnUnverifiedKeyDoesNotClearIt() async {
