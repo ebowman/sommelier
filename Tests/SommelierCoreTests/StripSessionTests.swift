@@ -24,6 +24,10 @@ private final class StripWorld: ActuatorPlatform, @unchecked Sendable {
     var pressedClicks = 0
     var afterDrag: (() -> Void)?            // runs once after a drag is posted (the world changing under the actuator)
     var frameOverride: [String: CGRect] = [:]
+    var windowGrowth = false                // 9o9.19: the owner's AX window count grows around a drag (the strip overlay appearing)
+    var otherAppMenu = false                // 9o9.19: a pop-up window of ANOTHER app is on screen
+    var probes = 0
+    var escapes = 0
 
     init(pile: [String], drawn: [String]) { all = pile + [chev] + drawn }
 
@@ -72,8 +76,9 @@ private final class StripWorld: ActuatorPlatform, @unchecked Sendable {
         if let h = afterDrag { afterDrag = nil; h() }
         return clock
     }
-    func menuProbe(for item: MenuBarItem) -> MenuProbe { MenuProbe(hasMenu: false, windowCount: 0) }
-    func pressEscape() {}
+    func menuProbe(for item: MenuBarItem) -> MenuProbe { probes += 1; return MenuProbe(hasMenu: false, windowCount: windowGrowth ? probes : 0) }
+    func menuOpenByAnotherApp() -> Bool { otherAppMenu }
+    func pressEscape() { escapes += 1 }
     func readOrderStore() throws -> [String: Double] { [:] }
     func writeOrderStore(_ updates: [String: Double], allowModules: Bool) throws {}
     func waitForOrderStoreQuiet() async {}
@@ -255,4 +260,144 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
     #expect(why.contains("not trustworthy"))
     #expect(!w.events.contains("drag"))
+}
+
+
+// MARK: 9o9.19: the fold rule verifies a crossing; the expanded strip is not a menu; a re-plan never aims at the chevron
+
+private func actuator(_ w: StripWorld, record: [String]) async -> LiveActuator {
+    let a = actuator(w, fallback: false)
+    await a.setRecordOrder(record.map(key))
+    return a
+}
+
+/// The live 17:41 shape: Jump (in the pile) goes after KYA (first drawn); macOS re-folds by width and KYA falls into the pile.
+private func refoldWorld() -> StripWorld {
+    let w = StripWorld(pile: ["Jump"], drawn: ["KYA", "B"])
+    w.afterDrag = { w.all = ["KYA", chev, "Jump", "B"] }
+    return w
+}
+
+@Test func aCrossingWhoseTargetRefoldsIntoThePileIsVerifiedByTheFoldRuleAfterTheStripCloses() async {
+    let w = refoldWorld()
+    let a = await actuator(w, record: ["KYA", "Jump", "B"])
+    let r = await a.move(key("Jump"), relation: .after(key("KYA")))
+    #expect(r.isVerified)
+    #expect(w.events == ["open", "drag", "close"])   // one session, one drag, no second attempt
+    #expect(!w.expanded)
+    let trace = await a.trace
+    #expect(trace.contains { $0.contains("fold rule:") && $0.contains("verified on the settled read after the strip closed") })
+    #expect(!trace.contains { $0.contains("drop refused") })
+}
+
+@Test func theFoldRuleReadIsTakenOnTheOpenStripWhenTheUserHadItOpen() async {
+    let w = refoldWorld()
+    w.expanded = true
+    let a = await actuator(w, record: ["KYA", "Jump", "B"])
+    let r = await a.move(key("Jump"), relation: .after(key("KYA")))
+    #expect(r.isVerified)
+    #expect(w.events == ["drag"] && w.expanded)       // left open, nothing clicked
+}
+
+@Test func theFoldRuleIsNotSatisfiedByASubjectLeftBehindTheChevron() async {
+    // The drag did nothing: Jump stays in the pile, so the rule cannot verify it.
+    let w = StripWorld(pile: ["Jump"], drawn: ["KYA", "B"])
+    w.dragScript = [false, false]
+    let r = await actuator(w, record: ["KYA", "Jump", "B"]).move(key("Jump"), relation: .after(key("KYA")))
+    #expect(!r.isVerified)
+    #expect(w.events.filter { $0 == "open" }.count == 1 && w.events.filter { $0 == "close" }.count == 1)
+}
+
+@Test func aReplanWithTheTargetInThePileAimsAtTheNearestDrawnKeyLeftOfTheSubjectInTheRecordNeverTheChevron() async {
+    let w = StripWorld(pile: ["Jump"], drawn: ["KYA", "K2"])
+    w.afterDrag = { w.all = ["KYA", chev, "Jump", "K2"] }   // the target re-folded; K2 (record-left of Jump) is drawn right of it
+    let a = await actuator(w, record: ["K2", "KYA", "Jump"])
+    let r = await a.move(key("Jump"), relation: .after(key("KYA")))
+    let chevronFrame = w.frames().first { $0.name == chev }!.frame
+    #expect(w.dragTargets.count == 2)
+    #expect(w.dragTargets.allSatisfy { !chevronFrame.insetBy(dx: -2, dy: 0).contains(CGPoint(x: $0, y: chevronFrame.midY)) })
+    let trace = await a.trace
+    #expect(trace.contains { $0.contains("aiming after") && $0.contains("K2") })
+    #expect(!trace.contains { $0.contains("drop refused") })
+    #expect(r.isVerified)
+    #expect(w.events.filter { $0 == "open" }.count == 1 && w.events.last == "close")
+}
+
+@Test func aReplanWithNoDrawnKeyToStandInEndsHonestlyWithoutAnotherDrag() async {
+    let w = StripWorld(pile: ["Jump"], drawn: ["KYA", "X"])
+    w.afterDrag = { w.all = ["KYA", chev, "X", "Jump"] }   // X belongs right of Jump but is drawn left of it: the rule fails
+    let a = await actuator(w, record: ["KYA", "Jump", "X"])
+    let r = await a.move(key("Jump"), relation: .after(key("KYA")))
+    #expect(!r.isVerified)
+    #expect(w.dragTargets.count == 1)
+    #expect(w.events == ["open", "drag", "close"])
+    #expect((await a.trace).contains { $0.contains("no drawn trusted key left of") })
+}
+
+@Test func theExpandedStripOverlayIsNeverAMenuInsideASession() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.windowGrowth = true            // the owner's window count grows around the drag: the strip overlay, not a menu
+    let a = actuator(w)
+    let r = await a.move(key("X2"), relation: .after(key("A")))
+    #expect(r.isVerified)
+    #expect(w.escapes == 0)
+    let trace = await a.trace
+    #expect(!trace.contains { $0.contains("menu opened") })
+    #expect(trace.contains { $0.contains("not a menu; ignored") })
+}
+
+@Test func aPopUpOfAnotherAppInsideASessionIsStillAMenu() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.windowGrowth = true
+    w.otherAppMenu = true
+    let a = actuator(w)
+    _ = await a.move(key("X2"), relation: .after(key("A")))
+    #expect(w.escapes >= 1)
+    #expect((await a.trace).contains { $0.contains("menu opened; Escape") })
+}
+
+@Test func aStripTheUserOpenedIsNeverAMenuEither() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.expanded = true
+    w.windowGrowth = true
+    let a = actuator(w)
+    let r = await a.move(key("X2"), relation: .after(key("A")))
+    #expect(r.isVerified)
+    #expect(w.events == ["drag"] && w.escapes == 0)
+    #expect(!(await a.trace).contains { $0.contains("menu opened") })
+}
+
+@Test func aPopUpOfAnotherAppWithTheUsersStripOpenIsStillAMenu() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.expanded = true
+    w.windowGrowth = true
+    w.otherAppMenu = true
+    let a = actuator(w)
+    _ = await a.move(key("X2"), relation: .after(key("A")))
+    #expect(w.escapes >= 1)
+    #expect((await a.trace).contains { $0.contains("menu opened; Escape") })
+}
+
+@Test func theOrderStoreFallbackNeverRunsWithTheUsersStripOpen() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.expanded = true
+    w.dragScript = [false, false, false, false]
+    let a = actuator(w, fallback: true)
+    let r = await a.move(key("X2"), relation: .after(key("A")))
+    #expect(!r.isVerified)
+    #expect(!(await a.trace).contains { $0.contains("fallback: order store") })
+}
+
+@Test func theFoldVerdictRule() {
+    func r(_ n: String, _ x: CGFloat, chevron: Bool = false) -> ResolvedItem {
+        let i = MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: n, title: "", axDescription: "", axIdentifier: n,
+                            frame: CGRect(x: x, y: 0, width: 20, height: 24), source: .appExtras, isOnMenuBar: true, isOverflowChevron: chevron, joinEvidence: .identifier)
+        return ResolvedItem(item: i, key: chevron ? .module(name: MenuBarItem.overflowChevronName) : key(n), confidence: .exact)
+    }
+    let read = [r("P", 100), r(chev, 120, chevron: true), r("S", 150), r("D", 180)]
+    #expect(ActuationVerifier.foldVerdict(subject: key("S"), record: ["P", "S", "D"].map(key), resolved: read).ok)
+    #expect(!ActuationVerifier.foldVerdict(subject: key("S"), record: ["D", "S"].map(key), resolved: read).ok)   // D belongs left, is drawn right
+    #expect(!ActuationVerifier.foldVerdict(subject: key("P"), record: ["P", "S"].map(key), resolved: read).ok)   // subject behind the chevron
+    #expect(!ActuationVerifier.foldVerdict(subject: key("S"), record: ["S", "P"].map(key), resolved: read).ok)   // P belongs right, is in the pile
+    #expect(ActuationVerifier.foldVerdict(subject: key("S"), record: ["Gone", "S", "D"].map(key), resolved: read).ok)   // off-bar keys are ignored
 }

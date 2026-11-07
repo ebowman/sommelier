@@ -241,6 +241,29 @@ struct FullBarChurnEngineTests {
         #expect(moves(await r.actuator.calls).isEmpty)
     }
 
+    /// 9o9.19: a crossing that makes macOS re-fold (the relation target D1 falls into the pile) is verified, not struck, and the tracker reports applied.
+    @Test func aCrossingWhoseTargetRefoldsIntoThePileIsNotStruckAndTheTrackerReportsApplied() async {
+        let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
+        // P3 belongs after D1: pull it out; the fixed three-key pile then re-folds D1 behind the chevron.
+        let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("D1"), k("P3"), k("D2"), k("D3"), k("D4")])
+        let r = await chevRig(order: order, layout: layout)
+        for _ in 0..<5 { _ = await r.engine.reconcileOnce() }
+        let ms = moves(await r.actuator.calls)
+        #expect(ms == [.move(k("P3"), .after(k("D1")))])
+        #expect(await r.actuator.recordOrder.filter { $0 != chevKey } == layout.visible)   // the record order, as the engine holds it
+        #expect(!r.lines.has("planned again"))
+        #expect(!r.lines.has("struck"))
+        let after = await r.actuator.order
+        let pile: Set<ItemKey> = Set(after.prefix(3))
+        #expect(pile.contains(k("D1")))   // the target really did re-fold
+        let observed = ObservedOrder(onBar: after + [chevKey], parked: [], systemOverflow: pile, overflowChevron: chevKey)
+        var t = ArrangeTracker()
+        let now = Date()
+        t.record([k("P3")], passesStarted: 1, now: now, awaitingStamp: false, dropID: 9, intent: DropIntent(key: k("P3"), left: k("D1"), right: k("D2")))
+        _ = t.update(observed: observed, layout: layout, perItem: [k("P3"): .inPlace], passSequence: 1, showHiddenSection: false, now: now)
+        #expect(t.timedOut.isEmpty)
+    }
+
     @Test func anOrdinaryOrderPassOnABarWithoutAChevronIsUnchanged() async {
         let order = [k("A"), k("B"), k("C")]
         let r = await chevRig(order: order, layout: Layout.placedAll(visible: [k("C"), k("B"), k("A")]), chevron: false)

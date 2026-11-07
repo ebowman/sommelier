@@ -75,6 +75,9 @@ public protocol ActuatorPlatform: SnapshotScanning {
     /// 9o9.12: the same user-interaction gate the engine uses (`InteractionSource.blockingReason`): a menu is open, the mouse button is
     /// down, a modifier is held, the screen is locked, the display is asleep. nil = nothing in the way. Asked BEFORE the strip is opened.
     func interactionBlockingReason() -> String?
+    /// 9o9.19: true when a pop-up-menu-layer window owned by an app OTHER than Sommelier and MenuBarAgent is on screen. Inside a strip
+    /// session the expanded strip overlay (MenuBarAgent's) is never a menu: "menu opened" is concluded only when this says true.
+    func menuOpenByAnotherApp() -> Bool
 }
 
 public struct AssumedHiddenOwner: Equatable, Sendable {
@@ -101,6 +104,7 @@ extension ActuatorPlatform {
     public func overflowProbe() async -> OverflowProbe? { nil }
     public func clickChevron(at point: CGPoint) -> Bool { false }
     public func interactionBlockingReason() -> String? { nil }
+    public func menuOpenByAnotherApp() -> Bool { true }   // unknown: trust the per-item probe
 }
 
 private final class ScannerBox: @unchecked Sendable { let v: MenuBarScanner; init(_ v: MenuBarScanner) { self.v = v } }
@@ -360,6 +364,10 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
 
     public func clickChevron(at point: CGPoint) -> Bool { SyntheticClick.post(at: point, button: .left) }
     public func interactionBlockingReason() -> String? { LiveInteractionSource().blockingReason() }
+    public func menuOpenByAnotherApp() -> Bool {
+        let agents = Set(NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).map { Int($0.processIdentifier) })
+        return LiveInteractionSource.menuOpen(excludingPIDs: agents)
+    }
 
     /// Chevron + hosted frames from top-level agent reads (gdu.65); nil when unreadable.
     public func overflowProbe() -> OverflowProbe? {

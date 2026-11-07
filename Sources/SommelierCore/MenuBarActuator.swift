@@ -73,10 +73,15 @@ public protocol MenuBarActuator: Sendable {
     /// subject or relation anchor is in it is not dragged on the collapsed bar (9o9.12: it is performed inside a strip session, like
     /// a move across the fold).
     func setChurnZone(_ keys: Set<ItemKey>) async
+    /// 9o9.19: the Visible record's full order (`Layout.visible`), handed over right before a move like the churn zone. A crossing is
+    /// verified by the fold rule against it (the fold is a prefix of the record) instead of adjacency to a target that may re-fold
+    /// into the pile. Empty = unknown: adjacency only.
+    func setRecordOrder(_ keys: [ItemKey]) async
 }
 
 public extension MenuBarActuator {
     func setChurnZone(_ keys: Set<ItemKey>) async {}
+    func setRecordOrder(_ keys: [ItemKey]) async {}
     /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.
     var lastBatchRespawned: Bool { get async { false } }
     var lastBatchUnconfirmed: Set<ItemKey> { get async { [] } }

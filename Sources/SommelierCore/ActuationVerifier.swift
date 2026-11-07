@@ -95,6 +95,43 @@ public enum ActuationVerifier {
         return Verdict(ok: ok, expected: expected, observed: ok ? expected : position(of: subject, in: order))
     }
 
+    /// 9o9.19: the keys behind the chevron on this read: the scanner/actuator overflow set plus every other on-bar item that stands left of
+    /// a fresh chevron (an open strip draws the pile left of its chevron too). Empty without a fresh chevron.
+    public static func foldPile(_ resolved: [ResolvedItem]) -> Set<ItemKey> {
+        var pile = overflowed(resolved)
+        if let ch = resolved.first(where: { ($0.item.isOverflowChevron || $0.key == overflowChevron) && !$0.item.stale && onBar($0) }) {
+            for r in barOrder(resolved) where r.key != ch.key && !r.item.isOverflowChevron && r.item.frame.midX < ch.item.frame.minX { pile.insert(r.key) }
+        } else {
+            pile = []   // no fresh chevron: nothing is folded
+        }
+        return pile
+    }
+
+    /// 9o9.19: the 9o9.11 convergence rule for ONE subject on a settled read: the subject is drawn (on the bar, fresh, not behind the
+    /// chevron), every on-bar record key left of it is behind the chevron or drawn left of it, and no on-bar record key right of it is
+    /// behind the chevron or drawn left of it (the fold is a prefix of the record). Keys off the bar and the chevron are ignored.
+    public static func foldVerdict(subject: ItemKey, record: [ItemKey], resolved: [ResolvedItem]) -> Verdict {
+        let expected = "\(subject) drawn with the fold a prefix of the record"
+        func fail(_ why: String) -> Verdict { Verdict(ok: false, expected: expected, observed: why) }
+        guard let i = record.firstIndex(of: subject) else { return fail("\(subject) is not in the record") }
+        guard let me = resolved.first(where: { $0.key == subject }), onBar(me) else { return fail("item is not on the bar") }
+        if me.item.stale { return fail("item read is stale (cached frame)") }
+        if uncorroborated(me) { return fail("item identity is heuristic without an AX identifier; cannot confirm") }
+        let pile = foldPile(resolved)
+        if pile.contains(subject) { return fail("\(subject) is behind the chevron") }
+        let byKey = Dictionary(resolved.filter { onBar($0) && !$0.item.isOverflowChevron }.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        for (j, k) in record.enumerated() where j != i {
+            guard let r = byKey[k], k != overflowChevron else { continue }
+            let leftOfMe = r.item.frame.midX < me.item.frame.midX
+            if j < i {
+                if !pile.contains(k) && !leftOfMe { return fail("\(k) belongs left of \(subject) but is drawn right of it") }
+            } else if pile.contains(k) || leftOfMe {
+                return fail("\(k) belongs right of \(subject) but is \(pile.contains(k) ? "behind the chevron" : "drawn left of it")")
+            }
+        }
+        return Verdict(ok: true, expected: expected, observed: expected)
+    }
+
     /// gdu.111: `barFull` (a fresh overflow chevron is on the final scan) + `confirmedShown` (Control Center's readback confirmed
     /// isAllowed == true for this show) make "absent / not drawn on the bar" satisfied: macOS keeps the item behind its chevron.
     public static func visibilityVerdict(key: ItemKey, hidden: Bool, resolved: [ResolvedItem],

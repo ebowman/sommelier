@@ -585,6 +585,22 @@ Sequence in `LiveActuator.stripMove`:
    neighbour, inside one a strip that closed under us, is refused with `.mechanismFailed`; the session's close path still runs).
 4. Close on EVERY exit after our own open (plain sequential flow, no early return between open and close). A close that fails keeps the
    move's result and adds the trace note `overflowStripStillExpanded` (`overflowStripStateUnknown` when the probe is unreadable).
+Verification inside a session (9o9.19; live 2026-11-07 17:41, Jump Desktop Connect after KeepingYouAwake):
+- The expanded strip overlay belongs to MenuBarAgent and is never a menu. In a session (or with the user's strip open) the per-item window
+  growth that would read "menu opened" counts only when `ActuatorPlatform.menuOpenByAnotherApp()` agrees: a pop-up-layer window owned by an
+  app other than Sommelier and MenuBarAgent (`LiveInteractionSource.menuOpen(excludingPIDs:)`).
+  The order-store fallback (and its agent restart) never runs while the strip is expanded, ours or the user's.
+- A crossing makes macOS re-fold by width, so the relation target can fall into the pile, where stacked frames carry no order and adjacency
+  ("Jump after KYA") cannot be verified. The engine hands the actuator the record order before each move (`setRecordOrder(layout.visible)`,
+  like `setChurnZone`). When adjacency fails on a settled read and the before/after target is behind the chevron (`ActuationVerifier.foldPile`:
+  the overflow set plus whatever stands left of a fresh chevron), `ActuationVerifier.foldVerdict` applies the 9o9.11 rule to the subject:
+  drawn, every on-bar record key left of it behind the chevron or drawn left of it, none right of it behind the chevron or drawn left of it
+  (off-bar keys and the chevron ignored). Satisfied inside OUR session: `moveCore` only sets `foldCandidate` and `stripMove` takes the verdict
+  from a settled read AFTER the strip closed (`.verified`, no strike; the engine's convergence rule then agrees); a strip the user had open is
+  judged on the expanded read at once.
+- A re-plan inside a session re-checks that rule first. If it is not satisfied and the target is in the pile, the new target is the nearest
+  key left of the subject in the record that is drawn, fresh and passes `frameTrustworthy` (`.after(k)`); none: `.failed(.notVerified)`
+  ("no drawn key to aim at"), no further drag. A drop on the chevron is still refused. Still one session per move and one order move per pass.
 Trace lines `phase strip: open t=<ms>` / `phase strip: closed t=<ms>`. One session per `move` call and one order move per pass, so the
 session counts as one move for the per-minute cap. The result's snapshot is the expanded one; `LayoutEngine.adopt` never adopts a
 `stripExpanded` snapshot directly (the strip is closed again by then) and observes afresh, so the next pass sees the stacked

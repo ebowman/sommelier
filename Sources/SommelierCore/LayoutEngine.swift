@@ -2237,6 +2237,7 @@ public actor LayoutEngine {
             log("engine: move subject evidence: \(evidence[key] ?? "none")")   // gdu.94
             await setStatus(key, .moving, inFlight: action)
             await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
+            await actuator.setRecordOrder(layout.visible)   // 9o9.19: a crossing is verified by the fold rule against the record
             let result = await actuator.move(key, relation: rel)
             flightBox.end()
             actionCount += 1

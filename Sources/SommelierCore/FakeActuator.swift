@@ -28,6 +28,9 @@ public actor FakeActuator: MenuBarActuator {
     /// The churn zone the engine last handed over (`setChurnZone`).
     public private(set) var churnZone: Set<ItemKey> = []
     public func setChurnZone(_ keys: Set<ItemKey>) async { churnZone = keys }
+    /// The record order the engine last handed over (`setRecordOrder`, 9o9.19).
+    public private(set) var recordOrder: [ItemKey] = []
+    public func setRecordOrder(_ keys: [ItemKey]) async { recordOrder = keys }
     private var scripted: [Int: ActuationError] = [:]
     private var drift: [Int: (String, String)] = [:]
     private let capabilities: any CapabilityProvider

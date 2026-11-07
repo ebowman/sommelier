@@ -46,13 +46,14 @@ public struct LiveInteractionSource: InteractionSource {
 
     /// A pop-up menu (any other app's, including a status item's) is an on-screen window at the pop-up-menu level that is
     /// menu-sized (height >= 20, width >= 40), visible (alpha > 0) and not one of Sommelier's own windows.
-    static func menuOpen() -> Bool {
+    static func menuOpen(excludingPIDs: Set<Int> = []) -> Bool {
         let level = Int(CGWindowLevelForKey(.popUpMenuWindow))
         let me = Int(ProcessInfo.processInfo.processIdentifier)
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
         return list.contains { w in
             guard (w[kCGWindowLayer as String] as? Int) == level else { return false }
             if (w[kCGWindowOwnerPID as String] as? Int) == me { return false }
+            if let o = w[kCGWindowOwnerPID as String] as? Int, excludingPIDs.contains(o) { return false }   // 9o9.19: the expanded strip is MenuBarAgent's
             if let a = w[kCGWindowAlpha as String] as? Double, a <= 0 { return false }
             guard let b = w[kCGWindowBounds as String] as? [String: Any],
                   let h = b["Height"] as? Double, let wd = b["Width"] as? Double else { return false }

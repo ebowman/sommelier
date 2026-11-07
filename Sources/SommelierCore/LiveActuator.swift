@@ -273,6 +273,12 @@ public actor LiveActuator: MenuBarActuator {
 
     private var churnZone: Set<ItemKey> = []
     public func setChurnZone(_ keys: Set<ItemKey>) async { churnZone = keys }
+    /// 9o9.19: the Visible record's order for the fold rule (see `MenuBarActuator.setRecordOrder`).
+    private var recordOrder: [ItemKey] = []
+    public func setRecordOrder(_ keys: [ItemKey]) async { recordOrder = keys }
+    /// 9o9.19: set by `moveCore` inside a session WE opened when the expanded read already satisfies the fold rule: the verdict waits
+    /// for a settled read taken after the strip closes (`stripMove`).
+    private var foldCandidate = false
 
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         await acquire(); defer { release() }
@@ -281,6 +287,7 @@ public actor LiveActuator: MenuBarActuator {
 
     private func performMove(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         trace = []
+        foldCandidate = false
         if let f = globalPrecheck() { return f }
         let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback)
         if let early { return early }
@@ -297,7 +304,9 @@ public actor LiveActuator: MenuBarActuator {
 
     /// The satisfied-check, the drag attempts with their verification, and (outside a strip session) the order-store fallback.
     /// `avoid`: a frame no drop may land on (the chevron, inside a strip session). `inStrip`: the strip is open around this call.
-    private func moveCore(_ key: ItemKey, _ relation: Relation, plan startPlan: Plan, avoid: CGRect?, inStrip: Bool) async -> ActuationResult {
+    /// `ours`: the strip session was opened by us (so it closes after this call and the fold-rule verdict is taken on the closed bar).
+    private func moveCore(_ key: ItemKey, _ relation: Relation, plan startPlan: Plan, avoid: CGRect?, inStrip: Bool, ours: Bool = false) async -> ActuationResult {
+        var relation = relation   // 9o9.19: a re-plan may replace a relation target that re-folded into the pile
         var plan = startPlan
         if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
             // gdu.26: prepare() took ONE full scan; `.verified` needs the settle rule (two agreeing scans), so confirm first.
@@ -340,7 +349,12 @@ public actor LiveActuator: MenuBarActuator {
                 catch DragError.userBusy { return .failed(.userBusy, lastSnapshot) }
                 catch { return .failed(.mechanismFailed("could not post mouse events: \(error)"), lastSnapshot) }
                 let probeAfter = platform.menuProbe(for: plan.subject.item)
-                let opened = probeAfter.hasMenu || probeAfter.windowCount > probeBefore.windowCount
+                var opened = probeAfter.hasMenu || probeAfter.windowCount > probeBefore.windowCount
+                if opened, inStrip || plan.snapshot.stripExpanded, !platform.menuOpenByAnotherApp() {
+                    // 9o9.19: the expanded strip overlay belongs to MenuBarAgent; it is not a menu. Only another app's pop-up counts.
+                    note("attempt \(attempt): the window change is the expanded « strip (MenuBarAgent), not a menu; ignored")
+                    opened = false
+                }
                 menuOpenedLast = opened
                 if opened {
                     note("attempt \(attempt): menu opened; Escape")
@@ -362,12 +376,47 @@ public actor LiveActuator: MenuBarActuator {
                 else if obs.verdict.ok || !obs.settled { lastError = .timeout }
                 else { lastError = obs.verdict.error! }
                 note("attempt \(attempt): \(lastError)")
+                // 9o9.19: macOS re-folds by width after a cross-fold drag, so the relation target may now be in the pile (stacked frames
+                // carry no order). Frame adjacency is then unverifiable: judge by the fold rule instead.
+                if inStrip || obs.snapshot.stripExpanded, obs.settled, let done = foldSettled(key, relation, resolved: obs.resolved, snapshot: obs.snapshot, ours: ours, fallback: lastError) { return done }
                 if attempt == 1 || config.allowFallback {
                     // Re-plan from the latest scan; the item may have vanished meanwhile.
                     let (p, e) = await prepare(key, relation, from: obs.snapshot)
                     if let e { return e }
                     plan = p!
                     if let r = foldRefusal(key, relation, plan: plan, inStrip: inStrip) { return r }
+                    if inStrip || plan.snapshot.stripExpanded {   // our session, or a strip the user had open: every frame is real
+                        if let done = foldSettled(key, relation, resolved: plan.resolved, snapshot: plan.snapshot, ours: ours, fallback: lastError) { return done }
+                        // The target is in the pile and the rule is not satisfied: aim at the nearest drawn trusted key left of the subject in the
+                        // record, or end honestly. Never at the chevron.
+                        switch relation {
+                        case .before(let t), .after(let t):
+                            let pile = ActuationVerifier.foldPile(plan.resolved)
+                            if !recordOrder.isEmpty, let i = recordOrder.firstIndex(of: key), pile.contains(t) {
+                                let stand = recordOrder[..<i].reversed().first { k in
+                                    guard let r = plan.resolved.first(where: { $0.key == k }), ActuationVerifier.onBar(r), !r.item.isOverflowChevron,
+                                          !r.item.stale, !pile.contains(k), !ActuationVerifier.uncorroborated(r) else { return false }
+                                    return Self.frameTrustworthy(subject: r, among: plan.resolved) == nil
+                                }
+                                guard let stand else {
+                                    note("re-plan: \(t) is behind the « chevron and no drawn trusted key left of \(key) in the record can stand in; ending")
+                                    return .failed(.notVerified(expected: "\(key) \(relation)", observed: "\(t) re-folded behind the « chevron; no drawn key to aim at"), plan.snapshot)
+                                }
+                                note("re-plan: \(t) re-folded behind the « chevron; aiming after \(stand) instead")
+                                relation = .after(stand)
+                                let (p2, e2) = await prepare(key, relation, from: plan.snapshot)
+                                if let e2 { return e2 }
+                                plan = p2!
+                                if let r = foldRefusal(key, relation, plan: plan, inStrip: inStrip) { return r }
+                                if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
+                                    let again = await observe(key, relation, subjectPID: pid)
+                                    lastSnapshot = again.snapshot
+                                    if again.verified { return .verified(again.snapshot) }
+                                }
+                            }
+                        default: break
+                        }
+                    }
                     if attempt == 1, ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok, obs.settled {
                         // gdu.26: the settled observation said "not in place" and one fresh scan says "in place": a
                         // contradiction, not a verdict. Only a new settled observation may earn `.verified`.
@@ -380,12 +429,33 @@ public actor LiveActuator: MenuBarActuator {
             }
         }
 
-        guard config.allowFallback, !inStrip else { return .failed(lastError, lastSnapshot) }   // never restart the agent with the strip open
+        guard config.allowFallback, !inStrip, !plan.snapshot.stripExpanded, !lastSnapshot.stripExpanded else { return .failed(lastError, lastSnapshot) }   // never restart the agent with the strip open (ours or the user's)
         note("fallback: order store + agent restart")
         return await fallbackMove(key, relation, plan: plan, previous: lastError, menuOpened: menuOpenedLast)
     }
 
     // MARK: - strip session (9o9.12)
+
+    /// 9o9.19: the fold rule (`ActuationVerifier.foldVerdict`) accepts a crossing whose relation target re-folded into the pile. Only for a
+    /// before/after relation whose target is behind the chevron on this read and a subject the record knows. nil = does not apply / not
+    /// satisfied. Satisfied: `.verified` when the user's strip is the one open; inside our own session the verdict is deferred to the
+    /// settled read after the strip closes (`foldCandidate`), and `.failed(fallback)` is returned only as the placeholder `stripMove` replaces.
+    private func foldSettled(_ key: ItemKey, _ relation: Relation, resolved: [ResolvedItem], snapshot: MenuBarSnapshot, ours: Bool,
+                             fallback: ActuationError) -> ActuationResult? {
+        guard !recordOrder.isEmpty, recordOrder.contains(key) else { return nil }
+        let target: ItemKey
+        switch relation { case .before(let t), .after(let t): target = t; default: return nil }
+        guard ActuationVerifier.foldPile(resolved).contains(target) else { return nil }
+        let v = ActuationVerifier.foldVerdict(subject: key, record: recordOrder, resolved: resolved)
+        guard v.ok else { note("fold rule: not satisfied (\(v.observed))"); return nil }
+        if ours {
+            foldCandidate = true
+            note("fold rule: \(key) is drawn and the fold is a prefix of the record (\(target) re-folded behind the chevron); verdict from the read after the strip closes")
+            return .failed(fallback, snapshot)
+        }
+        note("fold rule: \(key) is drawn and the fold is a prefix of the record (\(target) re-folded behind the chevron); verified")
+        return .verified(snapshot)
+    }
 
     /// A drag is never computed from a collapsed scan. After a re-plan: outside a session, refuse when the subject, target or a drop
     /// neighbour is folded behind the chevron on the new (collapsed) scan; inside a session, refuse when the strip closed under us.
@@ -481,13 +551,26 @@ public actor LiveActuator: MenuBarActuator {
             else {
                 let open = planOpt!
                 let chevronFrame = open.resolved.first(where: { $0.item.isOverflowChevron && !$0.item.stale })?.item.frame ?? chevron
-                result = await moveCore(key, relation, plan: open, avoid: chevronFrame, inStrip: true)
+                result = await moveCore(key, relation, plan: open, avoid: chevronFrame, inStrip: true, ours: session.openedByUs)
             }
         }
         if session.openedByUs {
             let left = await controller.close(session, say: { [self] in note($0) })
             note("phase strip: closed t=\(ms())")
             if let left { note("note: \(left)") }
+            if foldCandidate {
+                // 9o9.19: the settled read AFTER the strip closed decides (the expanded read only nominated the candidate).
+                foldCandidate = false
+                let after = await observe(key, relation, subjectPID: plan.subject.item.ownerPID)
+                let v = ActuationVerifier.foldVerdict(subject: key, record: recordOrder, resolved: after.resolved)
+                if after.settled, after.verdict.ok || v.ok {
+                    note("fold rule: verified on the settled read after the strip closed")
+                    result = .verified(after.snapshot)
+                } else {
+                    note("fold rule: not confirmed after the strip closed (settled=\(after.settled), \(v.observed))")
+                    result = .failed(after.settled ? (v.error ?? .timeout) : .timeout, after.snapshot)
+                }
+            }
         } else {
             note("strip: left open (the user had it open)")
         }
