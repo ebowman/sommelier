@@ -475,7 +475,7 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   overflow boundary is not a request Sommelier can act on. `Reconciler.plan` drops the overflowed keys and the chevron from
   `desired` and `base` before the order planning: no drawn key is ever anchored or reported because of them, whatever the layout
   lists (unknown, pulled-in, normalized or churned). Only an overflowed key the layout places differently relative to the drawn
-  keys gets one skip "in the system overflow area; macOS decides what fits" (gdu.69; agreeing layouts stay silent). No move has an
+  keys gets one skip (reworded in 9o9.11 to "behind the « chevron; its order there is set when the strip is next opened"; agreeing layouts stay silent; the moves across the fold are planned, see "Items behind the chevron (9o9.11)"). No move has an
   overflowed item or the chevron as subject or relation target, and none drops left of the chevron (a `.leftmost` drop becomes
   `.before(first drawn item)`); `overflowViolations` asserts this. Membership is unchanged (an overflowed item may still be
   hidden, which frees room). Overflowed items show as `ItemStatus.notFitting` and as `.notFitting` panel entries, never as
@@ -499,6 +499,56 @@ hosted tree, so `isOnMenuBar` keeps meaning "on the bar per the agent", but they
   "Hide what does not fit…" button (gdu.19, enabled only when something overflows, confirmation sheet listing the units) calls
   `Layout.hideNotFitting(_:)` to move that tail to `hidden`; overflowed items that cannot be hidden (Apple, untracked apps) are
   listed as staying.
+
+### Items behind the chevron (9o9.11)
+Product rule: everything in Visible is in order, including what macOS hides behind the « chevron; Sommelier opens the « strip for a moment
+when it has to move something across that fold. It never opens the strip just to look.
+
+Live facts (2026-11-07 14:55, macOS 27.0.1, full bar, 9 items behind the chevron; bd memory `system-overflow-strip-command-drag`):
+clicking MenuBarAgent's chevron expands its strip and it stays expanded until clicked again; while expanded the overflowed items are
+DRAWN at real frames at the left of the bar (x 270-570 on the user's bar) and `LiveAccessibilitySource.overflowProbe` reports
+`expanded` with no stacked frames; a Command-drag inside the expanded strip reorders them; a Command-drag ACROSS the chevron (pile ->
+drawn region) works and macOS re-folds by width at once (the first drawn item fell into the pile). Nothing is unreachable. While
+COLLAPSED the stacked frames carry no order (live: stacked x 781/783/786 read Jump, TimeMachine, WiFi while the real order was Jump,
+WiFi, TimeMachine).
+- Observation. `AgentHostedTree.menuBarMinX` is the agent's own top-level AXMenuBar minX in the SAME read as the hosted elements
+  (`agentHostedTree`, the read `overflowProbe` mirrors). `MenuBarScanner.assemble` sets `stripExpanded` on the FRESH chevron item when
+  that minX lies left of the chevron (by more than 2 pt); a carried (stale) chevron never carries it, a read without the AXMenuBar
+  says false. `MenuBarSnapshot.stripExpanded` and `ObservedOrder.stripExpanded` derive from that item, so it can never come from a
+  cache. When expanded, `SystemOverflow.indices` (and so `mark`, `ChurnRead`, `ActuationVerifier.overflowed`) flag NOTHING and the
+  churn zone is empty: every fresh item has a real frame and the chevron is no boundary.
+- Planner, collapsed strip (`Reconciler.crossFoldMove`). Overflowed keys are NOT dropped from the record for order purposes any more:
+  the record over the on-bar Visible keys (keys the layout does not list yet are excluded) must have the fold as a PREFIX. A
+  violation is a pair (drawn Y, pile X) with the record placing Y left of X. After the drawn order is settled (drawn moves always come
+  first, unchanged: one move per pass, 9o9.9 trusted/untrusted rule, anchors, `lands`), at most ONE cross-fold move is planned, on
+  the smaller side: a push-in `Y .before(X)` (Y trusted, movable, drawn, not in the trailing system block; X the record-first
+  trusted pile key right of Y) or a pull-out `X .after(A)` (X trusted and movable; A the nearest trusted drawn key left of X in the
+  record, not in the trailing block). Untrusted keys (uncorroborated, stale/carried, held) are never subject or
+  target, so a stale frame left of the chevron is never touched. The gdu.80 churn rule does NOT apply to a crossing: it exists because a
+  drag near the fold on a COLLAPSED bar lands in a region whose frames shift when macOS re-folds, but a cross-fold move is performed
+  (9o9.12) with the strip OPEN after a fresh re-scan, where every frame is real and nothing re-folds until the strip closes. So a
+  churn-zone drawn trusted key may be the pull-out target or the push-in subject (on a full bar the churn zone is the first drawn key and
+  its neighbours, exactly where crossings land; excluding them stalled the real bar). Every non-crossing move keeps the churn
+  exclusion. A crossing is judged against the real pile (`systemOverflow`), not the churn set. A pile key the record places right of a
+  drawn key for which no crossing can be planned is skipped with `Reconciler.noCrossingSkipReason` ("... cannot be brought out yet: the item it should follow is not trusted on the bar"), never silently; it REPLACES the gdu.69 wording for that key, since nothing will open the strip for it. A move whose subject AND target are both behind the chevron is
+  never planned: such a key is skipped with `Reconciler.overflowSkipReason` = "behind the « chevron; its order there is set when the
+  strip is next opened" (also used for a pile key whose only problem is its order among other pile keys). Cross-fold actions are not tagged on `PlannedAction`: `Reconciler.crossesFold(action, overflow:)` derives them (exactly one
+  of subject/target is in the observed pile), which is what the engine and the actuator (9o9.12) use to open the strip.
+- Planner, open strip. No overflow set; the chevron is still fixed (never subject or target, no edge drop left of it) but moves across
+  it are ordinary and `overflowViolations(boundary:)` is false. The order among formerly folded items is ordinary again.
+- Engine. A cross-fold move is not re-skipped by the gdu.69 `overflowRefused` filter; an actuator refusal of the crossing is kept
+  apart (`foldRefused`, per pass, no strike) so a refusing actuator cannot spin the pass. The gdu.80 settled-overflow gate (two
+  agreeing collapsed reads) and the gdu.111 full-bar reveal rule are unchanged and run before any cross-fold move. Per-item status:
+  a pile key consistent with the fold (`ArrangeSections.foldConsistent`) is `.notFitting`; a key whose record position is inconsistent
+  with the fold (a pile key with a drawn key left of it in the record, or a drawn key with a pile key right of it) is NEVER `.inPlace`
+  (`ArrangeSections.foldBaseStatus`): it is `.pending` unless a failure, `cannotPlace` or waiting-for-position verdict says otherwise,
+  so there is no check badge and the status line cannot read "Menu bar matches" while a crossing is outstanding (this includes the
+  keys of a push-in in flight). A pull-out or push-in subject is `.pending` like any move.
+- Convergence rule. With a collapsed strip the bar matches when every DRAWN trusted key is in record order AND every overflowed key is
+  left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The order among
+  overflowed keys is not tracked while collapsed. Caveat: macOS decides by width what folds, so a record the widths cannot realise
+  (the fold cannot be a prefix) is bounded by the one-move-per-pass cap and the per-minute cap; the per-key give-up does not bound the
+  stall (the churn exclusion that caused it is gone for crossings).
 
 ## Arrange window (gdu.19)
 `ArrangeView`/`ArrangeWindowController` (app target, single instance, frame autosave "Arrange") render `ArrangeViewModel`

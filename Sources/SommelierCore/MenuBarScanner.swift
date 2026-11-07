@@ -217,9 +217,11 @@ public struct MenuBarScanner {
             let again = Self.droppingMainMenu(againRaw)
             let have = Set(again.elements.map(\.identityKey))
             let firstOnly = tree.elements.filter { !have.contains($0.identityKey) }
+            let firstMenuBarMinX = tree.menuBarMinX
             tree = AgentHostedTree(stripFrame: again.stripFrame ?? tree.stripFrame, elements: again.elements + firstOnly,
                                    failedReads: again.failedReads, timedOut: again.timedOut + tree.timedOut,
                                    unnamedTimeouts: again.unnamedTimeouts, topFailures: again.topFailures + tree.topFailures)
+            tree.menuBarMinX = again.menuBarMinX ?? firstMenuBarMinX   // 9o9.11: the strip position of the same (latest) read
             lap("agent tree confirm read")
         }
 
@@ -1036,6 +1038,10 @@ public struct MenuBarScanner {
                 }
             }
         }
+        // 9o9.11: the strip is open when the agent's AXMenuBar of THIS read starts left of a FRESH chevron of the same read (a carried
+        // chevron is stale and never says so). An open strip draws the overflowed items at real frames: nothing is flagged.
+        let stripExpanded = tree.menuBarMinX.map { m in tree.elements.contains { $0.isOverflowChevron && !$0.stale && m < $0.frame.minX - 2 } } ?? false
+        if stripExpanded { for i in reported.indices where reported[i].isOverflowChevron && !reported[i].stale { reported[i].stripExpanded = true } }
         let marked = SystemOverflow.mark(reported)
         var snapshot = MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
                                        incompleteOnlyForSelfPositioning: spOnly)

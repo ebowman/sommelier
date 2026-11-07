@@ -161,11 +161,32 @@ public enum ArrangeSections {
         case .visible:
             guard observed.onBar.contains(key) else { return false }
             return drawnOrder(layout.visible, observed) == drawnOrder(observed.onBar, observed, within: layout.visible)
+                && foldConsistent(key, layout: layout, observed: observed)
         case .hidden:
             return observed.parked.contains(key) || (showHiddenSection && observed.onBar.contains(key))
         case .alwaysHidden:
             return observed.parked.contains(key) || (showAlwaysHidden && observed.onBar.contains(key))
         }
+    }
+
+    /// 9o9.11: the collapsed-strip convergence rule for one key: the fold is a PREFIX of the record. An overflowed key is consistent when no
+    /// drawn key stands left of it in the record; a drawn key when no overflowed key stands right of it. Keys outside the Visible record
+    /// and an open strip (nothing overflowed) are always consistent. The order AMONG overflowed keys is not tracked.
+    public static func foldConsistent(_ key: ItemKey, layout: Layout, observed: ObservedOrder) -> Bool {
+        let pile = observed.systemOverflow.intersection(observed.onBar)
+        guard !pile.isEmpty, !observed.stripExpanded, let i = layout.visible.firstIndex(of: key) else { return true }
+        let bar = Set(observed.onBar)
+        if pile.contains(key) {
+            return !layout.visible[..<i].contains { bar.contains($0) && !pile.contains($0) && $0 != observed.overflowChevron }
+        }
+        return !layout.visible[(i + 1)...].contains { pile.contains($0) }
+    }
+
+    /// 9o9.11: the status of an on-bar key before plan actions, skips and failures are applied. Inconsistent with the fold: `.pending`,
+    /// never `.inPlace` (no check badge, no "matches"); a consistent pile key: `.notFitting`; otherwise `.inPlace`.
+    public static func foldBaseStatus(_ key: ItemKey, layout: Layout, observed: ObservedOrder) -> ItemStatus {
+        if !foldConsistent(key, layout: layout, observed: observed) { return .pending }
+        return observed.systemOverflow.contains(key) ? .notFitting : .inPlace
     }
 
     private static func drawnOrder(_ keys: [ItemKey], _ o: ObservedOrder, within: [ItemKey]? = nil) -> [ItemKey] {

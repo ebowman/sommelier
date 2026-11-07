@@ -21,6 +21,9 @@ public struct ObservedOrder: Equatable, Sendable {
     /// gdu.120: the subset of `staleOnBar` that was `recentlyVerified` (carried briefly with an unchanged frame). DISPLAY only: the
     /// planner reads `staleOnBar`, so these keys are still never a move subject or target.
     public var carriedRecently: Set<ItemKey> = []
+    /// 9o9.11: the overflow strip was open in the scan this was built from (the fresh chevron's own read). Nothing is overflowed
+    /// then (`systemOverflow` is empty), the chevron is fixed (never subject or target) but moves across it are ordinary.
+    public var stripExpanded = false
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
                 placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = [], staleOnBar: Set<ItemKey> = []) {
         self.staleOnBar = staleOnBar
@@ -47,13 +50,14 @@ public struct ObservedOrder: Equatable, Sendable {
         var stale = Set<ItemKey>()
         var recent = Set<ItemKey>()
         var chevron: ItemKey?
+        var expanded = false
         for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
             guard seen.insert(r.key).inserted else { continue }
             if r.item.isOnMenuBar {
                 if r.item.stale { stale.insert(r.key); uncorr.insert(r.key); if r.item.recentlyVerified { recent.insert(r.key) } }
                 bar.append((r.item.frame.minX, r.key))
                 if r.item.systemOverflow, !r.item.stale { ovf.insert(r.key) }
-                if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key }
+                if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key; if r.item.stripExpanded { expanded = true } }
                 // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
                 if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
                     || r.item.hiddenInControlCenter { uncorr.insert(r.key) }
@@ -63,6 +67,8 @@ public struct ObservedOrder: Equatable, Sendable {
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
         self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr, staleOnBar: stale)
         self.carriedRecently = recent
+        self.stripExpanded = expanded && chevron != nil
+        if stripExpanded { systemOverflow = [] }   // an open strip draws every item at a real frame
     }
 }
 
@@ -265,6 +271,10 @@ public struct Reconciler: Sendable {
                 skipped.append(SkippedAction(k, churnKeys.contains(k) ? SystemOverflowRule.churnSkipReason : Reconciler.overflowSkipReason))
             }
         }
+        // 9o9.11: the record over every on-bar Visible key, overflowed ones included. Keys the layout does not list yet (new items placed
+        // by the policy) and revealed hidden-section keys are not in the record: nothing is pulled out or pushed in because of them.
+        let visibleRecord = Set(layout.visible)
+        let fullRecord = desired.filter { onBarSet.contains($0) && visibleRecord.contains($0) }
         desired = desired.filter { !ovf.contains($0) && $0 != chevron }
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
         let base = kept + shows
@@ -361,13 +371,57 @@ public struct Reconciler: Sendable {
             let fixed = anchors.union(untrusted)
             let planned = Self.movesReporting(from: base, to: target, anchors: fixed, boundary: chevron != nil, avoid: unfresh, unsteady: unsteady.intersection(untrusted))
             actions = planned.actions
+            // 9o9.11: with the drawn order settled, one move across the fold (pull-out or push-in) if the record asks for it.
+            var foldKeys = Set<ItemKey>()
+            if actions.isEmpty, chevron != nil, !observed.stripExpanded {
+                let pile = ovfKept.filter { observed.systemOverflow.contains($0) }
+                // The churn rule does not apply to a crossing: the actuator performs it with the strip OPEN after a fresh re-scan (real frames,
+                // nothing re-folds until it closes), so churn-zone drawn keys may be the pull-out target or the push-in subject.
+                let cannot = observed.uncorroborated.union(observed.staleOnBar).union(held)
+                let drawnAll = onBar.filter { !hideSet.contains($0) && !observed.systemOverflow.contains($0) && $0 != chevron && wantOnBar.contains($0) }
+                let foldBlockStart = blockStart < kept.count ? (drawnAll.firstIndex(of: kept[blockStart]) ?? drawnAll.count) : drawnAll.count
+                let fold = Self.crossFoldMove(record: fullRecord, drawn: drawnAll, pile: pile, excluded: cannot, canMove: { capabilities($0).canMove },
+                                              blockStart: foldBlockStart)
+                if let f = fold {
+                    actions = [f]
+                    if case .move(let k, let rel) = f {
+                        foldKeys.insert(k)
+                        switch rel { case .before(let t), .after(let t): foldKeys.insert(t); default: break }
+                    }
+                }
+                // The order among keys behind the chevron carries no information while the strip is collapsed (their stacked frames
+                // are noise): a pile key the record orders differently from the stacked order is never moved, only reported.
+                let rec = Dictionary(uniqueKeysWithValues: fullRecord.enumerated().map { ($1, $0) })
+                let listedPile = pile.filter { rec[$0] != nil && !held.contains($0) && !churnKeys.contains($0) }
+                let keep = Set(Self.lis(listedPile.map { rec[$0]! }))
+                for k in listedPile where !keep.contains(rec[k]!) && !foldKeys.contains(k) && !skipped.contains(where: { $0.key == k }) {
+                    skipped.append(SkippedAction(k, Reconciler.overflowSkipReason))
+                }
+                // A pile key the record places right of a drawn key but for which no crossing could be planned (no trusted drawn neighbour)
+                // is reported, never silently left.
+                if fold == nil {
+                    let drawnRec = drawnAll.compactMap { rec[$0] }
+                    for k in pile where !skipped.contains(where: { $0.key == k && $0.reason != Reconciler.overflowSkipReason }) {
+                        guard let ik = rec[k], drawnRec.contains(where: { $0 < ik }) else { continue }
+                        // The gdu.69 wording promises the strip will be opened for this key; here nothing will, so the truer reason replaces it.
+                        skipped.removeAll { $0.key == k }
+                        skipped.append(SkippedAction(k, Reconciler.noCrossingSkipReason))
+                    }
+                }
+            }
+            if !foldKeys.isEmpty { skipped.removeAll { foldKeys.contains($0.key) && $0.reason == Reconciler.overflowSkipReason } }
             // 9o9.9: a trusted subject blocked only by an untrusted wall is already explained by the untrusted key's own skip; not repeated.
             for k in planned.blocked where !skipped.contains(where: { $0.key == k })
                 && !(planned.blockedBy[k].map { w in untrusted.contains(w) && skipped.contains { $0.key == w } } ?? false) { skipped.append(SkippedAction(k, Reconciler.staleFrameSkipReason)) }
             for (k, u) in planned.moving where !skipped.contains(where: { $0.key == k }) { skipped.append(SkippedAction(k, Reconciler.movingNeighbourSkipReason(u))) }
-            assert(Self.overflowViolations(actions, forbidden: ovf.union(chevron.map { [$0] } ?? []), boundary: chevron != nil).isEmpty,
+            let realPile = observed.systemOverflow.intersection(onBarSet)   // a crossing is judged against macOS's real pile, not the churn zone
+            let foldActions = actions.filter { Self.crossesFold($0, overflow: realPile) }
+            assert(Self.overflowViolations(actions.filter { !Self.crossesFold($0, overflow: realPile) }, forbidden: ovf.union(chevron.map { [$0] } ?? []),
+                                           boundary: chevron != nil && !observed.stripExpanded).isEmpty,
                    "planned a move of or into macOS's overflow area")
-            assert(Self.violations(actions, target: target, anchors: fixed, blockStart: blockStart).isEmpty,
+            assert(foldActions.allSatisfy { Self.isLegalFoldMove($0, overflow: realPile, chevron: chevron) },
+                   "planned a move inside macOS's overflow pile or onto the chevron")
+            assert(Self.violations(actions.filter { !Self.crossesFold($0, overflow: realPile) }, target: target, anchors: fixed, blockStart: blockStart).isEmpty,
                    "planned a move of or into the trailing system block")
             phase = actions.isEmpty ? .converged : .order
         }
@@ -405,7 +459,73 @@ public struct Reconciler: Sendable {
     public static let uncorroboratedSkipReason = "its position on the bar is not corroborated by a hosted element (stale app-side frame or hidden in Control Center); no drag"
 
     /// Why an item in macOS's own overflow area is not planned (gdu.69).
-    public static let overflowSkipReason = "in the system overflow area; macOS decides what fits"
+    public static let overflowSkipReason = "behind the « chevron; its order there is set when the strip is next opened"
+
+    /// 9o9.11: why a key behind the chevron that the record places right of a drawn key is not pulled out.
+    public static let noCrossingSkipReason = "behind the « chevron; cannot be brought out yet: the item it should follow is not trusted on the bar"
+
+    /// 9o9.11: whether a move crosses the fold: exactly one of its subject and relation target is behind the chevron (in `overflow`).
+    /// The actuator opens the « strip for such a move (derived from the observation, never carried on the action).
+    public static func crossesFold(_ a: PlannedAction, overflow: Set<ItemKey>) -> Bool {
+        guard case .move(let k, let rel) = a else { return false }
+        switch rel {
+        case .before(let t), .after(let t): return overflow.contains(k) != overflow.contains(t)
+        case .leftmost, .rightmost: return false
+        }
+    }
+
+    /// 9o9.11: a cross-fold move is legal when it is a pull-out (overflowed subject, drawn target) or a push-in (drawn subject,
+    /// overflowed target); never between two overflowed keys and never involving the chevron.
+    static func isLegalFoldMove(_ a: PlannedAction, overflow: Set<ItemKey>, chevron: ItemKey?) -> Bool {
+        guard case .move(let k, let rel) = a else { return false }
+        switch rel {
+        case .before(let t), .after(let t): return k != chevron && t != chevron && overflow.contains(k) != overflow.contains(t)
+        case .leftmost, .rightmost: return false
+        }
+    }
+
+    /// 9o9.11: the one move across the fold the record asks for, or nil. With a collapsed strip the fold must be a PREFIX of the record:
+    /// every key behind the chevron sits left of every drawn key. A violation is a pair (drawn Y, pile X) with the record placing Y
+    /// left of X. It is repaired by the smaller side: a push-in `Y .before(X)` (Y trusted and movable, X the record-first pile key right
+    /// of Y) or a pull-out `X .after(A)` (X trusted and movable, A the nearest trusted drawn key left of X in the record, not in the
+    /// trailing block). `excluded`: untrusted (uncorroborated / stale / held) and churned keys, never subject or target. The order among
+    /// pile keys is never touched.
+    static func crossFoldMove(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
+                              blockStart: Int) -> PlannedAction? {
+        let rec = Dictionary(uniqueKeysWithValues: record.enumerated().map { ($1, $0) })
+        let pileSet = Set(pile)
+        let drawnInRecord = drawn.filter { rec[$0] != nil && !pileSet.contains($0) }
+        // Pull-out candidates: trusted pile keys with a drawn key left of them in the record.
+        let xs = pile.filter { x in
+            guard let ix = rec[x], !excluded.contains(x), canMove(x) else { return false }
+            return drawnInRecord.contains { rec[$0]! < ix }
+        }.sorted { rec[$0]! < rec[$1]! }
+        // Push-in candidates: trusted movable drawn keys with a trusted pile key right of them in the record.
+        let targets = pile.filter { rec[$0] != nil && !excluded.contains($0) }
+        let ys = drawn.enumerated().filter { (i, y) in
+            guard let iy = rec[y], i < blockStart, !excluded.contains(y), canMove(y) else { return false }
+            return targets.contains { rec[$0]! > iy }
+        }.map(\.element)
+        func pullOut() -> PlannedAction? {
+            for x in xs {
+                let ix = rec[x]!
+                let a = drawn.enumerated().filter { (i, d) in
+                    guard let id = rec[d], id < ix, i < blockStart, !excluded.contains(d), !pileSet.contains(d) else { return false }
+                    return true
+                }.max { rec[$0.element]! < rec[$1.element]! }
+                if let a { return .move(x, .after(a.element)) }
+            }
+            return nil
+        }
+        func pushIn() -> PlannedAction? {
+            guard let y = ys.first else { return nil }
+            let iy = rec[y]!
+            guard let x = targets.filter({ rec[$0]! > iy }).min(by: { rec[$0]! < rec[$1]! }) else { return nil }
+            return .move(y, .before(x))
+        }
+        if !ys.isEmpty, ys.count < xs.count { return pushIn() ?? pullOut() }
+        return pullOut() ?? pushIn()
+    }
 
     /// Post-condition (gdu.45): a move whose subject or relation target is overflowed or the chevron, or (with a chevron)
     /// that drops at the far left of the bar, i.e. left of the chevron.

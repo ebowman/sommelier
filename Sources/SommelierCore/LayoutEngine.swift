@@ -331,6 +331,9 @@ public actor LayoutEngine {
     /// gdu.69: keys whose move the actuator refused in THIS pass because the subject or anchor is in macOS's overflow area
     /// (belt and braces: the planner already skips flagged items). Never struck; their moves are dropped from the plan.
     private var overflowRefused: [ItemKey: String] = [:]
+    /// 9o9.11: subjects of CROSS-FOLD moves (pull-out / push-in) the actuator refused in this pass. Kept apart from `overflowRefused` so the
+    /// gdu.69 skip does not swallow an intended crossing, yet a refusing actuator cannot spin the pass. Cleared with `overflowRefused`.
+    private var foldRefused: [ItemKey: String] = [:]
     /// gdu.80: the last two COMPLETE reads' churn data (pile + first-drawn neighbourhood). The churn zone is their union; the
     /// overflow set is settled when both agree. A pass that changed membership on a full bar never orders; the order phase waits
     /// for two agreeing complete reads.
@@ -998,9 +1001,13 @@ public actor LayoutEngine {
             let wanted = (showHidden && sec == .hidden) || (showAlways && sec == .alwaysHidden)
             p.skipped.append(SkippedAction(k, wanted && !why.hasPrefix("cannot be shown") ? "cannot be shown: " + why : why))
         }
-        if !overflowRefused.isEmpty {
+        if !overflowRefused.isEmpty || !foldRefused.isEmpty {
+            let pile = planObs.systemOverflow
             func refused(_ a: PlannedAction) -> ItemKey? {
                 guard case .move(let k, let rel) = a else { return nil }
+                // 9o9.11: a cross-fold move is an intended move behind the chevron, not a stray one: the gdu.69 refusal memory never
+                // re-skips it (the actuator opens the strip for it; a refusal of the crossing is remembered apart, `foldRefused`).
+                if Reconciler.crossesFold(a, overflow: pile) { return foldRefused[k] != nil ? k : nil }
                 if overflowRefused[k] != nil { return k }
                 switch rel {
                 case .before(let t), .after(let t): return overflowRefused[t] != nil ? k : nil
@@ -1082,6 +1089,7 @@ public actor LayoutEngine {
         let previous = failedThisPass
         failedThisPass = []
         overflowRefused = [:]
+        foldRefused = [:]
         cutThisPass = false
         let limit = config.maxKeyFailures
         for (k, n) in strikes where n < limit && !previous.contains(k) { strikes[k] = nil }
@@ -1118,7 +1126,14 @@ public actor LayoutEngine {
     private func statuses(_ obs: ObservedOrder, _ plan: Plan) -> [ItemKey: ItemStatus] {
         clearFailuresInPlace(obs, plan)
         var out: [ItemKey: ItemStatus] = [:]
-        for k in obs.onBar + obs.parked { out[k] = obs.systemOverflow.contains(k) ? .notFitting : .inPlace }
+        // 9o9.11: an overflowed key is `.notFitting` while the record leaves it behind the chevron (every key left of it in the record is
+        // also overflowed or not on the bar). One the record places right of a drawn key is not "not fitting": it is out of place
+        // (a pull-out / push-in is planned for it, or it waits its turn) and reads as in place only if the order check says so.
+        for k in obs.onBar + obs.parked {
+            // A key whose record position is inconsistent with the fold (pile key with a drawn key left of it, drawn key with a pile key
+            // right of it) is never `.inPlace`: it is pending until the crossing is done (or a skip/failure says otherwise below).
+            out[k] = ArrangeSections.foldBaseStatus(k, layout: layout, observed: obs)
+        }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
         for k in obs.onBar + obs.parked where transientReveals[rule.unit(of: k)] != nil { out[k] = .pending }
         var waiting = Set<ItemKey>()
@@ -1888,8 +1903,13 @@ public actor LayoutEngine {
                 if e.isOverflowRefusal {
                     // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
                     consecutiveFailures -= 1
-                    if overflowRefused[key] == nil { log("\(key): move skipped, in the system overflow area (\(e)); not a failure") }
-                    overflowRefused[key] = Reconciler.overflowSkipReason
+                    if Reconciler.crossesFold(action, overflow: obs.systemOverflow) {
+                        if foldRefused[key] == nil { log("\(key): move across the « chevron refused (\(e)); not a failure") }
+                        foldRefused[key] = Reconciler.overflowSkipReason
+                    } else {
+                        if overflowRefused[key] == nil { log("\(key): move skipped, in the system overflow area (\(e)); not a failure") }
+                        overflowRefused[key] = Reconciler.overflowSkipReason
+                    }
                 } else { markFailed(key, e) }
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
             }

@@ -29,7 +29,7 @@ public enum ActuationVerifier {
     public static func overflowed(_ resolved: [ResolvedItem]) -> Set<ItemKey> {
         let order = barOrder(resolved)
         var out = Set(order.filter(\.item.systemOverflow).map(\.key))
-        let entries = order.map { SystemOverflow.Entry(frame: $0.item.frame, stale: $0.item.stale, isChevron: $0.item.isOverflowChevron || $0.key == overflowChevron) }
+        let entries = order.map { SystemOverflow.Entry(frame: $0.item.frame, stale: $0.item.stale, isChevron: $0.item.isOverflowChevron || $0.key == overflowChevron, stripExpanded: $0.item.stripExpanded) }
         for i in SystemOverflow.indices(order: entries) { out.insert(order[i].key) }
         let fresh = order.filter { !$0.item.stale && !$0.item.isOverflowChevron && $0.key != overflowChevron }
         for (i, a) in fresh.enumerated() {

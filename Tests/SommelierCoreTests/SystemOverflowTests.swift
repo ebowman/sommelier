@@ -157,9 +157,10 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     let p = Reconciler().plan(observed: o, layout: lay(v: ["o1", "o2", "ch", "a", "b"]), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
     #expect(p.desiredOnBar == ["o1", "o2", "ch", "a", "b"].map(k))
-    // the order among overflowed items carries no information (stacked frames): swapping them is not a request
+    // 9o9.11: the order among overflowed items carries no information (stacked frames): swapping them is never planned, only reported
     let q = Reconciler().plan(observed: o, layout: lay(v: ["o2", "o1", "ch", "a", "b"]), capabilities: anchorCh)
-    #expect(q.phase == .converged && q.skipped.isEmpty)
+    #expect(q.phase == .converged && q.actions.isEmpty)
+    #expect(q.skipped.count == 1 && q.skipped.allSatisfy { $0.reason == Reconciler.overflowSkipReason })
 }
 
 @Test func aWantedButParkedKeyFirstInTheLayoutCausesNoSpuriousSkips() {
@@ -220,14 +221,16 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), .status(ownerKey: "com.x.z", autosaveName: "z"), kk("b")], parked: [],
                           systemOverflow: [kk("o")], overflowChevron: k("ch"))
     let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
-    #expect(p.skipped.map(\.key) == [kk("o")] && p.actions.isEmpty && p.phase == .converged)   // gdu.69: reported, not planned
+    // 9o9.11: the record places o after b, a drawn key: a pull-out across the fold (the order among drawn keys is already right)
+    #expect(p.skipped.isEmpty && p.actions == [.move(kk("o"), .after(kk("b")))] && p.phase == .order)
 }
 
-@Test func churnInWhichItemsOverflowCausesNoSkipsAndNoActions() {
+@Test func churnInWhichItemsOverflowPlansTheRecordedPullOutWithNoSkips() {
     // At init O was overflowed and 28 drawn; later O is drawn and 28 overflowed.
     let o = obs(["28", "ch", "O", "M", "N"], ovf: ["28"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["O", "28", "ch", "M", "N"]), capabilities: anchorCh)
-    #expect(p.phase == .converged && p.skipped.map(\.key) == [k("28")] && p.actions.isEmpty)   // gdu.69: reported, not planned
+    // 9o9.11: the record puts O before 28, so 28 must be pulled out after O (one cross-fold move), not skipped
+    #expect(p.phase == .order && p.skipped.isEmpty && p.actions == [.move(k("28"), .after(k("O")))])
 }
 
 @Test func aRealBarShapedFixtureWithTheLayoutEqualToTheObservedOrderIsConverged() {
@@ -301,9 +304,10 @@ private func fr(_ x: CGFloat, _ w: CGFloat) -> CGRect { CGRect(x: x, y: 3, width
     #expect(snap.items.first { $0.axIdentifier == "A" }?.systemOverflow == true)
 }
 
-@Test func plannerReportsAnOverflowedItemTheLayoutMovesAsOneSkipAndConverges() {
+@Test func plannerPullsOutOneOverflowedItemTheLayoutMovesAndSkipsTheOtherWithTheFoldWording() {
     let o = obs(["o1", "o2", "ch", "a", "b"], ovf: ["o1", "o2"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "o1", "b", "o2"]), capabilities: anchorCh)
-    #expect(p.actions.isEmpty && p.phase == .converged)
-    #expect(Set(p.skipped.map(\.key)) == [k("o1"), k("o2")] && p.skipped.allSatisfy { $0.reason == "in the system overflow area; macOS decides what fits" })
+    // 9o9.11: o1 is pulled out after a (one move per pass); o2 waits its turn behind the chevron with the new wording
+    #expect(p.actions == [.move(k("o1"), .after(k("a")))] && p.phase == .order)
+    #expect(p.skipped.map(\.key) == [k("o2")] && p.skipped.allSatisfy { $0.reason == "behind the « chevron; its order there is set when the strip is next opened" })
 }

@@ -78,6 +78,9 @@ public struct AgentHostedTree: Sendable {
     /// Part of `failedReads` that is NOT a per-item group (the window or the top level could not be read). Such a failure
     /// can never be attributed to an item's owner (gdu.51).
     public var topFailures: Int
+    /// 9o9.11: minX of the agent's own top-level AXMenuBar (the menu-extras strip) in THIS read; nil when the read did not see it.
+    /// Left of the overflow chevron means the chevron is open (gdu.65, `LiveAccessibilitySource.overflowProbe`).
+    public var menuBarMinX: CGFloat?
     /// Set by the scanner (never by a source): every failed/timed-out group is attributable BY IDENTITY to a self-positioning
     /// owner (gdu.51), so the read is complete for everyone else.
     public var failuresAreSelfPositioning = false
@@ -496,10 +499,12 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         var found: [AXElementInfo] = []
         var strip: CGRect?
         var topFailed = 0
+        var menuBarMinX: CGFloat?
         var tasks: [Unchecked<AXUIElement>] = []
         for w in windows {
             let r = readRetrying(w, timeout: t, attempts: topAttempts)
             if r.transient { topFailed += 1 }
+            if r.role == "AXMenuBar", !r.transient, r.info.frame.width > 0 { menuBarMinX = r.info.frame.minX }
             if r.role == "AXWindow", strip == nil, r.info.frame.width > 0 { strip = r.info.frame }
             guard let kids = children(w, attempts: topAttempts) else { topFailed += 1; continue }
             tasks += kids.prefix(80).map { Unchecked(value: $0) }
@@ -551,7 +556,9 @@ public struct LiveAccessibilitySource: AccessibilitySource {
             }
         }
         if ProcessInfo.processInfo.environment["SOMMELIER_AX_TRACE"] != nil { trace("done: \(found.count) found, \(unresolved.count) groups timed out") }
-        return AgentHostedTree(stripFrame: strip, elements: found, failedReads: unresolved.count + topFailed, timedOut: timedOut,
-                               unnamedTimeouts: unnamed, topFailures: topFailed)
+        var tree = AgentHostedTree(stripFrame: strip, elements: found, failedReads: unresolved.count + topFailed, timedOut: timedOut,
+                                   unnamedTimeouts: unnamed, topFailures: topFailed)
+        tree.menuBarMinX = menuBarMinX
+        return tree
     }
 }

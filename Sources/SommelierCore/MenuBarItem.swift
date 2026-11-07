@@ -95,6 +95,10 @@ public struct MenuBarItem: @unchecked Sendable {
     /// on the bar (`isOnMenuBar`) with a clipped, stacked frame, but nothing is drawn and a drag is a no-op (gdu.25).
     /// Set by the scanner (`SystemOverflow.mark`); `isOnMenuBar` keeps meaning "on the bar per the agent".
     public var systemOverflow: Bool
+    /// 9o9.11: on the overflow chevron item only: the chevron is open (the agent's AXMenuBar starts left of it), so the overflowed items
+    /// are drawn at real frames and `SystemOverflow` flags nothing. Set by the scanner from the SAME read that found the chevron, so a
+    /// carried (stale) chevron never carries it. Always false on every other item.
+    public var stripExpanded = false
     /// Opaque handle for later AX actions. Never serialized.
     public var axElement: AXUIElement?
     /// True when this item was carried forward from an earlier scan because a fresh read failed or missed its budget.
@@ -143,7 +147,7 @@ public struct MenuBarItem: @unchecked Sendable {
 extension MenuBarItem: Codable {
     private enum CodingKeys: String, CodingKey {
         case ownerPID, ownerBundleID, ownerName, title, axDescription, axIdentifier
-        case frame, source, isOnMenuBar, stale, staleCount, hidden, systemOverflow, overflowChevron, joinEvidence, ccAllowed
+        case frame, source, isOnMenuBar, stale, staleCount, hidden, systemOverflow, overflowChevron, stripExpanded, joinEvidence, ccAllowed
     }
 
     public init(from decoder: Decoder) throws {
@@ -169,6 +173,7 @@ extension MenuBarItem: Codable {
             joinEvidence: try c.decodeIfPresent(JoinEvidence.self, forKey: .joinEvidence) ?? .none,
             hiddenInControlCenter: reason == .controlCenterHidden, placementUnknown: reason == .placementUnknown,
             controlCenterAllowed: try c.decodeIfPresent(Bool.self, forKey: .ccAllowed))
+        self.stripExpanded = try c.decodeIfPresent(Bool.self, forKey: .stripExpanded) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -187,6 +192,7 @@ extension MenuBarItem: Codable {
         try c.encodeIfPresent(hiddenReason, forKey: .hidden)
         try c.encode(systemOverflow, forKey: .systemOverflow)
         if isOverflowChevron { try c.encode(true, forKey: .overflowChevron) }
+        if stripExpanded { try c.encode(true, forKey: .stripExpanded) }
         if joinEvidence != .none { try c.encode(joinEvidence, forKey: .joinEvidence) }
         try c.encodeIfPresent(controlCenterAllowed, forKey: .ccAllowed)
     }
@@ -252,8 +258,9 @@ public struct ChurnRead: Equatable, Sendable {
         public var frame: CGRect
         public var isChevron: Bool
         public var stale: Bool
-        public init(key: ItemKey, frame: CGRect, isChevron: Bool = false, stale: Bool = false) {
-            self.key = key; self.frame = frame; self.isChevron = isChevron; self.stale = stale
+        public var stripExpanded: Bool
+        public init(key: ItemKey, frame: CGRect, isChevron: Bool = false, stale: Bool = false, stripExpanded: Bool = false) {
+            self.key = key; self.frame = frame; self.isChevron = isChevron; self.stale = stale; self.stripExpanded = stripExpanded
         }
     }
     /// A fresh chevron was on the bar (the bar is full).
@@ -271,6 +278,7 @@ public struct ChurnRead: Equatable, Sendable {
             hasChevron = false; overflow = []; zone = []; return
         }
         hasChevron = true
+        if c.stripExpanded { overflow = []; zone = []; return }   // 9o9.11: an open strip has no pile and no churn zone
         let ovfIdx = SystemOverflow.indices(order: bar.map { SystemOverflow.Entry(frame: $0.frame, stale: $0.stale, isChevron: $0.isChevron) })
         var ovf = Set(ovfIdx.map { bar[$0].key }).union(extraOverflow)
         ovf.remove(c.key)
@@ -287,7 +295,7 @@ public struct ChurnRead: Equatable, Sendable {
 
     public init(resolved: [ResolvedItem]) {
         let on = resolved.filter { $0.item.isOnMenuBar && $0.item.frame.width > 0 }
-        self.init(entries: on.map { Entry(key: $0.key, frame: $0.item.frame, isChevron: $0.item.isOverflowChevron, stale: $0.item.stale) },
+        self.init(entries: on.map { Entry(key: $0.key, frame: $0.item.frame, isChevron: $0.item.isOverflowChevron, stale: $0.item.stale, stripExpanded: $0.item.stripExpanded) },
                   extraOverflow: ActuationVerifier.overflowed(resolved))
     }
 }
@@ -409,6 +417,9 @@ public struct MenuBarSnapshot: Codable, Sendable {
         self.hostedReadComplete = hostedReadComplete
     }
 
+    /// 9o9.11: the overflow strip was open in this scan (the fresh chevron says so; see `MenuBarItem.stripExpanded`).
+    public var stripExpanded: Bool { items.contains { $0.isOverflowChevron && !$0.stale && $0.stripExpanded } }
+
     /// On-bar items sorted by frame.minX (stable for equal x).
     public var onBarLeftToRight: [MenuBarItem] { items.filter { $0.isOnMenuBar } }
     /// Off-bar or zero-size items, in discovery order.
@@ -424,7 +435,11 @@ public enum SystemOverflow {
         public var frame: CGRect
         public var stale: Bool
         public var isChevron: Bool
-        public init(frame: CGRect, stale: Bool, isChevron: Bool) { self.frame = frame; self.stale = stale; self.isChevron = isChevron }
+        /// 9o9.11: on the chevron entry: the strip is open, every fresh item has a real frame, nothing is overflowed.
+        public var stripExpanded: Bool
+        public init(frame: CGRect, stale: Bool, isChevron: Bool, stripExpanded: Bool = false) {
+            self.frame = frame; self.stale = stale; self.isChevron = isChevron; self.stripExpanded = stripExpanded
+        }
     }
 
     /// Indices (into `order`, the on-bar items left to right) that macOS overflowed: the FRESH items for which
@@ -433,6 +448,8 @@ public enum SystemOverflow {
     /// a partial read must not cascade); a stale or absent chevron flags nothing.
     public static func indices(order: [Entry]) -> Set<Int> {
         guard let c = order.firstIndex(where: { $0.isChevron && !$0.stale }) else { return [] }
+        // 9o9.11: an open strip draws the overflowed items at real frames; nothing is flagged and the chevron is no boundary.
+        if order[c].stripExpanded { return [] }
         let chevron = order[c].frame
         let fresh = order.indices.filter { $0 != c && !order[$0].isChevron && !order[$0].stale }
         let frames = fresh.map { order[$0].frame }
@@ -444,7 +461,7 @@ public enum SystemOverflow {
     public static func mark(_ items: [MenuBarItem]) -> [MenuBarItem] {
         let barIdx = items.indices.filter { items[$0].isOnMenuBar && items[$0].frame.width > 0 }
             .sorted { (items[$0].frame.minX, $0) < (items[$1].frame.minX, $1) }
-        let flagged = indices(order: barIdx.map { Entry(frame: items[$0].frame, stale: items[$0].stale, isChevron: items[$0].isOverflowChevron) })
+        let flagged = indices(order: barIdx.map { Entry(frame: items[$0].frame, stale: items[$0].stale, isChevron: items[$0].isOverflowChevron, stripExpanded: items[$0].stripExpanded) })
         var out = items
         for i in out.indices { out[i].systemOverflow = false }
         for n in flagged { out[barIdx[n]].systemOverflow = true }
