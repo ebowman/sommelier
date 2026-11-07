@@ -790,6 +790,9 @@ engine's published state; it never computes a claim of its own about the bar.
   | `.unreadAfterHandDrag` | hourglass | Moved by you in the menu bar; waiting to read its new position |
   | `.notConfirmed` | none | Not confirmed in place yet |
 
+  The `.staleFrame` tilde carries the uncorroborated text; « wins over ~ for pile keys. An uncorroborated key with no skip of its own
+  is on the 60 s position-wait timer, except pile keys and keys unread after a hand drag.
+
   The check appears only for a drawn row the plan does not touch, with no hold, hand-drag doubt, skip or failure, whose observed
   neighbours agree with the record (`placementMatches` plus the neighbour test). A stale or uncorroborated row never shows the check.
   A pile row consistent with the fold shows « and the fold line is drawn after the last overflowed key; a row whose record position is

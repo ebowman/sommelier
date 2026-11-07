@@ -150,6 +150,11 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var waitingOn: String? = nil
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
     public var capabilityNote: String?
+    /// 9o9.24: the ⊘ beside a row's name means a CAPABILITY LIMIT (not a state of the bar): it cannot be hidden here, or cannot be moved. Said in words.
+    public var capabilityTooltip: String? {
+        guard let n = capabilityNote else { return nil }
+        return (draggable ? "Can't be hidden by Sommelier: " : "Can't be moved: ") + n
+    }
     /// 9o9.15: the raw description (else title) the app reports; the tooltip's second line and part of what Filter matches.
     public var detail: String = ""
     /// gdu.117: the sections the context menu's "Move to ..." items are enabled for (`ArrangeDrop.canMove`), computed once when the
@@ -297,9 +302,22 @@ public enum ArrangeSections {
         }
     }
 
+    /// 9o9.24: the one honest text for an on-bar key whose position the scan cannot corroborate (with or without a skip of its own).
+    public static let uncorroboratedText = "Sommelier can't pin down where this item is on the bar"
+    public static let uncorroboratedTimeoutText = uncorroboratedText + " for a minute — right-click to try again"
+    public static let noSafeMoveText = "No safe move found; the bar hasn't settled"
+    /// The prefix of the engine's `.unsupported` reason once the position wait has timed out (LayoutEngine.statuses).
+    static let positionTimeoutPrefix = "could not corroborate its position on the bar for"
+
     /// Plain words for an engine reason (9o9.5): the technical wording stays in the log.
     public static func plainReason(_ raw: String) -> String {
-        if raw.contains("corroborate") { return "Sommelier can't pin down where this item is on the bar" }
+        // 9o9.24: the 60 s timeout wraps the original skip reason ("could not corroborate its position ... 60 s: <reason>"). A no-safe-move
+        // skip is a known position on a bar that has not settled, so it is matched BEFORE the generic "corroborate" mapping.
+        if raw == Reconciler.noSafeMoveSkipReason || (raw.hasPrefix(Self.positionTimeoutPrefix) && raw.hasSuffix(Reconciler.noSafeMoveSkipReason)) {
+            return noSafeMoveText
+        }
+        if raw.hasPrefix(Self.positionTimeoutPrefix) { return uncorroboratedTimeoutText }
+        if raw.contains("corroborate") { return uncorroboratedText }
         if raw == Reconciler.staleSkipReason || raw == Reconciler.staleFrameSkipReason || raw.contains("not refreshed") || raw.contains("stale") {
             return ArrangeBarState.staleText
         }
@@ -367,6 +385,8 @@ public enum ArrangeSections {
             return r
         }
 
+        func uncorroboratedNote(_ k: ItemKey) -> String { neighboursAgree(k) ? uncorroboratedText + " (it looks in place)" : uncorroboratedText }
+
         /// The bar's state for one Visible record key (see `ArrangeBarState`), with the badge and the optional "why it moves" text.
         func visibleRow(_ k: ItemKey, ghost: Bool) -> ArrangeRow {
             var r = row(k, ghost: ghost, running: true)
@@ -415,15 +435,23 @@ public enum ArrangeSections {
                 state = engineMoving ? .moving : .notOnBar
             } else if unverifiedAfterHandDrag.contains(k) {
                 state = .unreadAfterHandDrag
+            } else if pile.contains(k), foldConsistent(k, layout: layout, observed: observed) {
+                // 9o9.24: « wins over ~ for a key the observation reports in the pile (both are true; « is the more useful); the tooltip adds the other.
+                state = .behindChevron
+                if observed.staleOnBar.contains(k), !observed.carriedRecently.contains(k) {
+                    note = ArrangeBarState.behindChevronText + "\n" + ArrangeBarState.staleText
+                } else if observed.uncorroborated.contains(k) {
+                    note = ArrangeBarState.behindChevronText + "\n" + uncorroboratedText
+                }
             } else if case .waitingForPosition? = status {
+                // 9o9.24: "Position being re-read" is for STALE (carried) frames only; any other wait for a corroborated position reads the honest text.
                 state = .staleFrame
+                if !observed.staleOnBar.contains(k), observed.uncorroborated.contains(k) { note = uncorroboratedNote(k) }
             } else if r.staleFrame {
                 state = .staleFrame
-            } else if pile.contains(k), foldConsistent(k, layout: layout, observed: observed) {
-                state = .behindChevron
             } else if observed.uncorroborated.contains(k), !observed.staleOnBar.contains(k), onBar.contains(k), !pile.contains(k) {
                 state = .staleFrame
-                note = neighboursAgree(k) ? "Sommelier can't pin down where this item is on the bar (it looks in place)" : plainReason(Reconciler.uncorroboratedSkipReason)
+                note = uncorroboratedNote(k)
             } else if engineMoving {
                 state = .moving
             } else if onBar.contains(k), foldConsistent(k, layout: layout, observed: observed), neighboursAgree(k) {

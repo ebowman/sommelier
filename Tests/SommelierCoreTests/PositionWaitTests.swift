@@ -31,13 +31,13 @@ private final class JoinObserver: MenuBarObserver, @unchecked Sendable {
 private struct PRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let observer: JoinObserver }
 
 @MainActor
-private func prig(badScans: Int?, config: LayoutEngine.Config = .init()) async -> PRig {
+private func prig(badScans: Int?, config: LayoutEngine.Config = .init(), inOrder: Bool = false) async -> PRig {
     // bar a b c; the layout wants c first, so c is the order-move subject.
     let a = k("a"), b = k("b"), c = k("c")
     let act = FakeActuator(order: [a, b, c], hidden: [], capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let obs = JoinObserver(actuator: act, subject: c, badScans: badScans)
     let state = EngineState()
-    let engine = LayoutEngine(observer: obs, actuator: act, store: InMemoryLayoutStore(Layout(visible: [c, a, b])),
+    let engine = LayoutEngine(observer: obs, actuator: act, store: InMemoryLayoutStore(Layout(visible: inOrder ? [a, b, c] : [c, a, b])),
                               capabilities: OpenCaps(), state: state, busy: { false },
                               resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: config)
     await engine.start()
@@ -139,5 +139,30 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(b.tooltip == "Waiting for a trustworthy read of its position (the last scan could not corroborate where it is)")
         let line = ArrangeSections.statusLine(perItem: [k("c"): .waitingForPosition("r")], lastError: nil, isConverged: false, inFlight: false)
         #expect(line == "Waiting to read 1 item")
+    }
+
+    // MARK: 9o9.24 an uncorroborated key with no skip of its own is on the 60 s timer too
+
+    @Test func anUncorroboratedKeyWithNoSkipTimesOutToATryAgainWarningAndRetryRestartsTheWait() async {
+        var c = LayoutEngine.Config()
+        c.positionRetryBase = .milliseconds(20); c.positionRetryCap = .milliseconds(40); c.positionWaitTimeout = .milliseconds(150)   // the 60 s path, compressed
+        let r = await prig(badScans: nil, config: c, inOrder: true)   // the bar already matches the record: the planner has no skip for c
+        _ = await r.engine.reconcileOnce()
+        #expect(waitingKeys(r.state).isEmpty && unsupported(r.state).isEmpty)   // within the wait the base status stands (Arrange shows ~)
+        let ok = await waitUntil { await MainActor.run { self.unsupported(r.state).contains(k("c")) } }
+        #expect(ok)
+        guard case .unsupported(let why)? = r.state.perItem[k("c")] else { Issue.record("not unsupported"); return }
+        #expect(why.hasPrefix("could not corroborate its position on the bar for 0 s: "))
+        #expect(await r.engine.positionWaitInfo.timedOut == 1)
+        #expect(await r.actuator.order == [k("a"), k("b"), k("c")])
+        // the row: a warning with Try again and the honest minute text
+        let items = Dictionary(uniqueKeysWithValues: r.state.observed.onBar.map { ($0, ItemInfo(key: $0, title: "", axDescription: "", ownerPID: 1, ownerBundleID: "com.x", ownerName: "O", width: 30, isOnBar: true, systemOverflow: false)) })
+        let content = ArrangeSections.make(observed: r.state.observed, layout: Layout(visible: [k("a"), k("b"), k("c")]), items: items, perItem: r.state.perItem,
+                                           capabilities: { _ in Capability(canMove: true, canHide: true) })
+        let row = content.visible.rows.first { $0.key == k("c") }!
+        #expect(row.badge.glyph == "⚠" && row.barState == .cannotPlace(ArrangeSections.uncorroboratedTimeoutText) && ArrangeMenuRules.showsTryAgain(row))
+        // Retry clears the timer
+        await r.engine.retry(key: k("c"))
+        #expect(await r.engine.positionWaitInfo.timedOut == 0)
     }
 }

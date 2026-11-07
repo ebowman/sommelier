@@ -202,4 +202,17 @@ private func info(_ k: ItemKey, desc: String = "", title: String = "", owner: St
         let n = RowNameRule.Namer(keys: keys, items: items)
         for (k, r) in zip(keys, rows) { #expect(n.name(k) == r.3, "\(r.0)") }
     }
+
+    @Test func anUnobservedLeftoverHeuristicKeyBorrowsTheAppNameFromItsOwnersStatusKey() {
+        let status = st("at.obdev.MicroSnitch", "Item-0")
+        let h = ItemKey.heuristic(bundleID: "at.obdev.MicroSnitch", fingerprint: "Micro Snitch, no microphone or camera in use", ordinal: 0)
+        let items = [status: info(status, desc: "Micro Snitch", owner: "Micro Snitch")]
+        let n = RowNameRule.Namer(keys: [status, h], items: items)
+        #expect(n.name(h) == "Micro Snitch")
+        // not in the layout's keys either: still the app name
+        #expect(RowNameRule.Namer(keys: [h], items: items).name(h) == "Micro Snitch")
+        let c = ArrangeSections.make(observed: ObservedOrder(onBar: [status], parked: []), layout: Layout(visible: [status, h]), items: items, perItem: [:],
+                                     capabilities: { _ in .init(canMove: true, canHide: true) })
+        #expect(c.visible.notRunning.contains { $0.key == h && $0.title == "Micro Snitch" })
+    }
 }

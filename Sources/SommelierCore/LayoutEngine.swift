@@ -1063,6 +1063,7 @@ public actor LayoutEngine {
     public func retry(key: ItemKey) async {
         clearGiveUp([key])
         failures[key] = nil; strikes[key] = nil; unverifiedStrikes[key] = nil; lastVerifiedOrderMove[key] = nil; revertWatch[key] = nil
+        positionWaitSince[key] = nil; positionTimedOut.remove(key)   // 9o9.24: a fresh 60 s wait
         log("engine: retry \(key): attempts cleared")
         await publish { s in
             if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
@@ -1654,6 +1655,20 @@ public actor LayoutEngine {
                 }
             } else {
                 out[s.key] = .unsupported(s.reason)
+            }
+        }
+        // 9o9.24: an uncorroborated Visible key with NO skip of its own (the planner had nothing to move for it) is on the same 60 s timer:
+        // before it, its base status stands (Arrange shows ~ with the honest text); after it, it is unsupported (a warning with Try again).
+        let skippedKeys = Set(plan.skipped.map(\.key))
+        let quiet = obs.uncorroborated.subtracting(obs.staleOnBar).intersection(obs.onBar).subtracting(obs.systemOverflow)
+            .subtracting(obs.overflowChevron.map { [$0] } ?? []).subtracting(skippedKeys).subtracting(handDragUnverified)   // held by the planner (no skip, but not "quiet")
+        for k in quiet where layout.visible.contains(k) && failures[k] == nil && cannotPlace[k] == nil && out[k] != .notFitting {
+            let since = positionWaitSince[k] ?? now
+            positionWaitSince[k] = since
+            waiting.insert(k)
+            if since.duration(to: now) > config.positionWaitTimeout {
+                if positionTimedOut.insert(k).inserted { log("\(k): position not corroborated for \(config.positionWaitTimeout); marked unsupported until the layout changes or Retry") }
+                out[k] = .unsupported("could not corroborate its position on the bar for \(Self.seconds(config.positionWaitTimeout)) s: " + Reconciler.uncorroboratedSkipReason)
             }
         }
         for k in Array(positionWaitSince.keys) where !waiting.contains(k) { positionWaitSince[k] = nil; positionTimedOut.remove(k) }

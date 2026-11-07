@@ -311,7 +311,7 @@ struct CapsuleView: View {
             Text(row.title).font(.system(size: 12)).lineLimit(1)
             BadgeView(badge: row.badge, movingHelp: row.moveReason)
             if let n = row.capabilityNote {
-                Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
+                Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(row.capabilityTooltip ?? n)
             }
             if !row.unitMates.isEmpty {
                 Image(systemName: "link").font(.system(size: 9)).foregroundStyle(.secondary)
@@ -334,7 +334,7 @@ struct CapsuleView: View {
         if row.notFitting { parts.append(ArrangeBadge.notFitting.tooltip) }
         if row.badge != .none { parts.append(row.badgeTooltip) }
         else if let why = ArrangeMenuRules.whyText(row) { parts.append(why) }
-        if let n = row.capabilityNote { parts.append(n) }
+        if let n = row.capabilityTooltip { parts.append(n) }
         if row.notRunning { parts.append("The app is not running.") }
         return parts.joined(separator: "\n")
     }

@@ -131,7 +131,17 @@ public enum RowNameRule {
         public func name(_ k: ItemKey) -> String {
             if case .module(let m) = k { return RowNameRule.clip(RowNameRule.moduleName(m)) }
             if let m = RowNameRule.appleModuleName(k) { return RowNameRule.clip(m) }
-            guard let i = items[k] else { return RowNameRule.clip(RowNameRule.fallbackName(k)) }
+            guard let i = items[k] else {
+                // 9o9.24: an unobserved leftover heuristic key borrows the app name from another observed key of the same owner (its status
+                // key), never its stored fingerprint text ("Micro Snitch, no microp...", a date, "Eric's AirPods Pro #2").
+                if case .heuristic = k, let id = RowNameRule.ownerID(k) {
+                    let siblings = (owners[id] ?? []) + (heuristics[id] ?? [])
+                    let borrowed = siblings.compactMap { items[$0] }.map { Self.trimmed($0.ownerName) }.first { !$0.isEmpty }
+                        ?? items.values.first { $0.ownerBundleID == id && !Self.trimmed($0.ownerName).isEmpty }.map { Self.trimmed($0.ownerName) }
+                    if let borrowed { return RowNameRule.clip(borrowed) }
+                }
+                return RowNameRule.clip(RowNameRule.fallbackName(k))
+            }
             let app = appName(k, i)
             // A leftover heuristic key of an owner that has status keys is just the app (never numbered against them).
             if case .heuristic = k, let id = RowNameRule.ownerID(k), owners[id]?.contains(k) != true {

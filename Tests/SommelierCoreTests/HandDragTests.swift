@@ -378,8 +378,8 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
     }
 
     /// Drags A to the end with A carried until the deadline passes, leaving A unverified (record unchanged).
-    private func unverifiedA(_ clock: Clock, hide: Bool = false) async -> R {
-        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now } })
+    private func unverifiedA(_ clock: Clock, hide: Bool = false, positionWait: Duration? = nil) async -> R {
+        let r = await rig(order: names, layout: abcde(), modes: true, configure: { $0.now = { clock.now }; if let w = positionWait { $0.positionWaitTimeout = w } })
         r.observer.mode = .carried([k("A")], .completeExceptSelfPositioning)
         r.drags.fire(.began)
         await r.actuator.displace(k("A"), toIndex: 4)
@@ -403,6 +403,19 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return await r.layoutVisible() == ["B", "C", "D", "E", "A"].map(k) })
         #expect(r.sink.lines.contains("layout: adopted your menu bar drag of \(k("A")) (read late)"))
         #expect(await !r.actuator.calls.contains { if case .move = $0 { return true }; return false })
+    }
+
+    // 9o9.24: a hand-dragged key unread past the position-wait timeout stays held (hourglass), never the "could not corroborate" warning.
+    @Test func anUnreadHandDraggedKeyNeverTimesOutToTheUncorroboratedWarning() async {
+        let clock = Clock()
+        let r = await unverifiedA(clock, positionWait: .milliseconds(30))
+        #expect(await waitUntil { await MainActor.run { r.state.unverifiedAfterHandDrag == [k("A")] } })
+        r.observer.mode = .ambiguous([k("A"): 0])
+        for _ in 0..<6 { _ = await r.engine.reconcileOnce(); try? await Task.sleep(for: .milliseconds(20)) }
+        let st = await MainActor.run { r.state.perItem[k("A")] }
+        if case .unsupported? = st { Issue.record("A became unsupported: \(String(describing: st))") }
+        #expect(await MainActor.run { r.state.unverifiedAfterHandDrag == [k("A")] })
+        #expect(await r.engine.positionWaitInfo.timedOut == 0)
     }
 
     // 9o9.5: the engine publishes the unread hand-dragged keys so Arrange can say so (never a check for them).

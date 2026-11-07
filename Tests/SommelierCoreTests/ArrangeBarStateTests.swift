@@ -92,7 +92,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         #expect(row(f, k("a")).barState == .cannotPlace("drag did not start") && row(f, k("a")).badge == .cannotPlace("drag did not start"))
         #expect(row(f, k("a")).badge.glyph == "⚠" && row(f, k("a")).badgeTooltip == "drag did not start")
         let u = make(o, layout, status: [k("b"): .unsupported("could not corroborate its position on the bar for 60 s: stale")])
-        #expect(row(u, k("b")).barState == .cannotPlace("Sommelier can't pin down where this item is on the bar"))
+        #expect(row(u, k("b")).barState == .cannotPlace("Sommelier can't pin down where this item is on the bar for a minute — right-click to try again"))
         let g = make(o, layout, status: [k("c"): .cannotPlace(reason: "moved 3 times in a minute", attempts: 3)])
         #expect(row(g, k("c")).barState == .cannotPlace("moved 3 times in a minute"))
         let t = make(o, layout, status: allInPlace(bar), timedOut: [k("a")])
@@ -101,7 +101,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
 
     @Test func plainReasonsAreMappedAndOtherReasonsPassThrough() {
         #expect(ArrangeSections.plainReason(Reconciler.uncorroboratedSkipReason) == "Sommelier can't pin down where this item is on the bar")
-        #expect(ArrangeSections.plainReason("could not corroborate its position on the bar for 60 s: x") == "Sommelier can't pin down where this item is on the bar")
+        #expect(ArrangeSections.plainReason("could not corroborate its position on the bar for 60 s: x") == ArrangeSections.uncorroboratedTimeoutText)
         #expect(ArrangeSections.plainReason(Reconciler.staleFrameSkipReason) == "Position being re-read")
         #expect(ArrangeSections.plainReason(Reconciler.staleSkipReason) == "Position being re-read")
         #expect(ArrangeSections.plainReason(Reconciler.noCrossingSkipReason) == "Behind «; the item it should follow can't be located on the bar yet")
@@ -357,7 +357,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
                                          corsair: .unsupported("could not corroborate its position on the bar for 60 s: " + Reconciler.uncorroboratedSkipReason)]
         let c = make(o, layout, status: st)
         let r = row(c, corsair)
-        #expect(r.barState == .cannotPlace("Sommelier can't pin down where this item is on the bar") && r.badge.glyph == "⚠")
+        #expect(r.barState == .cannotPlace(ArrangeSections.uncorroboratedTimeoutText) && r.badge.glyph == "⚠")
         #expect(r.badge != .inPlace)
         let text = line(c, perItem: st)
         #expect(text == "1 item can't be placed — right-click one for why")
@@ -573,5 +573,67 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         for r in blank { #expect(r.badge == .none && ArrangeMenuRules.whyText(r) == ArrangeBarState.notConfirmedText) }
         let text = ArrangeSections.statusLine(perItem: allInPlace([a, b, clock]), lastError: nil, isConverged: true, inFlight: false, content: c)
         #expect(text != "Converged" && text == ArrangeSections.checkingMenuBar)
+    }
+
+    // MARK: 9o9.24 wording follow-ups
+
+    @Test func theNoSafeMoveTimeoutReadsNoSafeMoveWithTryAgainNotCantPinDown() {
+        let timeout = "could not corroborate its position on the bar for 60 s: " + Reconciler.noSafeMoveSkipReason
+        #expect(ArrangeSections.plainReason(timeout) == "No safe move found; the bar hasn't settled")
+        #expect(ArrangeSections.plainReason(Reconciler.noSafeMoveSkipReason) == "No safe move found; the bar hasn't settled")
+        let bar = [k("a"), k("b"), k("c"), clock]
+        let o = ObservedOrder(onBar: bar, parked: [])
+        let c = make(o, Layout(visible: bar), status: [k("b"): .unsupported(timeout)])
+        let r = row(c, k("b"))
+        #expect(r.barState == .cannotPlace("No safe move found; the bar hasn't settled") && r.badge.glyph == "⚠")
+        #expect(ArrangeMenuRules.showsTryAgain(r))
+    }
+
+    @Test func uncorroboratedRowsReadTheSameTextWithOrWithoutASkipOfTheirOwn() {
+        let a = k("a"), b = k("b"), c = k("c")
+        let rec = Layout(visible: [a, b, c, clock])
+        let o = ObservedOrder(onBar: [a, b, c, clock], parked: [], uncorroborated: [b])
+        let plain = make(o, rec, status: allInPlace([a, b, c, clock]))
+        let waiting = make(o, rec, status: { var s = allInPlace([a, b, c, clock]); s[b] = .waitingForPosition(Reconciler.uncorroboratedSkipReason); return s }())
+        for content in [plain, waiting] {
+            #expect(row(content, b).badge.glyph == "~")
+            #expect(row(content, b).badgeTooltip == "Sommelier can't pin down where this item is on the bar (it looks in place)")
+        }
+        // neighbours disagree
+        let o2 = ObservedOrder(onBar: [b, a, c, clock], parked: [], uncorroborated: [a])
+        let w2 = make(o2, rec, status: { var s = allInPlace([a, b, c, clock]); s[a] = .waitingForPosition(Reconciler.uncorroboratedSkipReason); return s }())
+        #expect(row(w2, a).badgeTooltip == "Sommelier can't pin down where this item is on the bar")
+        // "Position being re-read" stays for STALE frames
+        let o3 = ObservedOrder(onBar: [a, b, c, clock], parked: [], uncorroborated: [b], staleOnBar: [b])
+        let w3 = make(o3, rec, status: { var s = allInPlace([a, b, c, clock]); s[b] = .waitingForPosition(Reconciler.staleFrameSkipReason); return s }())
+        #expect(row(w3, b).badgeTooltip == "Position being re-read")
+    }
+
+    @Test func aStaleOrUncorroboratedPileKeyShowsTheChevronNotTheTilde() {
+        let p1 = k("p1"), p2 = k("p2"), d = k("d")
+        let rec = Layout(visible: [p1, p2, chev, d, clock])
+        let stale = ObservedOrder(onBar: [p1, p2, chev, d, clock], parked: [], systemOverflow: [p1, p2], overflowChevron: chev,
+                                  uncorroborated: [p2], staleOnBar: [p2])
+        let c = make(stale, rec, status: [p1: .notFitting, p2: .notFitting, d: .inPlace, clock: .inPlace])
+        #expect(row(c, p2).badge.glyph == "«" && row(c, p2).barState == .behindChevron)
+        #expect(row(c, p2).badgeTooltip == ArrangeBarState.behindChevronText + "\nPosition being re-read")
+        let unc = ObservedOrder(onBar: [p1, p2, chev, d, clock], parked: [], systemOverflow: [p1, p2], overflowChevron: chev, uncorroborated: [p2])
+        let u = make(unc, rec, status: [p1: .notFitting, p2: .notFitting, d: .inPlace, clock: .inPlace])
+        #expect(row(u, p2).badge.glyph == "«")
+        #expect(row(u, p2).badgeTooltip == ArrangeBarState.behindChevronText + "\nSommelier can't pin down where this item is on the bar")
+        #expect(row(u, p1).badgeTooltip == ArrangeBarState.behindChevronText)
+    }
+
+    @Test func theNoSignGlyphMeansACapabilityLimitAndSaysSoInWords() {
+        // Time Machine: a movable Apple item that cannot be HIDDEN by Sommelier
+        let tm = ItemKey.status(ownerKey: "com.apple.systemuiserver", autosaveName: "com.apple.menuextra.TimeMachine")
+        let cap = CapabilityRules(hasTrackedEntry: { _ in false }).capability(for: tm)
+        #expect(cap.canMove && !cap.canHide)
+        let o = ObservedOrder(onBar: [tm, clock], parked: [])
+        let c = ArrangeSections.make(observed: o, layout: Layout(visible: [tm, clock]), items: [tm: info(tm)], perItem: [:],
+                                     capabilities: { CapabilityRules(hasTrackedEntry: { _ in false }).capability(for: $0) })
+        let r = row(c, tm)
+        #expect(r.draggable)
+        #expect(r.capabilityTooltip == "Can't be hidden by Sommelier: Apple apps are hidden only in System Settings > Menu Bar.")
     }
 }
