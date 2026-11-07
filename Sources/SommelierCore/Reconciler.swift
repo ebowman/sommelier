@@ -120,6 +120,9 @@ public struct Plan: Equatable, Sendable {
 public struct Reconciler: Sendable {
     public init() {}
 
+    /// 9o9.21: true for the overflow chevron, by key or by the observation's flag. Such a key is never a new item.
+    static func isChevron(_ k: ItemKey, _ observed: ObservedOrder) -> Bool { k.isOverflowChevron || k == observed.overflowChevron }
+
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
                      units rule: HideUnitRule = .ownerKeys, held: Set<ItemKey> = [],
@@ -202,6 +205,9 @@ public struct Reconciler: Sendable {
         var wantOnBar = Set<ItemKey>()
         var unknownVisible: [ItemKey] = []
         for k in onBar + parked {
+            // 9o9.21: the chevron is the agent's own control, never a record key: it is neither a NEW item (no placement, no notice)
+            // nor ever hidden or shown by the plan, whatever its unit or the policy says.
+            if Self.isChevron(k, observed) { if onBarSet.contains(k) { wantOnBar.insert(k) }; continue }
             let wants = unitWantsBar[rule.unit(of: k)] ?? false
             if wants { wantOnBar.insert(k) }
             if layout.section(of: k) == nil {
@@ -251,7 +257,9 @@ public struct Reconciler: Sendable {
         // open after a fresh re-scan: every frame real, nothing re-folds until it closes), exactly like a move across the fold.
         // The zone still guards the COLLAPSED-bar actuator (`LiveActuator.stripNeed`).
         let ovf = observed.systemOverflow.intersection(onBarSet)
-        let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }
+        let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }   // the FRESH chevron: the only fold boundary (9o9.17)
+        // 9o9.21: the chevron's KEY (also a stale one, flag nil) is still dropped from desired/base: never moved, never a target.
+        let chevronKey = chevron ?? onBar.first(where: { $0.isOverflowChevron })
         let ovfKept = onBar.filter { ovf.contains($0) && wantOnBar.contains($0) && !hideSet.contains($0) }
         // macOS decides what overflows (total width); a layout's order across the overflow boundary is not a request we can
         // act on. Overflowed keys and the chevron are therefore dropped from `desired` and `base` before the ORDER planning:
@@ -264,8 +272,8 @@ public struct Reconciler: Sendable {
         // carries no information, and a layout that agrees with the observed order stays silent (gdu.45).
         do {
             let all = Set(onBar)
-            let want = desired.filter { all.contains($0) && !hideSet.contains($0) && $0 != chevron }
-            let have = onBar.filter { wantOnBar.contains($0) && !hideSet.contains($0) && $0 != chevron }
+            let want = desired.filter { all.contains($0) && !hideSet.contains($0) && $0 != chevronKey }
+            let have = onBar.filter { wantOnBar.contains($0) && !hideSet.contains($0) && $0 != chevronKey }
             func drawnBefore(_ k: ItemKey, _ list: [ItemKey]) -> Set<ItemKey>? {
                 guard let i = list.firstIndex(of: k) else { return nil }
                 return Set(list[..<i].filter { !ovf.contains($0) })
@@ -279,8 +287,8 @@ public struct Reconciler: Sendable {
         // by the policy) and revealed hidden-section keys are not in the record: nothing is pulled out or pushed in because of them.
         let visibleRecord = Set(layout.visible)
         let fullRecord = desired.filter { onBarSet.contains($0) && visibleRecord.contains($0) }
-        desired = desired.filter { !ovf.contains($0) && $0 != chevron }
-        let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevron }
+        desired = desired.filter { !ovf.contains($0) && $0 != chevronKey }
+        let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevronKey }
         let base = kept + shows
         // gdu.94 / 9o9.3: an on-bar key whose frame is not trusted (slot not corroborated by a hosted element, or a stale frame) keeps its
         // observed slot: it is never the subject of a move, never a relation target while a fresh neighbour exists, and it is NOT part of
