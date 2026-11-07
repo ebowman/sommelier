@@ -192,7 +192,7 @@ public actor LiveActuator: MenuBarActuator {
     /// Looks up subject/target; a single scan that misses them is never believed: it is confirmed with a fast scan after
     /// 300 ms and then a full scan before `.notFound` / `.unsupportedItem` is returned. Re-scans (up to 3 times) while
     /// the frames are stale.
-    private func prepare(_ key: ItemKey, _ relation: Relation, from first: MenuBarSnapshot?, allowStacked: Bool = false) async -> (Plan?, ActuationResult?) {
+    private func prepare(_ key: ItemKey, _ relation: Relation, from first: MenuBarSnapshot?, allowStacked: Bool = false, staleToStrip: Bool = false) async -> (Plan?, ActuationResult?) {
         var snap: MenuBarSnapshot
         if let first { snap = first } else { snap = await scanNonEmpty() }
         for round in 0...3 {
@@ -215,6 +215,9 @@ public actor LiveActuator: MenuBarActuator {
                 return (nil, .failed(.mechanismFailed("subject \(key) frame not trustworthy: \(why)"), snap))
             case .ok(let plan):
                 if !plan.subject.item.stale && !(plan.target?.item.stale ?? false) { return (plan, nil) }
+                // 9o9.23: on the collapsed pre-scan a stale pile subject/target is no reason to time out: the strip opens first and the
+                // fresh scan taken with it open decides (a still-stale subject is refused there, by this same rule).
+                if staleToStrip, !snap.stripExpanded, stripNeed(plan, relation) != nil { note("prepare: stale frame near the fold on the collapsed scan; the open strip's scan decides"); return (plan, nil) }
                 if round == 3 { return (nil, .failed(.timeout, snap)) }
                 snap = await scanNonEmpty()
             }
@@ -289,7 +292,7 @@ public actor LiveActuator: MenuBarActuator {
         trace = []
         foldCandidate = false
         if let f = globalPrecheck() { return f }
-        let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback)
+        let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback, staleToStrip: !config.forceFallback)
         if let early { return early }
         var plan = planOpt!
         let cap = CapabilityRules(hasTrackedEntry: { _ in true }).capability(for: key)

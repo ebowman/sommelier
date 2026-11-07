@@ -28,6 +28,8 @@ private final class StripWorld: ActuatorPlatform, @unchecked Sendable {
     var otherAppMenu = false                // 9o9.19: a pop-up window of ANOTHER app is on screen
     var probes = 0
     var escapes = 0
+    var carried: Set<String> = []           // 9o9.23: names whose frame is a carried (stale) one while the strip is collapsed
+    var carriedOpen: Set<String> = []       // ... and while it is open
 
     init(pile: [String], drawn: [String]) { all = pile + [chev] + drawn }
 
@@ -48,6 +50,7 @@ private final class StripWorld: ActuatorPlatform, @unchecked Sendable {
                                 axDescription: "", axIdentifier: f.name == chev ? "" : f.name, frame: f.frame, source: .appExtras, isOnMenuBar: true,
                                 isOverflowChevron: f.name == chev, joinEvidence: .identifier)
             if f.name == chev { i.stripExpanded = expanded }
+            if (expanded ? carriedOpen : carried).contains(f.name) { i.stale = true }
             return i
         }
         return MenuBarSnapshot(items: SystemOverflow.mark(items), capturedAt: clock)
@@ -400,4 +403,39 @@ private func refoldWorld() -> StripWorld {
     #expect(!ActuationVerifier.foldVerdict(subject: key("P"), record: ["P", "S"].map(key), resolved: read).ok)   // subject behind the chevron
     #expect(!ActuationVerifier.foldVerdict(subject: key("S"), record: ["S", "P"].map(key), resolved: read).ok)   // P belongs right, is in the pile
     #expect(ActuationVerifier.foldVerdict(subject: key("S"), record: ["Gone", "S", "D"].map(key), resolved: read).ok)   // off-bar keys are ignored
+}
+
+@Test func aCarriedPileSubjectOpensTheStripAndDragsOnceTheOpenReadIsFresh() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.carried = ["X2"]
+    let r = await actuator(w).move(key("X2"), relation: .after(key("A")))
+    #expect(r.isVerified)
+    #expect(w.events == ["open", "drag", "close"])
+    #expect(!w.dragWhileCollapsed && !w.expanded)
+}
+
+@Test func aPileSubjectStillStaleOnTheOpenStripReadIsRefusedWithOneCloseAndNoDrag() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.carried = ["X2"]; w.carriedOpen = ["X2"]
+    let r = await actuator(w).move(key("X2"), relation: .after(key("A")))
+    guard case .failed = r else { Issue.record("expected failed, got \(r)"); return }
+    #expect(w.events == ["open", "close"])
+    #expect(!w.expanded)
+}
+
+@Test func aCarriedPileTargetOpensTheStripAndDragsOnceTheOpenReadIsFresh() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.carried = ["X1"]
+    let r = await actuator(w).move(key("A"), relation: .before(key("X1")))
+    #expect(r.isVerified)
+    #expect(w.events == ["open", "drag", "close"])
+    #expect(!w.dragWhileCollapsed)
+}
+
+@Test func aPileTargetStillStaleOnTheOpenStripReadIsRefusedWithOneCloseAndNoDrag() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.carried = ["X1"]; w.carriedOpen = ["X1"]
+    let r = await actuator(w).move(key("A"), relation: .before(key("X1")))
+    guard case .failed = r else { Issue.record("expected failed, got \(r)"); return }
+    #expect(w.events == ["open", "close"])
 }

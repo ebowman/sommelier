@@ -569,7 +569,7 @@ WiFi, TimeMachine).
 `LiveActuator.move` performs a move whose subject, target or drop neighbours are behind the chevron (`ActuationVerifier.overflowed` on
 the collapsed scan, i.e. a cross-fold move as `Reconciler.crossesFold` derives it) or in the churn zone (`setChurnZone` plus
 `ChurnRead`) inside ONE strip session (`stripNeed` = crossesFold || touches the churn zone; nil when the scan already shows the strip
-open, `MenuBarSnapshot.stripExpanded`, which is the user's doing). The mechanism is the shared `StripController` (StripController.swift;
+open, `MenuBarSnapshot.stripExpanded`, which is the user's doing). A STALE (carried) subject or target on the collapsed pre-scan is not a timeout when `stripNeed` is non-nil (9o9.23): the strip is opened first and the fresh scan taken with it open decides, where a still-stale subject is refused with one close and no drag. The mechanism is the shared `StripController` (StripController.swift;
 `ItemActivator`'s gdu.65 path uses the same expand/collapse code): click the chevron (70 ms hold, `SyntheticClick`), poll until
 `OverflowProbe.expanded` and the chevron and every hosted frame are equal on two polls (`openSteady`; timeout `stripExpandTimeout`
 1.5 s), act, then click the chevron until `expanded == false` (two tries of `stripCollapseTimeout` 1 s each; Escape does not close it).

@@ -522,10 +522,11 @@ public struct Reconciler: Sendable {
 
     /// 9o9.11: the one move across the fold the record asks for, or nil. With a collapsed strip the fold must be a PREFIX of the record:
     /// every key behind the chevron sits left of every drawn key. A violation is a pair (drawn Y, pile X) with the record placing Y
-    /// left of X. It is repaired by a pull-out first (9o9.22), else a push-in `Y .before(X)` (Y trusted and movable, X the record-first pile key right
-    /// of Y) or a pull-out `X .after(A)` (X trusted and movable, A the nearest trusted drawn key left of X in the record, not in the
-    /// trailing block). `excluded`: untrusted (uncorroborated / stale / held) and churned keys, never subject or target. The order among
-    /// pile keys is never touched.
+    /// left of X. It is repaired by a pull-out first (9o9.22): `X .after(A)` (X behind the chevron and movable, A the nearest trusted
+    /// drawn key left of X in the record, not in the trailing block); else a push-in `Y .before(X)` (Y trusted, drawn, movable, X the
+    /// record-first pile key right of Y). `excluded`: keys never chosen as subject or target (drawn keys that are untrusted
+    /// (uncorroborated / stale / held) and pile keys that are held; churn-zone keys are allowed, the strip session covers them). A stale pile key is NOT excluded: the actuator
+    /// opens the strip and the fresh read taken with it open decides (9o9.23). The order among pile keys is never touched.
     static func crossFoldMove(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
                               blockStart: Int) -> PlannedAction? {
         let rec = Dictionary(uniqueKeysWithValues: record.enumerated().map { ($1, $0) })
