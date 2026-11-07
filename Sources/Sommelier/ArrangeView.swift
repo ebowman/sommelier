@@ -74,7 +74,7 @@ struct ArrangeView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    StripView(vm: vm, strip: content.visible, placeholder: content.visiblePlaceholder, title: "Visible", subtitle: "The real menu bar, left to right", hint: ArrangeMenuRules.visibleHint(mode: vm.orderMode))
+                    StripView(vm: vm, strip: content.visible, placeholder: content.visiblePlaceholder, title: "Visible", subtitle: "The real menu bar, left to right")
                     StripView(vm: vm, strip: content.hidden, title: "Hidden", subtitle: "Shown on demand in the overflow panel")
                     StripView(vm: vm, strip: content.alwaysHidden, title: "Always hidden", subtitle: "Never shown")
                 }
@@ -106,8 +106,6 @@ struct ArrangeView: View {
             Button("Hide what does not fit…") { vm.askHideNotFitting() }
                 .disabled(!vm.hasNotFitting)
                 .help(vm.hasNotFitting ? "Move the items macOS pushed behind its chevron into Hidden" : "Nothing is behind the chevron")
-            Toggle("Let Sommelier keep an order for items I place", isOn: Binding(get: { vm.ordersPlacedItems }, set: { vm.setOrdersPlacedItems($0) }))
-                .help("Off: order follows macOS; Command-drag items in the menu bar to reorder. On: items you drop at a position in Visible are kept there by Sommelier (it moves the real mouse to do so).")
             Spacer()
             TextField("Filter", text: $vm.filter).textFieldStyle(.roundedBorder).frame(width: 180)
         }
@@ -264,14 +262,10 @@ struct CapsuleSlot: View {
         Button("Move to Visible") { vm.move(row.key, to: .visible) }.disabled(!vm.canMove(row.key, to: .visible))
         Button("Move to Hidden") { vm.move(row.key, to: .hidden) }.disabled(!vm.canMove(row.key, to: .hidden))
         Button("Move to Always hidden") { vm.move(row.key, to: .alwaysHidden) }.disabled(!vm.canMove(row.key, to: .alwaysHidden))
-        if section == .visible && ArrangeMenuRules.showsStepItems(mode: vm.orderMode, isGhost: row.isGhost) {
+        if section == .visible && ArrangeMenuRules.showsStepItems(isGhost: row.isGhost) {
             Divider()
             Button("Move left") { vm.step(row.key, .left) }.disabled(!vm.canStep(row.key, .left, rows: rows))
             Button("Move right") { vm.step(row.key, .right) }.disabled(!vm.canStep(row.key, .right, rows: rows))
-        }
-        if let title = ArrangeMenuRules.placementMenuTitle(row: row.isPlaced, mode: vm.orderMode) {
-            Divider()
-            Button(title) { vm.unplace(row.key) }
         }
         if case .failed = row.badge {
             Divider()
@@ -311,9 +305,6 @@ struct CapsuleView: View {
             ArrangeIcon(row: row).frame(width: 18, height: 18)
             Text(row.title).font(.system(size: 12)).lineLimit(1)
             BadgeView(badge: row.badge, movingHelp: row.moveReason)
-            if let sym = ArrangeMenuRules.placementSymbol(isPlaced: row.isPlaced, inert: row.placementInert) {
-                Image(systemName: sym).font(.system(size: 9)).foregroundStyle(.secondary).help(row.placementNote ?? "")
-            }
             if let n = row.capabilityNote {
                 Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.secondary).help(n)
             }
@@ -336,7 +327,6 @@ struct CapsuleView: View {
         if row.isGhost { parts.append("Waiting for the menu bar: this is where it is going, not where it is.") }
         if row.notFitting { parts.append(ArrangeBadge.notFitting.tooltip) }
         if row.badge != .none { parts.append(row.badgeTooltip) }
-        if let n = row.placementNote { parts.append(n) }
         if let n = row.capabilityNote { parts.append(n) }
         if row.notRunning { parts.append("The app is not running.") }
         return parts.joined(separator: "\n")

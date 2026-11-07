@@ -22,14 +22,14 @@ public struct DropTrace {
             + "observed: onBar=\(observed.onBar.count) stale=\(observed.staleOnBar.count) settled=\(settled)"
     }
 
-    /// The layout the drop produced: the key's neighbours in its section and whether it is now a user-placed key.
+    /// The layout the drop produced: the key's neighbours in its section.
     public static func layoutLine(id: Int, key: ItemKey, layout: Layout) -> String {
-        guard let sec = layout.section(of: key) else { return "\(tag(id)) layout: \(key) in no section; placed=no" }
+        guard let sec = layout.section(of: key) else { return "\(tag(id)) layout: \(key) in no section" }
         let keys = layout.keys(in: sec)
         let i = keys.firstIndex(of: key)!
         let l = i > 0 ? "\(keys[i - 1])" : "start"
         let r = i + 1 < keys.count ? "\(keys[i + 1])" : "end"
-        return "\(tag(id)) layout: \(sec.rawValue) after \(l) before \(r); placed=\(layout.placedSet.contains(key) ? "yes" : "no")"
+        return "\(tag(id)) layout: \(sec.rawValue) after \(l) before \(r)"
     }
 
     public static func rejectedLine(id: Int, why: String) -> String { "\(tag(id)) rejected: \(why)" }

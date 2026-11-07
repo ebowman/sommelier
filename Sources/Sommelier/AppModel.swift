@@ -100,17 +100,6 @@ final class AppModel {
         }
     }
 
-    /// Order mode switch (8z5.5); reads the published layout, so Settings and Arrange agree.
-    var ordersPlacedItems: Bool {
-        get { state.layout.orderMode == .placedOnly }
-        set {
-            guard let engine else { return }
-            let mode: OrderMode = newValue ? .placedOnly : .macOSOwns
-            AppLog.log(.arrange, "arrange: order mode -> \(mode)")
-            Task { _ = await engine.setOrderMode(mode) }
-        }
-    }
-
     /// Inline "show the rest": click handling, debounce and click -> converged timing (SommelierCore.RevealController).
     @ObservationIgnored private(set) var reveal: RevealController!
 

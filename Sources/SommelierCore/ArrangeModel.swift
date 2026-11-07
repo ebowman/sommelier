@@ -85,12 +85,6 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var badgeTooltip: String { badge == .moving ? (moveReason ?? badge.tooltip) : badge.tooltip }
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
     public var capabilityNote: String?
-    /// sommelier-8z5.3: the key is in `layout.placed`.
-    public var isPlaced: Bool = false
-    /// Placed but not enforced (order mode macOSOwns): the badge shows it as remembered only.
-    public var placementInert: Bool = false
-    /// Tooltip text for a placed item (nil when not placed); rendered by the badge in 8z5.5.
-    public var placementNote: String? = nil
     public var id: String { isGhost ? key.description + "#ghost" : key.description }
 
     public var unitTooltip: String? { HideUnitNames.unitNote(mates: unitMates, app: unitApp) }
@@ -165,8 +159,6 @@ public enum ArrangeSections {
         switch sec {
         case .visible:
             guard observed.onBar.contains(key) else { return false }
-            // macOSOwns: macOS decides the order, so a shown item is in place wherever it landed on the bar.
-            if !layout.enforcesOrder { return true }
             return drawnOrder(layout.visible, observed) == drawnOrder(observed.onBar, observed, within: layout.visible)
         case .hidden:
             return observed.parked.contains(key) || (showHiddenSection && observed.onBar.contains(key))
@@ -230,9 +222,7 @@ public enum ArrangeSections {
             let cap = capabilities(k)
             let anchor = !cap.canMove
             let info = items[k]
-            // macOSOwns: a Visible key already on the bar is never "moving" (nothing reorders it); only arrival (ghost) is pending.
-            let orderFree = !layout.enforcesOrder && layout.section(of: k) == .visible && onBar.contains(k)
-            let pending = ghost || (awaiting.contains(k) && !orderFree)
+            let pending = ghost || awaiting.contains(k)
             let stale = !ghost && observed.staleOnBar.contains(k) && !observed.carriedRecently.contains(k)   // gdu.120: recently verified rows look ordinary
             var b = hasObs
                 ? badge(status: suppressedStatus.contains(k) ? nil : perItem[k], running: running, pendingPlacement: pending, isAnchor: anchor, timedOut: timedOut.contains(k),
@@ -245,10 +235,7 @@ public enum ArrangeSections {
                               notFitting: observed.systemOverflow.contains(k), notRunning: !running, unit: units.unit(of: k),
                               unitMates: mates(k), unitApp: units.trackedKey(of: k).flatMap(unitAppName), capabilityNote: (cap.canMove && cap.canHide) ? nil : cap.reason)
             r.staleFrame = stale
-            r.isPlaced = layout.placed.contains(k)
-            r.placementInert = r.isPlaced && !layout.enforcesOrder
-            r.placementNote = !r.isPlaced ? nil : (layout.enforcesOrder ? "Sommelier keeps this item here" : "Placement remembered, not enforced (order follows macOS)")
-            if b == .moving, !ghost, layout.enforcesOrder { r.moveReason = moveReasons[k] }
+            if b == .moving, !ghost { r.moveReason = moveReasons[k] }
             return r
         }
 
@@ -264,7 +251,7 @@ public enum ArrangeSections {
                     if case .module = k { continue }
                     if items[k] == nil && !parked.contains(k) { vNot.append(row(k, ghost: false, running: false)); continue }
                     ghost = true
-                } else if layout.enforcesOrder && awaiting.contains(k) && !placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {
+                } else if awaiting.contains(k) && !placementMatches(k, layout: layout, observed: observed, showHiddenSection: showHiddenSection) {
                     ghost = true
                 }
                 guard ghost else { continue }
@@ -343,19 +330,11 @@ public enum ArrangeSections {
         revealSkipNotice(perItem: state.perItem, showHiddenSection: state.showHiddenSection, showAlwaysHidden: state.showAlwaysHidden)
     }
 
-    /// Status-line suffix naming the order mode (only shown when converged and nothing is pending).
-    static func orderSuffix(_ mode: OrderMode, _ placed: Int) -> String {
-        switch mode {
-        case .macOSOwns: return "Order follows macOS"
-        case .placedOnly: return placed == 0 ? "No placed items" : "Keeping the order of \(placed) placed item\(placed == 1 ? "" : "s")"
-        }
-    }
-
     /// Bottom line: errors and counts first, "Converged" only when nothing is pending or failed.
     public static func statusLine(perItem: [ItemKey: ItemStatus], lastError: EngineError?, isConverged: Bool, inFlight: Bool,
                                   pendingAwaiting: Int = 0, observationSettled: Bool = true,
                                   notice: String? = nil, pollPausedNames: [String]? = nil,
-                                  orderMode: OrderMode? = nil, placedCount: Int = 0) -> String {
+                                  showsBarMatch: Bool = false) -> String {
         let pending = perItem.values.filter { if case .pending = $0 { return true }; if case .moving = $0 { return true }; return false }.count
         let failed = perItem.values.filter { if case .failed = $0 { return true }; return false }.count
         let waitingPos = perItem.values.filter { if case .waitingForPosition = $0 { return true }; return false }.count
@@ -369,7 +348,7 @@ public enum ArrangeSections {
         if waitingPos > 0 { parts.append("Waiting for a trustworthy read of \(waitingPos) item\(waitingPos == 1 ? "" : "s")") }
         if parts.isEmpty {
             var line = notice.map { "\($0) · \(base)" } ?? base
-            if base == "Converged", let m = orderMode { line += " · " + orderSuffix(m, placedCount) }
+            if base == "Converged", showsBarMatch { line += " · Menu bar matches" }   // TODO(9o9.5): full status wording
             if let n = pollPausedNames { line += " · " + pollPausedText(n) }
             return line
         }
@@ -382,13 +361,12 @@ public enum ArrangeSections {
 // MARK: - Drops, steps and toolbar actions
 
 /// Which keys of a submitted move the window tracks (spinner/timeout). Hidden-strip reorders are our own data (never tracked);
-/// in macOSOwns a key that stays in Visible is never tracked either (macOS owns the order, nothing to verify).
+/// a reorder inside Visible is tracked (the bar must follow the record).
 public func keysToTrack(moved: [ItemKey], old: Layout, new: Layout) -> [ItemKey] {
     moved.filter { k in
         let was = old.section(of: k), now = new.section(of: k)
         if was == now {
             if now != .visible { return false }
-            if !new.enforcesOrder { return false }
         }
         return true
     }
@@ -459,8 +437,6 @@ public enum ArrangeCapabilities {
 }
 
 public enum ArrangeDrop {
-    /// sommelier-8z5.3: refusal for a pure reorder inside Visible while macOS owns the order.
-    public static let orderFollowsMacOS = "Order follows macOS here. Command-drag the item in the menu bar to move it, or turn on \"Let Sommelier keep an order for items I place\"."
     public static let noObservation = "No observation of the menu bar yet: moving items needs one."
     /// gdu.101: refusal for a drop (or step) in Visible next to an item whose position has not been refreshed.
     public static let barNotFullyObserved = "The bar is not fully observed right now; try again in a moment."
@@ -490,8 +466,6 @@ public enum ArrangeDrop {
         /// The drop would not change the layout (e.g. dropped on its own position).
         case noop
         case rejected(String)
-        /// sommelier-8z5.3: the key (and its hide-unit mates, listed) stopped being "placed"; nothing moves, nothing is tracked.
-        case unplaced(Layout, [ItemKey])
         /// `moved` lists every key that moves (the unit's siblings come along, `key` first). `willNotFit`: the target is left
         /// of the overflow boundary, so the item will land behind macOS's chevron.
         case move(layout: Layout, moved: [ItemKey], willNotFit: Bool)
@@ -513,27 +487,10 @@ public enum ArrangeDrop {
         let cap = capabilities(key)
         guard cap.canMove else { return .rejected(cap.reason ?? "This item cannot be moved.") }
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
-        // sommelier-8z5.3: while macOS owns the order a pure reorder inside Visible (any index, any step) is refused. Evaluated after
-        // the observation/capability/self-positioning refusals so their messages win; before the move so nothing is computed or saved.
-        if !showRequest, !layout.enforcesOrder, section == .visible, layout.section(of: key) == .visible { return .rejected(orderFollowsMacOS) }
         var l = layout
         let moved = l.move(key, to: section, index: index, units: units)
         if !showRequest, l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
-        // gdu.89: a drop INTO Visible (from anywhere, siblings included) is the user's placement: it creates an order obligation.
-        // Order-only drops inside Hidden/Always hidden are our own data and create none (and a hide drops the key's obligation: `move`).
-        // sommelier-8z5.3: only when Sommelier enforces order; in macOSOwns `placed` stays untouched (inert).
-        if section == .visible, layout.enforcesOrder { l.markPlaced(moved) }
         return .move(layout: l, moved: moved, willNotFit: willNotFit && section == .visible)
-    }
-
-    /// Stops managing the order of `key` and its hide-unit mates: removes them from `placed`, moves nothing. `.noop` when none is placed.
-    public static func unplace(layout: Layout, key: ItemKey, units: HideUnitRule = .ownerKeys) -> Outcome {
-        let unit = units.unit(of: key)
-        let keys = layout.placed.filter { $0 == key || units.unit(of: $0) == unit }
-        guard !keys.isEmpty else { return .noop }
-        var l = layout
-        l.placed.removeAll { keys.contains($0) }
-        return .unplaced(l, keys)
     }
 
     /// The `Layout.move` index for dropping into the gap `slot` (0...rows.count) of a strip: the position of the first row
@@ -674,7 +631,7 @@ public enum ArrangeDrop {
     /// parked items, except that keys the current layout keeps in Always hidden stay there. Layout keys that are not
     /// observed (apps not running) keep their section, appended at the end. The new item policy is preserved.
     public static func adopt(observed: ObservedOrder, current: Layout, units: HideUnitRule = .ownerKeys) -> Layout {
-        var l = Layout(newItemPolicy: current.newItemPolicy, orderMode: current.orderMode)
+        var l = Layout(newItemPolicy: current.newItemPolicy)
         var seen = Set<ItemKey>()
         for k in observed.onBar where seen.insert(k).inserted { l.visible.append(k) }
         let always = Set(current.alwaysHidden)

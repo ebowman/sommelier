@@ -22,7 +22,7 @@ public struct FileLayoutStore: LayoutStore {
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { return (.empty, []) }
         let data = try Data(contentsOf: url)
-        let decoded: (layout: Layout, warnings: [String])
+        let decoded: (layout: Layout, warnings: [String], adoptBarOrder: Bool)
         do {
             decoded = try Layout.decode(data)
         } catch {

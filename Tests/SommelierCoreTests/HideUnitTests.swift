@@ -48,7 +48,7 @@ struct HideUnitTests {
 
     @Test func decodeReportsNormalization() throws {
         let json = #"{"visible":["status:com.a::1"],"hidden":["status:com.a::2"]}"#
-        let (l, w) = try Layout.decode(Data(json.utf8))
+        let (l, w, _) = try Layout.decode(Data(json.utf8))
         #expect(l.visible == [a1, a2]); #expect(l.hidden.isEmpty)
         #expect(w.contains { $0.contains("hide units normalized") && $0.contains("status:com.a::2") })
     }

@@ -346,11 +346,7 @@ public actor LayoutEngine {
             }
             let (l0, moved) = pruned.validatedReportingNormalization(units: rule)
             layout = l0
-            if !l0.enforcesOrder || !l0.placed.isEmpty { logOrderMode(l0) }
-            if l0.enforcesOrder && l0.placed.isEmpty {
-                // gdu.89: every layout written before the `placed` field. The engine never infers an order obligation from a saved order.
-                log("layout loaded: no order obligations exist (no item was placed by you in Arrange); the engine will plan no moves, items keep the order macOS gives them")
-            }
+            if l0.pendingAdoption { log("layout: legacy order fields found; the bar order will be adopted on the first complete, settled observation (no order move is planned until then)") }
             movedAtLoad = moved
             if !moved.isEmpty {
                 AppLog.log(.engine, "layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
@@ -405,11 +401,9 @@ public actor LayoutEngine {
         if !moved.isEmpty {
             log("layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
         }
-        // gdu.89: order obligations. A user placement (Arrange submit) carries its placed keys in `requested.placed`; a call that is not
-        // a user placement (a layout built from a scan) can neither add nor clear obligations. Either way only visible keys can hold one.
-        new.placed = userPlacement ? requested.placed : layout.placed
-        new = new.pruningPlaced()
-        new.orderMode = userPlacement ? requested.orderMode : layout.orderMode   // a scan-built layout never changes who owns the order (8z5.1)
+        // 9o9.2: the pending-adoption flag is engine state: a scan-built layout never changes it. A user placement that changes Visible
+        // is itself the order, so it supersedes an adoption that has not happened yet.
+        new.pendingAdoption = layout.pendingAdoption && !(userPlacement && new.visible != layout.visible)
         // gdu.79: keys this call moved into `visible` are the user's explicit placement; the rest keep the status they had.
         let wasVisible = Set(layout.visible)
         userPlacedVisible = userPlacedVisible.intersection(new.visible)
@@ -442,32 +436,38 @@ public actor LayoutEngine {
         return stamp
     }
 
-    private func logOrderMode(_ l: Layout) {
-        if l.enforcesOrder { log("order mode: placed items only (\(l.placed.count) placed)") }
-        else { log("order mode: macOS owns the order (\(l.placed.count) remembered placements, not enforced)") }
+    /// Reorders `visible` to the observed on-bar order (keys not on the bar keep their relative order, inserted after their nearest
+    /// preceding observed neighbour), saves, clears `pendingAdoption`. Called only with a complete, settled observation.
+    func adoptBarOrder(_ obs: ObservedOrder) async {
+        let n = layout.pendingAdoption ? Self.adoptedVisible(layout.visible, bar: obs.onBar) : layout.visible
+        var l = layout
+        l.visible = n
+        l.pendingAdoption = false
+        layout = l
+        do { try store.save(l) } catch { log("cannot save layout: \(error)") }
+        log("layout: adopted bar order on upgrade (\(n.count) keys)")
+        _ = await publishLayout(l)
     }
 
-    /// 8z5.2: switches who owns the order. Unchanged: returns the current revision, no write. Otherwise persists, bumps the revision,
-    /// publishes and requests a pass. `placed` is untouched (macOSOwns keeps the keys recorded; placedOnly re-arms them).
-    @discardableResult
-    public func setOrderMode(_ mode: OrderMode) async -> LayoutRevision {
-        let current: LayoutRevision = await MainActor.run { [state] in LayoutRevision(revision: state.layoutRevision, passesStarted: state.passesStarted) }
-        guard loaded else {   // never overwrite a layout file that failed to load with a default layout
-            log("order mode: ignored, layout not loaded")
-            return current
+    /// Pure: `visible` reordered so its on-bar keys follow `bar`; off-bar keys stay after their nearest preceding neighbour in `visible`
+    /// (the one that precedes them in the old order, after that neighbour's move), or lead when none precedes them.
+    static func adoptedVisible(_ visible: [ItemKey], bar: [ItemKey]) -> [ItemKey] {
+        let inVisible = Set(visible)
+        var seen = Set<ItemKey>()
+        let order = bar.filter { inVisible.contains($0) && seen.insert($0).inserted }
+        let onBar = Set(order)
+        // Each off-bar key hangs on the nearest preceding key of `visible` that is on the bar (nil = leading); runs keep relative order.
+        var leading: [ItemKey] = []
+        var after: [ItemKey: [ItemKey]] = [:]
+        var anchor: ItemKey?
+        for k in visible {
+            if onBar.contains(k) { anchor = k }
+            else if let a = anchor { after[a, default: []].append(k) }
+            else { leading.append(k) }
         }
-        if layout.orderMode == mode { return current }
-        noteUserAction()
-        let new = layout.withOrderMode(mode)
-        layout = new
-        noteSupersede("setOrderMode")
-        do { try store.save(new) } catch { log("cannot save layout: \(error)") }
-        logOrderMode(new)
-        let stamp = await publishLayout(new)
-        await clearFailures()   // also ends any position wait
-        if !new.enforcesOrder { await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] } }
-        requestReconcile(supersede: true, reason: "setOrderMode", userInitiated: true)
-        return stamp
+        var out = leading
+        for k in order { out.append(k); out += after[k] ?? [] }
+        return out
     }
 
     /// A request arrived that makes a running pass's plan stale: invalidate it and abandon an observation in progress.
@@ -741,7 +741,8 @@ public actor LayoutEngine {
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads), placed: layout.enforcesOrder ? layout.placedSet : [])   // 8z5.2: macOS owns the order -> nothing is placed, nothing may move
+                                         churn: SystemOverflowRule.churnZone(recentReads),
+                                         placed: layout.pendingAdoption ? [] : Set(layout.visible))   // 9o9.2: every Visible key is enforced; until the upgrade adoption completes nothing may move. TODO(system-of-record): 9o9.3 rewrites the order phase
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
         // as an unknown heuristic item at the unit's frame): the engine plans NOTHING, not even other units, and records no
         // new items. A hold is short-lived; the pass after `endTransientReveal` reconciles.
@@ -1262,6 +1263,16 @@ public actor LayoutEngine {
         delayed[Self.storeRetryReason]?.cancel(); delayed[Self.storeRetryReason] = nil
         pruneFailures(obs)
 
+        // (c0) upgrade migration (9o9.2): the first complete, settled observation after upgrading from an order-mode layout becomes the record.
+        // Only a complete read whose on-bar frames are ALL fresh qualifies (a carried frame, even a recently verified one, may be a wrong slot).
+        if layout.pendingAdoption {
+            if observedCompleteness == .complete, obs.staleOnBar.isEmpty { await adoptBarOrder(obs) }
+            else {
+                let reason = observedCompleteness != .complete ? "the read is \(observedCompleteness.rawValue)" : "on-bar frames are not fresh"
+                log("layout: adoption waiting: \(reason) (\(obs.staleOnBar.count) stale frames)")
+            }
+        }
+
         // (c) plan
         var plan = makePlan(obs)
 
@@ -1496,11 +1507,6 @@ public actor LayoutEngine {
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
             }
             guard let action = plan.actions.first, case .move(let key, let rel) = action else { break }
-            if !layout.enforcesOrder {   // 8z5.2: deterministic, never reached (the planner got an empty placed set)
-                log("engine: refusing move of \(key): macOS owns the order")
-                plan.actions = []; plan.phase = .converged
-                break
-            }
             if !effectiveCaps()(key).canMove {
                 log("engine: refusing move of \(key): capability forbids")
                 failures[key] = .unsupportedItem(reason: "capability forbids")
@@ -1525,10 +1531,10 @@ public actor LayoutEngine {
                 switch rel { case .before(let t), .after(let t): target = t; default: break }
                 let text = OrderMoveNotice.text(name: name(key), relation: rel, target: target.map(name))
                 switch rel {
-                case .after(let t): log("order: moving \(key) after \(t) (user placement)")
-                case .before(let t): log("order: moving \(key) before \(t) (user placement)")
-                case .leftmost: log("order: moving \(key) to the left end (user placement)")
-                case .rightmost: log("order: moving \(key) to the right end (user placement)")
+                case .after(let t): log("order: moving \(key) after \(t) (record order)")
+                case .before(let t): log("order: moving \(key) before \(t) (record order)")
+                case .leftmost: log("order: moving \(key) to the left end (record order)")
+                case .rightmost: log("order: moving \(key) to the right end (record order)")
                 }
                 log("order: why: \(text); observed around \(key): \(DropTrace.around(key, in: obs.onBar))")   // gdu.102
                 await publish { $0.orderMoveNotice = text; $0.orderMoveReasons[key] = text }

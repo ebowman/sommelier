@@ -41,12 +41,12 @@ import Testing
         #expect(line.contains("between A(\(a)) and B(\(b))"))
     }
 
-    @Test func layoutLineAfterBeforePlaced() {
+    @Test func layoutLineAfterBefore() {
         let a = key("a"), b = key("b"), m = key("m")
-        let l = Layout(visible: [a, m, b], placed: [m])
-        #expect(DropTrace.layoutLine(id: 7, key: m, layout: l) == "drop#7 layout: visible after \(a) before \(b); placed=yes")
+        let l = Layout(visible: [a, m, b])
+        #expect(DropTrace.layoutLine(id: 7, key: m, layout: l) == "drop#7 layout: visible after \(a) before \(b)")
         let l2 = Layout(visible: [b], hidden: [m, a])
-        #expect(DropTrace.layoutLine(id: 8, key: m, layout: l2) == "drop#8 layout: hidden after start before \(a); placed=no")
+        #expect(DropTrace.layoutLine(id: 8, key: m, layout: l2) == "drop#8 layout: hidden after start before \(a)")
         #expect(DropTrace.layoutLine(id: 9, key: a, layout: l2).contains("hidden after \(m) before end"))
         #expect(DropTrace.layoutLine(id: 10, key: key("zz"), layout: l2).contains("no section"))
     }
@@ -78,7 +78,7 @@ import Testing
         #expect(t.entries[m]?.dropID == 7)
         t.retry(passesStarted: 3, now: now)
         #expect(t.entries[m]?.dropID == 7)
-        let layout = Layout(visible: [a, m, b], placed: [m])
+        let layout = Layout(visible: [a, m, b])
         let lines = t.update(observed: ObservedOrder(onBar: [a, m, b], parked: []), layout: layout, perItem: [m: .inPlace], passSequence: 4,
                              showHiddenSection: false, now: now.addingTimeInterval(2))
         #expect(lines.count == 1)
@@ -92,7 +92,7 @@ import Testing
         var t = ArrangeTracker()
         let now = Date()
         t.record([m], passesStarted: 0, now: now, dropID: 2)
-        let layout = Layout(visible: [a, m], placed: [m])
+        let layout = Layout(visible: [a, m])
         let failed = t.update(observed: ObservedOrder(onBar: [m, a], parked: []), layout: layout,
                               perItem: [m: .failed(.timeout)], passSequence: 1, showHiddenSection: false, now: now.addingTimeInterval(1))
         #expect(failed.first?.hasPrefix("drop#2 done: ") == true)

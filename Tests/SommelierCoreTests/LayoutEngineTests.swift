@@ -148,7 +148,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let split = Layout.placedAll(visible: [a1, k("B")], hidden: [a2])
         await r.engine.setLayout(split)
         // gdu.89: the engine-normalized sibling a2 is not a user placement, so it is not in `placed`.
-        let want = Layout(visible: [a1, k("B"), a2], placed: [a1, k("B")], orderMode: .placedOnly)
+        let want = Layout(visible: [a1, k("B"), a2])
         #expect(r.state.layout == want)
         #expect(r.state.lastNormalization == [a2])
         #expect((try? r.store.load()) == want)

@@ -14,7 +14,7 @@ private func mi(_ n: String, x: CGFloat, join: JoinEvidence = .identifier, ccAll
                  key: k(n), confidence: .exact)
 }
 private func plan(_ items: [ResolvedItem]) -> Plan {
-    let layout = Layout(visible: [k("a"), k("airmail"), k("l"), k("z")], placed: [k("airmail")])
+    let layout = Layout(visible: [k("a"), k("airmail"), k("l"), k("z")])
     return Reconciler().plan(observed: ObservedOrder(resolved: items), layout: layout, capabilities: free, placed: [k("airmail")])
 }
 

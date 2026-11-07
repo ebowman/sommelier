@@ -116,7 +116,7 @@ final class ArrangeViewModel {
                                    inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
                                    observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice,
                                    pollPausedNames: pollPausedNames,
-                                   orderMode: state.layout.orderMode, placedCount: state.layout.placed.count)
+                                   showsBarMatch: true)
     }
     /// Display names of the items whose flapping paused the poll, nil when it is not paused (gdu.58).
     private var pollPausedNames: [String]? {
@@ -243,17 +243,6 @@ final class ArrangeViewModel {
         return false
     }
 
-    /// The order-mode switch reads the engine's published layout (no local copy), so Arrange and Settings stay in sync.
-    var orderMode: OrderMode { state.layout.orderMode }
-    var ordersPlacedItems: Bool { orderMode == .placedOnly }
-
-    func setOrdersPlacedItems(_ on: Bool) { model.ordersPlacedItems = on }
-
-    /// "Stop managing order" / "Forget placement": drop the key (and its unit mates) from `placed`.
-    func unplace(_ key: ItemKey) {
-        _ = submit(ArrangeDrop.unplace(layout: layout, key: key, units: units), key: key, dropID: nextDropID())
-    }
-
     func step(_ key: ItemKey, _ dir: ArrangeDrop.Direction) {
         _ = submit(ArrangeDrop.step(layout: layout, rows: content.visible.rows, key: key, dir, capabilities: cap,
                                     observationAvailable: observationAvailable, bar: state.observed.onBar, displayName: displayName, units: units), key: key, dropID: nextDropID())
@@ -321,16 +310,11 @@ final class ArrangeViewModel {
                 AppLog.log(.arrange, "arrange: " + DropTrace.doneLine(id: dropID, outcome: "rejected"))
             }
             return false
-        case .unplaced(let l, let keys):
-            message = nil
-            AppLog.log(.arrange, "arrange: unplaced \(key)" + (keys.count > 1 ? " (+mates \(keys.filter { $0 != key }.map { "\($0)" }.joined(separator: ", ")))" : ""))
-            apply(l, tracking: [], basedOn: state.layoutRevision, dropID: dropID)
-            return true
         case .move(let l, let moved, let willNotFit):
             let old = layout
             var track: [ItemKey] = []
             message = willNotFit ? "Dropped left of the overflow boundary: macOS will keep it behind the chevron." : nil
-            track = keysToTrack(moved: moved, old: old, new: l)   // hidden-strip reorders and (macOSOwns) Visible stayers are not tracked
+            track = keysToTrack(moved: moved, old: old, new: l)   // hidden-strip reorders are not tracked
             AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
             if let dropID { AppLog.log(.arrange, "arrange: " + DropTrace.layoutLine(id: dropID, key: key, layout: l)) }
             apply(l, tracking: track, basedOn: state.layoutRevision, moved: Set(moved), dropID: dropID, intent: intent)

@@ -145,7 +145,7 @@ private func obsItem(_ n: String, x: CGFloat, stale: Bool, recent: Bool) -> Reso
     let res = [obsItem("a", x: 100, stale: false, recent: false), obsItem("s1", x: 140, stale: true, recent: true), obsItem("s2", x: 180, stale: true, recent: false)]
     let o = ObservedOrder(resolved: res)
     #expect(o.staleOnBar == [s1, s2] && o.carriedRecently == [s1])
-    let c = ArrangeSections.make(observed: o, layout: Layout(visible: [a, s1, s2]).withOrderMode(.placedOnly), items: [:], perItem: [:],
+    let c = ArrangeSections.make(observed: o, layout: Layout(visible: [a, s1, s2]), items: [:], perItem: [:],
                                  capabilities: { _ in Capability(canMove: true, canHide: true) })
     #expect(c.visible.rows.first { $0.key == s1 }?.badge != .stale)
     #expect(c.visible.rows.first { $0.key == s2 }?.badge == .stale)
@@ -211,7 +211,7 @@ private func carriedAfter(_ seconds: TimeInterval) -> MenuBarSnapshot {
     let o = ObservedOrder(resolved: res)
     let k = ItemKey.status(ownerKey: istat.name, autosaveName: wid)
     #expect(o.carriedRecently.contains(k))
-    let c = ArrangeSections.make(observed: o, layout: Layout(visible: o.onBar).withOrderMode(.placedOnly), items: [:], perItem: [:],
+    let c = ArrangeSections.make(observed: o, layout: Layout(visible: o.onBar), items: [:], perItem: [:],
                                  capabilities: { _ in Capability(canMove: true, canHide: true) })
     #expect(c.visible.rows.first { $0.key == k }?.badge != .stale)
 }

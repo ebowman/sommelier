@@ -42,8 +42,6 @@ public enum EngineError: Equatable, Sendable {
 public final class EngineState {
     public var observed: ObservedOrder
     public var layout: Layout
-    /// Who owns the order (8z5.2); published with the layout.
-    public var orderMode: OrderMode { layout.orderMode }
     /// Display metadata for currently known items (parked or on bar), refreshed with every adopted scan.
     public var items: [ItemKey: ItemInfo] = [:]
     /// The engine's hide-unit rule (gdu.75) for the items above: Arrange and the overflow panel group with it, as the planner does.

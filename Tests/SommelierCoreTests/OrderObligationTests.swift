@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import SommelierCore
 
-// gdu.89: only an explicit user placement (Layout.placed) creates an order obligation on the real bar.
+// gdu.89 / 9o9.2: the planner's `placed` parameter is the set of keys that carry an order obligation; the engine passes every Visible key.
 
 private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosaveName: n) }
 private func free(_: ItemKey) -> Capability { Capability(canMove: true, canHide: true) }
@@ -11,7 +11,7 @@ private func obs(_ bar: [String], _ parked: [String] = [], ovf: [String] = [], c
     ObservedOrder(onBar: bar.map(k), parked: parked.map(k), systemOverflow: Set(ovf.map(k)), overflowChevron: chevron.map(k))
 }
 private func lay(v: [String], h: [String] = [], placed: [String] = []) -> Layout {
-    Layout(visible: v.map(k), hidden: h.map(k), placed: placed.map(k))
+    Layout(visible: v.map(k), hidden: h.map(k))   // `placed` documents which keys the test hands to the planner as obligations
 }
 private func moves(_ p: Plan) -> [PlannedAction] { p.actions.filter { if case .move = $0 { return true }; return false } }
 
@@ -27,7 +27,7 @@ struct OrderObligationPlannerTests {
             let anchors = Set(keys.shuffled(using: &g).prefix(Int.random(in: 0...3, using: &g)))
             let caps = { (key: ItemKey) in Capability(canMove: !anchors.contains(key), canHide: true) }
             let layout = Layout(visible: saved)
-            let p = rec.plan(observed: ObservedOrder(onBar: bar, parked: []), layout: layout, capabilities: caps, placed: layout.placedSet)
+            let p = rec.plan(observed: ObservedOrder(onBar: bar, parked: []), layout: layout, capabilities: caps, placed: [])
             #expect(p.phase == .converged, "seed \(seed)")
             #expect(p.actions.isEmpty, "seed \(seed)")
         }
@@ -67,7 +67,7 @@ struct OrderObligationPlannerTests {
             var g = SplitMix64(seed: UInt64(seed))
             let keys = (0..<Int.random(in: 3...14, using: &g)).map { k("i\($0)") }
             let placed = Set(keys.shuffled(using: &g).prefix(Int.random(in: 1...3, using: &g)))
-            let layout = Layout(visible: keys.shuffled(using: &g), placed: Array(placed))
+            let layout = Layout(visible: keys.shuffled(using: &g))
             let anchors = Set(keys.shuffled(using: &g).prefix(Int.random(in: 0...3, using: &g)))
             let caps = { (key: ItemKey) in Capability(canMove: !anchors.contains(key), canHide: true) }
             let plan = rec.plan(observed: ObservedOrder(onBar: keys.shuffled(using: &g), parked: []), layout: layout, capabilities: caps, placed: placed)
@@ -106,7 +106,7 @@ struct OrderObligationPlannerTests {
         let clock = ItemKey.module(name: "Clock")
         let caps = { (key: ItemKey) in key == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }
         let o = ObservedOrder(onBar: [k("k"), k("a"), clock], parked: [])
-        let p = rec.plan(observed: o, layout: Layout(visible: [k("gone"), k("k")], placed: [k("k")]), capabilities: caps, placed: [k("k")])
+        let p = rec.plan(observed: o, layout: Layout(visible: [k("gone"), k("k")]), capabilities: caps, placed: [k("k")])
         #expect(p.actions == [.move(k("k"), .after(k("a")))])
     }
 
@@ -114,12 +114,12 @@ struct OrderObligationPlannerTests {
     @Test func placedKeyFromHiddenIsShownThenMoved() {
         let layout = lay(v: ["a", "k", "b"], placed: ["k"])
         var o = obs(["a", "b"], ["k"])
-        let p1 = rec.plan(observed: o, layout: layout, capabilities: free, placed: layout.placedSet)
+        let p1 = rec.plan(observed: o, layout: layout, capabilities: free, placed: [k("k")])
         #expect(p1.phase == .membership)
         #expect(p1.actions == [.show(k("k"))])
         for a in p1.actions { o = PlanSimulator.apply(a, to: o) }
         #expect(o.onBar == ["a", "b", "k"].map(k))
-        let p2 = rec.plan(observed: o, layout: layout, capabilities: free, placed: layout.placedSet)
+        let p2 = rec.plan(observed: o, layout: layout, capabilities: free, placed: [k("k")])
         #expect(p2.phase == .order)
         #expect(p2.actions == [.move(k("k"), .after(k("a")))])
     }
@@ -127,78 +127,64 @@ struct OrderObligationPlannerTests {
     @Test func aShownUnplacedKeyIsNotOrdered() {
         let layout = lay(v: ["k", "a", "b"])
         var o = obs(["a", "b"], ["k"])
-        let p1 = rec.plan(observed: o, layout: layout, capabilities: free, placed: layout.placedSet)
+        let p1 = rec.plan(observed: o, layout: layout, capabilities: free, placed: [])
         for a in p1.actions { o = PlanSimulator.apply(a, to: o) }
-        let p2 = rec.plan(observed: o, layout: layout, capabilities: free, placed: layout.placedSet)
+        let p2 = rec.plan(observed: o, layout: layout, capabilities: free, placed: [])
         #expect(p2.phase == .converged)
     }
 
     // 3: a satisfied placement stays an obligation
     @Test func aSatisfiedPlacementIsEnforcedAgainAfterMacOSMovesTheKey() {
         let layout = lay(v: ["a", "k", "b"], placed: ["k"])
-        #expect(rec.plan(observed: obs(["a", "k", "b"]), layout: layout, capabilities: free, placed: layout.placedSet).phase == .converged)
-        let p = rec.plan(observed: obs(["k", "a", "b"]), layout: layout, capabilities: free, placed: layout.placedSet)
+        #expect(rec.plan(observed: obs(["a", "k", "b"]), layout: layout, capabilities: free, placed: [k("k")]).phase == .converged)
+        let p = rec.plan(observed: obs(["k", "a", "b"]), layout: layout, capabilities: free, placed: [k("k")])
         #expect(p.actions == [.move(k("k"), .after(k("a")))])
     }
 }
 
-struct LayoutPlacedModelTests {
-    // (e)
-    @Test func adoptClearsPlaced() {
-        let current = Layout(visible: [k("a"), k("b")], placed: [k("a")])
+struct LayoutRecordModelTests {
+    @Test func adoptKeepsTheObservedOrderAsTheRecord() {
+        let current = Layout(visible: [k("a"), k("b")])
         let adopted = ArrangeDrop.adopt(observed: obs(["b", "a"]), current: current)
-        #expect(adopted.placed.isEmpty)
         #expect(adopted.visible == [k("b"), k("a")])
     }
 
-    @Test func builderAndFirstLaunchProduceNoPlaced() {
-        let res = FakeMenuBar.resolve(FakeMenuBar.snapshot(order: ["A", "B", "C"].map(k), hidden: [k("C")]))
-        #expect(LayoutBuilder.build(from: res).layout.placed.isEmpty)
-    }
-
-    @Test func leavingTheLayoutOrVisibleDropsThePlacement() {
-        var l = Layout(visible: [k("a"), k("b")], hidden: [k("c")], placed: [k("a"), k("b")])
+    @Test func leavingVisibleOrTheLayoutKeepsTheLayoutValid() {
+        var l = Layout(visible: [k("a"), k("b")], hidden: [k("c")])
         l.move(k("a"), to: .hidden)
-        #expect(l.placed == [k("b")])
+        #expect(l.visible == [k("b")])
         l.remove(k("b"))
-        #expect(l.placed.isEmpty)
-        #expect(l.isValid)
-        #expect(!Layout(visible: [k("a")], placed: [k("zzz")]).isValid)
+        #expect(l.visible.isEmpty && l.isValid)
     }
 
-    @Test func hideNotFittingNeverAddsPlaced() {
-        var l = Layout(visible: [k("a"), k("b"), k("c")], placed: [k("a")])
-        l.hideNotFitting([k("b")])
-        #expect(l.placed == [k("a")])
-    }
-
-    // the Arrange drop is the only thing that marks keys
-    @Test func aDropIntoVisibleMarksTheMovedKeysAndOrderOnlyHiddenDropsDoNot() {
-        let base = Layout(visible: [k("a"), k("b")], hidden: [k("h1"), k("h2")], orderMode: .placedOnly)
+    @Test func aDropIntoVisibleIsARecordedMoveAndANoOpDropIsNoOp() {
+        let base = Layout(visible: [k("a"), k("b")], hidden: [k("h1"), k("h2")])
         guard case .move(let l1, let moved, _) = ArrangeDrop.outcome(layout: base, key: k("h2"), to: .visible, index: 1, capabilities: free) else { Issue.record("no move"); return }
         #expect(moved == [k("h2")])
-        #expect(l1.placed == [k("h2")])
-        guard case .move(let l2, _, _) = ArrangeDrop.outcome(layout: base, key: k("h2"), to: .hidden, index: 0, capabilities: free) else { Issue.record("no move"); return }
-        #expect(l2.placed.isEmpty)
-        guard case .move(let l3, _, _) = ArrangeDrop.outcome(layout: l1, key: k("a"), to: .visible, index: 2, capabilities: free) else { Issue.record("no move"); return }
-        #expect(Set(l3.placed) == [k("h2"), k("a")])
-        // dropping a placed key on its own position is no drop
+        #expect(l1.visible == [k("a"), k("h2"), k("b")])
         #expect(ArrangeDrop.outcome(layout: l1, key: k("h2"), to: .visible, index: 1, capabilities: free) == .noop)
     }
 
-    // (f)
-    @Test func decodeWithoutThePlacedFieldIsEmptyAndItRoundTrips() throws {
-        let old = Data(#"{"schemaVersion":1,"visible":["status:com.x.a::a"],"hidden":[],"alwaysHidden":[],"newItemPolicy":"visibleAtEnd"}"#.utf8)
-        #expect(try JSONDecoder().decode(Layout.self, from: old).placed.isEmpty)
-        #expect(try Layout.decode(old).layout.placed.isEmpty)
-        let l = Layout(visible: [k("a"), k("b")], placed: [k("b")])
-        let data = try JSONEncoder().encode(l)
-        #expect(try JSONDecoder().decode(Layout.self, from: data) == l)
-        #expect(try Layout.decode(data).layout.placed == [k("b")])
-        #expect(!String(decoding: try JSONEncoder().encode(Layout(visible: [k("a")])), as: UTF8.self).contains("placed"))
-        // a placed key that is not in the layout is dropped on load
-        let bad = Data(#"{"visible":["status:com.x.a::a"],"placed":["status:com.x.q::q"]}"#.utf8)
-        #expect(try Layout.decode(bad).layout.placed.isEmpty)
+    @Test func encodeNeverWritesLegacyFields() throws {
+        let text = String(decoding: try JSONEncoder().encode(Layout(visible: [k("a")])), as: UTF8.self)
+        #expect(!text.contains("placed") && !text.contains("orderMode") && !text.contains("pendingAdoption"))
+    }
+
+    // 9o9.2: a legacy file decodes to the same layout as without the legacy fields; the warnings name both fields; adoption is requested.
+    @Test func legacyFieldsAreIgnoredWithWarningsAndRequestAdoption() throws {
+        let plain = Data(#"{"schemaVersion":1,"visible":["status:com.x.a::a","status:com.x.b::b"],"hidden":["status:com.x.c::c"],"newItemPolicy":"visibleAtEnd"}"#.utf8)
+        let legacy = Data(#"{"schemaVersion":1,"visible":["status:com.x.a::a","status:com.x.b::b"],"hidden":["status:com.x.c::c"],"newItemPolicy":"visibleAtEnd","orderMode":"placedOnly","placed":["status:com.x.b::b"]}"#.utf8)
+        let p = try Layout.decode(plain), l = try Layout.decode(legacy)
+        #expect(!p.adoptBarOrder && p.warnings.isEmpty)
+        #expect(l.adoptBarOrder)
+        #expect(l.warnings.contains("ignored legacy field orderMode") && l.warnings.contains("ignored legacy field placed"))
+        var same = l.layout; same.pendingAdoption = false
+        #expect(same == p.layout)
+        #expect(l.layout.pendingAdoption)
+        // an unknown orderMode value no longer matters
+        #expect(try Layout.decode(Data(#"{"visible":[],"orderMode":"bogus"}"#.utf8)).adoptBarOrder)
+        // the Codable path tolerates the legacy keys too
+        #expect(try JSONDecoder().decode(Layout.self, from: legacy).visible == p.layout.visible)
     }
 }
 
@@ -235,53 +221,25 @@ private func engineRig(order: [String], layout: Layout, sink: LogSink) async -> 
 
 @MainActor
 struct OrderObligationEngineTests {
-    // (g)
-    @Test func aLayoutFromDiskWithoutPlacedProducesZeroOrderActions() async {
+    @Test func aSavedOrderIsEnforcedInFull() async {
         let sink = LogSink()
-        let r = await engineRig(order: ["A", "B", "C", "D"], layout: Layout(visible: ["D", "C", "B", "A"].map(k), orderMode: .placedOnly), sink: sink)
-        #expect(sink.lines.contains { $0.contains("no order obligations exist") })
+        let r = await engineRig(order: ["A", "B", "C", "D"], layout: Layout(visible: ["A", "C", "B", "D"].map(k)), sink: sink)
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .converged)
-        #expect(rep.actionCount == 0)
-        #expect(await r.actuator.calls.isEmpty)
-        #expect(await r.actuator.order == ["A", "B", "C", "D"].map(k))
-        #expect(!sink.lines.contains { $0.contains("order: moving") })
-    }
-
-    @Test func aPlacedKeyIsTheOnlyThingTheEngineMovesAndSaysWhy() async {
-        let sink = LogSink()
-        let layout = Layout(visible: ["A", "C", "B", "D"].map(k), placed: [k("C")], orderMode: .placedOnly)
-        let r = await engineRig(order: ["A", "B", "C", "D"], layout: layout, sink: sink)
-        #expect(!sink.lines.contains { $0.contains("no order obligations exist") })
-        let rep = await r.engine.reconcileOnce()
-        #expect(rep.outcome == .converged)
-        #expect(await r.actuator.calls == [.move(k("C"), .after(k("A")))])
+        #expect(await r.actuator.calls.count == 1)
         #expect(await r.actuator.order == ["A", "C", "B", "D"].map(k))
-        #expect(sink.lines.contains { $0.contains("order: moving") && $0.contains("(user placement)") })
+        #expect(sink.lines.contains { $0.contains("order: moving") })
         // the notice is only for the move in flight
         #expect(r.state.orderMoveNotice == nil)
         #expect(r.state.orderMoveReasons.isEmpty)
     }
 
-    @Test func aFirstLaunchLayoutAndAnAdoptNeverCreateObligations() async {
+    @Test func aUserDropPersistsItsOrderAndTheEngineRealizesIt() async {
         let sink = LogSink()
-        let r = await engineRig(order: ["A", "B"], layout: Layout(visible: ["B", "A"].map(k), placed: [k("B")]), sink: sink)
-        await r.engine.setLayout(Layout(visible: ["B", "A"].map(k)))   // adopt (no placed in the requested layout)
-        #expect(r.state.layout.placed.isEmpty)
-        await r.engine.setLayout(Layout(visible: ["B", "A"].map(k), placed: [k("B")]), userPlacement: false)   // built from a scan
-        #expect(r.state.layout.placed.isEmpty)
-        let rep = await r.engine.reconcileOnce()
-        #expect(rep.actionCount == 0)
-        #expect(await r.actuator.calls.isEmpty)
-    }
-
-    @Test func aUserDropPersistsItsPlacement() async {
-        let sink = LogSink()
-        let r = await engineRig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "B", "C"].map(k), orderMode: .placedOnly), sink: sink)
+        let r = await engineRig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "B", "C"].map(k)), sink: sink)
         guard case .move(let l, _, _) = ArrangeDrop.outcome(layout: r.state.layout, key: k("C"), to: .visible, index: 0, capabilities: free) else { Issue.record("no move"); return }
         await r.engine.setLayout(l)
-        #expect(r.state.layout.placed == [k("C")])
-        #expect((try? r.store.load())?.placed == [k("C")])
+        #expect((try? r.store.load())?.visible == ["C", "A", "B"].map(k))
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.order == ["C", "A", "B"].map(k))
     }

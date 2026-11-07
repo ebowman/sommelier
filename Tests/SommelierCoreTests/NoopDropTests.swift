@@ -20,7 +20,7 @@ import Testing
     private var mcp: ItemKey { k("mcp") }
     private var flo: ItemKey { k("flo") }
     private var bar: [ItemKey] { [cc, shield, mcp, flo] }
-    private var layoutOld: Layout { Layout(visible: [cc, shield, chev, mcp, flo], placed: [], orderMode: .placedOnly) }
+    private var layoutOld: Layout { Layout(visible: [cc, shield, chev, mcp, flo]) }
 
     private func rows(_ layout: Layout, awaiting: Set<ItemKey> = []) -> [ArrangeRow] {
         ArrangeSections.make(observed: ObservedOrder(onBar: bar, parked: []), layout: layout, items: Dictionary(uniqueKeysWithValues: bar.map { ($0, info($0)) }),
@@ -35,7 +35,7 @@ import Testing
         var t = ArrangeTracker()
         let now = Date()
         // A layout whose whole drawn order disagrees with the bar (MCP before ControlCenter): the whole-order check can never pass.
-        let skewed = Layout(visible: [mcp, cc, shield, chev, flo], placed: [shield], orderMode: .placedOnly)
+        let skewed = Layout(visible: [mcp, cc, shield, chev, flo])
         t.record([shield], passesStarted: 5, now: now, awaitingStamp: true, dropID: 17, intent: intent)
         let log = t.update(observed: ObservedOrder(onBar: bar, parked: []), layout: skewed, perItem: [shield: .inPlace], passSequence: 5,
                            showHiddenSection: false, now: now)
@@ -55,7 +55,7 @@ import Testing
 
     @Test func layoutAnchorIsTheDropNeighboursNotTheChevronModule() {
         // Layout lists the chevron module after ControlCenter and MCP behind it; dropping Shield between ControlCenter and MCP.
-        let layout = Layout(visible: [cc, chev, mcp, flo], placed: [], orderMode: .placedOnly)
+        let layout = Layout(visible: [cc, chev, mcp, flo])
         let r = rows(layout)
         let slot = r.firstIndex { $0.key == mcp }!
         let idx = ArrangeDrop.index(layout: layout, rows: r, slot: slot, key: shield, section: .visible)
@@ -66,14 +66,14 @@ import Testing
     }
 
     @Test func noGhostBesideItsOwnRealRow() {
-        let layout = Layout(visible: [cc, shield, chev, mcp, flo], placed: [shield], orderMode: .placedOnly)
+        let layout = Layout(visible: [cc, shield, chev, mcp, flo])
         let r = rows(layout, awaiting: [shield])
         #expect(r.filter { $0.key == shield }.count == 1)
         #expect(r.first { $0.key == shield }?.isGhost == false)
     }
 
     @Test func realMoveStillShowsAGhostAtTheTarget() {
-        let layout = Layout(visible: [shield, cc, mcp, flo], placed: [shield], orderMode: .placedOnly)   // wants Shield first; the bar has it second
+        let layout = Layout(visible: [shield, cc, mcp, flo])   // wants Shield first; the bar has it second
         let r = rows(layout, awaiting: [shield])
         #expect(r.filter { $0.key == shield }.count == 2)
     }

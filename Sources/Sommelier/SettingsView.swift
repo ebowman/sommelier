@@ -39,8 +39,6 @@ struct SettingsView: View {
                         Text("Overflow panel (default)").tag("panel")
                         Text("Show hidden items in the menu bar").tag("inline")
                     }
-                    Toggle("Let Sommelier keep an order for items I place", isOn: $model.ordersPlacedItems)
-                        .help("Off: order follows macOS; Command-drag items in the menu bar to reorder. On: items you drop at a position in Visible are kept there by Sommelier (it moves the real mouse to do so).")
                     Toggle("Show names in panel", isOn: $showNames)
                     Toggle("Show a notice while Sommelier moves the mouse", isOn: $showMouseNotice)
                         .help("Reordering menu bar items drags the real pointer for a few seconds; this floating notice says so. Hiding and showing items does not move the mouse.")

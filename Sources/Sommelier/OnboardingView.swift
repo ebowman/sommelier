@@ -30,11 +30,6 @@ struct OnboardingView: View {
                 request: { model.requestScreenRecording() }, pane: .screenRecording)
             controlCenterRow
             Section {
-                Text("By default the order of your menu bar items follows macOS (Command-drag them in the menu bar). Sommelier only hides, shows and reveals items. "
-                    + "If you turn on \"Let Sommelier keep an order for items I place\" in the Arrange window, Sommelier also keeps the order of the items you place, which moves the real mouse while it works.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Section {
             } footer: {
                 Text("Rebuilding from source changes the app's signature, so macOS asks for Accessibility again; the notarized release keeps its grant across updates signed with the same Developer ID.")
                     .fixedSize(horizontal: false, vertical: true)

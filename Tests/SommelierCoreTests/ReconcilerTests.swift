@@ -149,8 +149,8 @@ struct ReconcilerTests {
     }
     @Test func staleOnBarIsNeverMoved() {
         let o = ObservedOrder(onBar: [k("a"), k("s"), k("b")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
-        let l = Layout(visible: [k("s"), k("a"), k("b")], placed: [k("s")])
-        let p = rec.plan(observed: o, layout: l, capabilities: free, placed: l.placedSet)
+        let l = Layout(visible: [k("s"), k("a"), k("b")])
+        let p = rec.plan(observed: o, layout: l, capabilities: free, placed: Set(l.visible))
         #expect(p.actions.isEmpty)
     }
     @Test func staleOnBarHideIsSkipped() {
@@ -165,7 +165,7 @@ struct ReconcilerTests {
         let a = k("A"), x = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "x"), pp = k("P")
         let cc = ItemKey.module(name: "ControlCenter"), clock = ItemKey.module(name: "Clock")
         let o = ObservedOrder(onBar: [a, x, pp, cc, clock], parked: [])
-        let l = Layout(visible: [a, x, pp, cc, clock], placed: [pp])
+        let l = Layout(visible: [a, x, pp, cc, clock])
         // P observed at the far right of the movable span; the layout wants it after A (iStat X is an anchor between).
         let t = Reconciler.placedTarget(base: [a, x, cc, clock], placed: [pp], anchors: [x, cc, clock], visible: l.visible, eligible: [a, pp])
         #expect(t == [a, pp, x, cc, clock])
@@ -193,18 +193,18 @@ struct ReconcilerTests {
     @Test func placedNeverHangsOnAStaleNeighbour() {
         let a = k("A"), b = k("B"), pp = k("P")
         let o = ObservedOrder(onBar: [a, b, pp], parked: [], uncorroborated: [a], staleOnBar: [a])
-        let l = Layout(visible: [a, b, pp], placed: [pp])
+        let l = Layout(visible: [a, b, pp])
         // P is layout-after B; move it before... put it in a place that needs a move: observed has P last, layout wants A, P, B.
-        let l2 = Layout(visible: [a, pp, b], placed: [pp])
-        let p = rec.plan(observed: o, layout: l2, capabilities: free, placed: l2.placedSet)
+        let l2 = Layout(visible: [a, pp, b])
+        let p = rec.plan(observed: o, layout: l2, capabilities: free, placed: [pp])
         #expect(p.actions == [.move(pp, .before(b))])
         _ = l
     }
     @Test func staleKeyDoesNotExtendTheSystemBlock() {
         let x = k("X"), s = k("S"), pp = k("P"), cc = ItemKey.module(name: "CC"), clock = ItemKey.module(name: "Clock")
         let o = ObservedOrder(onBar: [pp, x, s, cc, clock], parked: [], uncorroborated: [s], staleOnBar: [s])
-        let l = Layout(visible: [k("Q"), pp], placed: [pp])
-        let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }, placed: l.placedSet)
+        let l = Layout(visible: [k("Q"), pp])
+        let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }, placed: Set(l.visible))
         #expect(p.desiredOnBar == [x, s, pp, cc, clock])
         let t = Reconciler.placedTarget(base: [x, s, cc, clock], placed: [pp], anchors: [cc, clock], visible: [k("Q"), pp], eligible: [pp])
         #expect(t == [x, s, pp, cc, clock])

@@ -58,7 +58,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 
 @Test func visibleMirrorsTheObservedBarWithModulesAsAnchorsAndTheBoundary() {
     let bar = [k("a"), k("b"), chev, k("c"), cc, clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
+    let layout = Layout(visible: bar)
     let c = make(bar: bar, ovf: [k("a"), k("b")], chevron: chev, layout: layout, status: Dictionary(uniqueKeysWithValues: bar.map { ($0, ItemStatus.inPlace) }).merging([k("a"): .notFitting, k("b"): .notFitting]) { $1 })
     #expect(c.visible.rows.map(\.key) == bar)
     #expect(c.visible.boundaryIndex == 2)
@@ -71,7 +71,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 
 @Test func visibleDoesNotReorderOptimisticallyAndShowsAGhostAtTheTargetSlot() {
     // layout wants c first; the bar still has a, b, c.
-    let layout = Layout(visible: [k("c"), k("a"), k("b"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("c"), k("a"), k("b"), clock])
     let c = make(bar: [k("a"), k("b"), k("c"), clock], layout: layout, status: [k("c"): .pending, k("a"): .inPlace], awaiting: [k("c")])
     #expect(c.visible.rows.map(\.key) == [k("c"), k("a"), k("b"), k("c"), clock])
     #expect(c.visible.rows[0].isGhost && c.visible.rows[0].badge == .moving)
@@ -81,7 +81,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 }
 
 @Test func awaitingKeyWithMatchingObservationShowsNoGhostAndPlacementMatches() {
-    let layout = Layout(visible: [k("a"), k("b"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("b"), clock])
     let o = ObservedOrder(onBar: [k("a"), k("b"), clock], parked: [])
     #expect(ArrangeSections.placementMatches(k("b"), layout: layout, observed: o))
     let c = make(bar: o.onBar, layout: layout, status: [k("b"): .inPlace], awaiting: [k("b")])
@@ -91,7 +91,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 }
 
 @Test func placementMatchesIgnoresOverflowedItemsAndOtherSections() {
-    let layout = Layout(visible: [k("o"), chev, k("a"), k("b")], hidden: [k("h")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("o"), chev, k("a"), k("b")], hidden: [k("h")])
     let o = ObservedOrder(onBar: [k("o"), chev, k("b"), k("a")], parked: [k("h")], systemOverflow: [k("o")], overflowChevron: chev)
     #expect(!ArrangeSections.placementMatches(k("a"), layout: layout, observed: o))     // a/b swapped on the bar
     let o2 = ObservedOrder(onBar: [chev, k("a"), k("b")], parked: [k("h")], systemOverflow: [], overflowChevron: chev)
@@ -102,7 +102,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 }
 
 @Test func hiddenMovePutsARealCapsuleInVisibleAndAGhostInHiddenUntilParked() {
-    let layout = Layout(visible: [k("b"), clock], hidden: [k("a")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("b"), clock], hidden: [k("a")])
     let pendingBar = make(bar: [k("a"), k("b"), clock], layout: layout, status: [k("a"): .pending])
     #expect(pendingBar.visible.rows.map(\.key) == [k("a"), k("b"), clock])
     #expect(pendingBar.visible.rows[0].badge == .moving)
@@ -112,18 +112,18 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 }
 
 @Test func parkedItemWantedVisibleIsAGhostAfterItsLayoutPredecessor() {
-    let layout = Layout(visible: [k("a"), k("h"), k("b"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("h"), k("b"), clock])
     let c = make(bar: [k("a"), k("b"), clock], parked: [k("h")], layout: layout, status: [k("h"): .pending])
     #expect(c.visible.rows.map(\.key) == [k("a"), k("h"), k("b"), clock])
     #expect(c.visible.rows[1].isGhost && c.visible.rows[1].badge == .moving)
     // without a predecessor it goes before its successor; unit siblings stay adjacent
-    let l2 = Layout(visible: [k("h"), k("h2"), k("a"), clock]).withOrderMode(.placedOnly)
+    let l2 = Layout(visible: [k("h"), k("h2"), k("a"), clock])
     let c2 = make(bar: [k("a"), clock], parked: [k("h"), k("h2")], layout: l2)
     #expect(c2.visible.rows.map(\.key) == [k("h"), k("h2"), k("a"), clock])
 }
 
 @Test func notRunningItemsGoToACollapsedGroupWithNoBadge() {
-    let layout = Layout(visible: [k("a"), k("gone"), clock], hidden: [k("gone2")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("gone"), clock], hidden: [k("gone2")])
     let c = make(bar: [k("a"), clock], layout: layout, status: [k("a"): .inPlace])
     #expect(c.visible.rows.map(\.key) == [k("a"), clock])
     #expect(c.visible.notRunning.map(\.key) == [k("gone")])
@@ -141,7 +141,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 }
 
 @Test func aFailedObservationNeverDrawsTheLayoutAsTheBar() {
-    let layout = Layout(visible: [k("a"), clock], hidden: [k("h")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), clock], hidden: [k("h")])
     let o = ObservedOrder(onBar: [k("a"), clock], parked: [k("h")])      // stale data from before the failure
     let c = ArrangeSections.make(observed: o, layout: layout, items: items([k("a"), clock, k("h")]), perItem: [:], capabilities: caps,
                                  observationProblem: ArrangeSections.observationProblem(lastError: .observe("scans did not agree")))
@@ -153,7 +153,7 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 }
 
 @Test func withoutObservationDropsThatNeedTheBarAreRefusedButOurOwnDataMoves() {
-    let layout = Layout(visible: [k("a"), clock], hidden: [k("h")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), clock], hidden: [k("h")])
     for (key, sec) in [(k("a"), LayoutSection.hidden), (k("h"), .visible)] {
         #expect(ArrangeDrop.outcome(layout: layout, key: key, to: sec, index: nil, capabilities: caps, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
     }
@@ -168,7 +168,7 @@ private struct NoEntry: CapabilityProvider {
 }
 
 @Test func unknownItemInfoMeansAllowedAndKnownUntrackedIsRefusedWithTheRealReason() {
-    let layout = Layout(visible: [k("a"), k("b"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("b"), clock])
     let rules = NoEntry()
     let known = [k("a"): info(k("a"))]
     let cap: (ItemKey) -> Capability = { ArrangeCapabilities.resolve($0, items: known, rules: rules) }
@@ -186,7 +186,7 @@ private struct NoEntry: CapabilityProvider {
 
 @Test func visibleDropIndexIsClampedAfterLeadingAnchorsAndBeforeTheTrailingBlock() {
     let wifi = ItemKey.module(name: "WiFi")
-    let layout = Layout(visible: [wifi, k("a"), k("b"), k("c"), cc, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [wifi, k("a"), k("b"), k("c"), cc, clock])
     let r = rows(layout)
     // slot 0 (left of the leading WiFi anchor) maps to index 1: after it
     #expect(ArrangeDrop.index(layout: layout, rows: r, slot: 0, key: k("c"), section: .visible) == 1)
@@ -200,14 +200,14 @@ private struct NoEntry: CapabilityProvider {
     guard case .move(let l2, _, _) = ArrangeDrop.drop(layout: layout, key: k("a"), section: .visible, movableIndex: 99, capabilities: caps) else { Issue.record("no move"); return }
     #expect(l2.visible == [wifi, k("b"), k("c"), k("a"), cc, clock])
     // movable indexes skip modules in the middle of the bar
-    let mid = Layout(visible: [wifi, k("a"), cc, k("b"), k("c"), clock]).withOrderMode(.placedOnly)
+    let mid = Layout(visible: [wifi, k("a"), cc, k("b"), k("c"), clock])
     #expect(ArrangeDrop.index(layout: mid, movableIndex: 1, key: k("c"), section: .visible) == 3)
 }
 
 
 @Test func unitSiblingsAreGroupedWithAHidesTogetherTooltip() {
     let a1 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "one"), a2 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "two")
-    let layout = Layout(visible: [a1, a2, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [a1, a2, clock])
     let c = make(bar: [a1, a2, clock], layout: layout, status: [a1: .inPlace, a2: .inPlace])
     #expect(c.visible.rows[0].unit == c.visible.rows[1].unit)
     #expect(c.visible.rows[0].unitTooltip == "Hides together with two")
@@ -215,7 +215,7 @@ private struct NoEntry: CapabilityProvider {
 }
 
 @Test func hideBlockedItemsStayInPlaceButCarryTheCapabilityReason() {
-    let layout = Layout(visible: [k("apple"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("apple"), clock])
     let c = make(bar: [k("apple"), clock], layout: layout, status: [k("apple"): .inPlace])
     #expect(c.visible.rows[0].badge == .inPlace && !c.visible.rows[0].canHide && c.visible.rows[0].draggable)
     #expect(c.visible.rows[0].capabilityNote == "Apple apps are hidden only in System Settings.")
@@ -224,7 +224,7 @@ private struct NoEntry: CapabilityProvider {
 // MARK: filtering
 
 @Test func filterMatchesTitleOwnerAndBundleCaseInsensitively() {
-    let layout = Layout(visible: [k("Alpha"), k("beta"), clock], hidden: [k("alphaH")], alwaysHidden: [k("zed")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("Alpha"), k("beta"), clock], hidden: [k("alphaH")], alwaysHidden: [k("zed")])
     let all = make(bar: [k("Alpha"), k("beta"), clock], parked: [k("alphaH"), k("zed")], layout: layout)
     #expect(all.visible.rows.count == 3)
     let f = make(bar: [k("Alpha"), k("beta"), clock], parked: [k("alphaH"), k("zed")], layout: layout, filter: " ALPHA ")
@@ -242,7 +242,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 }
 
 @Test func droppingOnItsOwnPositionIsANoop() {
-    let layout = Layout(visible: [k("a"), k("b"), k("c"), cc, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("b"), k("c"), cc, clock])
     let r = rows(layout)
     for slot in [1, 2] {     // before b, before c: both are b's own position
         #expect(ArrangeDrop.drop(layout: layout, rows: r, slot: slot, key: k("b"), section: .visible, capabilities: caps) == .noop)
@@ -250,7 +250,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 }
 
 @Test func droppingBetweenCapsulesReorders() {
-    let layout = Layout(visible: [k("a"), k("b"), k("c"), cc, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("b"), k("c"), cc, clock])
     guard case .move(let l, let moved, let nf) = ArrangeDrop.drop(layout: layout, rows: rows(layout), slot: 0, key: k("c"), section: .visible, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(l.visible == [k("c"), k("a"), k("b"), cc, clock] && moved == [k("c")] && !nf)
     guard case .move(let l2, _, _) = ArrangeDrop.drop(layout: layout, rows: rows(layout), slot: 3, key: k("a"), section: .visible, capabilities: caps) else { Issue.record("not a move"); return }
@@ -258,7 +258,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 }
 
 @Test func droppingRightOfTheTrailingSystemBlockClampsToBeforeIt() {
-    let layout = Layout(visible: [k("a"), k("b"), cc, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("b"), cc, clock])
     let r = rows(layout)
     for slot in [2, 3, 4] {   // before cc, before clock, after clock
         guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: r, slot: slot, key: k("a"), section: .visible, capabilities: caps) else { Issue.record("slot \(slot)"); continue }
@@ -268,7 +268,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 
 @Test func droppingLeftOfTheBoundaryIsAllowedAndFlaggedAsWillNotFit() {
     let bar = [k("o"), chev, k("a"), k("b"), clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
+    let layout = Layout(visible: bar)
     let r = make(bar: bar, ovf: [k("o")], chevron: chev, layout: layout).visible.rows
     guard case .move(let l, _, let nf) = ArrangeDrop.drop(layout: layout, rows: r, slot: 0, key: k("b"), section: .visible, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(l.visible.first == k("b") && nf)
@@ -277,7 +277,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 }
 
 @Test func dropIntoHiddenAppendsOrInsertsAndRespectsCapabilities() {
-    let layout = Layout(visible: [k("a"), k("b"), clock], hidden: [k("h1"), k("h2")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), k("b"), clock], hidden: [k("h1"), k("h2")])
     let hr = make(bar: [k("a"), k("b"), clock], parked: [k("h1"), k("h2")], layout: layout).hidden.rows
     guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: hr, slot: 1, key: k("a"), section: .hidden, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(l.hidden == [k("h1"), k("a"), k("h2")] && l.visible == [k("b"), clock])
@@ -288,14 +288,14 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     #expect(l3.hidden == [k("h2"), k("h1")])
     #expect(ArrangeDrop.drop(layout: layout, rows: hr, slot: 0, key: k("h1"), section: .hidden, capabilities: caps) == .noop)
     // Apple app cannot be hidden; a module cannot be moved at all
-    let l4 = Layout(visible: [k("apple"), clock]).withOrderMode(.placedOnly)
+    let l4 = Layout(visible: [k("apple"), clock])
     if case .rejected(let why) = ArrangeDrop.outcome(layout: l4, key: k("apple"), to: .hidden, index: nil, capabilities: caps) { #expect(why.contains("Apple")) } else { Issue.record("expected rejection") }
     if case .rejected = ArrangeDrop.outcome(layout: l4, key: clock, to: .hidden, index: nil, capabilities: caps) {} else { Issue.record("expected rejection") }
     #expect(ArrangeDrop.outcome(layout: l4, key: k("apple"), to: .visible, index: 0, capabilities: caps) == .noop)
 }
 
 @Test func hiddenToVisibleAtIndexZeroAndWithoutIndex() {
-    let layout = Layout(visible: [k("a"), cc, clock], hidden: [k("h")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), cc, clock], hidden: [k("h")])
     guard case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("h"), to: .visible, index: 0, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(l.visible == [k("h"), k("a"), cc, clock] && l.hidden.isEmpty)
     guard case .move(let l2, _, _) = ArrangeDrop.outcome(layout: layout, key: k("h"), to: .visible, index: nil, capabilities: caps) else { Issue.record("not a move"); return }
@@ -304,7 +304,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 
 @Test func unitMovesBringSiblingsAndReportThem() {
     let a1 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "one"), a2 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "two")
-    let layout = Layout(visible: [k("a"), a1, a2, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), a1, a2, clock])
     guard case .move(let l, let moved, _) = ArrangeDrop.outcome(layout: layout, key: a1, to: .hidden, index: nil, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(moved == [a1, a2] && l.hidden == [a1, a2] && l.visible == [k("a"), clock])
     // dropping next to a capsule of its own unit is its own position
@@ -317,7 +317,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 
 @Test func ghostRowsAreSkippedWhenComputingTheDropIndex() {
     // c is awaiting its move to the front: rows = [ghost c, a, b, real c, clock]. The real c is skipped (its layout slot is the ghost).
-    let layout = Layout(visible: [k("c"), k("a"), k("b"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("c"), k("a"), k("b"), clock])
     let c = make(bar: [k("a"), k("b"), k("c"), clock], layout: layout, awaiting: [k("c")])
     #expect(ArrangeDrop.index(layout: layout, rows: c.visible.rows, slot: 0, key: k("a"), section: .visible) == 0)     // before the ghost
     #expect(ArrangeDrop.index(layout: layout, rows: c.visible.rows, slot: 3, key: k("a"), section: .visible) == 2) // before the real c: next target is the clock, clamped
@@ -325,7 +325,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
 }
 
 @Test func stepSkipsAnchorsAndStopsAtTheTrailingBlock() {
-    let layout = Layout(visible: [k("a"), cc, k("b"), k("c"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), cc, k("b"), k("c"), clock])
     let r = rows(layout)
     guard case .move(let l, _, _) = ArrangeDrop.step(layout: layout, rows: r, key: k("b"), .left, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(l.visible == [k("b"), k("a"), cc, k("c"), clock])        // past a (cc anchor skipped by the search, a is the next movable)
@@ -347,7 +347,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 
 @Test func aDropThatDoesNotCrossASelfPositioningRowIsAllowed() {
     let bar = [k("a"), k("c"), istat67, k("b"), clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
+    let layout = Layout(visible: bar)
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("c"), to: .visible, index: 0, capabilities: caps67, bar: bar) {
         #expect(l.visible == [k("c"), k("a"), istat67, k("b"), clock])
     } else { Issue.record("a move left of istat that stays left of it must be allowed") }
@@ -355,7 +355,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
     if case .move = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .hidden, index: nil, capabilities: caps67, bar: bar) {} else { Issue.record("hide must be allowed") }
     // istat not on the bar at all: no crossing applies
     let noBar = [k("a"), k("b"), clock]
-    if case .move = ArrangeDrop.outcome(layout: Layout(visible: [k("a"), istat67, k("b"), clock]).withOrderMode(.placedOnly), key: k("b"), to: .visible, index: 0, capabilities: caps67, bar: noBar) {} else { Issue.record("istat off the bar") }
+    if case .move = ArrangeDrop.outcome(layout: Layout(visible: [k("a"), istat67, k("b"), clock]), key: k("b"), to: .visible, index: 0, capabilities: caps67, bar: noBar) {} else { Issue.record("istat off the bar") }
 }
 
 // gdu.120 (replaces aDropAcrossASelfPositioningRowIsRefusedInBothDirections, twoAdjacentSelfPositioningRowsAreEachRefused,
@@ -363,7 +363,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 // by drop and by step, and two adjacent iStat rows impose no restriction either.
 @Test func aDropOrStepAcrossAnIStatRowIsAcceptedLikeAnyOtherRow() {
     let bar = [k("a"), istat67, istat67b, k("b"), clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
+    let layout = Layout(visible: bar)
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("b"), to: .visible, index: 1, capabilities: caps, bar: bar) {
         #expect(l.visible.firstIndex(of: k("b"))! < l.visible.firstIndex(of: istat67)!)
     } else { Issue.record("left across iStat must be accepted") }
@@ -376,7 +376,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 
 @Test func aDropAcrossAModuleAnchorKeepsItsExistingBehaviour() {
     let bar = [k("a"), k("b"), cc, clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
+    let layout = Layout(visible: bar)
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("a"), to: .visible, index: 1, capabilities: caps67, bar: bar) {
         #expect(l.visible == [k("b"), k("a"), cc, clock])
     } else { Issue.record("module anchors are not self-positioning rows") }
@@ -386,7 +386,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 
 @Test func hideNotFittingHidesTheOverflowedUnitsAndReportsBlockedOnes() {
     let o1 = k("o1"), o2 = k("o2"), ap = k("apple")
-    let layout = Layout(visible: [o1, ap, o2, chev, k("a"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [o1, ap, o2, chev, k("a"), clock])
     let obs = ObservedOrder(onBar: layout.visible, parked: [], systemOverflow: [o1, ap, o2], overflowChevron: chev)
     let r = ArrangeDrop.hideNotFitting(layout: layout, observed: obs, capabilities: caps)
     #expect(r.layout.hidden == [o1, o2] && r.moved == [o1, o2] && r.blocked == [ap])
@@ -396,7 +396,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 }
 
 @Test func adoptRebuildsFromTheObservedBarKeepingAlwaysHiddenAndNotRunning() {
-    let current = Layout(visible: [k("b"), k("a"), k("gone"), clock], hidden: [k("h")], alwaysHidden: [k("ah"), k("goneH")], newItemPolicy: .hidden).withOrderMode(.placedOnly)
+    let current = Layout(visible: [k("b"), k("a"), k("gone"), clock], hidden: [k("h")], alwaysHidden: [k("ah"), k("goneH")], newItemPolicy: .hidden)
     let obs = ObservedOrder(onBar: [k("a"), k("b"), cc, clock], parked: [k("h"), k("ah"), k("new")])
     let l = ArrangeDrop.adopt(observed: obs, current: current)
     #expect(l.visible == [k("a"), k("b"), k("gone"), cc, clock])     // observed verbatim; not-running key before the trailing block
@@ -432,7 +432,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 // MARK: the waiting state machine
 
 private func trackerFixture() -> (Layout, ObservedOrder, ObservedOrder) {
-    let layout = Layout(visible: [k("b"), k("a"), clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("b"), k("a"), clock])
     return (layout, ObservedOrder(onBar: [k("a"), k("b"), clock], parked: []), ObservedOrder(onBar: [k("b"), k("a"), clock], parked: []))
 }
 private let t0 = Date(timeIntervalSince1970: 1_000)
@@ -510,7 +510,7 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
 
 @Test func unitSiblingsAreTrackedTogether() {
     let a1 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "one"), a2 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "two")
-    let layout = Layout(visible: [a1, a2, clock]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [a1, a2, clock])
     let wrong = ObservedOrder(onBar: [a2, a1, clock], parked: [])
     var t = ArrangeTracker()
     t.record([a1, a2], passesStarted: 0, now: t0)
@@ -539,18 +539,18 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
 
 @Test func orderOnlyDropOfAnIStatRowIsAcceptedLikeAnyOtherAndHideShowToo() {   // gdu.120: was refused as "positions itself"
     let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
-    let layout = Layout(visible: [k("a"), istat, k("b")], hidden: [k("h")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: [k("a"), istat, k("b")], hidden: [k("h")])
     let free: (ItemKey) -> Capability = { _ in Capability(canMove: true, canHide: true) }
-    // order-only inside Visible: accepted and placed, like any ordinary item
+    // order-only inside Visible: accepted, like any ordinary item
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: istat, to: .visible, index: 0, capabilities: free) {
-        #expect(l.visible.first == istat && l.placed.contains(istat))
+        #expect(l.visible.first == istat)
     } else { Issue.record("an iStat row must be draggable inside Visible") }
     // hide (section change) is accepted
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: istat, to: .hidden, index: nil, capabilities: free) {
         #expect(l.hidden.contains(istat) && !l.visible.contains(istat))
     } else { Issue.record("hiding a self-positioning row must be accepted") }
     // show (hidden -> visible) is accepted
-    let parked = Layout(visible: [k("a")], hidden: [istat]).withOrderMode(.placedOnly)
+    let parked = Layout(visible: [k("a")], hidden: [istat])
     if case .move(let l, _, _) = ArrangeDrop.outcome(layout: parked, key: istat, to: .visible, index: 0, capabilities: free) {
         #expect(l.visible.contains(istat))
     } else { Issue.record("showing a self-positioning row must be accepted") }
@@ -571,7 +571,7 @@ private func incident() -> (layout: Layout, bar: [ItemKey], content: ArrangeCont
     for (i, f) in fresh.enumerated() { bar.append(f); if i % 2 == 0, i / 2 < istat.count { bar.append(istat[i / 2]) } }
     bar += istat.suffix(from: min(istat.count, 8)).filter { !bar.contains($0) }
     bar += [cc, clock]
-    let layout = Layout(visible: bar).withOrderMode(.placedOnly)
+    let layout = Layout(visible: bar)
     let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: Set(istat), staleOnBar: Set(istat))
     let c = ArrangeSections.make(observed: o, layout: layout, items: items(bar), perItem: [:], capabilities: caps)
     return (layout, bar, c)
@@ -614,7 +614,7 @@ private func incident() -> (layout: Layout, bar: [ItemKey], content: ArrangeCont
 
 @Test func hiddenStripDropsIgnoreStaleness() {
     let (_, _, c) = incident()
-    let layout = Layout(visible: c.visible.rows.map(\.key), hidden: [k("h1"), k("h2")]).withOrderMode(.placedOnly)
+    let layout = Layout(visible: c.visible.rows.map(\.key), hidden: [k("h1"), k("h2")])
     let hr = [k("h1"), k("h2")].map { ArrangeRow(key: $0, title: "", ownerName: "", ownerBundleID: nil, ownerPID: nil, badge: .none, draggable: true, canHide: true, isAnchor: false, isGhost: false, isBoundary: false, notFitting: false, notRunning: false, unit: HideUnitRule.ownerKeys.unit(of: $0), unitMates: [], capabilityNote: nil) }
     guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: hr, slot: 1, key: k("f0"), section: .hidden, capabilities: caps) else { Issue.record("not a move"); return }
     #expect(l.hidden == [k("h1"), k("f0"), k("h2")])

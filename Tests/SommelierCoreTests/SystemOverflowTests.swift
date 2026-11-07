@@ -215,7 +215,7 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     func kk(_ n: String) -> ItemKey { .status(ownerKey: "com.x.app", autosaveName: n) }
     // "o" (overflowed) is hidden-listed, but its app also has visible items: decode moves it to visible, after every drawn key.
     let json = Data(#"{"schemaVersion":1,"visible":["status:com.x.app::a","status:com.x.z::z","status:com.x.app::b"],"hidden":["status:com.x.app::o"],"alwaysHidden":[],"newItemPolicy":"visibleAtEnd"}"#.utf8)
-    let (l, warnings) = try Layout.decode(json)
+    let (l, warnings, _) = try Layout.decode(json)
     #expect(!warnings.isEmpty && l.visible.last == kk("o"))              // normalization ran
     let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), .status(ownerKey: "com.x.z", autosaveName: "z"), kk("b")], parked: [],
                           systemOverflow: [kk("o")], overflowChevron: k("ch"))

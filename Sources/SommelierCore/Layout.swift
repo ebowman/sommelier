@@ -25,31 +25,14 @@ public struct Layout: Codable, Equatable, Sendable {
     public var hidden: [ItemKey]
     public var alwaysHidden: [ItemKey]
     public var newItemPolicy: NewItemPolicy
-    /// gdu.89: the keys the USER placed in Visible (a drop in Arrange, including a drop from Hidden into Visible). Only these create an
-    /// order obligation on the real bar; every other visible key follows whatever order macOS gives it (the layout merely records it).
-    /// Optional on disk (absent = empty, so every layout written before this field plans no moves). A key enters only through
-    /// `markPlaced` (Arrange's submit); builders, "Adopt current order", "Hide what does not fit" and new-item appends
-    /// never add to it. A key that leaves the layout (or Visible) leaves `placed`. The array order is
-    /// not meaningful (the planner uses the order of `visible`).
-    public var placed: [ItemKey]
-    /// The planner's view of `placed`.
-    public var placedSet: Set<ItemKey> { Set(placed) }
-    /// Who owns the bar's order (sommelier-8z5). Absent on disk = `.macOSOwns`; always written. `placed` is inert unless `.placedOnly`.
-    public var orderMode: OrderMode
-    /// True when the engine may plan order moves (only `.placedOnly`; enforced in sommelier-8z5.2).
-    public var enforcesOrder: Bool { orderMode == .placedOnly }
-
-    /// A copy with `orderMode` replaced (everything else, `placed` included, untouched).
-    public func withOrderMode(_ m: OrderMode) -> Layout {
-        var out = self
-        out.orderMode = m
-        return out
-    }
+    /// 9o9.2: true from an upgrade (a legacy `orderMode`/`placed` field was read) until the engine has adopted the observed bar
+    /// order into `visible` (so nothing moves on first launch). Persisted so a relaunch before adoption keeps the pending state.
+    /// Absent on disk = false; written only while true.
+    public var pendingAdoption: Bool
 
     public init(schemaVersion: Int = Layout.currentSchemaVersion, visible: [ItemKey] = [], hidden: [ItemKey] = [],
-                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, placed: [ItemKey] = [], orderMode: OrderMode = .macOSOwns) {
-        self.placed = placed
-        self.orderMode = orderMode
+                alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, pendingAdoption: Bool = false) {
+        self.pendingAdoption = pendingAdoption
         self.schemaVersion = schemaVersion
         self.visible = visible
         self.hidden = hidden
@@ -75,17 +58,11 @@ public struct Layout: Codable, Equatable, Sendable {
 
     public var isValid: Bool {
         let all = allKeys
-        return Set(all).count == all.count && Set(placed).isSubset(of: Set(all))
-    }
-
-    /// Records `keys` as user-placed (those that are in `visible`; others are ignored: only Visible has a bar order to enforce).
-    public mutating func markPlaced(_ keys: [ItemKey]) {
-        let vis = Set(visible)
-        for k in keys where vis.contains(k) && !placed.contains(k) { placed.append(k) }
+        return Set(all).count == all.count
     }
 
     /// gdu.114: removes keys `heuristic:com.apple.MenuBarAgent::#N` (empty fingerprint) left by earlier builds that made keys for
-    /// unnamed off-bar hosted elements. Sections and `placed` lose them; everything else is untouched.
+    /// unnamed off-bar hosted elements. Sections lose them; everything else is untouched.
     public func prunedAgentNoise() -> (Layout, removed: [ItemKey]) {
         func junk(_ k: ItemKey) -> Bool {
             if case .heuristic(let b, let fp, _) = k { return b == "com.apple.MenuBarAgent" && fp.isEmpty }
@@ -97,17 +74,7 @@ public struct Layout: Codable, Equatable, Sendable {
         out.visible = visible.filter { !junk($0) }
         out.hidden = hidden.filter { !junk($0) }
         out.alwaysHidden = alwaysHidden.filter { !junk($0) }
-        out.placed = placed.filter { !junk($0) }
         return (out, removed)
-    }
-
-    /// Drops `placed` entries that are not in `visible` any more (and duplicates).
-    func pruningPlaced() -> Layout {
-        var out = self
-        let vis = Set(visible)
-        var seen = Set<ItemKey>()
-        out.placed = placed.filter { vis.contains($0) && seen.insert($0).inserted }
-        return out
     }
 
     // MARK: Mutators (each preserves the at-most-one-section invariant)
@@ -132,7 +99,6 @@ public struct Layout: Codable, Equatable, Sendable {
                 set(ks, in: s)
             }
         }
-        placed.removeAll { $0 == key }
         return found
     }
 
@@ -247,12 +213,12 @@ public struct Layout: Codable, Equatable, Sendable {
             }
             out.set(kept, in: s)
         }
-        return (out.pruningPlaced(), dropped)
+        return (out, dropped)
     }
 
     // MARK: Codable (keys are stored as their string form)
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, placed, orderMode }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption }
 
     private static func parse(_ s: String) throws -> ItemKey {
         guard let k = ItemKey(storeKey: s) else { throw LayoutError.badKey(s) }
@@ -267,8 +233,7 @@ public struct Layout: Codable, Equatable, Sendable {
             hidden: try (c.decodeIfPresent([String].self, forKey: .hidden) ?? []).map(Self.parse),
             alwaysHidden: try (c.decodeIfPresent([String].self, forKey: .alwaysHidden) ?? []).map(Self.parse),
             newItemPolicy: try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy) ?? .visibleAtEnd,
-            placed: try (c.decodeIfPresent([String].self, forKey: .placed) ?? []).map(Self.parse),
-            orderMode: try c.decodeIfPresent(OrderMode.self, forKey: .orderMode) ?? .macOSOwns)
+            pendingAdoption: try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption) ?? false)
         self = raw.dedup().layout
     }
 
@@ -279,20 +244,32 @@ public struct Layout: Codable, Equatable, Sendable {
         try c.encode(hidden.map(\.description), forKey: .hidden)
         try c.encode(alwaysHidden.map(\.description), forKey: .alwaysHidden)
         try c.encode(newItemPolicy, forKey: .newItemPolicy)
-        try c.encode(orderMode, forKey: .orderMode)
-        if !placed.isEmpty { try c.encode(placed.map(\.description), forKey: .placed) }   // absent = empty: files without obligations keep their old shape
+        if pendingAdoption { try c.encode(true, forKey: .pendingAdoption) }   // absent = false
     }
 
     /// Decodes a layout file, reporting duplicates that were dropped and hide-unit normalization (reported once, here). Does not migrate.
-    public static func decode(_ data: Data) throws -> (layout: Layout, warnings: [String]) {
+    public static func decode(_ data: Data) throws -> (layout: Layout, warnings: [String], adoptBarOrder: Bool) {
         struct Raw: Decodable {
             var schemaVersion: Int?
             var visible: [String]?
             var hidden: [String]?
             var alwaysHidden: [String]?
             var newItemPolicy: NewItemPolicy?
-            var placed: [String]?
-            var orderMode: OrderMode?
+            var pendingAdoption: Bool?
+            var legacyOrderMode: Bool
+            var legacyPlaced: Bool
+            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, orderMode, placed }
+            init(from decoder: any Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion)
+                visible = try c.decodeIfPresent([String].self, forKey: .visible)
+                hidden = try c.decodeIfPresent([String].self, forKey: .hidden)
+                alwaysHidden = try c.decodeIfPresent([String].self, forKey: .alwaysHidden)
+                newItemPolicy = try c.decodeIfPresent(NewItemPolicy.self, forKey: .newItemPolicy)
+                pendingAdoption = try c.decodeIfPresent(Bool.self, forKey: .pendingAdoption)
+                legacyOrderMode = c.contains(.orderMode)   // 9o9.2: legacy fields are ignored (their value is not even parsed)
+                legacyPlaced = c.contains(.placed)
+            }
         }
         let r = try JSONDecoder().decode(Raw.self, from: data)
         let raw = Layout(
@@ -301,16 +278,22 @@ public struct Layout: Codable, Equatable, Sendable {
             hidden: try (r.hidden ?? []).map(parse),
             alwaysHidden: try (r.alwaysHidden ?? []).map(parse),
             newItemPolicy: r.newItemPolicy ?? .visibleAtEnd,
-            placed: try (r.placed ?? []).map(parse),
-            orderMode: r.orderMode ?? .macOSOwns)
+            pendingAdoption: false)
         let d = raw.dedup()
         let n = d.layout.normalizedHideUnits()
-        var warnings = d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
+        var warnings: [String] = []
+        if r.legacyOrderMode { warnings.append("ignored legacy field orderMode") }
+        if r.legacyPlaced { warnings.append("ignored legacy field placed") }
+        // A legacy field means this file predates the record-is-the-order model: the engine adopts the bar's order once.
+        let adopt = r.legacyOrderMode || r.legacyPlaced || (r.pendingAdoption ?? false)
+        var layout = n.layout
+        layout.pendingAdoption = adopt
+        warnings += d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {
             warnings.append("hide units normalized: " + n.moved.map(\.description).joined(separator: ", ")
                 + " moved to visible (all items governed by one Control Center entry hide or show at once)")
         }
-        return (n.layout, warnings)
+        return (layout, warnings, adopt)
     }
 
     /// Schema migration. No transforms exist yet; lower versions are just bumped.
