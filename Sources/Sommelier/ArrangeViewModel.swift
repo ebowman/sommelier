@@ -4,11 +4,20 @@ import SwiftUI
 import UniformTypeIdentifiers
 import SommelierCore
 
-/// Drag payload: the item's store key as plain text.
+/// Drag payload: the item's store key as plain text (a ghost capsule's drag carries the "#ghost" suffix, like `ArrangeRow.id`).
 struct ArrangePayload: Transferable, Equatable {
     var storeKey: String
+    var fromGhost = false
+    init(storeKey: String, fromGhost: Bool = false) { self.storeKey = storeKey; self.fromGhost = fromGhost }
+    static let ghostSuffix = "#ghost"
+    /// The wire text: `storeKey`, plus the ghost suffix.
+    var text: String { fromGhost ? storeKey + Self.ghostSuffix : storeKey }
+    init(text: String) {
+        if text.hasSuffix(Self.ghostSuffix) { self.init(storeKey: String(text.dropLast(Self.ghostSuffix.count)), fromGhost: true) }
+        else { self.init(storeKey: text) }
+    }
     static var transferRepresentation: some TransferRepresentation {
-        ProxyRepresentation(exporting: { $0.storeKey }, importing: { ArrangePayload(storeKey: $0) })
+        ProxyRepresentation(exporting: { $0.text }, importing: { ArrangePayload(text: $0) })
     }
 }
 
@@ -208,6 +217,13 @@ final class ArrangeViewModel {
                                        bar: state.observed.onBar, displayName: displayName, units: units,
                                        parked: Set(state.observed.parked))
         let id = nextDropID()
+        // gdu.116: every capsule carries the drag gesture; whether the SOURCE could be picked up is judged here.
+        let c = content
+        let all = c.visible.rows + c.hidden.rows + c.alwaysHidden.rows + c.visible.notRunning + c.hidden.notRunning + c.alwaysHidden.notRunning
+        if let why = ArrangeDrop.sourceRefusal(key: key, fromGhost: p.fromGhost, rows: all) {
+            AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot) (source not draggable)")
+            return submit(.rejected(why), key: key, dropID: id)
+        }
         AppLog.log(.arrange, "arrange: drop \(key) -> \(section.rawValue) slot \(slot)")
         AppLog.log(.arrange, "arrange: " + DropTrace.intentLine(id: id, key: key, section: section, slot: slot, rows: rows, observed: state.observed,
                                                               settled: state.observationSettled, displayName: displayName))

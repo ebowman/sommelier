@@ -232,14 +232,10 @@ struct CapsuleSlot: View {
 
     var body: some View {
         let cap = CapsuleView(row: row, grouped: false)
-        let interactive = vm.filter.isEmpty && (!row.isGhost || ArrangeMenuRules.ghostInteractive(row))
-        Group {
-            if row.draggable && interactive {
-                cap.draggable(ArrangePayload(storeKey: row.key.description))
-            } else {
-                cap
-            }
-        }
+        // gdu.116: the modifier chain is the same for every row in every state. `.draggable` is always attached; a row that cannot be
+        // picked up is refused at drop time (ArrangeDrop.sourceRefusal, ArrangeViewModel.drop). Swapping `cap.draggable` for `cap`
+        // when `draggable`/the filter changed destroyed the view that owned a running drag session.
+        cap.draggable(ArrangePayload(storeKey: row.key.description, fromGhost: row.isGhost))
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
         .dropDestination(for: ArrangePayload.self, action: { items, loc in
             guard let slot else { return false }

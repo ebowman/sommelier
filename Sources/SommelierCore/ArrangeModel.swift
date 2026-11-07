@@ -469,6 +469,25 @@ public enum ArrangeDrop {
     /// gdu.101: refusal for a drop (or step) in Visible next to an item whose position has not been refreshed.
     public static let barNotFullyObserved = "The bar is not fully observed right now; try again in a moment."
 
+    /// gdu.116: refusal texts for a payload whose SOURCE row cannot be picked up. The drag gesture is attached to every capsule
+    /// (a gesture that appears or disappears mid-drag kills the NSDraggingSession), so "not draggable" is judged here, at drop time.
+    public static let sourceStale = "Its position is not fresh right now (the app has not answered); try again in a moment."
+    public static let sourceNotRunning = "It is not running; start the app to move it."
+    public static let sourcePending = "A move of this item is still in progress; try again once it settles."
+    public static let sourceFixed = "This item cannot be moved."
+
+    /// Reason the dragged row may not be dropped, or nil when it may. `rows` are all rows of the window (every strip, including
+    /// not-running ones); `fromGhost` says the drag started on the ghost capsule of a pending move. nil also when no row matches
+    /// (the outcome rules decide), so the rule never refuses on missing data.
+    public static func sourceRefusal(key: ItemKey, fromGhost: Bool, rows: [ArrangeRow]) -> String? {
+        guard let row = rows.first(where: { $0.key == key && $0.isGhost == fromGhost }) else { return nil }
+        if row.isGhost { return ArrangeMenuRules.ghostInteractive(row) ? nil : sourcePending }
+        if row.draggable { return nil }
+        if row.staleFrame { return sourceStale }
+        if row.notRunning { return sourceNotRunning }
+        return row.capabilityNote ?? sourceFixed
+    }
+
     public enum Direction: Sendable { case left, right }
 
     public enum Outcome: Equatable, Sendable {

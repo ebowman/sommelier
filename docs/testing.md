@@ -810,3 +810,14 @@ Use a scratch layout that already has `placed` entries but no `orderMode` (an ol
 ## Off-bar agent elements shown every pass (gdu.114, 2026-11-06 10:13)
 
 Build 262 logged `membership write: show heuristic:com.apple.MenuBarAgent::#0..#5` (Control Center no entry, frame y=183 16x16, onBar=false) every pass. Fixed by the scanner noise rule, the no-entry show refusal and the load-time prune of empty-fingerprint agent keys; covered by `Gdu114Tests.swift`. Manual check: after launch the log has no `membership write: show heuristic:com.apple.MenuBarAgent` lines and, once, `layout: pruned N agent heuristic key(s)` if the old layout held any.
+
+## Live checklist: a drag survives a re-render (gdu.116)
+
+A drag must not die when the dragged capsule's data changes mid-drag (Filter, stale<->fresh). Orchestrator only; synthetic input, never the real bar of someone else.
+
+1. [ ] Drag the Tailscale capsule (Hidden strip) 18 px right with a plain HID left-drag and HOLD 6 s.
+2. [ ] At +2 s set the Arrange Filter to "x" via AX (rows shrink to the matches), at +4 s clear it. Release.
+3. [ ] Log: an `arrange: drop#N ...` line IS delivered after the filter flip (a drop while the Filter is non-empty is ignored, so release after clearing it; `drop#N done: noop` or a move). Before the fix there was no `arrange: drop` line at all.
+4. [ ] A follow-up quick drag delivers `arrange: drop#N+1 ...` (before the fix it was swallowed until `tell application id "ie.boboco.sommelier" to activate`).
+5. [ ] Same with an iStat capsule while it is fresh and a forced pass during the hold (`open -g -a Calculator`): the drop is delivered; if the row went stale the log reads `drop ... (source not draggable)` followed by `rejected ...: Its position is not fresh right now ...` and a callout shows.
+6. [ ] Control: the same hold without any change delivers the drop (as before).
