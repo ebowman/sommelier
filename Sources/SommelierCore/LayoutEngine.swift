@@ -139,6 +139,11 @@ public actor LayoutEngine {
     /// 9o9.3: the on-bar order of the last observation that was complete, settled and had no stale on-bar frame; what a drop made while
     /// the upgrade adoption is pending adopts first.
     private var lastCleanBar: [ItemKey]?
+    /// 9o9.9: the on-bar order of the previous complete, settled observation (stale frames included), advanced to the post-move
+    /// snapshot after every verified order move so the engine's own moves never make an untrusted key look unsteady; the untrusted
+    /// keys whose slot differs from it in the current pass: no order move crosses them (oscillation guard).
+    private var previousSettledBar: [ItemKey]?
+    private var unsteadyKeys = Set<ItemKey>()
     /// 9o9.3: per subject, the last order move the actuator verified, kept across passes until a pass finds the bar converged; a pass that plans the identical move again strikes it `.notVerified`.
     private var lastVerifiedOrderMove: [ItemKey: PlannedAction] = [:]
     private var unverifiedStrikes: [ItemKey: Int] = [:]
@@ -969,7 +974,8 @@ public actor LayoutEngine {
         fullBarLogged = fullBarWithheld.count
         var p = Reconciler().plan(observed: planObs, layout: layout, capabilities: effectiveCaps(), showHiddenSection: showHidden, showAlwaysHidden: showAlways,
                                          units: rule,
-                                         churn: SystemOverflowRule.churnZone(recentReads), held: Set(cannotPlace.keys))
+                                         churn: SystemOverflowRule.churnZone(recentReads), held: Set(cannotPlace.keys),
+                                         unsteady: unsteadyKeys)
         // 9o9.2: until the upgrade adoption completes no order action is planned (the record is the legacy saved order, not the bar's).
         if layout.pendingAdoption, p.phase == .order { p.actions = []; p.phase = .converged }
         // While any unit is revealed for click-forwarding the bar is deliberately in flux (the revealed element can show up
@@ -1118,7 +1124,7 @@ public actor LayoutEngine {
         var waiting = Set<ItemKey>()
         let now = ContinuousClock.now
         for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting {
-            if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason {   // gdu.105: transient, see positionWaitTimeout
+            if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason || Reconciler.isMovingNeighbourSkip(s.reason) {   // gdu.105: transient, see positionWaitTimeout
                 let since = positionWaitSince[s.key] ?? now
                 positionWaitSince[s.key] = since
                 waiting.insert(s.key)
@@ -1502,6 +1508,10 @@ public actor LayoutEngine {
 
         // (c0) upgrade migration (9o9.2): the first complete, settled observation after upgrading from an order-mode layout becomes the record.
         // Only a complete read whose on-bar frames are ALL fresh qualifies (a carried frame, even a recently verified one, may be a wrong slot).
+        if observedCompleteness == .complete {
+            unsteadyKeys = Reconciler.unsteadyKeys(previous: previousSettledBar, current: obs.onBar, among: obs.uncorroborated.union(obs.staleOnBar))
+            previousSettledBar = obs.onBar
+        }
         if observedCompleteness == .complete, obs.staleOnBar.isEmpty, lastCleanBar != obs.onBar {
             lastCleanBar = obs.onBar
             if layout.pendingAdoption { await publish { $0.cleanObservationAvailable = true } }
@@ -1548,6 +1558,7 @@ public actor LayoutEngine {
         }
         log(Self.describe(plan))
         for sk in plan.skipped where sk.reason == Reconciler.staleFrameSkipReason { log("order: skipped \(sk.key): stale frame") }
+        for sk in plan.skipped where Reconciler.isMovingNeighbourSkip(sk.reason) { log("order: skipped \(sk.key): \(sk.reason)") }
         await publishObserved(obs, plan)   // (e) skipped -> unsupported inside statuses()
 
         var phaseReached = plan.phase
@@ -1579,6 +1590,12 @@ public actor LayoutEngine {
         }
 
         // (f)
+        if plan.phase == .converged, plan.skipped.contains(where: { Reconciler.isMovingNeighbourSkip($0.reason) }) {
+            // 9o9.9: converged only because a move waits for an untrusted neighbour to hold still. Not converged: the strike memory stays
+            // (an identical move planned after the wait is still judged against it) and the position-retry timer (waiting status) re-plans.
+            _ = await finish(report(.incomplete), converged: false)
+            return report(.incomplete)
+        }
         if plan.phase == .converged {
             lastVerifiedOrderMove = [:]
             chained = 0; allFailedStreak = 0
@@ -1857,6 +1874,7 @@ public actor LayoutEngine {
                 revertWatch[key] = (action, 2)
                 noteAttempt(key, cause: "it keeps being moved without holding its place")
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
+                previousSettledBar = obs.onBar   // 9o9.9: the engine's own verified move is not the untrusted key's doing
             case .failed(let e, let snap):
                 consecutiveFailures += 1
                 if await handleFatal(e) { return await abort(.stopped) }
@@ -1881,6 +1899,9 @@ public actor LayoutEngine {
             if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
         }
         await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+        if plan.phase == .converged, plan.skipped.contains(where: { Reconciler.isMovingNeighbourSkip($0.reason) }) {
+            return await abort(.incomplete)
+        }
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()

@@ -151,7 +151,10 @@ struct ReconcilerTests {
         let o = ObservedOrder(onBar: [k("a"), k("s"), k("b")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
         let l = Layout(visible: [k("s"), k("a"), k("b")])
         let p = rec.plan(observed: o, layout: l, capabilities: free)
-        #expect(p.actions.isEmpty)
+        // 9o9.9 (was: no actions): the stale s is still never moved nor named, but the record puts a after s, and a (trusted) can cross s
+        // when spelled against the trusted b on the far side: one safe move reaches the record.
+        #expect(p.actions == [.move(k("a"), .before(k("b")))])
+        #expect(p.actions.reduce(o) { PlanSimulator.apply($1, to: $0) }.onBar == [k("s"), k("a"), k("b")])
     }
     @Test func staleOnBarHideIsSkipped() {
         let o = ObservedOrder(onBar: [k("a"), k("s")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
@@ -190,7 +193,9 @@ struct ReconcilerTests {
         let o = ObservedOrder(onBar: [pp, x, s, cc, clock], parked: [], uncorroborated: [s], staleOnBar: [s])
         let l = Layout(visible: [x, s, pp])
         let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) })
-        #expect(p.desiredOnBar == [x, pp, s, cc, clock])
+        // 9o9.9 (was [x, pp, s, cc, clock]): the stale s now sits at its record slot; P crosses it, spelled against the system block's first key.
+        #expect(p.desiredOnBar == [x, s, pp, cc, clock])
+        #expect(p.actions == [.move(pp, .before(cc))])
         #expect(!p.skipped.contains { $0.reason.hasPrefix("cannot be placed right of the system items") })
     }
     @Test func layoutModeIgnoresStaleAnchorOrder() {

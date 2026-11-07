@@ -113,10 +113,13 @@ public struct Reconciler: Sendable {
 
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
-                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = [], held: Set<ItemKey> = []) -> Plan {
-        // 9o9.3: `Layout.visible` is the ordered record and every Visible key carries the obligation. The order-phase target is the
-        // record restricted to the keys observed on the bar with trusted frames; anchors (never a move subject) are the keys the
-        // capabilities pin (the system block, unhideable items), the chevron and the keys whose frame is not trusted.
+                     units rule: HideUnitRule = .ownerKeys, churn: Set<ItemKey> = [], held: Set<ItemKey> = [],
+                     unsteady: Set<ItemKey> = []) -> Plan {
+        // 9o9.3 / 9o9.9: `Layout.visible` is the ordered record and every Visible key carries the obligation. The order-phase target is
+        // the record over ALL keys observed on the bar, trusted or not; only the keys the capabilities pin (the system block, unhideable
+        // items) and the held ones are anchors that keep their observed slot. Keys whose frame is not trusted are never a move subject
+        // or relation target, but trusted keys are moved so the record holds among them AND relative to the untrusted ones.
+        // `unsteady`: untrusted keys whose slot differs from the previous settled observation; no move crosses one this pass.
         // gdu.120: iStat Menus items are ordinary orderable items (verified live: a Command-drag takes effect and holds); there is
         // no anchor treatment by owner. Only the capability the caller reports (and stale/uncorroborated slots, below) pins a key.
         func capabilities(_ k: ItemKey) -> Capability { rawCapabilities(k) }
@@ -271,7 +274,7 @@ public struct Reconciler: Sendable {
         // 9o9.4: `held` keys (the engine gave up on them) are pinned the same way, silently: they keep their observed slot.
         let unfresh = observed.uncorroborated.union(observed.staleOnBar).union(held).intersection(onBarSet).intersection(Set(base))
         let pinned = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
-        let anchors = pinned.union(unfresh)
+        let anchors = pinned.union(held.intersection(unfresh))   // 9o9.9: untrusted keys are NOT anchors of the target
         if !unfresh.isEmpty, hides.isEmpty, shows.isEmpty {
             // What the order step would have done had these keys been movable: report each key it would have dragged (once).
             let baseSet = Set(base)
@@ -285,7 +288,8 @@ public struct Reconciler: Sendable {
                 }
             }
         }
-        desired = desired.filter { !unfresh.contains($0) }
+        let untrusted = unfresh.subtracting(held)   // 9o9.9: stay in the target at their record slot, but are never moved or targeted
+        desired = desired.filter { !held.contains($0) }
         var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
         // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
         // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.
@@ -354,12 +358,16 @@ public struct Reconciler: Sendable {
         } else {
             // Anchors are fixed points of the minimal-move computation. A move whose relation target is a key without a trusted frame
             // (no fresh neighbour was available) is not planned: it is skipped as a stale frame and retried when the frame is fresh.
-            let planned = Self.movesReporting(from: base, to: target, anchors: anchors, boundary: chevron != nil, avoid: unfresh)
+            let fixed = anchors.union(untrusted)
+            let planned = Self.movesReporting(from: base, to: target, anchors: fixed, boundary: chevron != nil, avoid: unfresh, unsteady: unsteady.intersection(untrusted))
             actions = planned.actions
-            for k in planned.blocked where !skipped.contains(where: { $0.key == k }) { skipped.append(SkippedAction(k, Reconciler.staleFrameSkipReason)) }
+            // 9o9.9: a trusted subject blocked only by an untrusted wall is already explained by the untrusted key's own skip; not repeated.
+            for k in planned.blocked where !skipped.contains(where: { $0.key == k })
+                && !(planned.blockedBy[k].map { w in untrusted.contains(w) && skipped.contains { $0.key == w } } ?? false) { skipped.append(SkippedAction(k, Reconciler.staleFrameSkipReason)) }
+            for (k, u) in planned.moving where !skipped.contains(where: { $0.key == k }) { skipped.append(SkippedAction(k, Reconciler.movingNeighbourSkipReason(u))) }
             assert(Self.overflowViolations(actions, forbidden: ovf.union(chevron.map { [$0] } ?? []), boundary: chevron != nil).isEmpty,
                    "planned a move of or into macOS's overflow area")
-            assert(Self.violations(actions, target: target, anchors: anchors, blockStart: blockStart).isEmpty,
+            assert(Self.violations(actions, target: target, anchors: fixed, blockStart: blockStart).isEmpty,
                    "planned a move of or into the trailing system block")
             phase = actions.isEmpty ? .converged : .order
         }
@@ -371,6 +379,27 @@ public struct Reconciler: Sendable {
 
     /// 9o9.3: why an order move is not planned: its subject, or the neighbour it would be dropped next to, has no trusted frame.
     public static let staleFrameSkipReason = "stale frame; waiting for a fresh read"
+
+    /// 9o9.9: why a trusted key's move is held back: it would cross an untrusted key whose slot changed since the last settled observation.
+    public static func movingNeighbourSkipReason(_ untrusted: ItemKey) -> String { "neighbour \(untrusted) is moving" }
+
+    /// 9o9.9: whether a skip reason is the "neighbour … is moving" hold (transient, like a stale frame).
+    public static func isMovingNeighbourSkip(_ reason: String) -> Bool { reason.hasPrefix("neighbour ") && reason.hasSuffix(" is moving") }
+
+    /// 9o9.9: untrusted keys among `among` whose slot differs between two observations: the set of other keys left of the key
+    /// (restricted to keys present in both) changed. No previous observation: none.
+    public static func unsteadyKeys(previous: [ItemKey]?, current: [ItemKey], among: Set<ItemKey>) -> Set<ItemKey> {
+        guard let previous else { return [] }
+        let common = Set(previous).intersection(current)
+        func left(_ bar: [ItemKey], _ k: ItemKey) -> Set<ItemKey>? {
+            guard let i = bar.firstIndex(of: k) else { return nil }
+            return Set(bar[..<i]).intersection(common)
+        }
+        return Set(among.filter { k in
+            guard let a = left(previous, k), let b = left(current, k) else { return false }
+            return a != b
+        })
+    }
 
     /// gdu.94: why a placed key whose bar position is not corroborated is not dragged.
     public static let uncorroboratedSkipReason = "its position on the bar is not corroborated by a hosted element (stale app-side frame or hidden in Control Center); no drag"
@@ -422,15 +451,19 @@ public struct Reconciler: Sendable {
         movesReporting(from: current, to: target, anchors: anchors, boundary: boundary, avoid: avoid).actions
     }
 
-    /// `moves`, plus the subjects that could not be spelled against a trusted neighbour (`blocked`).
-    /// With `avoid` (untrusted keys) the relation target is the nearest neighbour in `target` that is trusted and already in place,
-    /// searched outward on each side (left first). A side's search stops at an untrusted key, because dropping next to a key beyond it
-    /// would land on the wrong side of the untrusted one. It passes over keys still waiting to be moved: later moves into the same
-    /// gap are spelled against the same or a nearer in-place key and land in target order. No trusted neighbour on either side: the
-    /// subject is blocked, never spelled against an untrusted key and never counted as in place.
+    /// `moves`, plus the subjects that could not be spelled against a trusted neighbour (`blocked`) and the ones held back because the
+    /// move would cross an `unsteady` untrusted key (`moving`: subject, key).
+    /// With `avoid` (untrusted keys) the relation target is a neighbour in `target` that is trusted and already in place, nearest first,
+    /// left side before right. The search passes over keys still waiting to be moved (later moves into the same gap are spelled against
+    /// the same or a nearer in-place key and land in target order) and over untrusted keys (9o9.9): a trusted subject may cross an
+    /// untrusted key when it is spelled against a trusted neighbour on the far side. A candidate is accepted only if, simulated on the
+    /// physical bar, it leaves the subject on the target's side of every untrusted and every in-place key. No trusted neighbour at all:
+    /// an edge drop (leftmost / rightmost) is used only if the search met no untrusted key; otherwise the subject is blocked. Never
+    /// spelled against an untrusted key and never counted as in place.
     static func movesReporting(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>, boundary: Bool = false,
-                               avoid: Set<ItemKey> = []) -> (actions: [PlannedAction], blocked: [ItemKey]) {
-        guard current != target, current.count == target.count else { return ([], []) }
+                               avoid: Set<ItemKey> = [], unsteady: Set<ItemKey> = [])
+        -> (actions: [PlannedAction], blocked: [ItemKey], moving: [(ItemKey, ItemKey)], blockedBy: [ItemKey: ItemKey]) {
+        guard current != target, current.count == target.count else { return ([], [], [], [:]) }
         var tIndex: [ItemKey: Int] = [:]
         for (i, k) in target.enumerated() { tIndex[k] = i }
         let keep = keptSet(current: current, tIndex: tIndex, anchors: anchors)
@@ -438,6 +471,28 @@ public struct Reconciler: Sendable {
         var inPlace = keep
         var out: [PlannedAction] = []
         var blocked: [ItemKey] = []
+        var moving: [(ItemKey, ItemKey)] = []
+        var blockedBy: [ItemKey: ItemKey] = [:]   // subject -> the untrusted key whose wall blocked it
+        var cur = current   // the physical bar as the planned moves so far leave it (only tracked with `avoid`)
+        func idx(_ k: ItemKey, in bar: [ItemKey]) -> Int { bar.firstIndex(of: k) ?? Int.max }
+        func apply(_ k: ItemKey, _ r: Relation, to bar: [ItemKey]) -> [ItemKey] {
+            var b = bar; b.removeAll { $0 == k }
+            switch r {
+            case .after(let t): if let i = b.firstIndex(of: t) { b.insert(k, at: i + 1) }
+            case .before(let t): if let i = b.firstIndex(of: t) { b.insert(k, at: i) }
+            case .leftmost: b.insert(k, at: 0)
+            case .rightmost: b.append(k)
+            }
+            return b
+        }
+        /// `k` ends on the target's side of every untrusted and every in-place key.
+        func lands(_ k: ItemKey, _ r: Relation) -> Bool {
+            let after = apply(k, r, to: cur)
+            for z in avoid.union(inPlace) where z != k {
+                if (tIndex[k]! < tIndex[z]!) != (idx(k, in: after) < idx(z, in: after)) { return false }
+            }
+            return true
+        }
         for (i, k) in target.enumerated() where !keep.contains(k) {
             let left = i > 0 ? target[i - 1] : nil
             let right = i + 1 < target.count ? target[i + 1] : nil
@@ -446,22 +501,25 @@ public struct Reconciler: Sendable {
                 if let l = left, inPlace.contains(l) { relation = .after(l) }
                 else if let r = right, inPlace.contains(r) { relation = .before(r) }
             } else {
+                // Oscillation guard: a move that has to cross an untrusted key whose slot just changed waits for the bar to settle.
+                if let u = unsteady.first(where: { (idx(k, in: cur) < idx($0, in: cur)) != (i < tIndex[$0]!) }) { moving.append((k, u)); continue }
                 var hitUntrusted = false
+                var wall: ItemKey?
+                var candidates: [Relation] = []
                 var j = i - 1
                 while j >= 0 {
-                    if avoid.contains(target[j]) { hitUntrusted = true; break }
-                    if inPlace.contains(target[j]) { relation = .after(target[j]); break }
+                    if avoid.contains(target[j]) { hitUntrusted = true; wall = wall ?? target[j] }
+                    else if inPlace.contains(target[j]) { candidates.append(.after(target[j])); break }
                     j -= 1
                 }
-                if relation == nil {
-                    j = i + 1
-                    while j < target.count {
-                        if avoid.contains(target[j]) { hitUntrusted = true; break }
-                        if inPlace.contains(target[j]) { relation = .before(target[j]); break }
-                        j += 1
-                    }
+                j = i + 1
+                while j < target.count {
+                    if avoid.contains(target[j]) { hitUntrusted = true; wall = wall ?? target[j] }
+                    else if inPlace.contains(target[j]) { candidates.append(.before(target[j])); break }
+                    j += 1
                 }
-                if relation == nil, hitUntrusted { blocked.append(k); continue }   // no trusted in-place key is reachable
+                relation = candidates.first { lands(k, $0) }
+                if relation == nil, !candidates.isEmpty || hitUntrusted { blocked.append(k); if let w = wall { blockedBy[k] = w }; continue }   // no safe trusted in-place spelling
             }
             if relation == nil {
                 if i == 0 {
@@ -469,15 +527,17 @@ public struct Reconciler: Sendable {
                     // first other drawn item instead (nothing has been moved yet at index 0).
                     if boundary {
                         guard let f = current.first(where: { $0 != k }) else { inPlace.insert(k); continue }
+                        if avoid.contains(f) { blocked.append(k); continue }
                         relation = .before(f)
                     } else { relation = .leftmost }
                 }
                 else { relation = .rightmost }   // only reachable for the last index; left is always placed before it
             }
             out.append(.move(k, relation!))
+            if !avoid.isEmpty { cur = apply(k, relation!, to: cur) }
             inPlace.insert(k)
         }
-        return (out, blocked)
+        return (out, blocked, moving, blockedBy)
     }
 
     /// Keys that stay put: all anchors plus, per gap between consecutive anchors, the longest increasing subsequence
