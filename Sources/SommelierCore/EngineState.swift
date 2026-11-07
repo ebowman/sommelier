@@ -25,6 +25,29 @@ public enum ItemStatus: Equatable, Sendable {
     case cannotPlace(reason: String, attempts: Int)
 }
 
+/// 9o9.5: what the engine's last plan decided, published after every pass so Arrange DISPLAYS the plan instead of re-deriving it.
+public struct PlanSummary: Equatable, Sendable {
+    /// Subjects of every action in the last plan (including the ones the one-move-at-a-time cap defers).
+    public var moving: Set<ItemKey> = []
+    /// Keys the planner would move but cannot spell safely: subject -> the untrusted / unsteady key ("wall") in the way.
+    public var blocked: [ItemKey: ItemKey] = [:]
+    /// The engine's held set: given up on (cannotPlace) or unverified after a hand drag or failed at the strike limit. Out of the record
+    /// for planning purposes; Arrange leaves them out when judging whether a neighbour sits where the record says.
+    public var held: Set<ItemKey> = []
+    /// 9o9.5: trusted keys blocked because none of their candidate moves lands safely, with no untrusted key to name as the wall.
+    public var blockedNoWall: Set<ItemKey> = []
+    /// 9o9.5: `passesStarted` of the pass that PUBLISHED this plan (0 = never). A drop is handed over to this plan only when it was
+    /// published by a pass that started after the drop; a busy-skipped pass publishes no plan and so never counts.
+    public var passStarted: Int = 0
+    public init(moving: Set<ItemKey> = [], blocked: [ItemKey: ItemKey] = [:], held: Set<ItemKey> = [], blockedNoWall: Set<ItemKey> = [], passStarted: Int = 0) {
+        self.moving = moving; self.blocked = blocked; self.held = held; self.blockedNoWall = blockedNoWall; self.passStarted = passStarted
+    }
+    public init(plan: Plan, held: Set<ItemKey>) {
+        self.init(moving: Set(plan.actions.map { a -> ItemKey in switch a { case .move(let k, _), .hide(let k), .show(let k): return k } }),
+                  blocked: plan.blockedBy, held: held, blockedNoWall: plan.blockedNoWall)
+    }
+}
+
 public enum EngineError: Equatable, Sendable {
     case permissionDenied
     case observe(String)
@@ -62,6 +85,8 @@ public final class EngineState {
     /// 9o9.3: a complete, settled observation with fresh frames exists (what a drop made during the pending upgrade adoption adopts first).
     public var cleanObservationAvailable: Bool = false
     public var inFlight: PlannedAction?
+    /// 9o9.5: the partition of the engine's last plan; replaced by every pass that planned.
+    public var lastPlan: PlanSummary = PlanSummary()
     public var perItem: [ItemKey: ItemStatus]
     /// Keys that are `.inPlace` because a live hide/show was APPLIED per the Control Center store, but no usable complete read
     /// has confirmed it yet (`ActuationMechanism.liveUnverified`, gdu.55). Cleared by a later settled complete read.
@@ -89,6 +114,9 @@ public final class EngineState {
     public var newItemNotice: String?
     /// 9o9.7: "Adopted your menu bar drag" for the Arrange status line after a hand Command-drag became the record (cleared after a few seconds).
     public var handDragNotice: String?
+    /// 9o9.5: keys the user moved by hand in the menu bar whose new position is still unread (stale or ambiguous): held out of planning
+    /// by the engine, shown by Arrange as "Moved by you in the menu bar; waiting to read its new position". Never a check.
+    public var unverifiedAfterHandDrag: Set<ItemKey> = []
     /// gdu.80: set by a reveal pass on a full bar whose layout order differs from the bar: membership was applied, the order was
     /// not (macOS decides what fits). Cleared at the start of every pass.
     public var orderNotAppliedNotice: String?

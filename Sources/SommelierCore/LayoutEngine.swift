@@ -177,7 +177,17 @@ public actor LayoutEngine {
     private var handAgreeing: ObservedOrder?
     private var handWaitLogged = false
     /// Keys whose frames were stale or uncorroborated when a hand drag was adopted as "unchanged" at the deadline: when they were stamped.
-    private var handDragUnverified: Set<ItemKey> = []
+    private var handDragUnverified: Set<ItemKey> = [] {
+        didSet { if handDragUnverified != oldValue { Task { [weak self] in await self?.publishUnverified() } } }
+    }
+    private var publishedUnverified: Set<ItemKey> = []
+    /// 9o9.5: publishes `handDragUnverified` as `EngineState.unverifiedAfterHandDrag` whenever it changed (the Arrange row shows it).
+    func publishUnverified() async {
+        let now = handDragUnverified
+        guard now != publishedUnverified else { return }
+        publishedUnverified = now
+        await publish { $0.unverifiedAfterHandDrag = now }
+    }
     private var handWaitLoggedAt: Date?
     private var handNoticeSerial = 0
     /// Test hook: pretends a clean observation of `bar` was read (the pass records it and adopts in the same step, so a pending adoption never coexists with one in production).
@@ -666,6 +676,7 @@ public actor LayoutEngine {
         clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
         lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
         _ = await publishLayout(l)
+        await publishUnverified()
         await announceHandDrag()
     }
 
@@ -842,6 +853,7 @@ public actor LayoutEngine {
         clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
         lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
         _ = await publishLayout(l)
+        await publishUnverified()
         await announceHandDrag()
     }
 
@@ -1486,7 +1498,7 @@ public actor LayoutEngine {
         var waiting = Set<ItemKey>()
         let now = ContinuousClock.now
         for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting && s.reason != Reconciler.noCrossingOwnPositionSkipReason {   // own position unread = temporary unknown: keeps its .pending base
-            if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason || Reconciler.isMovingNeighbourSkip(s.reason) {   // gdu.105: transient, see positionWaitTimeout
+            if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason || s.reason == Reconciler.noSafeMoveSkipReason || Reconciler.isMovingNeighbourSkip(s.reason) {   // gdu.105: transient, see positionWaitTimeout
                 let since = positionWaitSince[s.key] ?? now
                 positionWaitSince[s.key] = since
                 waiting.insert(s.key)
@@ -1554,7 +1566,18 @@ public actor LayoutEngine {
         hasObservation = true
         let pc = Set(unconfirmed.keys)
         let hu = rule
-        await publish { s in s.observed = obs; s.items = info; s.hideUnits = hu; s.observationSettled = true; s.pendingConfirmation = pc; if let st { s.perItem = st } }
+        // 9o9.5: the plan's partition goes out with its statuses (after `statuses` cleared in-place failures, so `held` is current).
+        let summary = plan.map { PlanSummary(plan: $0, held: heldKeys()) }   // `passStarted` is stamped inside publish
+        await publish { s in
+            s.observed = obs; s.items = info; s.hideUnits = hu; s.observationSettled = true; s.pendingConfirmation = pc
+            if let st { s.perItem = st }
+            if var summary { summary.passStarted = s.passesStarted; s.lastPlan = summary }
+        }
+    }
+
+    /// 9o9.5: the engine's actual held set: given up on, unverified after a hand drag, or failed at the strike limit.
+    func heldKeys() -> Set<ItemKey> {
+        Set(cannotPlace.keys).union(handDragUnverified).union(failures.keys.filter { (strikes[$0] ?? 0) >= config.maxKeyFailures })
     }
 
     private func setStatus(_ k: ItemKey, _ st: ItemStatus, inFlight: PlannedAction?) async {
@@ -1926,6 +1949,7 @@ public actor LayoutEngine {
         }
         log(Self.describe(plan))
         for sk in plan.skipped where sk.reason == Reconciler.staleFrameSkipReason { log("order: skipped \(sk.key): stale frame") }
+        for sk in plan.skipped where sk.reason == Reconciler.noSafeMoveSkipReason { log("order: skipped \(sk.key): \(sk.reason)") }
         for sk in plan.skipped where Reconciler.isMovingNeighbourSkip(sk.reason) { log("order: skipped \(sk.key): \(sk.reason)") }
         await publishObserved(obs, plan)   // (e) skipped -> unsupported inside statuses()
 

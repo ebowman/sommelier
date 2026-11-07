@@ -138,6 +138,6 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         #expect(b == .waitingForPosition && b.glyph == "⟳")
         #expect(b.tooltip == "Waiting for a trustworthy read of its position (the last scan could not corroborate where it is)")
         let line = ArrangeSections.statusLine(perItem: [k("c"): .waitingForPosition("r")], lastError: nil, isConverged: false, inFlight: false)
-        #expect(line.contains("Waiting for a trustworthy read of 1 item"))
+        #expect(line == "Waiting to read 1 item")
     }
 }

@@ -38,9 +38,9 @@ import Testing
         for s in LayoutSection.allCases { #expect(!l.keys(in: s).contains(chev)) }
     }
 
-    @Test func arrangeStillRendersTheBoundaryFromTheObservation() {
+    @Test func arrangeStillRendersTheFoldLineFromTheObservation() {
         let items = Dictionary(uniqueKeysWithValues: [k("a"), k("b")].map { ($0, ItemInfo(key: $0, title: "", axDescription: "\($0)", ownerPID: 1, ownerBundleID: "com.x", ownerName: "O", width: 30, isOnBar: true, systemOverflow: false)) })
-        let obs = ObservedOrder(onBar: [k("a"), chev, k("b")], parked: [], overflowChevron: chev)
+        let obs = ObservedOrder(onBar: [k("a"), chev, k("b")], parked: [], systemOverflow: [k("a")], overflowChevron: chev)
         let s = ArrangeSections.make(observed: obs, layout: Layout(visible: [k("a"), k("b")]), items: items, perItem: [:],
                                      capabilities: { _ in Capability(canMove: true, canHide: true) }, awaiting: [])
         #expect(s.visible.rows.contains { $0.isBoundary })

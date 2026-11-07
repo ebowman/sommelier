@@ -72,10 +72,11 @@ import Testing
         #expect(r.first { $0.key == shield }?.isGhost == false)
     }
 
-    @Test func realMoveStillShowsAGhostAtTheTarget() {
+    @Test func realMoveShowsOneRowAtTheRecordSlotMoving() {
         let layout = Layout(visible: [shield, cc, mcp, flo])   // wants Shield first; the bar has it second
         let r = rows(layout, awaiting: [shield])
-        #expect(r.filter { $0.key == shield }.count == 2)
+        #expect(r.filter { $0.key == shield }.count == 1)
+        #expect(r.first?.key == shield)
     }
 
     @Test func timeoutBadgeCarriesTheReason() {

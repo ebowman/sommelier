@@ -358,8 +358,8 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
 
     @Test func suppressionStatusLineIsNotAnErrorAndNamesTheItems() {
         let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, pollPausedNames: ["Foo", "Bar"])
-        #expect(line == "Converged · Poll paused 5 min: Foo, Bar flapping")
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == "Converged")
+        #expect(line == "Poll paused 5 min: Foo, Bar flapping")
+        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == ArrangeSections.checkingMenuBar)
     }
 
     // gdu.60: the e7t confirm pass of a steady disagreement is free; flappers stay capped.

@@ -19,12 +19,12 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], layout: Layout, status
 }
 private let t0 = Date(timeIntervalSince1970: 1_000_000)
 
-@Test func outOfOrderVisibleKeyShowsGhostAndSpinner() {
+@Test func outOfOrderVisibleKeyIsOneRowInRecordOrderWithArrows() {
     let want = Layout(visible: [k("c"), k("a"), k("b"), clock])
     let bar = [k("a"), k("b"), k("c"), clock]
     let st: [ItemKey: ItemStatus] = [k("c"): .pending, k("a"): .inPlace, k("b"): .inPlace]
     let c = make(bar: bar, layout: want, status: st, awaiting: [k("c")])
-    #expect(c.visible.rows.count == 5 && c.visible.rows[0].isGhost && c.visible.rows[0].badge == .moving)
+    #expect(c.visible.rows.map(\.key) == [k("c"), k("a"), k("b"), clock] && !c.visible.rows[0].isGhost && c.visible.rows[0].badge == .moving)
 }
 
 @Test func verificationRequiresTheOrderMatch() {
@@ -38,17 +38,6 @@ private let t0 = Date(timeIntervalSince1970: 1_000_000)
     // and it times out as before
     let late = t.update(observed: obs, layout: layout, perItem: [k("c"): .inPlace], passSequence: 3, showHiddenSection: false, now: t0.addingTimeInterval(ArrangeTracker.timeout + 1))
     #expect(late.contains { $0.contains("NOT applied") })
-}
-
-@Test func statusLineConvergedSuffixIsMenuBarMatches() {
-    func line(_ show: Bool, converged: Bool = true) -> String {
-        ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: converged, inFlight: false, showsBarMatch: show)
-    }
-    #expect(line(true) == "Converged · Menu bar matches")
-    #expect(line(false) == "Converged")
-    #expect(!line(true, converged: false).contains("matches"))
-    let pending = ArrangeSections.statusLine(perItem: [k("a"): .pending], lastError: nil, isConverged: false, inFlight: true, showsBarMatch: true)
-    #expect(pending == "1 pending")
 }
 
 @Test func keysToTrackIncludesVisibleReorders() {

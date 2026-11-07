@@ -56,28 +56,28 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 
 // MARK: anchors, boundary, ghosts
 
-@Test func visibleMirrorsTheObservedBarWithModulesAsAnchorsAndTheBoundary() {
+@Test func visibleIsTheRecordWithModulesAsAnchorsAndTheFoldLine() {
     let bar = [k("a"), k("b"), chev, k("c"), cc, clock]
-    let layout = Layout(visible: bar)
+    let layout = Layout(visible: [k("a"), k("b"), k("c"), cc, clock])
     let c = make(bar: bar, ovf: [k("a"), k("b")], chevron: chev, layout: layout, status: Dictionary(uniqueKeysWithValues: bar.map { ($0, ItemStatus.inPlace) }).merging([k("a"): .notFitting, k("b"): .notFitting]) { $1 })
-    #expect(c.visible.rows.map(\.key) == bar)
+    #expect(c.visible.rows.map(\.key) == [k("a"), k("b"), chev, k("c"), cc, clock])
     #expect(c.visible.boundaryIndex == 2)
-    #expect(c.visible.rows[0].notFitting && c.visible.rows[0].badge == .notFitting)
+    #expect(c.visible.rows[0].notFitting && c.visible.rows[0].badge == .behindChevron && c.visible.rows[0].barState == .behindChevron)
     #expect(c.visible.rows[3].badge == .inPlace && c.visible.rows[3].draggable)
     #expect(c.visible.rows[4].isAnchor && !c.visible.rows[4].draggable && c.visible.rows[4].badge == .none)
     #expect(c.visible.rows[4].capabilityNote == "system module")
     #expect(c.visible.rows[5].isAnchor)
 }
 
-@Test func visibleDoesNotReorderOptimisticallyAndShowsAGhostAtTheTargetSlot() {
-    // layout wants c first; the bar still has a, b, c.
+@Test func visibleIsTheRecordOrderEvenWhileTheBarStillHasTheOldOrder() {
+    // the record wants c first; the bar still has a, b, c: ONE row per key, in record order, c moving
     let layout = Layout(visible: [k("c"), k("a"), k("b"), clock])
     let c = make(bar: [k("a"), k("b"), k("c"), clock], layout: layout, status: [k("c"): .pending, k("a"): .inPlace], awaiting: [k("c")])
-    #expect(c.visible.rows.map(\.key) == [k("c"), k("a"), k("b"), k("c"), clock])
-    #expect(c.visible.rows[0].isGhost && c.visible.rows[0].badge == .moving)
-    #expect(!c.visible.rows[3].isGhost && c.visible.rows[3].badge == .moving)       // the real capsule is still where the bar has it
-    #expect(c.visible.rows[1].badge == .inPlace)
-    #expect(c.visible.rows[0].id != c.visible.rows[3].id)
+    #expect(c.visible.rows.map(\.key) == [k("c"), k("a"), k("b"), clock])
+    #expect(!c.visible.rows[0].isGhost && c.visible.rows[0].badge == .moving && c.visible.rows[0].barState == .moving)
+    // only c is dragged; a and b are kept in place by the planner, so they keep the check (9o9.5)
+    #expect(c.visible.rows.filter { $0.barState == .moving }.map(\.key) == [k("c")])
+    #expect(c.visible.rows[0].badge != .inPlace)
 }
 
 @Test func awaitingKeyWithMatchingObservationShowsNoGhostAndPlacementMatches() {
@@ -86,8 +86,8 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
     #expect(ArrangeSections.placementMatches(k("b"), layout: layout, observed: o))
     let c = make(bar: o.onBar, layout: layout, status: [k("b"): .inPlace], awaiting: [k("b")])
     #expect(c.visible.rows.filter(\.isGhost).isEmpty)
-    // (awaiting still shows moving until the view model prunes it after a settled pass)
-    #expect(c.visible.rows[1].badge == .moving)
+    // (awaiting with a current status: the check, because the bar matches)
+    #expect(c.visible.rows[1].badge == .inPlace)
 }
 
 @Test func placementMatchesIgnoresOverflowedItemsAndOtherSections() {
@@ -101,11 +101,10 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
     #expect(ArrangeSections.placementMatches(k("h"), layout: layout, observed: ObservedOrder(onBar: [k("h")], parked: []), showHiddenSection: true))
 }
 
-@Test func hiddenMovePutsARealCapsuleInVisibleAndAGhostInHiddenUntilParked() {
+@Test func hiddenMoveShowsAGhostInHiddenUntilParkedAndLeavesVisible() {
     let layout = Layout(visible: [k("b"), clock], hidden: [k("a")])
     let pendingBar = make(bar: [k("a"), k("b"), clock], layout: layout, status: [k("a"): .pending])
-    #expect(pendingBar.visible.rows.map(\.key) == [k("a"), k("b"), clock])
-    #expect(pendingBar.visible.rows[0].badge == .moving)
+    #expect(pendingBar.visible.rows.map(\.key) == [k("b"), clock])      // Visible is the record: a is not in it
     #expect(pendingBar.hidden.rows.map(\.key) == [k("a")] && pendingBar.hidden.rows[0].isGhost && pendingBar.hidden.rows[0].badge == .moving)
     let done = make(bar: [k("b"), clock], parked: [k("a")], layout: layout, status: [k("a"): .inPlace, k("b"): .inPlace])
     #expect(done.hidden.rows[0].badge == .inPlace && !done.hidden.rows[0].isGhost)
@@ -154,11 +153,17 @@ private func make(bar: [ItemKey], parked: [ItemKey] = [], ovf: Set<ItemKey> = []
 
 @Test func withoutObservationDropsThatNeedTheBarAreRefusedButOurOwnDataMoves() {
     let layout = Layout(visible: [k("a"), clock], hidden: [k("h")])
-    for (key, sec) in [(k("a"), LayoutSection.hidden), (k("h"), .visible)] {
-        #expect(ArrangeDrop.outcome(layout: layout, key: key, to: sec, index: nil, capabilities: caps, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
+    #expect(ArrangeDrop.outcome(layout: layout, key: k("h"), to: .visible, index: nil, capabilities: caps, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
+    // Visible -> Hidden / Always hidden is a membership request the engine applies once it can read the bar
+    for sec in [LayoutSection.hidden, .alwaysHidden] {
+        if case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: k("a"), to: sec, index: nil, capabilities: caps, observationAvailable: false) {
+            #expect(l.section(of: k("a")) == sec)
+        } else { Issue.record("visible -> \(sec) must be accepted without an observation") }
     }
     if case .move = ArrangeDrop.outcome(layout: layout, key: k("h"), to: .alwaysHidden, index: nil, capabilities: caps, observationAvailable: false) {} else { Issue.record("hidden -> always hidden is our own data") }
-    #expect(ArrangeDrop.step(layout: layout, rows: [], key: k("a"), .left, capabilities: caps, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
+    // 9o9.5: a reorder inside Visible edits the record; the engine decides when it can act
+    let vis = Layout(visible: [k("a"), k("b"), clock])
+    if case .move = ArrangeDrop.outcome(layout: vis, key: k("a"), to: .visible, index: 1, capabilities: caps, observationAvailable: false) {} else { Issue.record("Visible reorder needs no observation") }
 }
 
 // MARK: capabilities are never fabricated
@@ -257,13 +262,17 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     #expect(l2.visible == [k("b"), k("c"), k("a"), cc, clock])
 }
 
-@Test func droppingRightOfTheTrailingSystemBlockClampsToBeforeIt() {
+@Test func droppingIntoOrRightOfTheTrailingSystemBlockIsRefusedAndRightBeforeItIsAllowed() {
     let layout = Layout(visible: [k("a"), k("b"), cc, clock])
     let r = rows(layout)
-    for slot in [2, 3, 4] {   // before cc, before clock, after clock
-        guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: r, slot: slot, key: k("a"), section: .visible, capabilities: caps) else { Issue.record("slot \(slot)"); continue }
-        #expect(l.visible == [k("b"), k("a"), cc, clock], "slot \(slot)")
+    guard case .move(let l, _, _) = ArrangeDrop.drop(layout: layout, rows: r, slot: 2, key: k("a"), section: .visible, capabilities: caps) else { Issue.record("slot 2"); return }
+    #expect(l.visible == [k("b"), k("a"), cc, clock])
+    for slot in [3, 4] {   // between cc and clock, after clock
+        #expect(ArrangeDrop.drop(layout: layout, rows: r, slot: slot, key: k("a"), section: .visible, capabilities: caps) == .rejected("macOS keeps the system items at the right end"), "slot \(slot)")
     }
+    // the by-index path (env move) still clamps
+    guard case .move(let l2, _, _) = ArrangeDrop.drop(layout: layout, key: k("a"), section: .visible, movableIndex: nil, capabilities: caps) else { Issue.record("index"); return }
+    #expect(l2.visible == [k("b"), k("a"), cc, clock])
 }
 
 @Test func droppingLeftOfTheBoundaryIsAllowedAndFlaggedAsWillNotFit() {
@@ -311,7 +320,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     let r = rows(layout)
     #expect(ArrangeDrop.drop(layout: layout, rows: r, slot: 2, key: a1, section: .visible, capabilities: caps) == .noop)
     // the awaiting set of a unit move covers the siblings, so both show moving
-    let c = make(bar: [k("a"), a1, a2, clock], parked: [], layout: l, status: [a1: .pending, a2: .pending])
+    let c = make(bar: [k("a"), a1, a2, clock], parked: [], layout: layout, status: [a1: .pending, a2: .pending])
     #expect(c.visible.rows[1].badge == .moving && c.visible.rows[2].badge == .moving)
 }
 
@@ -406,7 +415,7 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 
 @Test func unsettledObservationIsShownAsObservedButUnsettled() {
     #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: false, inFlight: false, observationSettled: false) == "Observing (unsettled)")
-    #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, observationSettled: true) == "Converged")
+    #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, observationSettled: true) == ArrangeSections.checkingMenuBar)
     // An error still wins over the unsettled note.
     #expect(ArrangeSections.statusLine(perItem: [:], lastError: .permissionDenied, isConverged: false, inFlight: false, observationSettled: false) == "Accessibility required")
     // With no lastError (an unsettled observation clears it) the capsules render instead of the placeholder.
@@ -420,13 +429,13 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
     func s(_ p: [ItemKey: ItemStatus], err: EngineError? = nil, conv: Bool = true, await n: Int = 0) -> String {
         ArrangeSections.statusLine(perItem: p, lastError: err, isConverged: conv, inFlight: false, pendingAwaiting: n)
     }
-    #expect(s([k("a"): .inPlace]) == "Converged")
-    #expect(s([k("a"): .pending, k("b"): .moving], conv: false) == "2 pending")
+    #expect(s([k("a"): .inPlace]) == ArrangeSections.checkingMenuBar)
+    #expect(s([k("a"): .pending, k("b"): .moving], conv: false) == "Moving 2 items…")
     #expect(s([:], conv: false) == "Working…")
-    #expect(s([:], await: 1) == "1 pending")
+    #expect(s([:], await: 1) == "Moving…")
     #expect(s([k("a"): .failed(.timeout)]) == "1 failed")
     #expect(s([:], err: .stoppedAfterFailures(3)) == "Error: stopped after 3 failures")
-    #expect(s([k("a"): .pending], err: .observe("boom")) == "Error: boom · 1 pending")
+    #expect(s([k("a"): .pending], err: .observe("boom")) == "Error: boom · Moving…")
 }
 
 // MARK: the waiting state machine
@@ -468,7 +477,7 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     #expect(log.first?.contains("not verified: expected leftmost, saw unchanged") == true && t.isEmpty)
     let c2 = ArrangeSections.make(observed: wrong, layout: layout, items: items(wrong.onBar), perItem: stale, capabilities: caps,
                                   awaiting: t.awaiting, suppressedStatus: t.suppressed(passSequence: 4))
-    #expect(c2.visible.rows.first { $0.key == k("b") && !$0.isGhost }?.badge == .failed("not verified: expected leftmost, saw unchanged"))
+    #expect(c2.visible.rows.first { $0.key == k("b") }?.badge == .cannotPlace("not verified: expected leftmost, saw unchanged"))
 }
 
 @Test func unsupportedFromAJudgingPassEndsTheWait() {
@@ -489,7 +498,7 @@ private let t0 = Date(timeIntervalSince1970: 1_000)
     #expect(t.timedOut == [k("b")] && log.count == 1)
     let c = ArrangeSections.make(observed: wrong, layout: layout, items: items(wrong.onBar), perItem: [k("b"): .inPlace], capabilities: caps,
                                  awaiting: t.awaiting, timedOut: t.timedOut)
-    #expect(c.visible.rows.first { $0.key == k("b") && !$0.isGhost }?.badge == .failed(ArrangeTracker.timeoutText))
+    #expect(c.visible.rows.first { $0.key == k("b") && !$0.isGhost }?.badge == .cannotPlace(ArrangeTracker.timeoutText))
     t.update(observed: right, layout: layout, perItem: [k("b"): .inPlace], passSequence: 4, showHiddenSection: false, now: t0 + 100)
     #expect(t.isEmpty && t.timedOut.isEmpty)
 }
@@ -577,13 +586,13 @@ private func incident() -> (layout: Layout, bar: [ItemKey], content: ArrangeCont
     return (layout, bar, c)
 }
 
-@Test func staleOnBarItemsAreRowsWithStaleBadgeAndNotDraggable() {
+@Test func staleOnBarItemsAreRowsWithStaleBadgeAndStillDraggable() {
     let (_, bar, c) = incident()
     #expect(c.visible.rows.map(\.key) == bar && bar.count == 26)
     let stale = c.visible.rows.filter(\.staleFrame)
-    #expect(stale.count == 9 && stale.allSatisfy { !$0.draggable && $0.badge == .stale && $0.badge.glyph == "~" })
+    #expect(stale.count == 9 && stale.allSatisfy { $0.draggable && $0.badge == .stale && $0.badge.glyph == "~" && $0.barState == .staleFrame })
     #expect(c.visible.rows.filter { !$0.staleFrame && $0.badge == .stale }.isEmpty)
-    #expect(ArrangeBadge.stale.tooltip.hasPrefix("Position not refreshed yet"))
+    #expect(ArrangeBadge.stale.tooltip == "Position being re-read" && stale.allSatisfy { $0.badgeTooltip == "Position being re-read" })
 }
 
 @Test func dropNextToAFreshNeighbourLandsNextToThatKey() {
@@ -596,20 +605,16 @@ private func incident() -> (layout: Layout, bar: [ItemKey], content: ArrangeCont
     #expect(l.visible[p - 1] == k("f1") && l.visible[p + 1] == k("f2"))
 }
 
-@Test func dropBesideAStaleRowIsRefusedWithTheExactText() {
+@Test func dropBesideAStaleRowIsAcceptedBecauseTheRecordIsEdited() {
     let (layout, _, c) = incident()
     let rows = c.visible.rows
     let s = rows.firstIndex { $0.key == istat[0] }!
-    for slot in [s, s + 1] {   // right of a stale row, left of a stale row
-        #expect(ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: k("f9"), section: .visible, capabilities: caps)
-                == .rejected("The bar is not fully observed right now; try again in a moment."))
+    for slot in [s, s + 1] {   // left of a stale row, right of a stale row
+        if case .move = ArrangeDrop.drop(layout: layout, rows: rows, slot: slot, key: k("f9"), section: .visible, capabilities: caps) {} else { Issue.record("drop beside a stale row refused at \(slot)") }
     }
-    #expect(ArrangeDrop.barNotFullyObserved == "The bar is not fully observed right now; try again in a moment.")
-    // Move left/right across a stale capsule is refused too.
-    let f = k("f1")
-    if case .rejected(let m) = ArrangeDrop.step(layout: layout, rows: rows.map { var r = $0; if r.key == k("f0") { r.staleFrame = true }; return r }, key: f, .left, capabilities: caps) {
-        #expect(m == ArrangeDrop.barNotFullyObserved)
-    } else { Issue.record("step across a stale row was not refused") }
+    // Move left/right across a stale capsule is accepted too.
+    if case .move = ArrangeDrop.step(layout: layout, rows: rows.map { var r = $0; if r.key == k("f0") { r.staleFrame = true }; return r }, key: k("f1"), .left, capabilities: caps) {}
+    else { Issue.record("step across a stale row was refused") }
 }
 
 @Test func hiddenStripDropsIgnoreStaleness() {

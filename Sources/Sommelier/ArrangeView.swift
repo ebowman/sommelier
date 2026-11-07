@@ -74,7 +74,7 @@ struct ArrangeView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    StripView(vm: vm, strip: content.visible, placeholder: content.visiblePlaceholder, title: "Visible", subtitle: "The real menu bar, left to right")
+                    StripView(vm: vm, strip: content.visible, placeholder: content.visiblePlaceholder, title: "Visible", subtitle: "Your order, left to right; each badge says where the real menu bar stands")
                     StripView(vm: vm, strip: content.hidden, title: "Hidden", subtitle: "Shown on demand in the overflow panel")
                     StripView(vm: vm, strip: content.alwaysHidden, title: "Always hidden", subtitle: "Never shown")
                 }
@@ -212,7 +212,7 @@ struct BoundaryLine: View {
             Text("overflow").font(.system(size: 8)).foregroundStyle(.orange)
         }
         .padding(.horizontal, 2)
-        .help("macOS overflow boundary: items to the left are on the bar per the system but not drawn (they do not fit)")
+        .help("Fold line: items to the left of it are behind macOS's « chevron (the bar is full); items to the right are drawn")
     }
 }
 
@@ -262,14 +262,18 @@ struct CapsuleSlot: View {
         Button("Move to Visible") { vm.move(row.key, to: .visible) }.disabled(!vm.canMove(row.key, to: .visible))
         Button("Move to Hidden") { vm.move(row.key, to: .hidden) }.disabled(!vm.canMove(row.key, to: .hidden))
         Button("Move to Always hidden") { vm.move(row.key, to: .alwaysHidden) }.disabled(!vm.canMove(row.key, to: .alwaysHidden))
-        if section == .visible && ArrangeMenuRules.showsStepItems(isGhost: row.isGhost) {
+        if let why = ArrangeMenuRules.whyText(row) {
+            Divider()
+            Button(why) {}.disabled(true)
+        }
+        if section == .visible && ArrangeMenuRules.showsStepItems() {
             Divider()
             Button("Move left") { vm.step(row.key, .left) }.disabled(!vm.canStep(row.key, .left, rows: rows))
             Button("Move right") { vm.step(row.key, .right) }.disabled(!vm.canStep(row.key, .right, rows: rows))
         }
-        if case .failed = row.badge {
+        if ArrangeMenuRules.showsTryAgain(row) {
             Divider()
-            Button("Retry") { vm.retry(row.key) }
+            Button("Try again") { vm.retry(row.key) }
         }
         if section == .hidden {
             Divider()
@@ -327,6 +331,7 @@ struct CapsuleView: View {
         if row.isGhost { parts.append("Waiting for the menu bar: this is where it is going, not where it is.") }
         if row.notFitting { parts.append(ArrangeBadge.notFitting.tooltip) }
         if row.badge != .none { parts.append(row.badgeTooltip) }
+        else if let why = ArrangeMenuRules.whyText(row) { parts.append(why) }
         if let n = row.capabilityNote { parts.append(n) }
         if row.notRunning { parts.append("The app is not running.") }
         return parts.joined(separator: "\n")
@@ -350,6 +355,10 @@ struct BadgeView: View {
         case .cannotChange: Image(systemName: "nosign").foregroundStyle(.secondary).font(.system(size: 11)).help(badge.tooltip)
         case .notFitting: Image(systemName: "chevron.left.2").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
         case .waitingForPosition: Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
+        case .ghost: Image(systemName: "circle.dashed").foregroundStyle(.secondary).font(.system(size: 11)).help(badge.tooltip)
+        case .cannotPlace: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.system(size: 11)).help(badge.tooltip)
+        case .behindChevron: Text("«").foregroundStyle(.orange).font(.system(size: 12, weight: .bold)).help(badge.tooltip)
+        case .unreadAfterHandDrag: Image(systemName: "hourglass").foregroundStyle(.orange).font(.system(size: 11)).help(badge.tooltip)
         case .stale: Text("~").foregroundStyle(.orange).font(.system(size: 11, weight: .bold)).help(badge.tooltip)
         }
     }

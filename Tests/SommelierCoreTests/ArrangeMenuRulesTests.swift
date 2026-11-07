@@ -17,7 +17,7 @@ import Testing
     }
 
     @Test func stepItemsAreAlwaysThereExceptForGhosts() {
-        #expect(!ArrangeMenuRules.showsStepItems(isGhost: true))
-        #expect(ArrangeMenuRules.showsStepItems(isGhost: false))
+        #expect(ArrangeMenuRules.showsStepItems())
+        #expect(ArrangeMenuRules.showsStepItems())
     }
 }

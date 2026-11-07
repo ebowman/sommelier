@@ -405,6 +405,24 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         #expect(await !r.actuator.calls.contains { if case .move = $0 { return true }; return false })
     }
 
+    // 9o9.5: the engine publishes the unread hand-dragged keys so Arrange can say so (never a check for them).
+    @Test func unverifiedHandDraggedKeysArePublishedToTheStateAndClearedWhenRead() async {
+        let clock = Clock()
+        let r = await unverifiedA(clock)
+        #expect(await waitUntil { await MainActor.run { r.state.unverifiedAfterHandDrag == [k("A")] } })
+        r.observer.mode = .good                          // corroborated at the new slot
+        #expect(await waitUntil { _ = await r.engine.reconcileOnce(); return await MainActor.run { r.state.unverifiedAfterHandDrag.isEmpty } })
+        #expect(await r.layoutVisible() == ["B", "C", "D", "E", "A"].map(k))
+    }
+
+    @Test func settingTheLayoutFromArrangeClearsThePublishedUnverifiedKey() async {
+        let clock = Clock()
+        let r = await unverifiedA(clock)
+        #expect(await waitUntil { await MainActor.run { r.state.unverifiedAfterHandDrag == [k("A")] } })
+        _ = await r.engine.setLayout(Layout(visible: ["B", "A", "C", "D", "E"].map(k)), userPlacement: true, moved: [k("A")])
+        #expect(await waitUntil { await MainActor.run { r.state.unverifiedAfterHandDrag.isEmpty } })
+    }
+
     @Test func anAmbiguousReadAtTheWrongSlotIsNotPlaced() async {
         let clock = Clock()
         let r = await unverifiedA(clock)

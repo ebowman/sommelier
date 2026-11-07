@@ -114,6 +114,12 @@ public struct Plan: Equatable, Sendable {
     /// The left-to-right on-bar order this plan converges to (in the membership phase, shown items are assumed to be
     /// appended at the end, since MenuBarAgent picks the real slot).
     public var desiredOnBar: [ItemKey]
+    /// 9o9.5: keys the planner would move but could not spell safely, or holds back this pass, because an untrusted / unsteady key (the
+    /// "wall", the value) stands between them and their target. Whether or not the subject also got a skip of its own. Arrange shows
+    /// "Waiting for <wall> to settle" for them; it never re-derives this.
+    public var blockedBy: [ItemKey: ItemKey] = [:]
+    /// 9o9.5: trusted keys the planner would move but for which no candidate move lands safely and no untrusted wall is to blame.
+    public var blockedNoWall: Set<ItemKey> = []
 }
 
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).
@@ -374,6 +380,8 @@ public struct Reconciler: Sendable {
         }
 
         var actions: [PlannedAction] = hides.map { .hide($0) } + shows.map { .show($0) }
+        var walls: [ItemKey: ItemKey] = [:]
+        var noWall = Set<ItemKey>()
         let phase: PlanPhase
         if !actions.isEmpty {
             phase = .membership
@@ -383,6 +391,8 @@ public struct Reconciler: Sendable {
             let fixed = anchors.union(untrusted)
             let planned = Self.movesReporting(from: base, to: target, anchors: fixed, boundary: chevron != nil, avoid: unfresh, unsteady: unsteady.intersection(untrusted))
             actions = planned.actions
+            walls = planned.blockedBy
+            for (k, u) in planned.moving { walls[k] = u }
             // 9o9.11: with the drawn order settled, one move across the fold (pull-out or push-in) if the record asks for it.
             var foldKeys = Set<ItemKey>()
             if actions.isEmpty, chevron != nil, !observed.stripExpanded {
@@ -428,7 +438,11 @@ public struct Reconciler: Sendable {
             if !foldKeys.isEmpty { skipped.removeAll { foldKeys.contains($0.key) && $0.reason == Reconciler.overflowSkipReason } }
             // 9o9.9: a trusted subject blocked only by an untrusted wall is already explained by the untrusted key's own skip; not repeated.
             for k in planned.blocked where !skipped.contains(where: { $0.key == k })
-                && !(planned.blockedBy[k].map { w in untrusted.contains(w) && skipped.contains { $0.key == w } } ?? false) { skipped.append(SkippedAction(k, Reconciler.staleFrameSkipReason)) }
+                && !(planned.blockedBy[k].map { w in untrusted.contains(w) && skipped.contains { $0.key == w } } ?? false) {
+                // 9o9.5: with a wall, the stale-frame wording stands; with none, say the true thing and remember the key for Arrange.
+                if planned.blockedBy[k] == nil { skipped.append(SkippedAction(k, Reconciler.noSafeMoveSkipReason)); noWall.insert(k) }
+                else { skipped.append(SkippedAction(k, Reconciler.staleFrameSkipReason)) }
+            }
             for (k, u) in planned.moving where !skipped.contains(where: { $0.key == k }) { skipped.append(SkippedAction(k, Reconciler.movingNeighbourSkipReason(u))) }
             let realPile = observed.systemOverflow.intersection(onBarSet)   // a crossing is judged against macOS's real pile, not the churn zone
             let foldActions = actions.filter { Self.crossesFold($0, overflow: realPile) }
@@ -441,7 +455,8 @@ public struct Reconciler: Sendable {
                    "planned a move of or into the trailing system block")
             phase = actions.isEmpty ? .converged : .order
         }
-        return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped, desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target)
+        return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped,
+                    desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target, blockedBy: walls, blockedNoWall: noWall)
     }
 
     /// gdu.101: why a hide of an on-bar key with a stale frame is not planned.
@@ -449,6 +464,9 @@ public struct Reconciler: Sendable {
 
     /// 9o9.3: why an order move is not planned: its subject, or the neighbour it would be dropped next to, has no trusted frame.
     public static let staleFrameSkipReason = "stale frame; waiting for a fresh read"
+
+    /// 9o9.5: why a trusted key's move is not planned this pass: none of its candidate moves lands safely (no untrusted key to blame).
+    public static let noSafeMoveSkipReason = "no safe move this pass; waiting for the bar to settle"
 
     /// 9o9.9: why a trusted key's move is held back: it would cross an untrusted key whose slot changed since the last settled observation.
     public static func movingNeighbourSkipReason(_ untrusted: ItemKey) -> String { "neighbour \(untrusted) is moving" }
@@ -665,7 +683,7 @@ public struct Reconciler: Sendable {
                     // first other drawn item instead (nothing has been moved yet at index 0).
                     if boundary {
                         guard let f = current.first(where: { $0 != k }) else { inPlace.insert(k); continue }
-                        if avoid.contains(f) { blocked.append(k); continue }
+                        if avoid.contains(f) { blocked.append(k); blockedBy[k] = f; continue }
                         relation = .before(f)
                     } else { relation = .leftmost }
                 }

@@ -254,6 +254,6 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     for n in ["x", "d1", "d2"] { #expect(ArrangeSections.foldBaseStatus(k(n), layout: l, observed: o) == .pending) }
     #expect(ArrangeSections.foldBaseStatus(k("p1"), layout: l, observed: o) == .notFitting)
     #expect(ArrangeSections.foldBaseStatus(k("d3"), layout: l, observed: o) == .inPlace)
-    let line = ArrangeSections.statusLine(perItem: [k("x"): .pending, k("d1"): .pending], lastError: nil, isConverged: true, inFlight: false, showsBarMatch: true)
+    let line = ArrangeSections.statusLine(perItem: [k("x"): .pending, k("d1"): .pending], lastError: nil, isConverged: true, inFlight: false)
     #expect(!line.contains("matches"))
 }

@@ -110,8 +110,9 @@ final class ArrangeViewModel {
         ArrangeSections.make(observed: state.observed, layout: layout, items: state.items, perItem: state.perItem,
                              capabilities: cap, showHiddenSection: state.showHiddenSection,
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
-                             suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled),
-                             pendingConfirmation: state.pendingConfirmation,
+                             suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled,
+                                                  planPass: state.lastPlan.passStarted),
+                             pendingConfirmation: state.pendingConfirmation, unverifiedAfterHandDrag: state.unverifiedAfterHandDrag, lastPlan: state.lastPlan,
                              observationProblem: observationProblem, filter: filter, units: units,
                              unitAppName: { [self] in self.unitAppName($0) }, moveReasons: state.inFlight != nil ? state.orderMoveReasons : [:])
     }
@@ -119,11 +120,20 @@ final class ArrangeViewModel {
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
     var hasNotFitting: Bool { !state.observed.systemOverflow.isEmpty }
     var statusText: String {
-        ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
-                                   inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                   observationSettled: state.observationSettled, notice: state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.handDragNotice ?? state.newItemNotice,
-                                   pollPausedNames: pollPausedNames,
-                                   showsBarMatch: true)
+        let notice = state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice
+            ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice
+        let c = content
+        var ctx = ArrangeSections.StatusContext(userPaused: state.userPaused, pauseReason: state.pauseReason,
+                                                orderCapActive: state.orderCapUntil.map { $0 > Date() } ?? false,
+                                                adoptionPending: state.layout.pendingAdoption, handDragNotice: state.handDragNotice)
+        if let k = state.inFlight.flatMap(Self.subject(of:)) { ctx.movingName = (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
+        return ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
+                                          inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
+                                          observationSettled: state.observationSettled, notice: notice,
+                                          pollPausedNames: pollPausedNames, content: c, context: ctx)
+    }
+    private static func subject(of a: PlannedAction) -> ItemKey {
+        switch a { case .move(let k, _), .hide(let k), .show(let k): return k }
     }
     /// Display names of the items whose flapping paused the poll, nil when it is not paused (gdu.58).
     private var pollPausedNames: [String]? {
@@ -188,7 +198,7 @@ final class ArrangeViewModel {
         guard !pending.isActive else { if windowVisible { logRowsIfChanged() }; return }
         for line in tracker.update(observed: state.observed, layout: layout, perItem: state.perItem, passSequence: state.passSequence,
                                    showHiddenSection: state.showHiddenSection, now: t,
-                                   observationSettled: state.observationSettled) {
+                                   observationSettled: state.observationSettled, planPass: state.lastPlan.passStarted) {
             AppLog.log(.arrange, "arrange: \(line)")
         }
         if windowVisible { logRowsIfChanged() }
@@ -365,10 +375,11 @@ final class ArrangeViewModel {
         Task { await engine.clearFailures(); await engine.requestReconcile() }
     }
 
+    /// "Try again" on one row: clears the engine's give-up / failure history of `key` and plans it again (`LayoutEngine.retry(key:)`).
     func retry(_ key: ItemKey) {
         guard let engine = model.engine else { return }
         tracker.retry(passesStarted: state.passesStarted, now: Date())
-        Task { await engine.clearFailures(); await engine.requestReconcile() }
+        Task { await engine.retry(key: key) }
     }
 
     func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout, units: units), base: state.layoutRevision) }

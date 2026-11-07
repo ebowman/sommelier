@@ -180,8 +180,8 @@ private final class PIDBox: @unchecked Sendable {
         #expect(NewItemNotice.text([("Foo", .hidden)]) == "New item: Foo placed in Hidden")
         #expect(NewItemNotice.text([("A", .visible), ("B", .hidden), ("C", .visible)]) == "New items: A, C placed in Visible; B placed in Hidden")
         let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, notice: "New item: Foo placed in Visible")
-        #expect(line == "New item: Foo placed in Visible · Converged")
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == "Converged")
+        #expect(line == "New item: Foo placed in Visible")
+        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == ArrangeSections.checkingMenuBar)
     }
 }
 

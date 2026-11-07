@@ -28,7 +28,11 @@ struct RecordOrderDropTests {
 
     @Test func otherRefusalsStillApply() {
         let l = lay(v: ["A", "B"])
-        #expect(ArrangeDrop.outcome(layout: l, key: k("A"), to: .visible, index: 1, capabilities: free, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
+        // a Visible reorder needs no observation (9o9.5); a section change still does
+        if case .move = ArrangeDrop.outcome(layout: l, key: k("A"), to: .visible, index: 1, capabilities: free, observationAvailable: false) {} else { Issue.record("reorder refused") }
+        if case .move = ArrangeDrop.outcome(layout: l, key: k("A"), to: .hidden, index: nil, capabilities: free, observationAvailable: false) {} else { Issue.record("visible -> hidden refused") }
+        let h = Layout(visible: [k("A")], hidden: [k("H")])
+        #expect(ArrangeDrop.outcome(layout: h, key: k("H"), to: .visible, index: 0, capabilities: free, observationAvailable: false) == .rejected(ArrangeDrop.noObservation))
         let none = { (_: ItemKey) in Capability(canMove: false, canHide: false, reason: "no way") }
         #expect(ArrangeDrop.outcome(layout: l, key: k("A"), to: .visible, index: 1, capabilities: none) == .rejected("no way"))
     }
