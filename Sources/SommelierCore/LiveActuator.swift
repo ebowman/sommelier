@@ -246,6 +246,13 @@ public actor LiveActuator: MenuBarActuator {
         let me = plan.subject.item
         switch relation {
         case .before, .after:
+            // 9o9.29: a `.before` target that is the FIRST drawn key sits right of the chevron; the generic rule would hover the chevron
+            // (its left neighbour) and drop on it. Aim just right of the chevron's edge instead: left of the target's midpoint, and
+            // past the chevron's midpoint, so the subject lands between the chevron and the target.
+            if case .before = relation, let t = plan.target?.item, let ti = bar.firstIndex(where: { $0.frame == t.frame }) {
+                let left = bar[..<ti].last(where: { $0.frame != me.frame })
+                if let c = left, c.isOverflowChevron, !c.stale, c.frame.maxX + 2 < t.frame.midX { return c.frame.maxX + 2 }
+            }
             return DragTarget.dropX(for: DragRelation(relation), moved: me, target: plan.target?.item, bar: bar)
         case .leftmost:
             guard let first = freshBar.first(where: { !ActuationVerifier.isModule($0) && $0.key != plan.subject.key })

@@ -471,3 +471,26 @@ private func refoldWorld() -> StripWorld {
     guard case .failed = r else { Issue.record("expected failed, got \(r)"); return }
     #expect(w.events == ["open", "close"])
 }
+
+// MARK: - 9o9.29: a `.before` target that is the first drawn key (right of the chevron)
+
+@Test func aBeforeTargetThatIsTheFirstDrawnKeyDropsJustRightOfTheChevronNotOnIt() async throws {
+    let w = StripWorld(pile: ["Jump"], drawn: ["B", "C"])
+    let a = await actuator(w, record: ["Jump", "B", "C"])
+    let r = await a.move(key("Jump"), relation: .before(key("B")))
+    #expect(r.isVerified)
+    #expect(w.events == ["open", "drag", "close"])           // dragged once: no refusal, no re-plan
+    // The strip is open during the drag: the chevron spans 310..327, B starts at 340 (midX 355). The drop is the chevron's maxX + 2.
+    #expect(w.dragTargets.count == 1)
+    let first = try #require(w.dragTargets.first)
+    #expect(first == 329)
+    #expect(!(await a.trace).contains { $0.contains("drop refused") })
+}
+
+@Test func aBeforeTargetThatIsNotTheFirstDrawnKeyKeepsTheGenericDropX() async {
+    let w = StripWorld(pile: ["Jump"], drawn: ["B", "C"])
+    let a = await actuator(w, record: ["Jump", "B", "C"])
+    _ = await a.move(key("Jump"), relation: .before(key("C")))
+    #expect(w.dragTargets.count >= 1)
+    #expect(w.dragTargets[0] != 329)
+}

@@ -91,7 +91,9 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         let f = make(o, layout, status: [k("a"): .failed(.mechanismFailed("drag did not start"))])
         #expect(row(f, k("a")).barState == .cannotPlace("drag did not start") && row(f, k("a")).badge == .cannotPlace("drag did not start"))
         #expect(row(f, k("a")).badge.glyph == "⚠" && row(f, k("a")).badgeTooltip == "drag did not start")
-        let u = make(o, layout, status: [k("b"): .unsupported("could not corroborate its position on the bar for 60 s: stale")])
+        // 9o9.29: only an uncorroborated key the record wants ELSEWHERE (neighbours disagree) is a warning after the minute.
+        let o2 = ObservedOrder(onBar: [k("a"), k("c"), k("b"), clock], parked: [])
+        let u = make(o2, layout, status: [k("b"): .unsupported("could not corroborate its position on the bar for 60 s: stale")])
         #expect(row(u, k("b")).barState == .cannotPlace("Sommelier can't pin down where this item is on the bar for a minute — right-click to try again"))
         let g = make(o, layout, status: [k("c"): .cannotPlace(reason: "moved 3 times in a minute", attempts: 3)])
         #expect(row(g, k("c")).barState == .cannotPlace("moved 3 times in a minute"))
@@ -365,6 +367,35 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         // the rows the planner keeps in place show the check
         for key in [shield, mcp, clock] { #expect(row(c, key).badge != .inPlace || row(c, key).barState == .matches) }
         #expect(ArrangeMenuRules.showsTryAgain(r))
+    }
+
+    // MARK: 9o9.29 an in-place key the scan cannot corroborate is "can't be pinned down", not "can't be placed"
+
+    @Test func aDrawnKeyWhoseNeighboursAgreeAfterTheMinuteReadsTildeNotWarning() {
+        let bar = [k("a"), k("b"), k("c"), clock]
+        let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: [k("b")])
+        let st: [ItemKey: ItemStatus] = [k("b"): .unsupported("could not corroborate its position on the bar for 60 s: " + Reconciler.uncorroboratedSkipReason)]
+        let c = make(o, Layout(visible: bar), status: st)
+        let r = row(c, k("b"))
+        #expect(r.barState == .staleFrame && r.badge.glyph == "~")
+        #expect(r.badgeTooltip == "Sommelier can't pin down where this item is on the bar (it looks in place) — right-click to try again")
+        #expect(r.pinDownTimedOut && ArrangeMenuRules.showsTryAgain(r))
+        let text = ArrangeSections.statusLine(perItem: st, lastError: nil, isConverged: true, inFlight: false, content: c)
+        #expect(text == "1 item can't be pinned down — right-click one to try again")
+        #expect(!text.contains("can't be placed") && !text.contains("matches"))
+    }
+
+    @Test func twoPinnedDownKeysArePluralAndAKeyTheRecordWantsElsewhereStillCountsAsCannotPlace() {
+        let bar = [k("a"), k("b"), k("c"), clock]
+        let timeout = ItemStatus.unsupported("could not corroborate its position on the bar for 60 s: " + Reconciler.uncorroboratedSkipReason)
+        let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: [k("a"), k("c")])
+        let st: [ItemKey: ItemStatus] = [k("a"): timeout, k("c"): timeout]
+        let c = make(o, Layout(visible: bar), status: st)
+        #expect(ArrangeSections.statusLine(perItem: st, lastError: nil, isConverged: true, inFlight: false, content: c) == "2 items can't be pinned down — right-click one to try again")
+        // the record wants b before a: a's neighbours disagree, so its timeout stays a warning and "can't be placed" wins the line
+        let c2 = make(ObservedOrder(onBar: bar, parked: [], uncorroborated: [k("a")]), Layout(visible: [k("b"), k("a"), k("c"), clock]), status: [k("a"): timeout])
+        #expect(row(c2, k("a")).barState == .cannotPlace(ArrangeSections.uncorroboratedTimeoutText))
+        #expect(ArrangeSections.statusLine(perItem: [k("a"): timeout], lastError: nil, isConverged: true, inFlight: false, content: c2) == "1 item can't be placed — right-click one for why")
     }
 
     @Test func aHeldKeyOutOfOrderLeavesItsNeighbourWithTheCheck() {

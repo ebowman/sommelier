@@ -8,6 +8,7 @@ public enum ArrangeMenuRules {
     /// 9o9.5: "Try again" on a row the engine could not place (failed, unsupported, gave up): calls `LayoutEngine.retry(key:)`.
     public static func showsTryAgain(_ row: ArrangeRow) -> Bool {
         if case .cannotPlace? = row.barState { return true }
+        if row.pinDownTimedOut { return true }   // 9o9.29
         return false
     }
 

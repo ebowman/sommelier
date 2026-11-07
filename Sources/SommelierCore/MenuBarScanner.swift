@@ -908,7 +908,23 @@ public struct MenuBarScanner {
             if !reportNotHosted { newHidden.remove(ckey) }
             // A candidate verified by the hosted tree takes the hosted (authoritative, fresh) frame and is not stale.
             var h = reportNotHosted ? nil : matchedCandidates[ci]
-            let ev: JoinEvidence = h == nil ? .none : joinEvidence(ci)
+            var ev: JoinEvidence = h == nil ? .none : joinEvidence(ci)
+            // 9o9.29: SystemUIServer's menu extras (Time Machine) have no hosted element: the agent tree mirrors only its own. A fresh
+            // on-bar app-side frame that no hosted element (the chevron's 2 pt reach included) and no other owner item overlaps is
+            // corroborated by the owner alone (`.ownerFrame`); anything contested stays uncorroborated (gdu.94 unchanged).
+            var ownerOnly = false
+            if h == nil, !reportNotHosted, !assumed, agent != nil, hostedComplete, !verifiedOnly, c.app.bundleID == "com.apple.systemuiserver", !c.stale,
+               carriedCount == 0, matchedCandidates[ci] == nil, c.info.frame.width > 1, onBar(c.info.frame) {
+                func overlaps(_ a: CGRect, _ b: CGRect) -> Bool {
+                    guard a.width > 0, b.width > 0 else { return false }
+                    let i = a.intersection(b)
+                    return !i.isNull && i.width > 0 && i.height > 0
+                }
+                let f = c.info.frame
+                let hostedContest = hosted.contains { overlaps($0.frame, f) || ($0.isOverflowChevron && overlaps($0.frame.insetBy(dx: -2, dy: 0), f)) }
+                let ownerContest = candidates.indices.contains { $0 != ci && !assumedIdx.contains($0) && candidates[$0].info.frame.width > 1 && overlaps(candidates[$0].info.frame, f) }
+                if !hostedContest, !ownerContest { ownerOnly = true; ev = .ownerFrame }
+            }
             var ccHidden = false, unknown = false
             var ccAllowed: Bool?
             var why = "no hosted element"
@@ -966,7 +982,7 @@ public struct MenuBarScanner {
                 stale: h == nil ? (c.stale || carriedCount > 0) : (freshOwnerRead ? false : h!.stale),
                 staleCount: freshOwnerRead ? 0 : (h?.staleCount ?? carriedCount),
                 notHostedByAgent: reportNotHosted, assumedNotHosted: assumed,
-                joinEvidence: h == nil ? .none : ev,
+                joinEvidence: h == nil ? (ownerOnly ? ev : .none) : ev,
                 hiddenInControlCenter: ccHidden, placementUnknown: unknown, controlCenterAllowed: ccAllowed)
             if unknown { built.placementReason = why2 ?? (why + "; make room in the bar so the item is drawn, or hide it in Control Center") }
             items.append(built)

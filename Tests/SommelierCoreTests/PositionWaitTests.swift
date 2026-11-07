@@ -160,7 +160,8 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let content = ArrangeSections.make(observed: r.state.observed, layout: Layout(visible: [k("a"), k("b"), k("c")]), items: items, perItem: r.state.perItem,
                                            capabilities: { _ in Capability(canMove: true, canHide: true) })
         let row = content.visible.rows.first { $0.key == k("c") }!
-        #expect(row.badge.glyph == "⚠" && row.barState == .cannotPlace(ArrangeSections.uncorroboratedTimeoutText) && ArrangeMenuRules.showsTryAgain(row))
+        // 9o9.29: the bar matches the record (neighbours agree): after the minute it is ~ "it looks in place" with Try again, not a warning
+        #expect(row.badge.glyph == "~" && row.barState == .staleFrame && row.pinDownTimedOut && ArrangeMenuRules.showsTryAgain(row))
         // Retry clears the timer
         await r.engine.retry(key: k("c"))
         #expect(await r.engine.positionWaitInfo.timedOut == 0)

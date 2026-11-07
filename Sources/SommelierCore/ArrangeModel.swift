@@ -146,6 +146,9 @@ public struct ArrangeRow: Identifiable, Equatable, Sendable {
     public var badgeTooltip: String { badge == .moving ? (moveReason ?? badge.tooltip) : (stateNote ?? barState?.text ?? badge.tooltip) }
     /// 9o9.5: replaces the bar state's generic text (an uncorroborated key that looks in place).
     public var stateNote: String? = nil
+    /// 9o9.29: the 60 s position wait ran out for a drawn key whose observed neighbours agree with the record: it reads ~ "it looks in
+    /// place" (not a warning) and offers Try again; the status line counts it as "can't be pinned down".
+    public var pinDownTimedOut: Bool = false
     /// 9o9.5: display name of the untrusted key the engine's plan says this row's move waits for ("Waiting for <it> to settle").
     public var waitingOn: String? = nil
     /// Capability reason when the item cannot be moved or hidden (rendered as a small ⊘).
@@ -304,6 +307,7 @@ public enum ArrangeSections {
 
     /// 9o9.24: the one honest text for an on-bar key whose position the scan cannot corroborate (with or without a skip of its own).
     public static let uncorroboratedText = "Sommelier can't pin down where this item is on the bar"
+    public static let pinnedDownTimeoutText = uncorroboratedText + " (it looks in place) — right-click to try again"
     public static let uncorroboratedTimeoutText = uncorroboratedText + " for a minute — right-click to try again"
     public static let noSafeMoveText = "No safe move found; the bar hasn't settled"
     /// The prefix of the engine's `.unsupported` reason once the position wait has timed out (LayoutEngine.statuses).
@@ -401,6 +405,7 @@ public enum ArrangeSections {
             var state: ArrangeBarState
             var why: String?
             var note: String?
+            var pinTimedOut = false
             var waitName: String?
             if timedOut.contains(k) {
                 state = .cannotPlace(ArrangeTracker.timeoutText)
@@ -409,6 +414,12 @@ public enum ArrangeSections {
                 state = .moving
             } else if case .failed(let e)? = status {
                 state = .cannotPlace(plainReason(describe(e)))
+            } else if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix), !reason.hasSuffix(Reconciler.noSafeMoveSkipReason),
+                      onBar.contains(k), !pile.contains(k), foldConsistent(k, layout: layout, observed: observed), neighboursAgree(k) {
+                // 9o9.29: the scan never corroborated this key's frame, but its observed neighbours are the record's: not a warning.
+                state = .staleFrame
+                note = pinnedDownTimeoutText
+                pinTimedOut = true
             } else if case .unsupported(let reason)? = status {
                 state = .cannotPlace(plainReason(reason))
             } else if case .cannotPlace(let reason, _)? = status {
@@ -462,6 +473,7 @@ public enum ArrangeSections {
             if state == .moving, why == nil, !ghost, !pile.contains(k), !foldConsistent(k, layout: layout, observed: observed) { why = ArrangeBarState.willGoBehindText }
             r.barState = state
             r.stateNote = note
+            r.pinDownTimedOut = pinTimedOut
             r.staleFrame = state == .staleFrame
             switch state {
             case .matches:
@@ -589,6 +601,8 @@ public enum ArrangeSections {
     public static let readingOrder = "Reading your menu bar order…"
     public static let orderCapText = "Pausing order moves for a minute"
     public static func cannotPlaceText(_ n: Int) -> String { "\(n) item\(n == 1 ? "" : "s") can't be placed — right-click one for why" }
+    /// 9o9.29: drawn keys whose position the scan could not corroborate for a minute but whose neighbours agree with the record.
+    public static func cannotPinDownText(_ n: Int) -> String { "\(n) item\(n == 1 ? "" : "s") can't be pinned down — right-click one to try again" }
     public static func waitingToSettleText(_ name: String) -> String { "Waiting for \(name) to settle" }
     public static func waitingToReadText(_ n: Int) -> String { "Waiting to read \(n) item\(n == 1 ? "" : "s")" }
 
@@ -608,7 +622,8 @@ public enum ArrangeSections {
         let base = StatusLine.text(lastError: lastError, isConverged: isConverged, inFlight: inFlight, trusted: true, conflicting: nil,
                                   observationSettled: observationSettled)
         let cannotPlace = vStates.filter { if case .cannotPlace = $0 { return true }; return false }.count
-        let waiting = vStates.filter { $0 == .staleFrame || $0 == .unreadAfterHandDrag }.count + waitingOther
+        let pinnedDown = (content?.visible.rows ?? []).filter(\.pinDownTimedOut).count
+        let waiting = vStates.filter { $0 == .staleFrame || $0 == .unreadAfterHandDrag }.count + waitingOther - pinnedDown
         // The rows the ENGINE is moving: its last plan's subjects and the pending / in-flight ones. A row waiting for an untrusted key
         // ("Waiting for X to settle") is not being moved.
         let rows = content?.visible.rows ?? []
@@ -623,6 +638,7 @@ public enum ArrangeSections {
         else if context.orderCapActive { primary = orderCapText }
         else if context.adoptionPending { primary = readingOrder }
         else if cannotPlace > 0 { primary = cannotPlaceText(cannotPlace) }
+        else if pinnedDown > 0 { primary = cannotPinDownText(pinnedDown) }
         else if moving {
             if let name = context.movingName { primary = "Moving \(name)…" }
             else if movingCandidates.count == movingCount, (1...2).contains(movingCount) { primary = "Moving \(movingCandidates.map(\.title).joined(separator: ", "))…" }

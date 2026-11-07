@@ -48,9 +48,13 @@ public enum JoinEvidence: String, Codable, Sendable {
     /// 9o9.10: frame join corroborated by elimination: a contiguous run of hosted elements no stronger join claimed pairs one-to-one,
     /// left to right, with the same number of owner items of matching width (within 2 pt) and nearby app-side frames.
     case elimination
+    /// 9o9.29: no hosted element at all (SystemUIServer's menu extras, e.g. Time Machine, are not mirrored by the agent tree): the
+    /// owner's fresh app-side frame is the only claim at that x, no hosted element (chevron reach included) and no other owner
+    /// item overlaps it. Only Apple's SystemUIServer qualifies; the frame is the owner's own live read, not a guess.
+    case ownerFrame
 
     /// A pairing that does not rest on a bare, possibly mislabelled frame overlap.
-    public var corroborated: Bool { self == .identifier || self == .description || self == .frameUnique || self == .elimination }
+    public var corroborated: Bool { self == .identifier || self == .description || self == .frameUnique || self == .elimination || self == .ownerFrame }
 }
 
 /// One menu bar item (status item / menu extra).
