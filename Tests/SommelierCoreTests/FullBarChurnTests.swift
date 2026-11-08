@@ -259,6 +259,9 @@ struct FullBarChurnEngineTests {
         // P3 belongs after D1: pull it out; the fixed three-key pile then re-folds D1 behind the chevron.
         let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("D1"), k("P3"), k("D2"), k("D3"), k("D4")])
         let r = await chevRig(order: order, layout: layout)
+        _ = await r.engine.reconcileOnce()
+        #expect(moves(await r.actuator.calls).isEmpty)   // gdu.144: nothing is pulled out until the user drops P3
+        await r.engine.setLayout(layout, moved: [k("P3")])
         for _ in 0..<5 { _ = await r.engine.reconcileOnce() }
         let ms = moves(await r.actuator.calls)
         #expect(ms == [.move(k("P3"), .after(k("D1")))])
@@ -281,6 +284,8 @@ struct FullBarChurnEngineTests {
         let order = [k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4")]
         let layout = Layout.placedAll(visible: [k("P1"), k("P2"), k("D1"), k("P3"), k("D2"), k("D3"), k("D4")])
         let r = await chevRig(order: order, layout: layout, blind: [k("D1").description])
+        _ = await r.engine.reconcileOnce()
+        await r.engine.setLayout(layout, moved: [k("P3")])   // gdu.144: the user drops P3
         for _ in 0..<5 { _ = await r.engine.reconcileOnce() }
         let ms = moves(await r.actuator.calls)
         #expect(ms == [.move(k("P3"), .before(k("D2")))], "moves=\(ms)")
@@ -328,6 +333,10 @@ struct FullBarChurnEngineTests {
             if key == k("D1") { return true }
             switch rel { case .before(let t), .after(let t): return t == k("D1"); default: return false }
         }
+        for _ in 0..<5 { _ = await r.engine.reconcileOnce() }   // (the full-bar gate needs two agreeing reads before any drag)
+        #expect(moves(await r.actuator.calls).isEmpty)   // gdu.144 B4: the engine never opens the strip on its own
+        #expect(await r.actuator.stripEvents.isEmpty)
+        await r.engine.setLayout(layout, moved: [k("D1")])   // ... only the user's own drop of D1 may
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         let touched = moves(await r.actuator.calls).flatMap { c -> [ItemKey] in
             guard case .move(let s, let rel) = c else { return [] }
@@ -347,6 +356,8 @@ struct FullBarChurnEngineTests {
         let r = await chevRig(order: order, layout: layout)
         await r.actuator.setStripPolicy { _, _, _ in true }
         await r.actuator.failOnCall(1, .mechanismFailed("injected drag failure"))
+        _ = await r.engine.reconcileOnce()
+        await r.engine.setLayout(layout, moved: [k("D1")])   // gdu.144 B4: only the user's own drop opens the strip
         for _ in 0..<3 { _ = await r.engine.reconcileOnce() }   // the full-bar gate needs two agreeing reads before the first drag
         let events = await r.actuator.stripEvents
         #expect(events.count >= 3)
@@ -405,6 +416,7 @@ struct FullBarChevronChangeTests {
         // the post-write read (no chevron) does not agree with the pre-write one (chevron); the follow-up pass's own read agrees
         // with the post-write read, so ordering happens there and only there
         _ = await r.engine.reconcileOnce()
+        // gdu.144 D1: no chevron in this read: ordering happens here (the budget caps it at 3 while the bar is still assumed full)
         #expect(!moves(await r.actuator.calls).isEmpty)
     }
 

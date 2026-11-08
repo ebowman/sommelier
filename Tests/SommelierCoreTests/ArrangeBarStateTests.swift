@@ -78,7 +78,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         let moved: Set<ItemKey> = Set(plan.actions.compactMap { if case .move(let key, _) = $0 { key } else { nil } })
         let moving = Set(c.visible.rows.filter { $0.barState == .moving }.map(\.key))
         #expect(moving == moved && moving.count == 1)
-        #expect(row(c, e).barState == .matches && row(c, clock).barState == .matches)      // their neighbours are the record's
+        #expect(row(c, e).barState == .notConfirmed && row(c, clock).barState == .notConfirmed)   // gdu.144 D7: no check anywhere while the drawn order differs from the record
         for key in [a, b, cK, d] where !moving.contains(key) { #expect(row(c, key).barState == .notConfirmed && row(c, key).badge != .inPlace, "\(key)") }
         let text = line(c, perItem: st)
         #expect(text.hasPrefix("Moving ") && !text.contains("6 items"))
@@ -139,7 +139,8 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         let c = make(o, Layout(visible: [k("p"), k("a"), clock]), status: [k("p"): .notFitting, k("a"): .inPlace])
         let r = row(c, k("p"))
         #expect(r.barState == .behindChevron && r.badge == .behindChevron && r.badge.glyph == "«")
-        #expect(r.badgeTooltip == "Behind «: macOS hides it because the bar is full. Drag it right of the fold line to bring it out.")
+        #expect(r.badgeTooltip == ArrangeBarState.stayBehindText(r.title))   // gdu.144 rule 5: the row note is the drop warning's text
+        #expect(r.badgeTooltip == "\(r.title) is in your order, but macOS folds from the left, so it stays behind « until there is room")
         #expect(r.draggable && !r.isBoundary)
     }
 
@@ -176,13 +177,12 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         // record: p1 d1 p2 d2 -- the bar has p1 p2 behind « and d1 d2 drawn (d1 is out of fold order against the record)
         let o = ObservedOrder(onBar: [k("p1"), k("p2"), chev, k("d1"), k("d2"), clock], parked: [], systemOverflow: [k("p1"), k("p2")], overflowChevron: chev)
         let layout = Layout(visible: [k("p1"), k("d1"), k("p2"), k("d2"), clock])
-        let c = make(o, layout, status: [k("p1"): .notFitting, k("p2"): .pending, k("d1"): .pending, k("d2"): .inPlace])
+        let c = make(o, layout, status: [k("p1"): .notFitting, k("p2"): .notFitting, k("d1"): .inPlace, k("d2"): .inPlace])
         #expect(c.visible.rows.map(\.key) == [k("p1"), k("d1"), k("p2"), chev, k("d2"), clock])
         #expect(c.visible.boundaryIndex == 3)
-        // the drawn key the record places left of the line is moving: it will go behind «
+        // gdu.144: the drawn key the record places left of the line is NOT moving (the fold is macOS's decision); drawn order matches
         let d1 = row(c, k("d1"))
-        #expect(d1.barState == .moving && d1.badge == .moving && d1.badgeTooltip == "It will go behind « when the engine moves it")
-        #expect(d1.moveReason == ArrangeBarState.willGoBehindText)
+        #expect(d1.barState == .matches && d1.moveReason == nil)
         // the chevron is a fold line, never a capsule row
         #expect(c.visible.rows.filter(\.isBoundary).count == 1 && !c.visible.rows[3].draggable)
     }
@@ -398,7 +398,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         #expect(ArrangeSections.statusLine(perItem: [k("a"): timeout], lastError: nil, isConverged: true, inFlight: false, content: c2) == "1 item can't be placed — right-click one for why")
     }
 
-    @Test func aHeldKeyOutOfOrderLeavesItsNeighbourWithTheCheck() {
+    @Test func aHeldKeyOutOfOrderLeavesItsNeighbourWithoutTheCheck() {   // gdu.144 D7: a given-up key is still a drawn key out of order: no row is a check
         let a = k("a"), b = k("b"), c = k("c"), d = k("d")
         let rec = Layout(visible: [a, b, c, d, clock])
         let o = ObservedOrder(onBar: [a, c, b, d, clock], parked: [])
@@ -406,11 +406,11 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         #expect(sum.moving.isEmpty && sum.held == [b])
         let st: [ItemKey: ItemStatus] = [a: .inPlace, c: .inPlace, d: .inPlace, b: .cannotPlace(reason: "gave up", attempts: 3)]
         let cnt = make(o, rec, status: st, plan: sum)
-        #expect(row(cnt, c).barState == .matches && row(cnt, c).badge == .inPlace)
+        #expect(row(cnt, c).barState == .notConfirmed && row(cnt, c).badge != .inPlace)
         #expect(row(cnt, b).badge.glyph == "⚠")
     }
 
-    @Test func aKeyBothGivenUpAndFailedAtTheLimitShowsWarningAndItsNeighbourStillGetsTheCheck() {
+    @Test func aKeyBothGivenUpAndFailedAtTheLimitShowsWarningAndItsNeighbourGetsNoFalseCheck() {
         let a = k("a"), b = k("b"), c = k("c"), d = k("d")
         let rec = Layout(visible: [a, b, c, d, clock])
         let o = ObservedOrder(onBar: [a, c, b, d, clock], parked: [])
@@ -418,7 +418,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         let st: [ItemKey: ItemStatus] = [a: .inPlace, c: .inPlace, d: .inPlace, b: .failed(.timeout)]
         let cnt = make(o, rec, status: st, plan: sum)
         #expect(row(cnt, b).badge.glyph == "⚠")
-        #expect(row(cnt, c).barState == .matches && row(cnt, c).badge == .inPlace)      // not a stuck arrows row
+        #expect(row(cnt, c).barState == .notConfirmed && row(cnt, c).badge != .inPlace)   // gdu.144 D7: no false check; and not a stuck arrows row
         #expect(!cnt.visible.rows.contains { $0.barState == .moving })
         #expect(line(cnt, perItem: st) == "1 item can't be placed — right-click one for why")
     }
@@ -601,7 +601,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         let c = make(o, rec, status: allInPlace([a, b, clock]), plan: PlanSummary(held: [a]))
         let blank = c.visible.rows.filter { $0.barState == .notConfirmed }
         #expect(!blank.isEmpty)
-        for r in blank { #expect(r.badge == .none && ArrangeMenuRules.whyText(r) == ArrangeBarState.notConfirmedText) }
+        for r in blank { #expect(r.badge == .none && ArrangeMenuRules.whyText(r) == ArrangeBarState.differsFromYourOrderText) }   // gdu.144 D7: a drawn row on a differing bar says why
         let text = ArrangeSections.statusLine(perItem: allInPlace([a, b, clock]), lastError: nil, isConverged: true, inFlight: false, content: c)
         #expect(text != "Converged" && text == ArrangeSections.checkingMenuBar)
     }
@@ -652,7 +652,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         let u = make(unc, rec, status: [p1: .notFitting, p2: .notFitting, d: .inPlace, clock: .inPlace])
         #expect(row(u, p2).badge.glyph == "«")
         #expect(row(u, p2).badgeTooltip == ArrangeBarState.behindChevronText + "\nSommelier can't pin down where this item is on the bar")
-        #expect(row(u, p1).badgeTooltip == ArrangeBarState.behindChevronText)
+        #expect(row(u, p1).badgeTooltip == ArrangeBarState.stayBehindText(row(u, p1).title))   // gdu.144 rule 5
     }
 
     @Test func theNoSignGlyphMeansACapabilityLimitAndSaysSoInWords() {

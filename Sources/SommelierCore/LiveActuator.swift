@@ -318,11 +318,22 @@ public actor LiveActuator: MenuBarActuator {
     /// 9o9.19: the Visible record's order for the fold rule (see `MenuBarActuator.setRecordOrder`).
     private var recordOrder: [ItemKey] = []
     public func setRecordOrder(_ keys: [ItemKey]) async { recordOrder = keys }
+    /// gdu.144 rule 4: the next move is engine-initiated on a bar with a chevron: ONE drag, never a second attempt (set before every move).
+    private var engineSingleDrag = false
+    public func setSingleDrag(_ on: Bool) async { engineSingleDrag = on }
+    /// gdu.144 D2: the next move is engine-initiated: it never opens the strip, whatever the engine's own read said.
+    private var engineInitiatedMove = false
+    public func setEngineInitiated(_ on: Bool) async { engineInitiatedMove = on }
     /// 9o9.19: set by `moveCore` inside a session WE opened when the expanded read already satisfies the fold rule: the verdict waits
     /// for a settled read taken after the strip closes (`stripMove`).
     private var foldCandidate = false
     /// gdu.129: a drag's mouse events were posted in this call (a failure before that is a refusal, not an attempt).
     private var mouseEventsPosted = false
+    /// gdu.144 D6: some mouse event of the last move call may have been posted (a drag, or the chevron click of a strip session).
+    private var anyMouseTouched = false
+    public var lastMoveTouchedMouse: Bool { anyMouseTouched }
+    private var stripSessionOpened = false
+    public var lastMoveOpenedStrip: Bool { stripSessionOpened }
 
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         await acquire(); defer { release() }
@@ -333,6 +344,8 @@ public actor LiveActuator: MenuBarActuator {
         trace = []
         foldCandidate = false
         mouseEventsPosted = false
+        anyMouseTouched = false
+        stripSessionOpened = false
         if let f = globalPrecheck() { return f }
         let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback, staleToStrip: !config.forceFallback)
         if let early { return early }
@@ -344,7 +357,18 @@ public actor LiveActuator: MenuBarActuator {
         // gdu.134 rule 1: never aim across the fold at a folded target. Only a folded SUBJECT with a DRAWN target opens the strip.
         if !config.forceFallback, !plan.snapshot.stripExpanded, let t = plan.target?.key, ActuationVerifier.overflowed(plan.resolved).contains(t) {
             note("refused: the target \(t) is behind the « chevron; nothing is aimed at a folded key (no strip session)")
-            return .failed(.mechanismFailed("\(t) \(ActuationError.overflowRefusalMarker); \(Reconciler.foldedNeighbourSkipReason)"), plan.snapshot)
+            return .failed(.mechanismFailed("\(t) \(ActuationError.overflowRefusalMarker); nothing is aimed at a folded key"), plan.snapshot)
+        }
+        // gdu.144: nor does it drag while the strip is open at the actuator's own scan (the user opened it between the engine's read and this scan:
+        // the frames are stacked and the bar is not the one the engine planned for).
+        if !config.forceFallback, engineInitiatedMove, plan.snapshot.stripExpanded {
+            note("refused: engine-initiated move while the « strip is open; nothing is dragged")
+            return .failed(.mechanismFailed("\(key) \(ActuationError.overflowRefusalMarker); the « strip is open"), plan.snapshot)
+        }
+        // gdu.144 B4: an engine-initiated move (`setSingleDrag`) never opens the strip: only the user's own drop may click the chevron.
+        if !config.forceFallback, engineInitiatedMove, let need = stripNeed(plan, relation) {
+            note("refused: engine-initiated move needs the « strip (\(need.why)); only a drop of yours opens it")
+            return .failed(.mechanismFailed("\(key) \(ActuationError.overflowRefusalMarker); engine moves never open the « strip"), plan.snapshot)
         }
         if !config.forceFallback, let need = stripNeed(plan, relation) {
             return await stripMove(key, relation, plan: plan, need: need)
@@ -359,6 +383,7 @@ public actor LiveActuator: MenuBarActuator {
     private func moveCore(_ key: ItemKey, _ relation: Relation, plan startPlan: Plan, avoid: CGRect?, inStrip: Bool, ours: Bool = false,
                           singleDrag: Bool = false) async -> ActuationResult {
         var plan = startPlan
+        let singleDrag = singleDrag || engineSingleDrag   // gdu.144 rule 4
         if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
             // gdu.26: prepare() took ONE full scan; `.verified` needs the settle rule (two agreeing scans), so confirm first.
             var obs = await observe(key, relation, subjectPID: plan.subject.item.ownerPID)
@@ -396,7 +421,7 @@ public actor LiveActuator: MenuBarActuator {
                 note("attempt \(attempt): drag subject frame=\(plan.subject.item.frame) fresh=\(!plan.subject.item.stale) target=\(targetText) expect=\(relation) toX=\(Int(x)) steps=\(steps) bar=\(DropTrace.truncated(ActuationVerifier.barOrder(plan.resolved).map { "\(Int($0.item.frame.minX))" }))")
                 let probeBefore = platform.menuProbe(for: plan.subject.item)
                 let upAt: Date
-                mouseEventsPosted = true
+                mouseEventsPosted = true; anyMouseTouched = true
                 do { upAt = try await platform.drag(itemFrame: plan.subject.item.frame, toX: x, steps: steps) }
                 catch DragError.userBusy { return .failed(.userBusy, lastSnapshot) }
                 catch { return .failed(.mechanismFailed("could not post mouse events: \(error)"), lastSnapshot) }
@@ -487,10 +512,10 @@ public actor LiveActuator: MenuBarActuator {
         guard v.ok else { note("fold rule: not satisfied (\(v.observed))"); return nil }
         if ours {
             foldCandidate = true
-            note("fold rule: \(key) is drawn and the fold is a prefix of the record (\(target) re-folded behind the chevron); verdict from the read after the strip closes")
+            note("fold rule: \(key) is drawn in record order among the drawn keys (\(target) re-folded behind the chevron); verdict from the read after the strip closes")
             return .failed(fallback, snapshot)
         }
-        note("fold rule: \(key) is drawn and the fold is a prefix of the record (\(target) re-folded behind the chevron); verified")
+        note("fold rule: \(key) is drawn in record order among the drawn keys (\(target) re-folded behind the chevron); verified")
         return .verified(snapshot)
     }
 
@@ -556,6 +581,7 @@ public actor LiveActuator: MenuBarActuator {
                                          timing: .init(expandTimeout: config.stripExpandTimeout, collapseTimeout: config.stripCollapseTimeout, poll: config.stripPoll))
         let t0 = p.now()
         func ms() -> Int { Int(p.now().timeIntervalSince(t0) * 1000) }
+        anyMouseTouched = true   // the session may click the chevron
         let outcome = await controller.openSteady(chevron: chevron, say: { [self] in note($0) })
         let session: StripController.Session
         switch outcome {
@@ -569,7 +595,7 @@ public actor LiveActuator: MenuBarActuator {
             if let n = await controller.close(s, say: { [self] in note($0) }) { note("note: \(n)") }
             return .failed(.mechanismFailed(ActuationError.stripOpenFailureMessage), plan.snapshot)
         }
-        if session.openedByUs { note("phase strip: open t=\(ms())") }
+        if session.openedByUs { stripSessionOpened = true; note("phase strip: open t=\(ms())") }
         // Every frame left of the chevron changed: plan again from a FRESH scan taken with the strip open.
         var result: ActuationResult
         var fresh = await scanNonEmpty()

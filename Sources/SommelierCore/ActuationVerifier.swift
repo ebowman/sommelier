@@ -107,11 +107,11 @@ public enum ActuationVerifier {
         return pile
     }
 
-    /// 9o9.19: the 9o9.11 convergence rule for ONE subject on a settled read: the subject is drawn (on the bar, fresh, not behind the
-    /// chevron), every on-bar record key left of it is behind the chevron or drawn left of it, and no on-bar record key right of it is
-    /// behind the chevron or drawn left of it (the fold is a prefix of the record). Keys off the bar and the chevron are ignored.
+    /// 9o9.19 / gdu.144: the convergence rule for ONE subject on a settled read: the subject is drawn (on the bar, fresh, not behind the
+    /// chevron), and among the DRAWN keys the record places left of it are drawn left of it and the ones the record places right of it are
+    /// drawn right of it. Where macOS puts the fold is its decision: keys behind the chevron (and keys off the bar) are ignored.
     public static func foldVerdict(subject: ItemKey, record: [ItemKey], resolved: [ResolvedItem]) -> Verdict {
-        let expected = "\(subject) drawn with the fold a prefix of the record"
+        let expected = "\(subject) drawn in record order among the drawn items"
         func fail(_ why: String) -> Verdict { Verdict(ok: false, expected: expected, observed: why) }
         guard let i = record.firstIndex(of: subject) else { return fail("\(subject) is not in the record") }
         guard let me = resolved.first(where: { $0.key == subject }), onBar(me) else { return fail("item is not on the bar") }
@@ -121,12 +121,12 @@ public enum ActuationVerifier {
         if pile.contains(subject) { return fail("\(subject) is behind the chevron") }
         let byKey = Dictionary(resolved.filter { onBar($0) && !$0.item.isOverflowChevron }.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
         for (j, k) in record.enumerated() where j != i {
-            guard let r = byKey[k], k != overflowChevron else { continue }
+            guard let r = byKey[k], k != overflowChevron, !pile.contains(k) else { continue }
             let leftOfMe = r.item.frame.midX < me.item.frame.midX
             if j < i {
-                if !pile.contains(k) && !leftOfMe { return fail("\(k) belongs left of \(subject) but is drawn right of it") }
-            } else if pile.contains(k) || leftOfMe {
-                return fail("\(k) belongs right of \(subject) but is \(pile.contains(k) ? "behind the chevron" : "drawn left of it")")
+                if !leftOfMe { return fail("\(k) belongs left of \(subject) but is drawn right of it") }
+            } else if leftOfMe {
+                return fail("\(k) belongs right of \(subject) but is drawn left of it")
             }
         }
         return Verdict(ok: true, expected: expected, observed: expected)

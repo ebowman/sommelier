@@ -37,13 +37,10 @@ per section), it is never a new item, never shown or hidden, never a move subjec
 open-strip scan cannot pin the subject down (`.parkedSubject`, untrusted frame, not found, timeout; no drag was posted), returns
 `.mechanismFailed(stripOpenFailureMessage | stripUnplaceableMessage)`. The engine treats either as a property of the bar, not of the key:
 no attempt, no strike, no `.unsupported`; it sets `stripOpenHold` (a `BarFingerprint`) and every fold move is skipped with
-`Reconciler.stripUnavailableSkipReason` until the bar changes or Retry. **gdu.131:** the fingerprint is the chevron and the drawn count
-ONLY; the folded set (system overflow plus `foldedParked`) flaps between reads (iStat items alternating stale and fresh, 14 <-> 11) and is
-kept beside the hold only for the status line's N and for recognising a held fold move. A chevron/drawn change releases the hold only when
-seen on two consecutive passes (`stripPending`, counted once per pass; engine plans come only from settled observations; a carried-chevron
-scan neither counts nor resets, and while a hold is active it holds EVERY order move, not only fold moves, because a carried scan cannot tell a drawn-only move from one that crosses the fold); the line stays `strip hold cleared (the bar changed: drawn A->B, chevron X->Y)`. There is NO time expiry: a bar
-that does not change stays held and quiet (zero further strip sessions); the status line explains and Retry (or any layout edit, which
-runs `clearFailures()`) is the way out. One diagnostic line (`strip: subject not placeable inside the open
+`Reconciler.stripUnavailableSkipReason`. **gdu.144:** the hold is released ONLY by user intent (Retry, Try again, an edit touching a folded key) or by
+the proof that the bar is not full (three consecutive fully-read chevronless reads, `fullBarState`); a change of the bar, however often seen, releases
+NOTHING (gdu.131's two-observation release and its `stripPending` debounce are deleted). There is no time expiry: a held bar stays quiet; the status
+line explains and Retry is the way out. `stripOpenHold` keeps a `BarFingerprint` only for the status line's N. One diagnostic line (`strip: subject not placeable inside the open
 strip:`) logs the subject's app-side frame and the hosted elements left of the chevron. A carried chevron that was `recentlyVerified`
 keeps `foldedParked` (`ObservedOrder.chevronRecent`) but never plans a fold move or opens a strip.
 
@@ -303,11 +300,9 @@ A move the actuator verified but the next read still plans is struck `.notVerifi
 
 **Crossings.** See "Crossing the « fold" below: one cross-fold move at most, after the drawn order is settled, a pull-out only (gdu.134: no push-in).
 
-**Convergence rule.** With a collapsed strip the bar matches the record when every DRAWN trusted key is in record order AND every
-overflowed key is left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The
-order among overflowed keys is not tracked while collapsed. With the strip open the whole order is compared. A record the widths
-cannot realise (macOS decides by width what folds; the fold cannot be a prefix) is bounded by the one-move-per-pass cap and the
-per-minute cap, not by the per-key give-up.
+**Convergence rule (gdu.144).** The bar matches the record when the DRAWN trusted keys are in record order among themselves
+(`ArrangeSections.placementMatches` = drawn order). Where macOS puts the fold is its decision and never part of the rule: a folded key
+reads « (`.notFitting`), a drawn key is `.inPlace` when the drawn order matches. With the strip open the whole order is compared.
 
 **Skip reasons and their plain words.** A skipped key is explained, never silently dropped. The engine's technical text stays in the
 log; Arrange shows `ArrangeSections.plainReason` where one exists:
@@ -368,55 +363,105 @@ log; Arrange shows `ArrangeSections.plainReason` where one exists:
 
 Product rule: everything in Visible is in order, including what macOS hides behind the « chevron; Sommelier opens the « strip for a moment when it has to move something across that fold. It never opens the strip just to look. Nothing behind « is unreachable: while the strip is expanded the pile is drawn at real frames and a Command-drag inside it, or across the chevron, works; macOS re-folds by width at once after a crossing. While COLLAPSED the stacked frames carry no order. (Live facts: "Live evidence" (3).)
 
-- Planner, collapsed strip (`Reconciler.crossFoldMove`). Overflowed keys are NOT dropped from the record for order purposes any more:
-  the record over the on-bar Visible keys (keys the layout does not list yet are excluded) must have the fold as a PREFIX. A
-  violation is a pair (drawn Y, pile X) with the record placing Y left of X. After the drawn order is settled (drawn moves always come
-  first, unchanged: one move per pass, 9o9.9 trusted/untrusted rule, anchors, `lands`), at most ONE cross-fold move is planned, on
-  the pull-out first: `X .after(A)` (X movable, behind the chevron; A the nearest trusted drawn key left of X in the record, not in the
-  trailing block), or, when no trusted drawn key exists on the left, `X .before(B)` with B the nearest trusted drawn key RIGHT of X in the record (not in the trailing block; 9o9.28: X then lands left of B, and the untrusted key left of X stays drawn left of it, which the fold rule verifies). gdu.134 retired the push-in (`Y .before(X)` with X a pile key): it aimed across the fold at a FOLDED target, and its verification depended on macOS's re-fold. The drawn key it would have moved is reported as skipped with `Reconciler.foldedNeighbourSkipReason` ("its record neighbour is folded too"). Trust rule for crossings (9o9.22): DRAWN keys keep the full requirement (fresh and
-  corroborated, never held), so a stale frame left of the chevron is never touched; a PILE key is excluded only when HELD
-  (cannotPlace / held / handDragUnverified). Stacked pile frames are frameAmbiguous by construction, so requiring them corroborated on
-  the collapsed read would refuse nearly every crossing; the strip session re-scans with the strip open (every frame real) and
-  `LiveActuator.prepare()` applies the normal trust rules there, refusing honestly if the open read is still ambiguous. The gdu.69
-  among-pile skip yields to a plannable crossing; the own-position reason (9o9.17) is for HELD pile keys only. The gdu.80 churn rule used to exclude churn-zone keys: a
-  drag near the fold on a COLLAPSED bar lands in a region whose frames shift when macOS re-folds. Since 9o9.12 neither a crossing nor
-  any other move touching the zone is excluded: the actuator performs it with the strip OPEN after a fresh re-scan, where every frame
-  is real and nothing re-folds until the strip closes (a churn-zone drawn trusted key may be the pull-out target,
-  and a drawn key in the zone is ordered like any other; excluding them stalled the real bar). A crossing is judged against the real pile (`systemOverflow`), not the churn set. A pile key the record places right of a
-  drawn key for which no crossing can be planned is skipped with `Reconciler.noCrossingSkipReason` ("... cannot be brought out yet: the item it should follow is not trusted on the bar"), never silently; it REPLACES the gdu.69 wording for that key, since nothing will open the strip for it. A move whose subject AND target are both behind the chevron is
-  never planned: such a key is skipped with `Reconciler.overflowSkipReason` = "behind the « chevron; its order there is set when the
-  strip is next opened" (also used for a pile key whose only problem is its order among other pile keys). Cross-fold actions are not tagged on `PlannedAction`: `Reconciler.crossesFold(action, overflow:)` derives them (exactly one
-  of subject/target is in the observed pile), which is what the engine and the actuator (9o9.12) use to open the strip.
+- Planner, collapsed strip (`Reconciler.crossFoldMove`, gdu.144). The planner orders DRAWN keys only: pile, folded-parked and untrusted pile
+  keys are neither subject nor target of any drawn move, and a drawn key is never moved relative to a folded key. A move across the fold
+  is planned ONLY for a key in `foldDropRequest` (below), and only as a pull-out: `X .after(A)` (X movable, behind the chevron; A the
+  nearest trusted drawn key left of X in the record, not in the trailing block), or, when no trusted drawn key exists on the left,
+  `X .before(B)` with B the nearest trusted drawn key RIGHT of X (9o9.28). Never a push-in (gdu.134), never a folded target. Trust rule for
+  the one crossing (9o9.22): DRAWN keys keep the full requirement (fresh, corroborated, never held); the pile key is excluded only when
+  HELD. The strip session re-scans with the strip open and `LiveActuator.prepare()` applies the normal trust rules there. All other
+  pile keys get no plan (and no skip beyond the gdu.69 wording `Reconciler.overflowSkipReason`) and read « (`.notFitting`).
+  A requested key for which no crossing can be planned is skipped with `noCrossingSkipReason` / `noCrossingOwnPositionSkipReason` /
+  `foldedSystemItemSkipReason`. Cross-fold actions are not tagged on `PlannedAction`: `Reconciler.crossesFold(action, overflow:)`
+  derives them, which is what the engine and the actuator (9o9.12) use to open the strip.
+- `foldDropRequest` (gdu.144 rule 1). `LayoutEngine.setLayout` fills it ONLY from the moved keys of a user placement whose key is folded
+  (pile or folded-parked in the latest observation) and is in Visible. In memory, never persisted, so a restart pulls nothing. It is
+  consumed by the one attempt, whatever its outcome (a busy mouse is no attempt), and dropped once the key is drawn.
 - Planner, open strip. No overflow set; the chevron is still fixed (never subject or target, no edge drop left of it) but moves across
   it are ordinary and `overflowViolations(boundary:)` is false. The order among formerly folded items is ordinary again.
 - Engine. A cross-fold move is not re-skipped by the gdu.69 `overflowRefused` filter; an actuator refusal of the crossing is kept
-  apart (`foldRefused`, per pass, no strike) so a refusing actuator cannot spin the pass. The gdu.80 settled-overflow gate (two
-  agreeing collapsed reads) and the gdu.111 full-bar reveal rule are unchanged and run before any cross-fold move. Per-item status:
-  a pile key consistent with the fold (`ArrangeSections.foldConsistent`) is `.notFitting`; a key whose record position is inconsistent
-  with the fold (a pile key with a drawn key left of it in the record, or a drawn key with a pile key right of it) is NEVER `.inPlace`
-  (`ArrangeSections.foldBaseStatus`): it is `.pending` unless a failure, `cannotPlace` or waiting-for-position verdict says otherwise,
-  so there is no check badge and the status line cannot read "Menu bar matches" while a crossing is outstanding (this includes the
-  keys of a push-in in flight). A pull-out or push-in subject is `.pending` like any move. 9o9.17: a key in the pile never takes the
-  gdu.105 "position not corroborated for 60 s; marked unsupported" path (stacked frames overlap, so its join is ambiguous by construction):
-  pile keys never reach the uncorroborated / stale / moving-neighbour skips because the planner leaves them out of the reorder base (Reconciler); a pile key whose own position has not been read is `.pending` (skip `noCrossingOwnPositionSkipReason`); one whose neighbour is untrusted is `.unsupported` with the reason. Pile keys keep `foldBaseStatus` (`.notFitting` when fold-consistent, `.pending` otherwise) and leave it when drawn again.
-- Convergence rule. With a collapsed strip the bar matches when every DRAWN trusted key is in record order AND every overflowed key is
-  left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The order among
-  overflowed keys is not tracked while collapsed. Caveat: macOS decides by width what folds, so a record the widths cannot realise
-  (the fold cannot be a prefix) is bounded by the one-move-per-pass cap and the per-minute cap; the per-key give-up does not bound the
-  stall (the churn exclusion that caused it is gone, 9o9.12).
+  apart (`foldRefused`, per pass, no strike). The gdu.80 settled-overflow gate (two agreeing collapsed reads) and the gdu.111 full-bar
+  reveal rule run before any cross-fold move. Per-item status (gdu.144): a folded key is `.notFitting` (`ArrangeSections.foldBaseStatus`),
+  every other key `.inPlace` unless a plan action, skip or failure says otherwise; where the fold falls never makes a key pending or a
+  warning. 9o9.17: a key in the pile never takes the gdu.105 "position not corroborated for 60 s" path, and Arrange shows a pile row as «
+  whatever the engine's position verdict says (never the warning triangle merely for being in the pile). A failed user pull-out stays failed
+  on its row ("macOS put it back behind «; hide something to make room") until Retry or the next edit.
+- Convergence rule (gdu.144). The drawn trusted keys are in record order among themselves; the fold is not part of it
+  (`ActuationVerifier.foldVerdict` judges a pulled-out subject the same way: drawn, in record order among the drawn keys, folded keys ignored).
 
+### Overfull bars (gdu.134, gdu.144)
 
+The record is an ORDER; what folds behind « is macOS's width decision, not ours (live 2026-11-08: 49 items on a 1352 pt bar; on 0.1.2 the
+engine kept dragging for nine minutes, and on 0.1.3 it still pulled folded items out on its own at launch). What the engine does:
 
-### Overfull bars (gdu.134)
+1. It orders the DRAWN items only, in record order, with the usual per-key caps. It never aims a drag at a folded item and never moves a
+   drawn item relative to one. With a chevron in the read, trusted keys are planned among themselves: a stale, uncorroborated or held key is
+   dropped from the order base and target (`Reconciler.plan(fullBar:)`), so no trusted key moves because of an untrusted key's record slot.
+2. FULL UNTIL PROVEN OTHERWISE (`LayoutEngine.fullBar`). The bar counts as full from launch. It stops counting as full only after THREE
+   CONSECUTIVE reads in which the agent's tree was fully read (`complete` or `completeExceptSelfPositioning`: the chevron is the agent's own
+   element) and no chevron at all shows (fresh, carried or stale); the proof takes effect from the next pass. Any chevron in any read, with no
+   time limit, makes it full again and restarts the count; any OTHER completeness level (`incomplete`) resets the count to zero as well. A stale
+   chevron counts as a chevron: items left of its last frame are folded (`ObservedOrder.chevronPresent`, `hasChevron`) and, with the last
+   fresh pile, stand in for the carried scan in planning and Arrange, so a hosted pile row is never a check on a carried or stale scan.
+   While the chevron is in the read but not fresh, the engine plans NO order move. QUIET POLL SCANS count toward the proof under the same read-level
+   rules (`LayoutEngine.notePollScan`, fed by `EngineTriggers.poll`; the proof then takes effect at once, releases the hold and requests a pass to
+   publish it), and so does any read the engine receives, settled or not: an unsettled `incomplete` read resets the count (`observeOnce`). While the
+   bar is still ASSUMED full and the read has no chevron nothing is confirmed (`Plan.checkingBar`): no row is a check, `isConverged` is false, the
+   menu and Arrange say "Checking the menu bar…" and the rows read "not confirmed", never "Moving".
+3. Engine-initiated moves never open the strip, on any bar. The engine withholds a move whose subject or target is folded or in the churn
+   zone (`Reconciler.noStripSkipReason`, a neutral skip: never moving, waiting or a warning), and the actuator refuses it on its OWN scan
+   (`setEngineInitiated(true)`: an overflow refusal before any click or drag, never a strike), whatever the engine's read said. Only the
+   user's own drop (a folded key, or a drawn key the churn zone needs) may click the chevron.
+4. Hard budget, one combined counter: `Config.maxEngineMovesPerLaunch = 3` engine-initiated order drags on a full bar,
+   `maxEngineMovesPerLaunchNotFull = 20` otherwise; every engine-initiated drag counts, verified or failed. Enforced at the single dispatch
+   point (the actuator call in `runPassBody`) as well as in the planner gate (`gateEngineMoves`). A chevron coming and going refills
+   nothing. Exhausted: no more engine moves and one log line. Hides and shows are not counted. ONLY a user's intent resets it: a user
+   `setLayout` placement, `userRetry()` ("Re-apply layout"), or the per-row `retry(key:)`. `clearFailures()` (Accessibility granted, permission
+   resume in `AppModel`) resets neither the budget nor the hold; a non-user `setLayout` (mbprobe, scan-built) resets nothing.
+5. In a user's pass the ONLY keys that may move are the keys the user moved: the planner pins every other key as a fixed anchor and places
+   the dropped key relative to them (`Reconciler.plan(onlyMove:)`). The moves it would otherwise make are named as deferred (the "Done: X. Next:
+   Y" line) and made by the next regular pass, as engine moves (budget, gates and hold apply). "Jump after Time Machine" cannot happen.
+6. Drops on a chevron bar. A DRAWN key dropped left of the fold line: the record takes the drop; the key makes one drag to the leftmost drawn
+   slot if it is not there yet (the strip opens only if the churn zone needs it), nothing else moves; Arrange says "<name> is in your order, but
+   macOS folds from the left, so it can't go further left until there is room". A FOLDED key dropped left of the fold line: no drag; "...so it
+   stays behind « until there is room". A FOLDED key dropped right of the fold line: one strip session, the first such key of the edit (record
+   order) first; other folded keys of the same edit are only recorded. The request (`foldDropRequest`) is in memory, planned FIRST ahead of any
+   drawn move, and ends with the first pass that planned it, so it can never fire later. The warning also shows with a stale chevron.
+7. EVERY engine-initiated move is exactly ONE physical drag on every bar (`MenuBarActuator.setSingleDrag(true)`; the next pass may retry within
+   the budget), so the counter equals the physical drags; the user's own move is a single drag too on a full bar. ANY failed engine-initiated drag
+   on a full bar sets the bar-level hold
+   (`LayoutEngine.stripOpenHold`) on every engine-initiated order move until user intent (`userRetry()`, `retry(key:)`, a user edit that touches
+   a folded key) or the proof that the bar is not full; no change of the bar releases it. The user's failed drag holds the bar too (so the same drag
+   is never made twice). The hold is taken from a fresh-chevron observation and set before the post-move adopt. The user's own move (`isUsersMove`:
+   its SUBJECT is the key the user dropped, only inside the user's pass and the pass chained from it) is exempt.
+   THE USER'S PASS: the first pass after an edit (a `setLayout` with moved keys, `userRetry()`, `retry(key:)`) is the user's pass and the passes
+   chained from it. Resume, a reveal toggle and every other request are REGULAR passes for this purpose. The first regular pass, and the end of the
+   chain however it ends, clear every owed attempt (`userDropPending`, `foldDropRequest`), dispatched or not, so nothing the user asked for can fire
+   later. What an exhausted chain left unfinished is made by ONE regular follow-up pass (`userEditFollowUp`, counted engine moves, gates and hold
+   apply), so the status never sticks at "Working…". One edit opens at most ONE strip session across all of its moved keys, including a mixed unit (`editStripSessionUsed`; further moves that
+   would need one are withheld, or refused by the actuator on its own scan). "Try again" (`retry(key:)`) is the user's own move for its next pass
+   only, with one fold request for a folded key. While the « strip is open the engine moves nothing. The counter counts ACTUAL drags: a failure
+   before any mouse event (`lastMoveTouchedMouse` false) refunds it. A chevron in ANY read the engine receives (settled or not, post-move)
+   restarts the not-full proof; the last fresh pile stays through chevronless reads until the proof, so pile rows stay «. Immovable keys are not
+   progress (`orderDiffers` ignores them); Re-apply also clears given-up keys.
+8. No false check, honest status. On EVERY bar (chevron or not) a drawn row is a check only if ALL drawn trusted keys are in record order among
+   themselves (a given-up key still counts as drawn) and its own neighbours are the record's; otherwise it reads "not confirmed" with the note
+   "differs from your order". `isConverged` (and the menu's "Converged") also requires the trusted drawn keys to be in record order
+   (`PlanSummary.orderDiffers`); unread (stale) drawn keys are named ("Waiting to read N items"), never trusted. The menu and Arrange say the same:
+   the honest "stopped" line (with the hold text after " · " while held), the hold text, or "N items can't be placed" for a failed row. A pile key (any chevron) is never a check and never `.inPlace`. When moves are withheld (gate, hold, spent budget, a key given
+   up) while the bar differs from the record, `isConverged` is false and `PlanSummary.stoppedWhileDiffering` makes both the Arrange status line
+   and the menu's status text read "Your order and the bar differ. Sommelier has stopped moving items on its own: drag an item or press Re-apply
+   layout." (never "Converged"). Re-apply layout is `userRetry()`, which resets the budget and the hold AND grants ONE user-authorised strip session for the next single move the
+   engine would otherwise withhold for needing the strip (a mismatch beside the fold): consumed on dispatch, counted toward nothing automatic, gone
+   at the end of the next pass; one session and one drag per press. A `.userBusy` result after any mouse event of the move (a drag, a chevron click)
+   consumes the user's attempt instead of re-arming it.
+9. A user pull-out that does not hold (macOS puts the item back) is one drag and a failed row: "macOS put it back behind «; hide something
+   to make room". The status line leads with the hold text "The bar is full: macOS folds N items behind «. Hide items to make room." while a
+   hold is active (with N = 0 it says the bar may be full and names "Re-apply layout" as the way out); "Hide what does not fit" (folded and folded-parked keys, passed as moved) is the way out.
 
-The record is an ORDER; what folds behind « is macOS's width decision, not ours. When more items are Visible than fit (live 2026-11-08: 49 on a 1352 pt bar), the record cannot be realised: every pull-out pushes another item into the fold, and every verification across the fold depends on how macOS re-folds afterwards. On 0.1.2 the engine kept dragging for nine minutes (22 strip sessions, 32 drags, 8 give-ups). What the engine does now:
-
-- It keeps the order among the DRAWN items (drawn-only moves, rule 4: unchanged behaviour and per-key caps).
-- It pulls folded items out one per pass toward the record, each item at most once (a verified pull-out may be followed by the next on the next pass). A cross-fold drag (a strip session we opened, a pile subject, a drawn target) that does not verify, or a verified one the menu bar then moves back, sets the bar-level strip hold (`LayoutEngine.stripOpenHold`, same release rules as gdu.126/129/131: two consecutive changed observations, Retry, layout edit) instead of counting a per-key attempt: no further cross-fold drags until the bar changes or Retry. `ActuationError.stripMoveDidNotHoldMessage` carries it from the actuator; the status line reads "The bar is too narrow for this order: macOS folds N items behind « and a move across the fold did not hold." and leads the line (the "N items can't be pinned down" count follows it).
-- It never aims at a folded target. The planner has no push-in; a pull-out targets a drawn trusted key only. The actuator refuses any move whose relation target is behind the chevron (an `overflowRefusalMarker` refusal, no strip session, no click).
-- It never substitutes targets. The former in-session re-plan ("re-folded behind the « chevron; aiming after X instead") is gone; inside a session we opened a cross-fold move posts exactly ONE drag (`moveCore(singleDrag:)`) and a failed verification ends the call.
-
-Why: after a cross-fold drag macOS re-folds by width, so "observed between A and B" and even the fold rule are unreliable evidence; a second drag toward a substitute the record never asked for only moves another item. One honest attempt, then a visible hold, is bounded and tells the user the truth.
+Why: after a cross-fold drag macOS re-folds by width, so "observed between A and B" and even a fold-prefix rule are unreliable evidence, and
+a record the width cannot realise made the engine chase it forever. One honest attempt on the user's request, then a visible hold, is
+bounded and tells the user the truth.
 
 ## (d) The actuator
 
@@ -568,12 +613,13 @@ OR the pile left of the chevron is de-stacked (docs/findings-drag.md "The expand
 leaves an undetected-open strip: when the strip does not settle after OUR click, the last probe decides (open per any clause: treated as
 open; collapsed but the description or the pile changed: one closing click verified against the pre-click state; nothing changed: no
 click), and `collapse` uses the same rule and logs the deciding clause.
-**Bar-level hold (gdu.126).** A `.mechanismFailed("could not open the « strip")` is a property of the bar, not of a key: the engine records
-`stripOpenHold = BarFingerprint(chevron present, drawn count, folded set)` without counting an attempt or a strike. While the fingerprint of
-the current observation equals the hold, `makePlan` drops every move whose subject or target is folded (pile or folded-parked) and reports
-it as skipped with `Reconciler.stripUnavailableSkipReason`. A changed fingerprint or Retry (`retry(key:)`, `clearFailures()`) clears it, so a
-failing bar costs ONE chevron click per bar state. Arrange renders the held subject as « with the reason, and the status line reads "The bar
-is too narrow for this order: macOS folds N items behind « and the strip would not open".
+**Bar-level hold (gdu.126, widened by gdu.144).** A `.mechanismFailed("could not open the « strip")`, an unplaceable subject, a cross-fold drag
+that did not hold, or ANY failed engine-initiated drag on a bar with a chevron is a property of the bar, not of a key: the engine records
+`stripOpenHold = BarFingerprint(chevron present, drawn count)` from a fresh-chevron observation, before the post-move adopt, without counting
+a strike for the hold itself. While the fingerprint of the current observation equals the hold, `makePlan` drops every engine-initiated order
+move (not the user's own dropped key) and reports it as skipped with `Reconciler.stripUnavailableSkipReason`. A changed fingerprint (two
+consecutive observations), Retry (`retry(key:)`, `clearFailures()`) or an edit touching a folded key clears it. Arrange reads the status line
+"The bar is full: macOS folds N items behind «. Hide items to make room."
 Sequence in `LiveActuator.stripMove`:
 1. Gate, exactly as before a drag: `waitMouseIdle` (no button down) and `ActuatorPlatform.interactionBlockingReason()` (the
    `LiveInteractionSource` conditions: menu open, button down, modifier held, screen locked, display asleep; a reason returns

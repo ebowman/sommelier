@@ -171,7 +171,7 @@ private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state:
     @Test func retryStillReleasesTheHold() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        await r.engine.clearFailures()
+        await r.engine.userRetry()
         #expect(await r.engine.stripOpenHold == nil)
     }
 }

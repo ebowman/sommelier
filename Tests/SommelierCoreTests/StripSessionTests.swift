@@ -133,7 +133,7 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     let a = actuator(w)
     let r = await a.move(key("A"), relation: .before(key("X1")))
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected a refusal, got \(r)"); return }
-    #expect(why.contains(Reconciler.foldedNeighbourSkipReason) && r.error?.isOverflowRefusal == true)
+    #expect(why.contains("nothing is aimed at a folded key") && r.error?.isOverflowRefusal == true)
     #expect(w.events.isEmpty)
     #expect(!(await a.trace).contains { $0.hasPrefix("strip: needed") })
     #expect(!w.expanded)
@@ -222,7 +222,7 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
     let r = await actuator(w, fallback: false).move(key("B"), relation: .after(key("X2")))
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected a refusal, got \(r)"); return }
-    #expect(why.contains(Reconciler.foldedNeighbourSkipReason))
+    #expect(why.contains("nothing is aimed at a folded key"))
     #expect(w.events.isEmpty)
     #expect(!w.expanded)
 }
@@ -437,7 +437,7 @@ private func refoldWorld() -> StripWorld {
     #expect(ActuationVerifier.foldVerdict(subject: key("S"), record: ["P", "S", "D"].map(key), resolved: read).ok)
     #expect(!ActuationVerifier.foldVerdict(subject: key("S"), record: ["D", "S"].map(key), resolved: read).ok)   // D belongs left, is drawn right
     #expect(!ActuationVerifier.foldVerdict(subject: key("P"), record: ["P", "S"].map(key), resolved: read).ok)   // subject behind the chevron
-    #expect(!ActuationVerifier.foldVerdict(subject: key("S"), record: ["S", "P"].map(key), resolved: read).ok)   // P belongs right, is in the pile
+    #expect(ActuationVerifier.foldVerdict(subject: key("S"), record: ["S", "P"].map(key), resolved: read).ok)   // gdu.144: a pile key is ignored wherever the record puts it
     #expect(ActuationVerifier.foldVerdict(subject: key("S"), record: ["Gone", "S", "D"].map(key), resolved: read).ok)   // off-bar keys are ignored
 }
 
@@ -512,4 +512,83 @@ private func refoldWorld() -> StripWorld {
     let lines = await a.trace.filter { $0.hasPrefix("strip: subject not placeable inside the open strip:") }
     #expect(lines.count == 1)
     #expect(lines[0].contains("stale=true") && lines[0].contains("join=identifier") && lines[0].contains("hosted left of the chevron"))
+}
+
+// MARK: gdu.144 B4: an engine-initiated move (setSingleDrag) never opens the strip
+
+@Test func anEngineInitiatedChurnZoneMoveClicksNoChevronAndPostsNoDrag() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    let a = actuator(w)
+    await a.setChurnZone([key("A")])
+    await a.setEngineInitiated(true)
+    let r = await a.move(key("C"), relation: .before(key("A")))
+    #expect(!r.isVerified && r.error?.isOverflowRefusal == true)   // a refusal: the engine reads it as a skip, never a strike
+    #expect(w.events.isEmpty)   // no "open", no "drag", no "close": zero chevron clicks
+    // the same move is the user's own drop (flag off): the strip session is allowed
+    await a.setEngineInitiated(false)
+    let u = await a.move(key("C"), relation: .before(key("A")))
+    #expect(u.isVerified && w.events == ["open", "drag", "close"])
+}
+
+@Test func anEngineInitiatedPullOutClicksNoChevronEither() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    let a = actuator(w)
+    await a.setEngineInitiated(true)
+    let r = await a.move(key("X2"), relation: .after(key("A")))
+    #expect(!r.isVerified && w.events.isEmpty)
+}
+
+// MARK: gdu.144 D2: the REAL engine on the REAL actuator (fake platform), no user input: zero chevron clicks, whatever the engine read
+
+private struct WorldObserver144: MenuBarObserver {
+    let w: StripWorld
+    func observe() async throws -> [ResolvedItem] { w.resolve(w.snapshot()) }
+}
+/// The engine's read has NO chevron at all (never seen one), while the actuator's own scan of the same world has one.
+private struct NoChevObserver144: MenuBarObserver {
+    let names: [String]
+    func observe() async throws -> [ResolvedItem] {
+        names.enumerated().map { (i, n) in
+            var it = MenuBarItem(ownerPID: pid_t(abs(n.hashValue % 30000) + 100), ownerBundleID: "app.\(n)", ownerName: n, title: "", axDescription: "", axIdentifier: n,
+                                 frame: CGRect(x: 100 + CGFloat(i) * 50, y: 0, width: 30, height: 24), source: .appExtras, isOnMenuBar: true, isOverflowChevron: false, joinEvidence: .identifier)
+            it.controlCenterAllowed = true
+            return ResolvedItem(item: it, key: key(n), confidence: .exact)
+        }
+    }
+}
+private struct OpenCaps144: CapabilityProvider { func capability(for k: ItemKey) -> Capability { Capability(canMove: true, canHide: true) } }
+
+@MainActor private func realEngine144(_ w: StripWorld, observer: any MenuBarObserver, record: [String]) async -> (LayoutEngine, EngineState) {
+    let st = EngineState()
+    var cfg = LayoutEngine.Config(); cfg.maxOrderMovesPerPass = .max
+    let e = LayoutEngine(observer: observer, actuator: actuator(w), store: InMemoryLayoutStore(Layout.placedAll(visible: record.map(key))), capabilities: OpenCaps144(), state: st,
+                         resolveSnapshot: { s in w.resolve(s) }, sleep: { _ in }, log: { _ in }, config: cfg)
+    await e.start()
+    return (e, st)
+}
+
+@MainActor @Test func theRealEngineOnTheRealActuatorClicksNoChevronWithoutUserInput_chevronlessEngineRead() async {
+    let w = StripWorld(pile: ["P1"], drawn: ["D1", "D2", "D3"])
+    let (e, _) = await realEngine144(w, observer: NoChevObserver144(names: ["P1", "D1", "D2", "D3"]), record: ["D1", "D2", "D3", "P1"])
+    for _ in 0..<10 { _ = await e.reconcileOnce() }
+    #expect(!w.events.contains("open") && !w.events.contains("close"), "an engine-initiated move clicked the chevron: \(w.events)")
+}
+
+@MainActor @Test func theRealEngineOnTheRealActuatorClicksNoChevronWithoutUserInput_freshChevronAndAMismatchAtTheFold() async {
+    let w = StripWorld(pile: ["P1", "P2"], drawn: ["D1", "D2", "D3", "D4"])
+    // the record wants a folded key between drawn ones AND the first drawn keys swapped (churn zone): every move would need the strip
+    let (e, _) = await realEngine144(w, observer: WorldObserver144(w: w), record: ["P1", "P2", "D2", "P2", "D1", "D3", "D4"].reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } })
+    for _ in 0..<12 { _ = await e.reconcileOnce() }
+    #expect(!w.events.contains("open") && !w.events.contains("close"), "events=\(w.events)")
+}
+
+@MainActor @Test func theRealEngineMakesAUsersFoldDropWithExactlyOneSessionOnTheRealActuator() async {
+    let w = StripWorld(pile: ["P1", "P2"], drawn: ["D1", "D2", "D3"])
+    let (e, _) = await realEngine144(w, observer: WorldObserver144(w: w), record: ["P1", "P2", "D1", "D2", "D3"])
+    _ = await e.reconcileOnce()
+    #expect(w.events.isEmpty)
+    // the user drops P1 and P2 (a two-key moved set) right of the fold line: ONE strip session, for the first key
+    await e.setLayout(Layout.placedAll(visible: ["D1", "P1", "P2", "D2", "D3"].map(key)), moved: [key("P1"), key("P2")])
+    for _ in 0..<6 { _ = await e.reconcileOnce() }
+    #expect(w.events.filter { $0 == "open" }.count == 1 && w.events.filter { $0 == "drag" }.count == 1, "events=\(w.events)")
 }

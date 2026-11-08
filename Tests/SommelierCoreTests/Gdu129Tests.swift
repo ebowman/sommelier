@@ -13,28 +13,31 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
 @MainActor
 @Suite struct StripUnplaceableHoldTests {
     @Test func aStripThatOpensButCannotPlaceTheSubjectIsOneSessionPerBarState() async {
-        let r = await holdRig(failCalls: 20, message: ActuationError.stripUnplaceableMessage)
+        let r = await holdRig(failCalls: 20, message: ActuationError.stripUnplaceableMessage, record: ["D1", "P1", "D2", "P2", "D4", "P3", "D3"])   // + a live D3/D4 mismatch
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
+        await regularPasses(r.engine, r.state)   // the regular pass plans the D3 / D4 mismatch; only the hold keeps it from being dragged
         #expect(await moveCalls(r.actuator) == 1)
         #expect(await r.engine.stripOpenHold != nil)
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
         #expect(r.bar.lines.contains { $0.contains("could not be pinned down inside it") })
         let plan = r.state.lastPlan
-        #expect(!plan.stripHeld.isEmpty && plan.stripHoldFolded == 3 && plan.stripHoldUnplaceable)
-        #expect(plan.moving.isEmpty)
-        #expect(r.bar.lines.contains { $0.contains("plan:") && $0.contains(Reconciler.stripUnavailableSkipReason) })
-        #expect(!r.bar.lines.contains { $0.contains("phase=membership") || $0.contains("membership") && $0.contains("phase") })
+        // gdu.144: P2/P3 were never asked for: nothing planned, nothing held; the hold itself reports N folded
+        #expect(plan.stripHoldFolded == 3 && plan.stripHoldUnplaceable && !plan.stripHeld.isEmpty)   // the live drawn mismatch is held, not dragged
         for key in plan.stripHeld {
-            #expect(r.state.perItem[key] == .notFitting)
-            if case .unsupported = r.state.perItem[key] { Issue.record("unsupported") }
+            switch r.state.perItem[key] { case .pending?, .moving?, .unsupported?, .failed?: Issue.record("held \(key) reads \(String(describing: r.state.perItem[key]))"); default: break }
         }
-        // a changed bar: exactly one more session; Retry: one more
+        #expect(plan.moving.isEmpty)
+        #expect(!r.bar.lines.contains { $0.contains("phase=membership") || $0.contains("membership") && $0.contains("phase") })
+        // a changed bar releases the hold; one more session only for the user's next drop; Retry alone drags nothing
         await r.actuator.removeItem(k("D4"))
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 2)
-        await r.engine.clearFailures()
+        #expect(await moveCalls(r.actuator) == 1)
+        await r.engine.setLayout(r.layout, moved: [k("P2")])
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 3)
+        #expect(await moveCalls(r.actuator) == 2)
+        await r.engine.userRetry()
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(await moveCalls(r.actuator) == 2)
     }
 
     @Test func theOpenFailureHoldKeepsItsOwnFlag() async {
@@ -85,16 +88,16 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
 // MARK: c. status line
 
 @Suite struct StripHoldStatusTests {
-    @Test func theNewHoldAndTheOpenFailureHoldReadDifferently() {
+    @Test func everyHoldReadsTheSameBarFullText() {
         let (p1, d1) = (k("P1"), k("D1"))
         let o = ObservedOrder(onBar: [p1, d1], parked: [], systemOverflow: [p1], overflowChevron: .module(name: MenuBarItem.overflowChevronName))
         let c = ArrangeSections.make(observed: o, layout: Layout(visible: [d1, p1]), items: [:], perItem: [:], capabilities: { _ in Capability(canMove: true, canHide: true) }, lastPlan: PlanSummary())
         var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 5; ctx.stripHoldUnplaceable = true
         #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx)
-                == "The bar is too narrow for this order: macOS folds 5 items behind « and Sommelier could not place an item inside the strip.")
+                == "The bar is full: macOS folds 5 items behind «. Hide items to make room.")
         ctx.stripHoldUnplaceable = false
         #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx)
-                == "The bar is too narrow for this order: macOS folds 5 items behind « and the strip would not open")
+                == "The bar is full: macOS folds 5 items behind «. Hide items to make room.")   // gdu.144: one text for every hold
     }
 }
 

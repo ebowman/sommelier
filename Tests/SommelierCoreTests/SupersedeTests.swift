@@ -71,6 +71,7 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false,
     let logs = Logs()
     var cfg = LayoutEngine.Config()
     cfg.layoutCoalesce = window
+    cfg.assumeFullBarAtLaunch = false   // gdu.144: these tests are about coalescing on a plain bar; an assumed-full bar is not converged until proven otherwise
     let state = EngineState()
     let slow = slowFirst ? SlowFirstActuatorObserver(actuator: act) : nil
     let engine = LayoutEngine(observer: slow ?? ActuatorObserver(actuator: act), actuator: act,

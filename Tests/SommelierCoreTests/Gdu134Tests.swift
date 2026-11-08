@@ -32,28 +32,29 @@ private func obs(_ bar: [String], ovf: [String]) -> ObservedOrder {
             if case .move(_, .after(let t)) = a { #expect(t != k("np")) }
         }
         #expect(p.actions.isEmpty && p.phase == .converged)
-        #expect(p.skipped.contains { $0.key == k("weather") && $0.reason == Reconciler.foldedNeighbourSkipReason })
-        #expect(p.skipped.contains { $0.key == k("np") && $0.reason == Reconciler.foldedSystemItemSkipReason })
+        #expect(!p.skipped.contains { $0.key == k("weather") })   // gdu.144: a drawn key is not reported for where macOS folds
+        #expect(!p.skipped.contains { $0.key == k("np") && $0.reason == Reconciler.foldedSystemItemSkipReason })   // not asked for by the user: no report either
     }
 
     @Test func noCrossFoldRelationEverHasAFoldedTarget() {
         let rec = ["gate", "cpu", "weather", "np", "tm"].map(k)
-        let m = Reconciler.crossFoldMove(record: rec, drawn: ["gate", "cpu", "weather", "tm"].map(k), pile: [k("np")], excluded: [],
+        let m = Reconciler.crossFoldMove(record: rec, drawn: ["gate", "cpu", "weather", "tm"].map(k), pile: [k("np")], requested: [k("np")], excluded: [],
                                          canMove: { $0 != k("np") }, blockStart: 4)
         #expect(m == nil)
     }
 
     @Test func aPullOutWithADrawnTargetIsStillPlanned() {
         let o = obs(["np", "ch", "gate", "cpu", "weather", "tm"], ovf: ["np"])
-        let p = Reconciler().plan(observed: o, layout: record, capabilities: caps())
+        // gdu.144: only a pull-out the USER asked for (np in foldDropRequest) is planned; without the request nothing is pulled out.
+        #expect(Reconciler().plan(observed: o, layout: record, capabilities: caps()).actions.isEmpty)
+        let p = Reconciler().plan(observed: o, layout: record, capabilities: caps(), foldDropRequest: [k("np")])
         #expect(p.actions == [.move(k("np"), .after(k("weather")))])
-        #expect(!p.skipped.contains { $0.reason == Reconciler.foldedNeighbourSkipReason })
     }
 
     @Test func aPullOutBeforeTheNearestDrawnKeyRightOfItIsStillPlannedWhenNoTrustedKeyLiesLeft() {
         // 9o9.28 shape: record [tm, np, gate]; tm is drawn but untrusted (excluded), so np goes .before(gate), a drawn trusted key.
         let rec = ["tm", "np", "gate"].map(k)
-        let m = Reconciler.crossFoldMove(record: rec, drawn: [k("tm"), k("gate")], pile: [k("np")], excluded: [k("tm")], canMove: { _ in true }, blockStart: 2)
+        let m = Reconciler.crossFoldMove(record: rec, drawn: [k("tm"), k("gate")], pile: [k("np")], requested: [k("np")], excluded: [k("tm")], canMove: { _ in true }, blockStart: 2)
         #expect(m == .move(k("np"), .before(k("gate"))))
     }
 }
@@ -70,12 +71,14 @@ private func obs(_ bar: [String], ovf: [String]) -> ObservedOrder {
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
         #expect(r.bar.lines.contains { $0.contains("a move across the fold did not hold") })
         let plan = r.state.lastPlan
-        #expect(plan.stripHoldDidNotHold && !plan.stripHoldUnplaceable && plan.stripHoldFolded == 3 && !plan.stripHeld.isEmpty)
-        for key in plan.stripHeld { #expect(r.state.perItem[key] == .notFitting) }
-        // Retry releases the hold: one more drag
-        await r.engine.clearFailures()
+        #expect(plan.stripHoldDidNotHold && !plan.stripHoldUnplaceable && plan.stripHoldFolded == 3)
+        // gdu.144 rule 5: the user's dropped key says what happened; the hold is the bar's
+        guard case .failed(let e)? = r.state.perItem[k("P1")] else { Issue.record("P1 should read failed, got \(String(describing: r.state.perItem[k("P1")]))"); return }
+        #expect(ArrangeSections.plainReason(ArrangeSections.describe(e)) == "macOS put it back behind «; hide something to make room")
+        // Retry releases the hold; the request was consumed by its one attempt, so nothing is dragged again (gdu.144)
+        await r.engine.userRetry()
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 2)
+        #expect(await moveCalls(r.actuator) == 1)
     }
 
     @Test func aVerifiedCrossFoldMoveThatIsMovedBackSetsTheHoldNotAnAttempt() async {
@@ -89,9 +92,8 @@ private func obs(_ bar: [String], ovf: [String]) -> ObservedOrder {
         _ = await r.engine.reconcileOnce()
         #expect(await moveCalls(r.actuator) == n)   // no second drag
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
-        #expect(await r.engine.stripOpenHold != nil)
-        #expect(r.state.lastPlan.stripHoldDidNotHold)
-        #expect(r.bar.lines.contains { $0.contains("did not hold") })
+        // gdu.144: the pull-out request was consumed by its one attempt, so a revert is never planned again (nothing to hold, nothing to strike)
+        #expect(!r.bar.lines.contains { $0.contains("planned again") })
     }
 }
 
@@ -107,18 +109,18 @@ private func obs(_ bar: [String], ovf: [String]) -> ObservedOrder {
     @Test func theDidNotHoldTextIsExact() {
         var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 5; ctx.stripHoldDidNotHold = true
         #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: content(), context: ctx)
-                == "The bar is too narrow for this order: macOS folds 5 items behind « and a move across the fold did not hold.")
+                == "The bar is full: macOS folds 5 items behind «. Hide items to make room.")
         ctx.stripHoldFolded = 1
-        #expect(ArrangeSections.barTooNarrowText(1, didNotHold: true) == "The bar is too narrow for this order: macOS folds 1 item behind « and a move across the fold did not hold.")
+        #expect(ArrangeSections.barFullText(1) == "The bar is full: macOS folds 1 item behind «. Hide items to make room.")
     }
 
     @Test func theHoldLeadsOverMovingAndCannotPlaceAndPinnedDownIsAppended() {
         var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 3; ctx.stripHoldDidNotHold = true
         let c = content()
         let held = ArrangeSections.statusLine(perItem: [k("D1"): .failed(.timeout)], lastError: nil, isConverged: false, inFlight: true, content: c, context: ctx)
-        #expect(held.hasPrefix("The bar is too narrow for this order: macOS folds 3 items behind « and a move across the fold did not hold."))
+        #expect(held.hasPrefix("The bar is full: macOS folds 3 items behind «. Hide items to make room."))
         ctx.stripHoldFolded = nil
-        #expect(!ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: false, inFlight: true, content: c, context: ctx).contains("too narrow"))
+        #expect(!ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: false, inFlight: true, content: c, context: ctx).contains("The bar is full"))
     }
 
     @Test func thePinnedDownCountFollowsTheHoldText() {
@@ -127,7 +129,7 @@ private func obs(_ bar: [String], ovf: [String]) -> ObservedOrder {
         rows.visible.rows[0] = row
         var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 2; ctx.stripHoldDidNotHold = true
         let s = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: rows, context: ctx)
-        #expect(s == "The bar is too narrow for this order: macOS folds 2 items behind « and a move across the fold did not hold. · 1 item can't be pinned down")
+        #expect(s == "The bar is full: macOS folds 2 items behind «. Hide items to make room. · 1 item can't be pinned down")
         ctx.stripHoldFolded = nil
         #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: rows, context: ctx).hasPrefix("1 item can't be pinned down"))
     }
@@ -208,29 +210,29 @@ private func rig134(order: [ItemKey], pile: Int, layout: Layout, immovable: Set<
         let r = await rig134(order: [np, gate, cpu, weather, tm], pile: 1, layout: Layout.placedAll(visible: [gate, cpu, weather, np, tm]), immovable: [np])
         for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
         #expect(await r.fake.calls.isEmpty)
-        guard case .unsupported(let why)? = r.state.perItem[weather] else { Issue.record("expected unsupported, got \(String(describing: r.state.perItem[weather]))"); return }
-        #expect(why == Reconciler.foldedNeighbourSkipReason)
+        // gdu.144: the fold is macOS's decision; the drawn weather is simply in place (no unsupported verdict for where NowPlaying folded)
+        #expect(r.state.perItem[weather] == .inPlace)
         let obs = ObservedOrder(resolved: snapshot134(order: await r.fake.order, pile: 1).items.compactMap { i in
             ItemKey(storeKey: i.axIdentifier.isEmpty ? i.title : i.axIdentifier).map { ResolvedItem(item: i, key: $0, confidence: .exact) } })
         let content = ArrangeSections.make(observed: obs, layout: Layout.placedAll(visible: [gate, cpu, weather, np, tm]), items: [:], perItem: r.state.perItem,
                                            capabilities: { Caps134(immovable: [np]).capability(for: $0) }, lastPlan: r.state.lastPlan)
         let row = content.visible.rows.first { $0.key == weather }
-        if case .cannotPlace? = row?.barState {} else { Issue.record("weather row state \(String(describing: row?.barState))") }
+        if case .cannotPlace? = row?.barState { Issue.record("weather row must not be a warning") }
         let line = ArrangeSections.statusLine(perItem: r.state.perItem, lastError: nil, isConverged: r.state.isConverged, inFlight: r.state.inFlight != nil,
                                               content: content, context: ArrangeSections.StatusContext())
         #expect(!line.hasPrefix("Moving") && !line.contains("Moving"))
-        #expect(line.contains("can't be placed"))
+        #expect(!line.contains("can't be placed"))
     }
 
     @Test func aCrossFoldMoveRevertedWithinThePassSetsTheHoldWithNoSecondDragAndNoAttempt() async {
         let (p1, p2, p3, d1, d2, d3, d4) = (k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4"))
-        let r = await rig134(order: [p1, p2, p3, d1, d2, d3, d4], pile: 3, layout: Layout.placedAll(visible: [d1, p1, d2, p2, d3, p3, d4]), reverting: true)
+        let layout = Layout.placedAll(visible: [d1, p1, d2, p2, d3, p3, d4])
+        let r = await rig134(order: [p1, p2, p3, d1, d2, d3, d4], pile: 3, layout: layout, reverting: true)
+        _ = await r.engine.reconcileOnce()
+        await r.engine.setLayout(layout, moved: [p1])   // gdu.144: the user drops P1 (the only pull-out there is)
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         let moves = await r.fake.calls.filter { if case .move = $0 { true } else { false } }.count
-        #expect(moves == 1)
-        #expect(await r.engine.stripOpenHold != nil)
-        #expect(r.state.lastPlan.stripHoldDidNotHold)
-        #expect(r.bar.lines.contains { $0.contains("planned again") && $0.contains("did not hold") })
+        #expect(moves == 1)   // one drag; macOS puts it back; the consumed request is not planned again
         #expect(!r.bar.lines.contains { $0.contains("giving up") || $0.contains("was verified but is planned again") })
     }
 }

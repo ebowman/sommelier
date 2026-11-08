@@ -24,6 +24,15 @@ public enum StatusLine {
             if state.userPaused { return "Paused by you" }   // 9o9.4
             if let until = state.orderCapUntil, until > Date() { return "Order moves capped for a minute" }
             if let why = state.pauseReason { return "Waiting: \(why)" }
+            if state.lastError == nil, state.inFlight == nil {
+                // gdu.144 D8: the menu says what Arrange says, and never "Converged" while the bar differs
+                if state.lastPlan.stoppedWhileDiffering { return ArrangeSections.stoppedText(holdFolded: state.lastPlan.stripHoldFolded) }
+                if let n = state.lastPlan.stripHoldFolded { return ArrangeSections.barFullText(n) }   // the hold text Arrange leads with
+                let failed = state.perItem.values.filter { if case .failed = $0 { return true }; if case .cannotPlace = $0 { return true }; if case .unsupported = $0 { return true }; return false }.count
+                if failed > 0 { return ArrangeSections.cannotPlaceText(failed) }
+                if state.lastPlan.orderDiffers, state.lastPlan.unreadDrawn > 0, state.lastPlan.moving.isEmpty { return ArrangeSections.waitingToReadText(state.lastPlan.unreadDrawn) }
+                if state.lastPlan.checkingBar, state.lastPlan.moving.isEmpty { return ArrangeSections.checkingMenuBar }   // gdu.144: assumed full, no chevron in the read
+            }
         }
         return text(lastError: state.lastError, isConverged: state.isConverged, inFlight: state.inFlight != nil,
              trusted: trusted, conflicting: conflicting, observationSettled: state.observationSettled)

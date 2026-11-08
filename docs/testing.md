@@ -891,11 +891,11 @@ On 0.1.0 a 644 pt display planned `show` for 8 allowed Visible items every pass 
 
 Orchestrator only; narrow display with more items than fit even when the strip is open (644 pt portrait).
 
-1. [ ] At most one chevron click per bar state: the log shows one `chevron clicked` and then `plan: ... fold move(s) held, the « strip could not be opened` instead of a click every pass.
+1. [ ] At most one chevron click per bar state: the log shows one `chevron clicked` and then `plan: ... order move(s) held, the bar is full` instead of a click every pass.
 2. [ ] The strip is never left open: after a pass the chevron's description reads "Show Hidden Menu Bar Items" (or the log says `strip collapsed` / `closing click verified`); the bar does not toggle open and closed every 15 s.
 3. [ ] If the strip opens (menu titles covered by the items), the log reads `strip: open per description|geometric|deStacked`, not `did not show as expanded`.
-4. [ ] Arrange: the held subject row reads « with "the « strip could not be opened on this bar; widen the bar or hide items"; the status line names the hold ("The bar is too narrow for this order: macOS folds N items behind « ...") and never "Moving..." / "Waiting...".
-5. [ ] Retry, a layout edit, or a changed bar (quit an item; seen on two consecutive passes) allows exactly one more chevron click.
+4. [ ] Arrange: the held subject row reads « with "the bar is full; moves wait until Retry or your next edit (or the bar is proven not full) (hide items to make room)"; the status line names the hold ("The bar is full: macOS folds N items behind «. Hide items to make room.") and never "Moving..." / "Waiting...".
+5. [ ] Retry, Try again, or a layout edit touching a folded key allows exactly one more chevron click each (gdu.144: a changed bar alone releases nothing).
 6. [ ] (gdu.129) After one strip session the plan is held, the status line names the hold ("... and Sommelier could not place an item inside the strip." when the strip opened), and there are no give-ups (`giving up on` never appears); folded rows stay « through carried-chevron scans.
 7. [ ] (gdu.131) No time expiry and no flapping release: with the bar unchanged, zero further strip sessions after the first over 5 minutes (one `chevron clicked`, no `strip hold cleared (the bar changed ...)` while the chevron and drawn count are steady, even as the folded count flaps), `phase=converged` after it and the status line shown.
 
@@ -903,7 +903,26 @@ Orchestrator only; narrow display with more items than fit even when the strip i
 
 Orchestrator only; the 1352 pt display with 49 Visible items (more than fit) returning after a launch on the 644 pt display. Log 2026-11-08 08:16-08:25 is the failing baseline (22 sessions, 32 drags, 8 give-ups).
 
-1. [ ] After the display change the engine pulls folded items out one per pass toward the record; each item moves at most once. After a failed cross-fold drag there are no further drags: `plan: ... fold move(s) held` and phase=converged for 10 minutes.
+1. [ ] After the display change the engine pulls nothing out on its own (gdu.144); it orders drawn items only. After a failed drag there are no further engine drags: `plan: ... order move(s) held` and phase=converged for 10 minutes.
 2. [ ] No `re-plan: ... aiming after` line and no drag toward a key behind «: every `order: moving ... before|after X` has X drawn.
-3. [ ] The status line leads with "The bar is too narrow for this order: macOS folds N items behind « and a move across the fold did not hold."; no item moves twice; zero `giving up` lines; the status line names the hold.
+3. [ ] The status line leads with "The bar is full: macOS folds N items behind «. Hide items to make room."; no item moves twice; zero `giving up` lines; the status line names the hold.
 4. [ ] Drawn-only moves (both keys drawn) still work and keep their caps; Retry or a layout edit allows exactly one more attempt.
+
+## Live checklist: launch and restart on an overfull bar (gdu.144, 2026-11-08)
+
+Orchestrator only; the overfull bar (more Visible items than fit, a chevron present), a record that disagrees with where macOS folds.
+
+1. [ ] Launch Sommelier, then quit and launch it again (restart) and wait 10 minutes each time: ZERO engine-initiated chevron clicks (no `chevron clicked`, no `strip: needed`, no `phase strip: open`) and ZERO cross-fold drags (no `order: moving` with a folded subject or target). The engine makes AT MOST 3 drags in total per launch (`Config.maxEngineMovesPerLaunch`, verified or failed; 20 only after three complete chevronless reads), then it is quiet: one `automatic order moves made` line. A bar change releasing the hold, a chevron coming and going, the Accessibility grant and the permission resume (`clearFailures()`) do NOT give the budget back; a user edit and Re-apply layout (`userRetry()`) do.
+2. [ ] When the budget is spent or moves are gated and the bar differs from the record: the Arrange status line AND the menu's status item read "Your order and the bar differ. Sommelier has stopped moving items on its own: drag an item or press Re-apply layout." (never "Converged"); no drawn row is a check unless ALL drawn keys are in your order (otherwise "differs from your order").
+3. [ ] After a failed drag: the log reads `holding every order move until Retry or your next edit (or the bar is proven not full)`; the status line leads with "The bar is full: macOS folds N items behind «. Hide items to make room."; no `giving up` lines.
+4. [ ] While the chevron is carried or stale (flaps between scans), no `order: moving` at all and Arrange pile rows stay « (never a check).
+5. [ ] Arrange: folded rows read « (none is a warning triangle merely for being folded or uncorroborated); the fold line stays where macOS puts it.
+6. [ ] Drop a folded item to the right of the fold line (with a drawn mismatch pending): the folded item is dragged FIRST, exactly one strip session and one drag, no retry, none after a restart; two folded keys in one edit are still one session. If it does not stay out, the row reads "macOS put it back behind «; hide something to make room".
+7. [ ] (A drawn drop beside the fold may open ONE strip session when the churn zone needs it; a failing drawn drop is still one physical drag.) Drop a DRAWN item left of the fold line (e.g. Time Machine at slot 0): ONE drag of that item to the leftmost drawn slot (the strip may open only if the churn zone needs it), no other item moves (not Jump, not Network); the status area reads "<name> is in your order, but macOS folds from the left, so it can't go further left until there is room". A FOLDED item dropped left of the fold line: no drag at all (`dropped left of the fold line, no pull-out`), "... so it stays behind « until there is room". A later unrelated drop never makes that item move.
+8. [ ] "Hide what does not fit" hides the folded and the folded-parked items, and releases the hold.
+9. [ ] With the budget spent and a mismatch beside the fold, Re-apply layout fixes it with exactly one strip session and one drag; pressing nothing moves nothing. A reading that is only `incomplete` (the agent's tree not fully read), however often, never counts toward "the bar is not full".
+10. [ ] The menu's status item and the Arrange status line always agree (stopped line, hold text, or "N items can't be placed"); neither says Converged while the drawn keys differ from your order, on any bar.
+
+Strip criteria elsewhere in this file (the gdu.126 / gdu.129 / gdu.131 / gdu.134 checklists): since gdu.144 only a drop of the user's own may open the « strip. Wherever they say the engine opens the strip, pulls folded items out, or drags a churn-zone item inside a strip session, read "after the user's own drop"; an automatic move that would need the strip is withheld with `next to the « fold; Sommelier moves that only when you drop it there`, and refused by the actuator on its own scan if the engine's read missed the fold.
+11. [ ] After a failed folded drop (or any edit with a folded member) leave Sommelier alone for 10 minutes, then let macOS shift an item: no chevron click and no user-exempt drag happens (the user's owed attempts end with the first regular pass). One edit that moves a whole app unit opens at most ONE strip session. Try again on the failed folded row is one session and one drag, once.
+12. [ ] While you hold the « strip open yourself, Sommelier moves nothing.

@@ -96,14 +96,30 @@ public protocol MenuBarActuator: Sendable {
     /// a move across the fold).
     func setChurnZone(_ keys: Set<ItemKey>) async
     /// 9o9.19: the Visible record's full order (`Layout.visible`), handed over right before a move like the churn zone. A crossing is
-    /// verified by the fold rule against it (the fold is a prefix of the record) instead of adjacency to a target that may re-fold
+    /// verified by the fold rule against it (the subject is drawn and in record order among the drawn keys; the fold itself is macOS's decision) instead of adjacency to a target that may re-fold
     /// into the pile. Empty = unknown: adjacency only.
     func setRecordOrder(_ keys: [ItemKey]) async
+    /// gdu.144 rule 4: handed over right before every order move. `true` = the move is engine-initiated on a bar with a chevron: post ONE
+    /// drag, never a second attempt. `false` = ordinary behaviour (no chevron, or the user's own drop).
+    func setSingleDrag(_ on: Bool) async
+    /// gdu.144 D2: handed over right before every order move. `true` = the engine started this move on its own: if the actuator's OWN scan finds that it
+    /// needs the « strip (a folded subject or target, or a churn-zone key), it refuses before any click or drag (an overflow refusal, never a strike).
+    /// Only the user's own drop (`false`) may open the strip.
+    func setEngineInitiated(_ on: Bool) async
+    /// gdu.144 D6: some mouse event (a drag, a chevron click) of the LAST `move` call may have been posted. A `.userBusy` result after one is consumed by
+    /// the engine, not re-armed.
+    var lastMoveTouchedMouse: Bool { get async }
+    /// gdu.144 item 3: the LAST `move` call opened (and closed) a « strip session.
+    var lastMoveOpenedStrip: Bool { get async }
 }
 
 public extension MenuBarActuator {
     func setChurnZone(_ keys: Set<ItemKey>) async {}
     func setRecordOrder(_ keys: [ItemKey]) async {}
+    func setSingleDrag(_ on: Bool) async {}
+    func setEngineInitiated(_ on: Bool) async {}
+    var lastMoveTouchedMouse: Bool { get async { false } }
+    var lastMoveOpenedStrip: Bool { get async { false } }
     /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.
     var lastBatchRespawned: Bool { get async { false } }
     var lastBatchUnconfirmed: Set<ItemKey> { get async { [] } }

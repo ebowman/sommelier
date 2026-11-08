@@ -36,7 +36,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
     let store = InMemoryLayoutStore(layout)
     let state = EngineState()
     let engine = LayoutEngine(observer: ActuatorObserver(actuator: act), actuator: act, store: store, capabilities: Caps(), state: state,
-                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) }, config: .multiMove)   // gdu.144: plain bar, not assumed full
     await engine.start()
     return (engine, state, act, store)
 }

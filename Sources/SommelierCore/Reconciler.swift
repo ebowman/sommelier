@@ -31,6 +31,11 @@ public struct ObservedOrder: Equatable, Sendable {
     /// gdu.129: the chevron of THIS scan is carried (stale) but was `recentlyVerified` (gdu.120). Display and fold stability only: the
     /// fold (`foldedParked`) and the « rows hold through it; `overflowChevron` stays nil, so no fold move is planned and no strip opens.
     public var chevronRecent = false
+    /// gdu.144 D1: a chevron item is on the bar in this read, FRESH, carried (recent) or STALE with no time limit. Any chevron in any read means
+    /// the bar may be full; a stale one counts as a chevron for pile rows and planning (its pile is derived from its last frame).
+    public var chevronPresent = false
+    /// gdu.144 D1: a chevron of any kind is in this read.
+    public var hasChevron: Bool { overflowChevron != nil || chevronRecent || chevronPresent }
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
                 placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = [], staleOnBar: Set<ItemKey> = []) {
         self.staleOnBar = staleOnBar
@@ -59,6 +64,8 @@ public struct ObservedOrder: Equatable, Sendable {
         var recent = Set<ItemKey>()
         var chevron: ItemKey?
         var chevronRecentSeen = false
+        var staleChevronMinX: CGFloat?
+        var chevronAnyKey: ItemKey?
         var expanded = false
         var foldCandidates = Set<ItemKey>()
         for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
@@ -67,7 +74,9 @@ public struct ObservedOrder: Equatable, Sendable {
                 if r.item.stale { stale.insert(r.key); uncorr.insert(r.key); if r.item.recentlyVerified { recent.insert(r.key) } }
                 bar.append((r.item.frame.minX, r.key))
                 if r.item.systemOverflow { ovf.insert(r.key); if r.item.stale { staleOvf.insert(r.key) } }
+                if r.item.isOverflowChevron { chevronAnyKey = chevronAnyKey ?? r.key }
                 if r.item.isOverflowChevron, r.item.stale, r.item.recentlyVerified { chevronRecentSeen = true }
+                if r.item.isOverflowChevron, r.item.stale { staleChevronMinX = staleChevronMinX ?? r.item.frame.minX }
                 if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key; if r.item.stripExpanded { expanded = true } }
                 // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
                 if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
@@ -80,6 +89,11 @@ public struct ObservedOrder: Equatable, Sendable {
         }
         // 9o9.17: a stale item keeps its pile flag (carried frame), but only against a fresh chevron of the read (gdu.45).
         if chevron == nil { ovf.subtract(staleOvf) }
+        // gdu.144 D1: a stale chevron (no fresh one in the read) still marks the bar full: whatever stands left of its last frame is folded.
+        // Only against a collapsed layout: items drawn left of a chevron would mean an open strip, which needs a fresh chevron.
+        if chevron == nil, let cx = staleChevronMinX {
+            for (x, key) in bar where x + 1 < cx && key != chevronAnyKey && !(resolved.first { $0.key == key }?.item.isOverflowChevron ?? false) { ovf.insert(key) }
+        }
         // Stable sort by x (enumerated index breaks ties).
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
         self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr, staleOnBar: stale)
@@ -89,6 +103,7 @@ public struct ObservedOrder: Equatable, Sendable {
         // gdu.121: with a fresh chevron and the strip collapsed, an allowed parked item is folded for width.
         // gdu.129: a carried chevron verified within the recency window keeps the fold (no flicker between « and "not on the bar").
         chevronRecent = chevron == nil && chevronRecentSeen
+        chevronPresent = chevronAnyKey != nil
         if chevron != nil || chevronRecent, !stripExpanded { foldedParked = foldCandidates }
     }
 }
@@ -148,6 +163,14 @@ public struct Plan: Equatable, Sendable {
     public var stripHoldDidNotHold = false
     /// gdu.136: order moves withheld because they follow the user's own edit (one surprise at a time), in plan order.
     public var deferredAfterUserEdit: [ItemKey] = []
+    /// gdu.144 D8: an engine-initiated order move was withheld (gate, hold or spent budget): the bar differs from the record and the engine will not move it by itself.
+    public var gatedDiffers = false
+    /// gdu.144: the bar is still ASSUMED full (no proof yet) and this read shows no chevron: nothing is confirmed in place, nothing converged.
+    public var checkingBar = false
+    /// gdu.144 D8: the trusted drawn keys are NOT in record order (the engine is not converged), and how many drawn Visible keys are unread (stale /
+    /// uncorroborated), which is why their order cannot be judged.
+    public var orderDiffers = false
+    public var unreadDrawn = 0
     /// gdu.136: the keys the user's edit moved while `deferredAfterUserEdit` is non-empty (the status line's "Done:").
     public var userEditMoved: [ItemKey] = []
 }
@@ -162,7 +185,13 @@ public struct Reconciler: Sendable {
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
                      units rule: HideUnitRule = .ownerKeys, held: Set<ItemKey> = [],
-                     unsteady: Set<ItemKey> = []) -> Plan {
+                     unsteady: Set<ItemKey> = [], foldDropRequest: Set<ItemKey> = [], fullBar: Bool = false, onlyMove: Set<ItemKey>? = nil) -> Plan {
+        // gdu.144 D5: `onlyMove` (a user's pass): the keys the user moved are the only drawn keys that may move; every other key is a FIXED anchor, so
+        // the minimal-move computation moves the dropped key and nothing else.
+        // gdu.144 B6: on a full bar (`fullBar`) trusted keys are planned among themselves: a stale / uncorroborated / held key is dropped from the
+        // order base and target, so no trusted key is moved because of where the record puts an untrusted one.
+        // gdu.144 rule 1: `foldDropRequest` = the folded keys the USER just dropped (engine memory only). A pull-out across the fold is planned
+        // for those keys and no others; what folds is macOS's decision, the engine orders drawn items only.
         // 9o9.3 / 9o9.9: `Layout.visible` is the ordered record and every Visible key carries the obligation. The order-phase target is
         // the record over ALL keys observed on the bar, trusted or not; only the keys the capabilities pin (the system block, unhideable
         // items) and the held ones are anchors that keep their observed slot. Keys whose frame is not trusted are never a move subject
@@ -326,8 +355,9 @@ public struct Reconciler: Sendable {
         // by the policy) and revealed hidden-section keys are not in the record: nothing is pulled out or pushed in because of them.
         let visibleRecord = Set(layout.visible)
         let fullRecord = desired.filter { onBarSet.contains($0) && visibleRecord.contains($0) }
-        desired = desired.filter { !ovf.contains($0) && $0 != chevronKey && !observed.foldedParked.contains($0) }
-        let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevronKey }
+        let untrustedOnFullBar: Set<ItemKey> = fullBar ? observed.uncorroborated.union(observed.staleOnBar).union(held).intersection(onBarSet) : []
+        desired = desired.filter { !ovf.contains($0) && $0 != chevronKey && !observed.foldedParked.contains($0) && !untrustedOnFullBar.contains($0) }
+        let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevronKey && !untrustedOnFullBar.contains($0) }
         let base = kept + shows
         // gdu.94 / 9o9.3: an on-bar key whose frame is not trusted (slot not corroborated by a hosted element, or a stale frame) keeps its
         // observed slot: it is never the subject of a move, never a relation target while a fresh neighbour exists, and it is NOT part of
@@ -335,7 +365,8 @@ public struct Reconciler: Sendable {
         // 9o9.4: `held` keys (the engine gave up on them) are pinned the same way, silently: they keep their observed slot.
         let unfresh = observed.uncorroborated.union(observed.staleOnBar).union(held).intersection(onBarSet).intersection(Set(base))
         let pinned = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
-        let anchors = pinned.union(held.intersection(unfresh))   // 9o9.9: untrusted keys are NOT anchors of the target
+        let frozen: Set<ItemKey> = onlyMove.map { m in Set(base.filter { !m.contains($0) && !pinned.contains($0) }) } ?? []
+        let anchors = pinned.union(held.intersection(unfresh)).union(frozen)   // 9o9.9: untrusted keys are NOT anchors of the target
         if !unfresh.isEmpty, hides.isEmpty, shows.isEmpty {
             // What the order step would have done had these keys been movable: report each key it would have dragged (once).
             let baseSet = Set(base)
@@ -364,7 +395,7 @@ public struct Reconciler: Sendable {
             // Not reported in a membership phase (gdu.44): the bar is about to change, a transient or churned bar can show
             // anchors out of order that the next (order) pass finds fine. The order pass re-evaluates and reports them.
             if shows.isEmpty && hides.isEmpty {
-                for k in anchorsInBase where !keep.contains(tIdx[k]!) {
+                for k in anchorsInBase where !keep.contains(tIdx[k]!) && !frozen.contains(k) {
                     skipped.append(SkippedAction(k, "immovable item is out of layout order"))
                 }
             }
@@ -372,12 +403,34 @@ public struct Reconciler: Sendable {
             target = base.map { anchors.contains($0) ? $0 : (fill.next() ?? $0) }
         }
 
+        // gdu.144 D5: in a user's pass the dropped keys are placed RELATIVE to the fixed keys: the fixed keys keep their observed order, and each movable
+        // key goes right after its nearest record predecessor already placed (or first). Nothing else moves.
+        if onlyMove != nil {
+            let fixedKeys = anchors.union(untrusted)
+            var placed = base.filter { fixedKeys.contains($0) }
+            let movable = base.filter { !fixedKeys.contains($0) }
+            let movableSet = Set(movable)
+            for m in desired.filter({ movableSet.contains($0) }) {
+                let at = desired.firstIndex(of: m) ?? 0
+                var pred: ItemKey?
+                for j in stride(from: at - 1, through: 0, by: -1) where placed.contains(desired[j]) { pred = desired[j]; break }
+                if let pred, let pi = placed.firstIndex(of: pred) { placed.insert(m, at: pi + 1) } else { placed.insert(m, at: 0) }
+            }
+            for m in movable where !placed.contains(m) {   // a movable key the layout does not place keeps its observed neighbour
+                let bi = base.firstIndex(of: m) ?? 0
+                var pred: ItemKey?
+                for j in stride(from: bi - 1, through: 0, by: -1) where placed.contains(base[j]) { pred = base[j]; break }
+                if let pred, let pi = placed.firstIndex(of: pred) { placed.insert(m, at: pi + 1) } else { placed.insert(m, at: 0) }
+            }
+            if placed.count == base.count { target = placed }
+        }
+
         // Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock).
         // Nothing movable can be placed right of its first item, so such targets are reported and relocated to the last
         // slot before the block (relative order kept); no drag ever targets the block.
         // The block is taken from the observed bar BEFORE shown items are appended (`kept`): in a membership pass the shows
         // would otherwise hide it, and `skipped`/`desiredOnBar` would put a key right of the clock until the order pass (gdu.44).
-        let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors.subtracting(unfresh))   // gdu.101 / 9o9.3: an untrusted key does not extend the system block
+        let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors.subtracting(unfresh).subtracting(frozen))   // gdu.101 / 9o9.3: an untrusted key does not extend the system block
         if blockStart < kept.count {
             let blockSet = Set(kept[blockStart...])
             // Name the first MODULE of the block in skip messages: a self-positioning item (iStat, an anchor) can sit at its start
@@ -426,9 +479,12 @@ public struct Reconciler: Sendable {
             actions = planned.actions
             walls = planned.blockedBy
             for (k, u) in planned.moving { walls[k] = u }
-            // 9o9.11: with the drawn order settled, one move across the fold (a pull-out; gdu.134: never a push-in) if the record asks for it.
+            // gdu.144 rule 1: with the drawn order settled, one move across the fold (a pull-out; gdu.134: never a push-in) ONLY for a folded
+            // key the user dropped (`foldDropRequest`). Nothing else is ever pulled out; the other folded keys get no plan.
             var foldKeys = Set<ItemKey>()
-            if actions.isEmpty, chevron != nil, !observed.stripExpanded {
+            // gdu.144 B2: the user's requested pull-out goes FIRST, ahead of any pending drawn move (which waits for a later pass).
+            let askedFold = !foldDropRequest.isEmpty && chevron != nil && !observed.stripExpanded
+            if (actions.isEmpty || askedFold), chevron != nil, !observed.stripExpanded {
                 let pile = ovfKept.filter { observed.systemOverflow.contains($0) }
                 // The actuator performs a crossing with the strip OPEN after a fresh re-scan (real frames, nothing re-folds until it closes),
                 // so churn-zone drawn keys may be the pull-out target.
@@ -439,8 +495,8 @@ public struct Reconciler: Sendable {
                 let cannot = observed.uncorroborated.union(observed.staleOnBar).union(held).subtracting(pileSet.subtracting(held))
                 let drawnAll = onBar.filter { !hideSet.contains($0) && !observed.systemOverflow.contains($0) && $0 != chevron && wantOnBar.contains($0) }
                 let foldBlockStart = blockStart < kept.count ? (drawnAll.firstIndex(of: kept[blockStart]) ?? drawnAll.count) : drawnAll.count
-                let fold = Self.crossFoldMove(record: fullRecord, drawn: drawnAll, pile: pile, excluded: cannot, canMove: { capabilities($0).canMove },
-                                              blockStart: foldBlockStart)
+                let fold = foldDropRequest.isEmpty ? nil : Self.crossFoldMove(record: fullRecord, drawn: drawnAll, pile: pile, requested: foldDropRequest,
+                                                                              excluded: cannot, canMove: { capabilities($0).canMove }, blockStart: foldBlockStart)
                 if let f = fold {
                     actions = [f]
                     if case .move(let k, let rel) = f {
@@ -456,15 +512,9 @@ public struct Reconciler: Sendable {
                 for k in listedPile where !keep.contains(rec[k]!) && !foldKeys.contains(k) && !skipped.contains(where: { $0.key == k }) {
                     skipped.append(SkippedAction(k, Reconciler.overflowSkipReason))
                 }
-                // A pile key the record places right of a drawn key but for which no crossing could be planned (no trusted drawn neighbour)
-                // is reported, never silently left.
-                if fold == nil, let y = Self.foldedNeighbourSubject(record: fullRecord, drawn: drawnAll, pile: pile, excluded: cannot, canMove: { capabilities($0).canMove },
-                                                                    blockStart: foldBlockStart), !skipped.contains(where: { $0.key == y }) {
-                    skipped.append(SkippedAction(y, Reconciler.foldedNeighbourSkipReason))
-                }
                 if fold == nil {
                     let drawnRec = drawnAll.compactMap { rec[$0] }
-                    for k in pile where !skipped.contains(where: { $0.key == k && $0.reason != Reconciler.overflowSkipReason }) {
+                    for k in pile where foldDropRequest.contains(k) && !skipped.contains(where: { $0.key == k && $0.reason != Reconciler.overflowSkipReason }) {
                         guard let ik = rec[k], drawnRec.contains(where: { $0 < ik }) else { continue }
                         // The gdu.69 wording promises the strip will be opened for this key; here nothing will, so the truer reason replaces it.
                         skipped.removeAll { $0.key == k }
@@ -536,14 +586,18 @@ public struct Reconciler: Sendable {
     /// gdu.136: why an order move that is not the user's own is withheld right after the user's edit: it waits for the next regular pass.
     public static let deferredAfterUserEditReason = "waiting a moment after your change"
 
+    /// gdu.144 B1/B4/B5: why an engine-initiated order move is withheld on a full bar. Neutral: the row keeps its real state (never moving / waiting / warning).
+    public static let carriedBarSkipReason = "waiting for a fresh read of the bar (the « chevron is not read this pass)"
+    public static let noStripSkipReason = "next to the « fold; Sommelier moves that only when you drop it there"
+    public static let budgetSkipReason = "the bar is full and Sommelier has made its automatic moves; change the order yourself or press Retry"
+    public static let stripOpenSkipReason = "the « strip is open; Sommelier moves nothing while it is"
+    public static func isEngineWithheld(_ reason: String) -> Bool { [carriedBarSkipReason, noStripSkipReason, budgetSkipReason, stripOpenSkipReason].contains(reason) }
+
     /// gdu.126: why a fold move (pull-out / push-in) is not dispatched: opening the « strip failed on this bar state and is held.
-    public static let stripUnavailableSkipReason = "the « strip could not be opened on this bar; widen the bar or hide items"
+    public static let stripUnavailableSkipReason = "the bar is full; moves wait until Retry or your next edit (or the bar is proven not full) (hide items to make room)"
 
     /// Why an item in macOS's own overflow area is not planned (gdu.69).
     public static let overflowSkipReason = "behind the « chevron; its order there is set when the strip is next opened"
-
-    /// gdu.134: why a drawn key whose record neighbour (the next key right of it) is folded behind « is not moved: nothing is aimed at a folded key.
-    public static let foldedNeighbourSkipReason = "its record neighbour is folded too"
 
     /// gdu.134: a folded key that cannot be moved (a system item) and so cannot be pulled out.
     public static let foldedSystemItemSkipReason = "folded behind « with the system items; macOS places it"
@@ -573,20 +627,19 @@ public struct Reconciler: Sendable {
         }
     }
 
-    /// 9o9.11: the one move across the fold the record asks for, or nil. With a collapsed strip the fold must be a PREFIX of the record:
-    /// every key behind the chevron sits left of every drawn key. A violation is a pair (drawn Y, pile X) with the record placing Y
-    /// left of X. It is repaired by a pull-out first (9o9.22): `X .after(A)` (X behind the chevron and movable, A the nearest trusted
+    /// gdu.144: the one pull-out the USER asked for (a folded key in `requested` that the record places right of a drawn key), or nil.
+    /// No other folded key is ever a subject (the former "the fold is a prefix of the record" convergence is gone). The pull-out is (9o9.22): `X .after(A)` (X behind the chevron and movable, A the nearest trusted
     /// drawn key left of X in the record, not in the trailing block); else (9o9.28) `X .before(B)` with B the nearest trusted drawn key RIGHT of X when none exists on the left; (gdu.134: no push-in). `excluded`: keys never chosen as subject or target (drawn keys that are untrusted
     /// (uncorroborated / stale / held) and pile keys that are held; churn-zone keys are allowed, the strip session covers them). A stale pile key is NOT excluded: the actuator
     /// opens the strip and the fresh read taken with it open decides (9o9.23). The order among pile keys is never touched.
-    static func crossFoldMove(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
+    static func crossFoldMove(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], requested: Set<ItemKey>, excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
                               blockStart: Int) -> PlannedAction? {
         let rec = Dictionary(uniqueKeysWithValues: record.enumerated().map { ($1, $0) })
         let pileSet = Set(pile)
         let drawnInRecord = drawn.filter { rec[$0] != nil && !pileSet.contains($0) }
         // Pull-out candidates: trusted pile keys with a drawn key left of them in the record.
         let xs = pile.filter { x in
-            guard let ix = rec[x], !excluded.contains(x), canMove(x) else { return false }
+            guard requested.contains(x), let ix = rec[x], !excluded.contains(x), canMove(x) else { return false }
             return drawnInRecord.contains { rec[$0]! < ix }
         }.sorted { rec[$0]! < rec[$1]! }
         func pullOut() -> PlannedAction? {
@@ -610,19 +663,6 @@ public struct Reconciler: Sendable {
         // gdu.134 rule 1: a pull-out is the ONLY cross-fold move, and its target is always a DRAWN trusted key. The former push-in
         // (`Y .before(X)` with X a pile key) aimed across the fold at a folded target; it is gone (see `foldedNeighbourSubject`).
         return pullOut()
-    }
-
-    /// gdu.134: the drawn key the retired push-in would have moved (the nearest to the fold in the record): trusted, movable, drawn, with a trusted pile key right of it in the
-    /// record. It is never moved (its record neighbour is folded too, so no drawn target exists); the planner reports it as skipped.
-    static func foldedNeighbourSubject(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
-                                       blockStart: Int) -> ItemKey? {
-        let rec = Dictionary(uniqueKeysWithValues: record.enumerated().map { ($1, $0) })
-        let targets = pile.filter { rec[$0] != nil && !excluded.contains($0) }
-        // The one nearest the fold in the record (its record neighbour is the folded key), which is what the 08:21:53 push-in moved.
-        return drawn.enumerated().filter { (i, y) in
-            guard let iy = rec[y], i < blockStart, !excluded.contains(y), canMove(y) else { return false }
-            return targets.contains { rec[$0]! > iy }
-        }.max { rec[$0.element]! < rec[$1.element]! }?.element
     }
 
     /// Post-condition (gdu.45): a move whose subject or relation target is overflowed or the chevron, or (with a chevron)

@@ -171,7 +171,7 @@ final class ArrangeViewModel {
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
-    var hasNotFitting: Bool { !state.observed.systemOverflow.isEmpty }
+    var hasNotFitting: Bool { !state.observed.systemOverflow.isEmpty || !state.observed.foldedParked.isEmpty }
     var statusText: String {
         let notice = state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice
             ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice
@@ -182,6 +182,8 @@ final class ArrangeViewModel {
         ctx.stripHoldFolded = state.lastPlan.stripHoldFolded
         ctx.stripHoldUnplaceable = state.lastPlan.stripHoldUnplaceable
         ctx.stripHoldDidNotHold = state.lastPlan.stripHoldDidNotHold
+        ctx.stoppedWhileDiffering = state.lastPlan.stoppedWhileDiffering
+        ctx.checkingBar = state.lastPlan.checkingBar
         // gdu.136: "Done: X. Next: Y" once the edit's own move is no longer pending or in flight.
         let editDone = state.lastPlan.userEditMoved.allSatisfy { k in
             switch state.perItem[k] { case .pending?, .moving?: return false; default: return true }
@@ -421,7 +423,12 @@ final class ArrangeViewModel {
         case .move(let l, let moved, let willNotFit):
             let old = layout
             var track: [ItemKey] = []
-            message = willNotFit ? "Dropped left of the overflow boundary: macOS will keep it behind the chevron." : nil
+            // gdu.144 rule 5 / D6: a Visible drop left of the fold line says macOS folds from the left. A FOLDED key stays behind «; a DRAWN key is in the
+            // record and goes as far left as the drawn items go. Also with a stale chevron (`hasChevron`).
+            let o = state.observed
+            let chevronBar = o.hasChevron
+            let wasFolded = o.systemOverflow.union(o.foldedParked).contains(key)
+            message = willNotFit && chevronBar ? (wasFolded ? ArrangeBarState.stayBehindText(displayName(key)) : ArrangeBarState.cannotGoFurtherLeftText(displayName(key))) : nil
             track = keysToTrack(moved: moved, old: old, new: l)   // hidden-strip reorders are not tracked
             AppLog.log(.arrange, "arrange: submit layout; moved=\(moved.map { "\($0)" }.joined(separator: ", "))")
             if let dropID { AppLog.log(.arrange, "arrange: " + DropTrace.layoutLine(id: dropID, key: key, layout: l)) }
@@ -456,7 +463,7 @@ final class ArrangeViewModel {
     func reapply() {
         guard let engine = model.engine else { return }
         editTracker { $0.retry(passesStarted: state.passesStarted, now: Date()) }
-        Task { await engine.clearFailures(); await engine.requestReconcile() }
+        Task { await engine.userRetry(); await engine.requestReconcile() }   // gdu.144 D4: the user's Retry (gives the budget and the hold back)
     }
 
     /// "Try again" on one row: clears the engine's give-up / failure history of `key` and plans it again (`LayoutEngine.retry(key:)`).
@@ -485,7 +492,8 @@ final class ArrangeViewModel {
         case .hideNotFitting(let l, let titles, _, let base):
             AppLog.log(.arrange, "arrange: hide what does not fit: \(titles.joined(separator: ", "))")
             let old = layout
-            apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible }, basedOn: base)
+            apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible }, basedOn: base,
+                  moved: Set(l.hidden.filter { old.section(of: $0) == .visible }))   // gdu.144 rule 6: the hidden keys are the edit's moved keys
         }
     }
 

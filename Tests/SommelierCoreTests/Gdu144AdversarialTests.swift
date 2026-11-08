@@ -1,0 +1,487 @@
+import CoreGraphics
+import Foundation
+import Testing
+@testable import SommelierCore
+
+// gdu.144 corrective pass 2: the reviewer's adversarial scenarios, tightened to the decisions (D1 full-until-proven, D2 no engine strip, D3 universal budget,
+// D4 explicit user-intent resets, D5 pinned non-moved keys, D6 drop semantics, D7 no false check, D8 honest status). No relaxed caps anywhere
+// except the one test that isolates the 20-drag cap of a bar proven not full (it says so).
+
+private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosaveName: n) }
+private let advChev = ItemKey.module(name: MenuBarItem.overflowChevronName)
+private struct AdvRNG: RandomNumberGenerator { var s: UInt64; mutating func next() -> UInt64 { s &+= 0x9E3779B97F4A7C15; var z = s; z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9; z = (z ^ (z >> 27)) &* 0x94D049BB133111EB; return z ^ (z >> 31) } }
+private enum AdvChev: Sendable { case fresh, recent, staleOld, absent }
+
+private final class AdvWorld: @unchecked Sendable {
+    private let l = NSLock(); private var _mode: AdvChev = .fresh; private var _drawn: [String]; let pile: [String]
+    init(pile: [String], drawn: [String]) { self.pile = pile; _drawn = drawn }
+    var mode: AdvChev { get { l.lock(); defer { l.unlock() }; return _mode } set { l.lock(); _mode = newValue; l.unlock() } }
+    var drawn: [String] { get { l.lock(); defer { l.unlock() }; return _drawn } set { l.lock(); _drawn = newValue; l.unlock() } }
+    func snap() -> MenuBarSnapshot {
+        let m = mode
+        func item(_ n: String, _ f: CGRect, chev: Bool = false) -> MenuBarItem {
+            var i = MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: chev ? n : k(n).description, axDescription: "", axIdentifier: chev ? "" : k(n).description,
+                                frame: f, source: .appExtras, isOnMenuBar: true, isOverflowChevron: chev, joinEvidence: .identifier)
+            i.controlCenterAllowed = true
+            if chev { switch m { case .recent: i.stale = true; i.recentlyVerified = true; case .staleOld: i.stale = true; default: break } }
+            return i
+        }
+        var items: [MenuBarItem] = []
+        for (i, n) in pile.enumerated() { items.append(item(n, CGRect(x: 700 + CGFloat(i) * 20, y: 0, width: 24, height: 24))) }
+        if m != .absent { items.append(item("chev", CGRect(x: 786, y: 0, width: 17, height: 24), chev: true)) }
+        for (i, n) in drawn.enumerated() { items.append(item(n, CGRect(x: 813 + CGFloat(i) * 60, y: 0, width: 24, height: 24))) }
+        return MenuBarSnapshot(items: SystemOverflow.mark(items), capturedAt: Date())
+    }
+}
+private func advRes(_ s: MenuBarSnapshot) -> [ResolvedItem] { s.items.map { i in ResolvedItem(item: i, key: i.isOverflowChevron ? advChev : ItemKey(storeKey: i.axIdentifier)!, confidence: .exact) } }
+private struct AdvObs: MenuBarObserver { let w: AdvWorld; func observe() async throws -> [ResolvedItem] { advRes(w.snap()) } }
+private struct AdvCaps: CapabilityProvider { func capability(for key: ItemKey) -> Capability { Capability(canMove: true, canHide: true) } }
+
+/// Posts what it is told: every move is recorded with the engine-initiated flag; a verified or failed result at random; the world is scrambled so the
+/// record is never realised (whatever the engine does, a mismatch remains).
+private actor AdvChaos: MenuBarActuator {
+    let w: AdvWorld; var rng: AdvRNG; var drags: [(key: String, engineInitiated: Bool)] = []; var flag = false; var single = false; var hideCalls = 0; let mix: Bool
+    /// PHYSICAL drags: a single-drag move posts one drag; any other failing move posts a second attempt (the real actuator's attempt 2)
+    var physicalDrags = 0
+    /// every move answers `.userBusy`; `busyTouchedMouse` says whether a mouse event was posted before it (decision D6)
+    var busy = false; var busyTouchedMouse = false
+    var touchedLast = false
+    /// every move fails BEFORE any mouse event (notFound): the engine's counter must not count it (decision: it counts actual drags)
+    var preDrag = false; var dispatches = 0
+    func setPreDrag(_ on: Bool) { preDrag = on }
+    func dispatchCount() -> Int { dispatches }
+    var lastMoveTouchedMouse: Bool { busy ? busyTouchedMouse : touchedLast }
+    func setBusy(_ on: Bool, touched: Bool) { busy = on; busyTouchedMouse = touched }
+    func unflaggedDispatches() -> Int { drags.filter { !$0.engineInitiated }.count }
+    init(w: AdvWorld, seed: UInt64, mix: Bool = true) { self.w = w; rng = AdvRNG(s: seed); self.mix = mix }
+    func setSingleDrag(_ on: Bool) async { single = on }
+    func setEngineInitiated(_ on: Bool) async { flag = on }
+    func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        dispatches += 1
+        if preDrag { touchedLast = false; return .failed(.notFound, w.snap()) }
+        let r = mix ? Int.random(in: 0..<5, using: &rng) : 0
+        if r == 4 { touchedLast = false; return .failed(.mechanismFailed("\(key) \(ActuationError.overflowRefusalMarker); engine moves never open the « strip"), w.snap()) }   // refusal: no drag
+        touchedLast = true
+        drags.append((key.description, flag))
+        if busy { return .failed(.userBusy, w.snap()) }
+        physicalDrags += (single || r <= 1) ? 1 : 2
+        w.drawn = w.drawn.shuffled(using: &rng)
+        return r <= 1 ? .verified(w.snap()) : .failed(.mechanismFailed("the drag did not land"), w.snap())
+    }
+    func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult { hideCalls += 1; return .verified(w.snap()) }
+    func applyHiddenBatch(_ changes: [ItemKey: Bool]) async -> ActuationResult { hideCalls += 1; return .verified(w.snap()) }
+    var lastBatchRespawned: Bool { false }
+    var lastBatchUnconfirmed: Set<ItemKey> { [] }
+    var lastBatchRefused: [ItemKey: String] { [:] }
+    var lastBatchUnsettled: [ItemKey: String] { [:] }
+    func count() -> Int { physicalDrags }   // PHYSICAL drags, honouring setSingleDrag
+    func notEngineInitiated() -> Int { drags.filter { !$0.engineInitiated }.count }
+    func keys() -> [String] { drags.map(\.key).map { String($0.split(separator: ":").last ?? "?") } }
+}
+
+private let advP = ["P1", "P2", "P3"]
+private let advD = ["D1", "D2", "D3", "D4", "D5", "D6"]
+
+@MainActor
+private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool = true, now: (@Sendable () -> Date)? = nil, skipPlanningGate: Bool = false) async -> (LayoutEngine, AdvChaos, EngineState) {
+    let a = AdvChaos(w: w, seed: seed, mix: mix); let st = EngineState()
+    var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max
+    c.skipPlanningGateForTests = skipPlanningGate
+    if let now { c.now = now }
+    let e = LayoutEngine(observer: AdvObs(w: w), actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: record.map(k))), capabilities: AdvCaps(), state: st,
+                         resolveSnapshot: advRes, sleep: { _ in }, log: { _ in }, config: c)
+    await e.start(); return (e, a, st)
+}
+
+@MainActor
+@Suite struct AdversarialBudgetTests {
+    // The randomized world: chevron fresh / carried / stale / absent in any order (never absent for three reads in a row, which would PROVE the bar not full),
+    // scrambled bars, any actuator result. NO user input. Engine drags: never a flagless one (a flagless move could click the chevron); at most 3 in
+    // all, launch included.
+    @Test func randomizedWorldsWithAChevronNeverExceedThreeAndNeverFlagAnEngineMoveAsTheUsers() async {
+        var worst = 0
+        for seed in 0..<150 as Range<UInt64> {
+            var r = AdvRNG(s: seed &* 7919)
+            let w = AdvWorld(pile: advP, drawn: advD.shuffled(using: &r))
+            let (e, a, _) = await advRig(w: w, record: advP + advD, seed: seed)
+            var absentRun = 0
+            for _ in 0..<60 {
+                var m: AdvChev = [.fresh, .recent, .staleOld, .absent, .absent].randomElement(using: &r)!
+                if m == .absent { absentRun += 1; if absentRun >= 3 { m = .staleOld; absentRun = 0 } } else { absentRun = 0 }
+                w.mode = m
+                if Bool.random(using: &r) { w.drawn = w.drawn.shuffled(using: &r) }
+                _ = await e.reconcileOnce()
+            }
+            let total = await a.count()
+            worst = max(worst, total)
+            #expect(await a.notEngineInitiated() == 0, "seed \(seed): a drag was not flagged engine-initiated (it could click the chevron)")
+            #expect(total <= 3, "seed \(seed): \(total) engine drags")
+        }
+        #expect(worst >= 1)   // the world really did make the engine move (the bound is not met by doing nothing)
+    }
+
+    // ... and with arbitrary gaps (a chevron missing for any number of reads, even proving the bar not full): 20 in total, always, and never unflagged
+    @Test func randomizedWorldsWithArbitraryGapsNeverExceedTwenty() async {
+        for seed in 0..<100 as Range<UInt64> {
+            var r = AdvRNG(s: seed &* 31337)
+            let w = AdvWorld(pile: advP, drawn: advD.shuffled(using: &r))
+            let (e, a, _) = await advRig(w: w, record: advP + advD, seed: seed)
+            for _ in 0..<80 {
+                w.mode = [.fresh, .recent, .staleOld, .absent, .absent, .absent].randomElement(using: &r)!
+                if Bool.random(using: &r) { w.drawn = w.drawn.shuffled(using: &r) }
+                _ = await e.reconcileOnce()
+            }
+            #expect(await a.notEngineInitiated() == 0)
+            let total = await a.count()
+            #expect(total <= 20, "seed \(seed): \(total)")
+        }
+    }
+
+    // A2: a chevron that is read only now and then (gaps of any length, same pile, same frames)
+    @Test func aChevronReadOnlyNowAndThenNeverBuysMoreThanThree() async {
+        for seed in 0..<60 as Range<UInt64> {
+            var r = AdvRNG(s: seed &* 104729)
+            let w = AdvWorld(pile: advP, drawn: advD.shuffled(using: &r)); let clk = AdvClock()
+            let (e, a, _) = await advRig(w: w, record: advP + advD, seed: seed, now: { clk.read() })
+            for _ in 0..<60 {
+                w.mode = [.fresh, .staleOld, .absent, .absent].randomElement(using: &r)!
+                clk.adv(Double.random(in: 1...20, using: &r))
+                if Bool.random(using: &r) { w.drawn = w.drawn.shuffled(using: &r) }
+                _ = await e.reconcileOnce()
+            }
+            let total = await a.count()
+            #expect(total <= 20, "seed \(seed): \(total)")
+        }
+    }
+
+    // A3: launch with no chevron for three scans on a bar that really is full
+    @Test func aLaunchWithNoChevronForThreeScansIsStillCappedAtThree() async {
+        let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"]); w.mode = .absent
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        for _ in 0..<3 { w.drawn = w.drawn.reversed(); _ = await e.reconcileOnce() }
+        let early = await a.count()
+        #expect(early <= 3)
+        w.mode = .fresh
+        for _ in 0..<10 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        let total = await a.count()
+        #expect(total <= 3, "total \(total)")
+    }
+
+    // D1: three COMPLETE reads without any chevron prove the bar is not full: more than 3 moves, up to 20; a chevron (even stale) makes it full again
+    @Test func threeChevronlessReadsProveTheBarNotFullAndAnyChevronMakesItFullAgain() async {
+        let w = AdvWorld(pile: [], drawn: advD.reversed()); w.mode = .absent
+        let (e, a, _) = await advRig(w: w, record: advD, mix: false)
+        for _ in 0..<12 { _ = await e.reconcileOnce() }
+        let free = await a.count()
+        #expect(free > 3 && free <= 20, "not-full bar moved \(free) times")
+        // the engine counted them in ONE combined counter: a chevron showing up now (stale, no time limit) means counter >= 3 stops everything
+        w.mode = .staleOld
+        for _ in 0..<12 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == free)
+    }
+
+    // A4: a stale chevron with no time limit still marks the bar full (cap 3, no moves on the stale pass at all)
+    @Test func aStaleChevronForAnyLengthOfTimeNeverGetsAMove() async {
+        let w = AdvWorld(pile: advP, drawn: advD); let clk = AdvClock()
+        let (e, a, st) = await advRig(w: w, record: advP + advD, mix: false, now: { clk.read() })
+        _ = await e.reconcileOnce()
+        w.mode = .staleOld
+        clk.adv(31); w.drawn = ["D2", "D1", "D3", "D4", "D5", "D6"]
+        for _ in 0..<10 { clk.adv(5000); w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == 0)
+        // the stale chevron's own pile (everything left of its last frame) is « and never a check
+        for key in advP.map(k) { #expect(st.observed.systemOverflow.contains(key) && st.perItem[key] == .notFitting, "\(key) \(String(describing: st.perItem[key]))") }
+    }
+
+    // A5: default caps, ten simulated minutes of a chevron missing then fresh. Gaps of fewer than three chevronless reads never prove anything: 3 in all.
+    @Test func aFlappingChevronOnDefaultCapsNeverGetsMoreThanThree() async {
+        let w = AdvWorld(pile: advP, drawn: advD); let clk = AdvClock()
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, now: { clk.read() })
+        for i in 0..<40 { w.mode = i % 3 == 0 ? .fresh : .absent; clk.adv(15); w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        let n = await a.count()
+        #expect(n <= 3, "drags \(n)")
+    }
+
+    // ... and gaps of three or more complete chevronless reads DO prove the bar not full: one combined counter, 20 in all, never refilled by the chevron coming back
+    @Test func aChevronGoneForThreeReadsRaisesTheCapToTwentyButNeverRefillsIt() async {
+        let w = AdvWorld(pile: advP, drawn: advD); let clk = AdvClock()
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, now: { clk.read() })
+        for i in 0..<80 { w.mode = i % 5 == 0 ? .fresh : .absent; clk.adv(15); w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        let n = await a.count()
+        #expect(n <= 20, "drags \(n)")
+    }
+}
+
+@MainActor
+@Suite struct AdversarialNotFullCapTests {
+    // The ONE test with the per-key / per-minute caps out of the way: a bar proven not full (three complete chevronless reads) is capped by the combined
+    // counter at exactly 20 engine drags, however many the scrambling world keeps asking for.
+    @Test func aBarProvenNotFullStopsAtExactlyTwentyEngineDrags() async {
+        let w = AdvWorld(pile: [], drawn: advD.reversed()); w.mode = .absent
+        let a = AdvChaos(w: w, seed: 3, mix: false); let st = EngineState()
+        var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max
+        c.maxAttemptsPerItem = 100_000; c.maxOrderMovesPerMinute = 100_000; c.maxKeyFailures = 100_000; c.maxConsecutiveFailures = 100_000
+        let e = LayoutEngine(observer: AdvObs(w: w), actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: advD.map(k))), capabilities: AdvCaps(), state: st,
+                             resolveSnapshot: advRes, sleep: { _ in }, log: { _ in }, config: c)
+        await e.start()
+        for _ in 0..<80 { _ = await e.reconcileOnce() }
+        #expect(await a.count() == 20)
+        #expect(await a.notEngineInitiated() == 0)
+        // and a user edit gives it back
+        await e.setLayout(Layout.placedAll(visible: advD.map(k)), moved: [k("D1")])
+        for _ in 0..<80 { _ = await e.reconcileOnce() }
+        #expect(await a.count() > 20)
+    }
+}
+
+private final class AdvClock: @unchecked Sendable {
+    private var t = Date(timeIntervalSince1970: 1_000_000); private let l = NSLock()
+    func read() -> Date { l.lock(); defer { l.unlock() }; return t }
+    func adv(_ s: TimeInterval) { l.lock(); t = t.addingTimeInterval(s); l.unlock() }
+}
+
+@MainActor
+@Suite struct AdversarialTruthfulnessTests {
+    private func info(_ key: ItemKey) -> ItemInfo { ItemInfo(key: key, title: "\(key)", axDescription: "", ownerPID: 1, ownerBundleID: nil, ownerName: "x", width: 24, isOnBar: true) }
+
+    // A7 (D7 + D8): gated or spent, with a bar that differs from the record: no false check, not converged, the honest line everywhere
+    @Test func gatedRowsAreNeverFalseChecksAndTheStatusIsHonest() async {
+        for (name, bar) in [("twoBlockSwap", ["D4", "D5", "D6", "D1", "D2", "D3"]), ("adjacentSwap", ["D1", "D2", "D4", "D3", "D5", "D6"])] {
+            for spent in [true, false] {
+                let w = AdvWorld(pile: advP, drawn: bar)
+                let (e, a, st) = await advRig(w: w, record: advP + advD, mix: false)
+                if spent { for _ in 0..<12 { w.drawn = bar; _ = await e.reconcileOnce() }; w.drawn = bar }
+                else { _ = await e.reconcileOnce(); w.mode = .recent; for _ in 0..<3 { _ = await e.reconcileOnce() } }
+                let c = ArrangeSections.make(observed: st.observed, layout: st.layout, items: Dictionary(uniqueKeysWithValues: (st.observed.onBar + st.observed.parked).map { ($0, info($0)) }),
+                                             perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) }, lastPlan: st.lastPlan)
+                let line = ArrangeSections.statusLine(perItem: st.perItem, lastError: st.lastError, isConverged: st.isConverged, inFlight: false, content: c,
+                                                      context: { var x = ArrangeSections.StatusContext(); x.stoppedWhileDiffering = st.lastPlan.stoppedWhileDiffering; return x }())
+                let menu = StatusLine.text(state: st, trusted: true, conflicting: nil)
+                for r in c.visible.rows where r.barState == .matches && advD.map(k).contains(r.key) {
+                    let rec = advD.map(k), barK = st.observed.onBar.filter { rec.contains($0) }
+                    let i = rec.firstIndex(of: r.key)!
+                    #expect(rec[..<i].allSatisfy { barK.firstIndex(of: $0)! < barK.firstIndex(of: r.key)! } && rec[(i + 1)...].allSatisfy { barK.firstIndex(of: $0)! > barK.firstIndex(of: r.key)! },
+                            "false check on \(r.key) in \(name) spent=\(spent)")
+                }
+                for key in advP.map(k) { #expect(st.perItem[key] != .inPlace) }   // a pile key is never in place
+                let differs = ArrangeBarState.stoppedWhileDifferingText
+                if !st.isConverged || line.contains(differs) {
+                    #expect(!st.isConverged && line.contains(differs) && menu == differs, "name=\(name) spent=\(spent) line=\(line) menu=\(menu) converged=\(st.isConverged)")
+                }
+                let observedDrawn = st.observed.onBar.filter { advD.map(k).contains($0) }
+                #expect(observedDrawn == advD.map(k) || menu != "Converged", "Converged while the drawn order differs: \(observedDrawn)")
+                if spent { #expect(await a.count() == 3); #expect(!st.isConverged && menu == differs, "spent: menu=\(menu)") }
+            }
+        }
+    }
+
+    // D8: the Retry that gives the budget back is "Re-apply layout" (userRetry); the permission paths (clearFailures) give back nothing
+    @Test func onlyUserIntentGivesTheBudgetOrTheHoldBack() async {
+        let w = AdvWorld(pile: advP, drawn: ["D1", "D2", "D4", "D3", "D5", "D6"])
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        for _ in 0..<12 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == 3)
+        await e.clearFailures()   // AppModel: Accessibility granted / permission resume
+        for _ in 0..<6 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == 3)
+        // a setLayout that is not a user placement (mbprobe, a scan-built layout) gives nothing back either
+        await e.setLayout(Layout.placedAll(visible: (advP + advD).map(k)), userPlacement: false, moved: [k("D1")])
+        for _ in 0..<6 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == 3)
+        await e.userRetry()   // Re-apply layout
+        for _ in 0..<12 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        let after = await a.count()
+        #expect(after > 3 && after <= 6)
+    }
+
+    // A10: membership is unaffected and uncounted while the budget is spent
+    @Test func aSpentBudgetStillHidesAndNeverCountsIt() async {
+        let w = AdvWorld(pile: advP, drawn: ["D1", "D2", "D4", "D3", "D5", "D6"])
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        for _ in 0..<12 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == 3)
+        var l = Layout.placedAll(visible: (advP + advD).map(k)); _ = l.move(k("D6"), to: .hidden, units: .ownerKeys)
+        await e.setLayout(l, userPlacement: false)
+        for _ in 0..<3 { _ = await e.reconcileOnce() }
+        #expect(await a.hideCalls >= 1)
+        #expect(await a.count() == 3)
+    }
+}
+
+@MainActor
+@Suite struct AdversarialDropTests {
+    // D6 + D5: a DRAWN key dropped left of the fold: the record takes it, the key makes ONE drag to the leftmost drawn slot, no other key moves
+    @Test func aDrawnKeyDroppedLeftOfTheFoldMakesOneDragAndNothingElseMoves() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        _ = await e.reconcileOnce()
+        #expect(await a.count() == 0)
+        await e.setLayout(Layout.placedAll(visible: (["D4"] + advP + ["D1", "D2", "D3", "D5", "D6"]).map(k)), moved: [k("D4")])
+        for _ in 0..<6 { _ = await e.reconcileOnce() }
+        let keys = await a.keys()
+        #expect(keys == ["D4"], "moved \(keys)")
+    }
+
+    // D6: a FOLDED key dropped left of the fold: no drag at all, nothing pending
+    @Test func aFoldedKeyDroppedLeftOfTheFoldMakesNoDrag() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        _ = await e.reconcileOnce()
+        await e.setLayout(Layout.placedAll(visible: (["P3", "P1", "P2"] + advD).map(k)), moved: [k("P3")])
+        #expect(await e.foldDropRequest.isEmpty)
+        for _ in 0..<6 { _ = await e.reconcileOnce() }
+        #expect(await a.count() == 0)
+    }
+
+    // D6: two folded keys in one edit: ONE session, the first key (record order) first; the other is only recorded
+    @Test func twoFoldedKeysOfOneEditAreOneSessionForTheFirst() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        _ = await e.reconcileOnce()
+        await e.setLayout(Layout.placedAll(visible: ["P3", "D1", "P2", "P1", "D2", "D3", "D4", "D5", "D6"].map(k)), moved: [k("P1"), k("P2")])
+        #expect(await e.foldDropRequest == [k("P2")])   // the first of the moved keys in record order that has a drawn key left of it
+        for _ in 0..<8 { _ = await e.reconcileOnce() }
+        let keys = await a.keys()
+        #expect(keys.filter { $0 == "P1" }.isEmpty && keys.filter { $0 == "P2" }.count <= 1, "moved \(keys)")
+    }
+
+    // the text of the warnings
+    @Test func theDropWarningsAreExact() {
+        #expect(ArrangeBarState.stayBehindText("TM") == "TM is in your order, but macOS folds from the left, so it stays behind « until there is room")
+        #expect(ArrangeBarState.cannotGoFurtherLeftText("TM") == "TM is in your order, but macOS folds from the left, so it can't go further left until there is room")
+        #expect(ArrangeBarState.stoppedWhileDifferingText == "Your order and the bar differ. Sommelier has stopped moving items on its own: drag an item or press Re-apply layout.")
+        #expect(ArrangeBarState.differsFromYourOrderText == "differs from your order")
+    }
+
+    // A12: the REAL shape from live-136b.log, 10:29:38-45. Pile (folded): Network Sensors Astronomy Battery Memory WiFi Disks Focus KeepingYouAwake; drawn: Jump,
+    // Time Machine, WiFi Signal, CPU, Weather, ControlCenter ... Time Machine (DRAWN, directly right of Jump) is dropped at Visible slot 0 with the two
+    // moved keys of the live event (Time Machine and its heuristic sibling).
+    @Test func theLiveTenTwentyNineDropMovesTimeMachineAtMostOnceAndNeverJumpOrNetwork() async {
+        let pile = ["Net", "Sens", "Astro", "Batt", "Mem", "WiFi", "Disks", "Focus", "KYA"]
+        let drawn = ["Jump", "TM", "Sig", "CPU", "Weather", "CC", "Gate"]
+        let w = AdvWorld(pile: pile, drawn: drawn)
+        let (e, a, _) = await advRig(w: w, record: pile + drawn, mix: false)
+        for _ in 0..<2 { _ = await e.reconcileOnce() }
+        #expect(await a.count() == 0)
+        await e.setLayout(Layout.placedAll(visible: (["TM"] + pile + ["Jump", "Sig", "CPU", "Weather", "CC", "Gate"]).map(k)), moved: [k("TM"), k("TMsibling")])
+        for _ in 0..<8 { _ = await e.reconcileOnce() }
+        let keys = await a.keys()
+        #expect(keys == ["TM"], "moved \(keys)")   // exactly one drag, the dropped key's: never Jump (the 10:29:46 move), never Network
+        #expect(await a.notEngineInitiated() == 1)   // and it is the USER's own drop (not flagged engine-initiated)
+    }
+}
+
+
+@MainActor
+@Suite struct AdversarialDispatchGateTests {
+    // The planner-side gate switched OFF (test flag): the DISPATCH-point gate alone must hold the budget (3 on a full bar) and refuse a stale chevron
+    @Test func theDispatchGateAloneHoldsTheBudget() async {
+        let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"])
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, skipPlanningGate: true)
+        for _ in 0..<30 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        let n = await a.count()
+        #expect(n >= 1 && n <= 3, "physical drags \(n)")
+    }
+    @Test func theDispatchGateAloneRefusesAStaleChevronsMoves() async {
+        let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"]); w.mode = .staleOld
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, skipPlanningGate: true)
+        for _ in 0..<10 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        #expect(await a.count() == 0)
+    }
+}
+
+/// An observer whose chevron mode the test flips, with one allowed key parked "folded for width" (F) that the record lists as visible.
+private final class FoldWorld144: MenuBarObserver, @unchecked Sendable {
+    private let l = NSLock(); private var _stale = false
+    var stale: Bool { get { l.lock(); defer { l.unlock() }; return _stale } set { l.lock(); _stale = newValue; l.unlock() } }
+    func snap() -> MenuBarSnapshot {
+        let st = stale
+        func item(_ n: String, _ f: CGRect, onBar: Bool = true, chev: Bool = false) -> MenuBarItem {
+            var i = MenuBarItem(ownerPID: 1, ownerBundleID: nil, ownerName: "fake", title: chev ? n : k(n).description, axDescription: "", axIdentifier: chev ? "" : k(n).description,
+                                frame: f, source: .appExtras, isOnMenuBar: onBar, isOverflowChevron: chev, joinEvidence: .identifier)
+            i.controlCenterAllowed = true
+            if chev, st { i.stale = true }
+            return i
+        }
+        var items = [item("P1", CGRect(x: 700, y: 0, width: 24, height: 24)), item("chev", CGRect(x: 786, y: 0, width: 17, height: 24), chev: true),
+                     item("D1", CGRect(x: 813, y: 0, width: 24, height: 24)), item("D2", CGRect(x: 873, y: 0, width: 24, height: 24)),
+                     item("F", CGRect(x: 0, y: 0, width: 24, height: 24), onBar: false)]
+        items.sort { $0.frame.minX < $1.frame.minX }
+        return MenuBarSnapshot(items: SystemOverflow.mark(items), capturedAt: Date())
+    }
+    func observe() async throws -> [ResolvedItem] { advRes(snap()) }
+}
+
+@MainActor
+@Suite struct AdversarialStalePileTests {
+    // effective(): on a STALE-chevron read the last fresh read's folded-for-width keys still stand in. Without it the parked key F would be planned as a
+    // plain show (membership) the moment the chevron goes stale.
+    @Test func aStaleChevronKeepsTheFoldedForWidthKeysFoldedSoNothingIsShown() async {
+        let world = FoldWorld144()
+        let act = FakeActuator(order: [k("P1"), k("D1"), k("D2")], hidden: [], capabilities: AdvCaps(), makeSnapshot: { _, _ in world.snap() })
+        let st = EngineState()
+        let e = LayoutEngine(observer: world, actuator: act, store: InMemoryLayoutStore(Layout.placedAll(visible: ["P1", "D1", "D2", "F"].map(k))), capabilities: AdvCaps(), state: st,
+                             resolveSnapshot: advRes, sleep: { _ in }, log: { _ in }, config: .multiMove)
+        await e.start()
+        for _ in 0..<3 { _ = await e.reconcileOnce() }
+        func shows() async -> Int { await act.calls.filter { if case .applyHiddenBatch = $0 { true } else { false } }.count }
+        #expect(await shows() == 0)   // fresh chevron: F is folded for width, never a show
+        world.stale = true
+        for _ in 0..<5 { _ = await e.reconcileOnce() }
+        #expect(await shows() == 0, "the stale-chevron pass planned a show of the folded F")
+        #expect(st.observed.foldedParked.contains(k("F")) || st.observed.systemOverflow.contains(k("F")))
+        let row = ArrangeSections.make(observed: st.observed, layout: st.layout, items: [:], perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) },
+                                       lastPlan: st.lastPlan).visible.rows.first { $0.key == k("F") }
+        #expect(row?.barState == .behindChevron)
+    }
+}
+
+
+@MainActor
+@Suite struct AdversarialBusyTests {
+    // D6: a user's drop answered `.userBusy` AFTER a mouse event was posted is consumed; with NO mouse event it is re-armed for the next pass
+    @Test func aBusyResultAfterAMouseEventIsConsumedAndOtherwiseRearmed() async {
+        for touched in [true, false] {
+            let w = AdvWorld(pile: advP, drawn: advD)
+            let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+            _ = await e.reconcileOnce()
+            await a.setBusy(true, touched: touched)
+            await e.setLayout(Layout.placedAll(visible: (["D4"] + advP + ["D1", "D2", "D3", "D5", "D6"]).map(k)), moved: [k("D4")])
+            for _ in 0..<8 { _ = await e.reconcileOnce() }
+            let user = await a.unflaggedDispatches()
+            if touched { #expect(user == 1, "consumed, not re-armed: \(user) user dispatches") } else { #expect(user > 1, "nothing was posted: the drop is re-armed (\(user))") }
+        }
+    }
+    // the menu's failed text (no hold): the same words as Arrange
+    @Test func theMenuSaysWhatArrangeSaysForAFailedRowWithoutAHold() {
+        let st = EngineState()
+        st.perItem[k("D1")] = .failed(.timeout)
+        #expect(StatusLine.text(state: st, trusted: true, conflicting: nil) == ArrangeSections.cannotPlaceText(1))
+    }
+}
+
+
+@MainActor
+@Suite struct AdversarialPassFourTests {
+    // item 10: the counter counts ACTUAL drags: a failure before any mouse event refunds it, so pre-drag failures do not spend the budget
+    @Test func aPreDragFailureDoesNotSpendTheBudget() async {
+        let w = AdvWorld(pile: advP, drawn: ["D1", "D2", "D4", "D3", "D6", "D5"])
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        await a.setPreDrag(true)
+        for _ in 0..<12 { _ = await e.reconcileOnce() }
+        let dispatches = await a.dispatchCount()
+        #expect(dispatches > 3, "a notFound before any drag spent the budget (\(dispatches) dispatches)")
+        #expect(await a.count() == 0)
+    }
+    // an unconsumed Re-apply grant expires with the next pass: a mismatch beside the fold that appears LATER is not fixed without another press
+    @Test func anUnconsumedReApplyGrantExpiresWithTheNextPass() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
+        _ = await e.reconcileOnce()
+        await e.userRetry()                       // nothing needs the strip: the grant is not used
+        for _ in 0..<2 { _ = await e.regularPassForTests() }
+        w.drawn = ["D2", "D1", "D3", "D4", "D5", "D6"]   // a mismatch beside the fold shows up afterwards
+        for _ in 0..<8 { _ = await e.regularPassForTests() }
+        #expect(await a.count() == 0, "the expired grant fixed a mismatch beside the fold")
+    }
+}

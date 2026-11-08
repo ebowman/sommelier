@@ -53,6 +53,7 @@ private func rig(pollConfig: PollConfig = PollConfig()) async -> Rig {
     let rec = SeedRecorder(actuator: act)
     let st = EngineState()
     var c = LayoutEngine.Config(); c.layoutCoalesce = .zero; c.minPassInterval = .zero
+    c.assumeFullBarAtLaunch = false   // gdu.144: these tests are about seeds on a plain bar; a poll that PROVES the bar not full requests a pass of its own
     c.userPassReuseWindow = .milliseconds(30)           // a click after the 120 ms pause is "idle"
     let e = LayoutEngine(observer: rec, actuator: act, store: InMemoryLayoutStore(Layout(visible: ["A", "B", "C"].map(k))),
                          capabilities: Caps(), state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: c)

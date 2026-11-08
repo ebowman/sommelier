@@ -1183,7 +1183,7 @@ private final class FakePrefs: @unchecked Sendable {
     w.modules = ["Show Hidden Menu Bar Items"]
     let r = await actuator(w).move(key("D"), relation: .before(key("B")))
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
-    #expect(why.contains(ActuationError.overflowRefusalMarker) && why.contains(Reconciler.foldedNeighbourSkipReason))   // gdu.134: refused, no strip session
+    #expect(why.contains(ActuationError.overflowRefusalMarker) && why.contains("nothing is aimed at a folded key"))   // gdu.134: refused, no strip session
     #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)   // the agent is never restarted for a move behind the fold
 }
 
@@ -1558,4 +1558,21 @@ private func laggingHideWorld() async -> (World, LiveActuator, LiveActuator.Conf
     #expect(got == [key("A")])   // B absent, C false, H is a hide
     #expect(LiveActuator.confirmedShown(expectations: exp, readback: [:], trackedKey: { tracked[$0] }).isEmpty)
     #expect(LiveActuator.confirmedShown(expectations: exp, readback: ["a": true], trackedKey: { _ in nil }).isEmpty)
+}
+
+// MARK: - gdu.144 rule 4: an engine-initiated drag on a bar with a chevron is ONE drag
+
+@Test func singleDragFlagPostsExactlyOneDragAndNoSecondAttempt() async {
+    let w = World(["A", "B", "C", "D"])
+    w.dragScript = [.menuOpensAndNoop, .menuOpensAndNoop]
+    let a = actuator(w, fallback: false)
+    await a.setSingleDrag(true)
+    let r = await a.move(key("A"), relation: .after(key("C")))
+    #expect(!r.isVerified)
+    #expect(w.dragCalls.count == 1)
+    // without the flag the second attempt is still made (the user's own drop keeps the ordinary rules)
+    let w2 = World(["A", "B", "C", "D"])
+    w2.dragScript = [.menuOpensAndNoop]
+    let r2 = await actuator(w2).move(key("A"), relation: .after(key("C")))
+    #expect(r2.isVerified && w2.dragCalls.count == 2)
 }

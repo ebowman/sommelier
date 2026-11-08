@@ -97,7 +97,16 @@ public enum ArrangeBarState: Equatable, Sendable {
     public static let matchesText = "In place (verified against the real menu bar)"
     public static let movingText = "Waiting for the menu bar to change"
     public static let notConfirmedText = "Not confirmed in place yet"
-    public static let willGoBehindText = "It will go behind « when the engine moves it"
+    /// gdu.144 rule 5: the status-line warning for a Visible drop left of the fold line; also the row note of that key. macOS folds from the left.
+    public static func stayBehindText(_ name: String) -> String { "\(name) is in your order, but macOS folds from the left, so it stays behind « until there is room" }
+    /// gdu.144 D6: a DRAWN key dropped left of the fold line: the record takes it, the key goes as far left as the drawn items go.
+    public static func cannotGoFurtherLeftText(_ name: String) -> String { "\(name) is in your order, but macOS folds from the left, so it can't go further left until there is room" }
+    /// gdu.144 D7: a drawn row on a chevron bar whose drawn order differs from the record (never a check).
+    public static let differsFromYourOrderText = "differs from your order"
+    /// gdu.144 D8: moves were withheld (gate / hold / spent budget) while the bar differs from the record.
+    public static let stoppedWhileDifferingText = "Your order and the bar differ. Sommelier has stopped moving items on its own: drag an item or press Re-apply layout."
+    /// gdu.144 rule 5: a folded key the user dropped right of the fold line was put back behind « by macOS.
+    public static let putBackText = "macOS put it back behind «; hide something to make room"
 
     public var text: String {
         switch self {
@@ -244,8 +253,7 @@ public enum ArrangeSections {
         case .visible:
             if observed.foldedParked.contains(key) { return true }   // gdu.121: folded for width; macOS decides, nothing to realize
             guard observed.onBar.contains(key) else { return false }
-            return drawnOrder(layout.visible, observed) == drawnOrder(observed.onBar, observed, within: layout.visible)
-                && foldConsistent(key, layout: layout, observed: observed)
+            return drawnOrder(layout.visible, observed) == drawnOrder(observed.onBar, observed, within: layout.visible)   // gdu.144: the fold is macOS's decision
         case .hidden:
             return observed.parked.contains(key) || (showHiddenSection && observed.onBar.contains(key))
         case .alwaysHidden:
@@ -253,29 +261,10 @@ public enum ArrangeSections {
         }
     }
 
-    /// 9o9.11: the collapsed-strip convergence rule for one key: the fold is a PREFIX of the record. An overflowed key is consistent when no
-    /// drawn key stands left of it in the record; a drawn key when no overflowed key stands right of it. Keys outside the Visible record
-    /// and an open strip (nothing overflowed) are always consistent. The order AMONG overflowed keys is not tracked.
-    public static func foldConsistent(_ key: ItemKey, layout: Layout, observed: ObservedOrder) -> Bool {
-        // gdu.121: parked keys macOS folded for width count as overflowed, like pile keys. They are never pulled out (no hosted element to
-        // drag), so a folded key is always consistent and a drawn key is judged against the hosted pile only (otherwise it would read
-        // "pending" forever for a crossing nothing plans).
-        let real = observed.systemOverflow.intersection(observed.onBar)
-        let pile = real.union(observed.foldedParked)
-        guard !pile.isEmpty, !observed.stripExpanded, let i = layout.visible.firstIndex(of: key) else { return true }
-        if observed.foldedParked.contains(key) { return true }
-        let bar = Set(observed.onBar)
-        if pile.contains(key) {
-            return !layout.visible[..<i].contains { bar.contains($0) && !pile.contains($0) && $0 != observed.overflowChevron }
-        }
-        return !layout.visible[(i + 1)...].contains { real.contains($0) }
-    }
-
-    /// 9o9.11: the status of an on-bar key before plan actions, skips and failures are applied. Inconsistent with the fold: `.pending`,
-    /// never `.inPlace` (no check badge, no "matches"); a consistent pile key: `.notFitting`; otherwise `.inPlace`.
+    /// 9o9.11 / gdu.144: the status of an on-bar key before plan actions, skips and failures are applied. What folds is macOS's decision, so the
+    /// fold never makes a key pending: a folded key (pile or folded-parked) is `.notFitting`; every other key is `.inPlace`.
     public static func foldBaseStatus(_ key: ItemKey, layout: Layout, observed: ObservedOrder) -> ItemStatus {
-        if !foldConsistent(key, layout: layout, observed: observed) { return .pending }
-        return observed.systemOverflow.contains(key) || observed.foldedParked.contains(key) ? .notFitting : .inPlace
+        observed.systemOverflow.contains(key) || observed.foldedParked.contains(key) ? .notFitting : .inPlace
     }
 
     private static func drawnOrder(_ keys: [ItemKey], _ o: ObservedOrder, within: [ItemKey]? = nil) -> [ItemKey] {
@@ -333,6 +322,7 @@ public enum ArrangeSections {
         if raw == Reconciler.staleSkipReason || raw == Reconciler.staleFrameSkipReason || raw.contains("not refreshed") || raw.contains("stale") {
             return ArrangeBarState.staleText
         }
+        if raw == ActuationError.stripMoveDidNotHoldMessage { return ArrangeBarState.putBackText }   // gdu.144 rule 5
         if raw == Reconciler.noCrossingSkipReason { return "Behind «; the item it should follow can't be located on the bar yet" }
         if raw == Reconciler.noCrossingOwnPositionSkipReason { return "Behind «; its position hasn't been read yet" }
         if raw == Reconciler.overflowSkipReason || raw == SystemOverflowRule.churnSkipReason || raw.contains("macOS decides what fits") { return "Behind «; macOS decides what fits" }
@@ -360,7 +350,14 @@ public enum ArrangeSections {
         let recordDrawn = layout.visible.filter { !$0.isOverflowChevron && drawn.contains($0) && !lastPlan.held.contains($0) }
         let barRecordKeys = drawn.filter { layout.visible.contains($0) && !lastPlan.held.contains($0) }
         /// Whether the key's immediate neighbours on the bar (leaving out the engine's held keys, which it does not move) are the record's.
+        // gdu.144 D7: on EVERY bar a drawn row is a check only if ALL drawn trusted keys are in record order among themselves AND its own neighbours
+        // are the record's; a hosted pile key (any chevron) is never a check.
+        let chevronBar = observed.hasChevron
+        let trusted: (ItemKey) -> Bool = { !observed.uncorroborated.contains($0) && !observed.staleOnBar.contains($0) }
+        // (held / given-up keys count: a key the engine gave up on is still a drawn key, and the others are not "in order" around it)
+        let drawnAllInOrder = layout.visible.filter { !$0.isOverflowChevron && drawn.contains($0) && trusted($0) } == drawn.filter { layout.visible.contains($0) && trusted($0) }
         func neighboursAgree(_ k: ItemKey) -> Bool {
+            if !drawnAllInOrder { return false }
             guard let i = recordDrawn.firstIndex(of: k), let j = barRecordKeys.firstIndex(of: k) else { return false }
             func at(_ a: [ItemKey], _ n: Int) -> ItemKey? { a.indices.contains(n) ? a[n] : nil }
             return at(recordDrawn, i - 1) == at(barRecordKeys, j - 1) && at(recordDrawn, i + 1) == at(barRecordKeys, j + 1)
@@ -417,7 +414,7 @@ public enum ArrangeSections {
             var waitName: String?
             if timedOut.contains(k) {
                 state = .cannotPlace(ArrangeTracker.timeoutText)
-            } else if !suppressed, lastPlan.stripHeld.contains(k) {
+            } else if !suppressed, lastPlan.stripHeld.contains(k), pile.contains(k) {
                 // gdu.126: the engine could not open the « strip on this bar state and holds the fold move: « with the reason, never "moving".
                 state = .behindChevron
                 note = ArrangeBarState.behindChevronText + "\n" + ArrangeBarState.stripHeldText
@@ -429,8 +426,19 @@ public enum ArrangeSections {
                 state = .moving
             } else if case .failed(let e)? = status {
                 state = .cannotPlace(plainReason(describe(e)))
+            } else if pile.contains(k), !engineMoving, !{ if case .cannotPlace? = status { return true } else { return false } }() {
+                // gdu.144 rule 2: a folded row is « and never a warning merely for being in the pile or uncorroborated while in it (no unsupported /
+                // waiting verdict reaches it). 9o9.24: « wins over ~ for a key the observation reports in the pile (both are true; « is the more
+                // useful); the tooltip adds the other.
+                state = .behindChevron
+                note = ArrangeBarState.stayBehindText(title(k))
+                if observed.staleOnBar.contains(k), !observed.carriedRecently.contains(k) {
+                    note = ArrangeBarState.behindChevronText + "\n" + ArrangeBarState.staleText
+                } else if observed.uncorroborated.contains(k) {
+                    note = ArrangeBarState.behindChevronText + "\n" + uncorroboratedText
+                }
             } else if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix), !reason.hasSuffix(Reconciler.noSafeMoveSkipReason),
-                      onBar.contains(k), !pile.contains(k), foldConsistent(k, layout: layout, observed: observed), neighboursAgree(k) {
+                      onBar.contains(k), !pile.contains(k), neighboursAgree(k) {
                 // 9o9.29: the scan never corroborated this key's frame, but its observed neighbours are the record's: not a warning.
                 state = .staleFrame
                 note = pinnedDownTimeoutText
@@ -461,14 +469,6 @@ public enum ArrangeSections {
                 state = engineMoving ? .moving : .notOnBar
             } else if unverifiedAfterHandDrag.contains(k) {
                 state = .unreadAfterHandDrag
-            } else if pile.contains(k), foldConsistent(k, layout: layout, observed: observed) {
-                // 9o9.24: « wins over ~ for a key the observation reports in the pile (both are true; « is the more useful); the tooltip adds the other.
-                state = .behindChevron
-                if observed.staleOnBar.contains(k), !observed.carriedRecently.contains(k) {
-                    note = ArrangeBarState.behindChevronText + "\n" + ArrangeBarState.staleText
-                } else if observed.uncorroborated.contains(k) {
-                    note = ArrangeBarState.behindChevronText + "\n" + uncorroboratedText
-                }
             } else if case .waitingForPosition? = status {
                 // 9o9.24: "Position being re-read" is for STALE (carried) frames only; any other wait for a corroborated position reads the honest text.
                 state = .staleFrame
@@ -480,12 +480,12 @@ public enum ArrangeSections {
                 note = uncorroboratedNote(k)
             } else if engineMoving {
                 state = .moving
-            } else if onBar.contains(k), foldConsistent(k, layout: layout, observed: observed), neighboursAgree(k) {
+            } else if onBar.contains(k), neighboursAgree(k), !lastPlan.checkingBar {   // gdu.144: no check while the bar is assumed full on a chevronless read
                 state = .matches
             } else {
                 state = .notConfirmed
+                if !drawnAllInOrder, onBar.contains(k), !pile.contains(k) { note = ArrangeBarState.differsFromYourOrderText }
             }
-            if state == .moving, why == nil, !ghost, !pile.contains(k), !foldConsistent(k, layout: layout, observed: observed) { why = ArrangeBarState.willGoBehindText }
             r.barState = state
             r.stateNote = note
             r.pinDownTimedOut = pinTimedOut
@@ -612,6 +612,10 @@ public enum ArrangeSections {
         /// gdu.136: titles of the keys the user's edit moved (done) and of the order moves now deferred to the next pass (next, in plan order).
         public var userEditDone: [String] = []
         public var userEditNext: [String] = []
+        /// gdu.144 D8: the engine withheld moves while the bar differs from the record (`PlanSummary.stoppedWhileDiffering`).
+        public var stoppedWhileDiffering = false
+        /// gdu.144: the bar is assumed full and the read has no chevron (`PlanSummary.checkingBar`): "Checking the menu bar…".
+        public var checkingBar = false
         public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
                     handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
             self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
@@ -619,10 +623,14 @@ public enum ArrangeSections {
         }
     }
 
-    /// gdu.126: the status line while the strip hold is active and nothing else is pending.
-    public static func barTooNarrowText(_ n: Int, unplaceable: Bool = false, didNotHold: Bool = false) -> String {
-        "The bar is too narrow for this order: macOS folds \(n) item\(n == 1 ? "" : "s") behind « and "
-            + (didNotHold ? "a move across the fold did not hold." : unplaceable ? "Sommelier could not place an item inside the strip." : "the strip would not open")
+    /// gdu.144 rule 5: the status line while the bar-level hold is active (one text; it replaces the three "too narrow" variants).
+    public static func barFullText(_ n: Int) -> String {
+        if n <= 0 { return "The bar may be full: macOS did not accept the move. Press Re-apply layout to try again, or hide items to make room." }
+        return "The bar is full: macOS folds \(n) item\(n == 1 ? "" : "s") behind «. Hide items to make room."
+    }
+    /// gdu.144 D8: ONE text for the Arrange status line and the menu: moves are withheld while the bar differs; the hold text (if a hold is active) follows.
+    public static func stoppedText(holdFolded: Int?) -> String {
+        ArrangeBarState.stoppedWhileDifferingText + (holdFolded.map { " · " + barFullText($0) } ?? "")
     }
     /// gdu.136: one surprise at a time: what the user's edit did, and the first move that follows on the next pass.
     public static func userEditDeferredText(done: [String], next: [String]) -> String {
@@ -672,10 +680,15 @@ public enum ArrangeSections {
         else if context.orderCapActive { primary = orderCapText }
         else if context.adoptionPending { primary = readingOrder }
         // gdu.134 rule 5: an active bar-level hold LEADS (it explains the rest); gdu.133 item 1: the pinned-down count follows it.
-        else if let n = context.stripHoldFolded {
-            primary = barTooNarrowText(n, unplaceable: context.stripHoldUnplaceable, didNotHold: context.stripHoldDidNotHold)
+        // gdu.144 D8: when moves are withheld while the bar differs, the honest "stopped" text leads (the hold text may follow it after " · ")
+        else if context.stoppedWhileDiffering, !inFlight { primary = stoppedText(holdFolded: context.stripHoldFolded)
             if pinnedDown > 0 { primary! += " · \(pinnedDown) item\(pinnedDown == 1 ? "" : "s") can't be pinned down" }
         }
+        else if let n = context.stripHoldFolded {
+            primary = barFullText(n)
+            if pinnedDown > 0 { primary! += " · \(pinnedDown) item\(pinnedDown == 1 ? "" : "s") can't be pinned down" }
+        }
+        else if context.stoppedWhileDiffering, !inFlight { primary = ArrangeBarState.stoppedWhileDifferingText }
         else if !context.userEditNext.isEmpty, !context.userEditDone.isEmpty, !inFlight {
             primary = userEditDeferredText(done: context.userEditDone, next: context.userEditNext)
         }
@@ -690,6 +703,7 @@ public enum ArrangeSections {
         else if let w = blockedRows.first?.waitingOn { primary = waitingToSettleText(w) }
         else if let n = context.handDragNotice { primary = n }
         else if let n = context.systemSettingsNotice { primary = n }
+        else if context.checkingBar { primary = checkingMenuBar }
         else if lastError == nil, base == "Converged", content?.observedAvailable == true,
                 vStates.allSatisfy({ $0 == .matches || $0 == .behindChevron || $0 == .notOnBar }) {
             primary = menuBarMatches
@@ -984,7 +998,8 @@ public enum ArrangeDrop {
     public static func hideNotFitting(layout: Layout, observed: ObservedOrder,
                                       capabilities: (ItemKey) -> Capability,
                                       units: HideUnitRule = .ownerKeys) -> (layout: Layout, moved: [ItemKey], blocked: [ItemKey]) {
-        let keys = layout.visible.filter { observed.systemOverflow.contains($0) && $0 != observed.overflowChevron }
+        // gdu.144 rule 6: every folded key, the pile AND the keys macOS folds for width (folded-parked), is hidden; the caller passes `moved` as the edit's keys.
+        let keys = layout.visible.filter { (observed.systemOverflow.contains($0) || observed.foldedParked.contains($0)) && $0 != observed.overflowChevron }
         let ok = keys.filter { capabilities($0).canHide && capabilities($0).canMove }
         let blocked = keys.filter { k in !ok.contains(k) }
         var l = layout

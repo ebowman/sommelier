@@ -47,6 +47,13 @@ public struct PlanSummary: Equatable, Sendable {
     /// gdu.136: moves withheld after the user's edit, and the keys the edit moved (the status line's "Done: X. Next: Y").
     public var deferredAfterUserEdit: [ItemKey] = []
     public var userEditMoved: [ItemKey] = []
+    /// gdu.144 D8: moves were withheld (gate / hold / spent budget) while the bar differs from the record: the engine has stopped moving items on its own.
+    public var stoppedWhileDiffering = false
+    /// gdu.144 D8: the trusted drawn keys differ from the record, and the number of drawn Visible keys whose order cannot be judged (unread).
+    public var orderDiffers = false
+    public var unreadDrawn = 0
+    /// gdu.144: the bar is assumed full and this read has no chevron: no row is a check, not converged ("Checking the menu bar…").
+    public var checkingBar = false
     public init(moving: Set<ItemKey> = [], blocked: [ItemKey: ItemKey] = [:], held: Set<ItemKey> = [], blockedNoWall: Set<ItemKey> = [], passStarted: Int = 0) {
         self.moving = moving; self.blocked = blocked; self.held = held; self.blockedNoWall = blockedNoWall; self.passStarted = passStarted
     }
@@ -55,6 +62,7 @@ public struct PlanSummary: Equatable, Sendable {
                   blocked: plan.blockedBy, held: held, blockedNoWall: plan.blockedNoWall)
         stripHeld = plan.stripHeld; stripHoldFolded = plan.stripHoldFolded; stripHoldUnplaceable = plan.stripHoldUnplaceable; stripHoldDidNotHold = plan.stripHoldDidNotHold
         deferredAfterUserEdit = plan.deferredAfterUserEdit; userEditMoved = plan.userEditMoved
+        checkingBar = plan.checkingBar; stoppedWhileDiffering = plan.gatedDiffers; orderDiffers = plan.orderDiffers; unreadDrawn = plan.unreadDrawn
     }
 }
 

@@ -213,14 +213,15 @@ private struct HoldObserver: MenuBarObserver {
     }
 }
 
-struct HoldRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let bar: HoldBar }
+struct HoldRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let bar: HoldBar; let layout: Layout }
 
 @MainActor
-func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMessage) async -> HoldRig {
-    // P1..P3 folded behind «; the record wants each of them out between the drawn keys: three pull-outs, one per pass.
+func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMessage, drop: [String] = ["P1"], record: [String]? = nil) async -> HoldRig {
+    // P1..P3 folded behind «; the record wants each of them out between the drawn keys. gdu.144: nothing is pulled out on the engine's own
+    // initiative; `drop` lists the folded keys the USER drops (after one observing pass), each of which gets exactly one pull-out attempt.
     let (p1, p2, p3, d1, d2, d3, d4) = (k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4"))
     let order = [p1, p2, p3, d1, d2, d3, d4]
-    let layout = Layout.placedAll(visible: [d1, p1, d2, p2, d3, p3, d4])
+    let layout = Layout.placedAll(visible: record.map { $0.map(k) } ?? [d1, p1, d2, p2, d3, p3, d4])
     let act = FakeActuator(order: order, hidden: [], capabilities: HoldCaps(), makeSnapshot: { holdSnapshot(order: $0, hidden: $1) })
     // The strip never opens: every move across the fold the engine dispatches fails like the live actuator's failed strip open.
     for n in 0..<failCalls { await act.failOnCall(n + 1, .mechanismFailed(message)) }
@@ -231,7 +232,20 @@ func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMe
                                   s.items.compactMap { i in ItemKey(storeKey: i.axIdentifier.isEmpty ? i.title : i.axIdentifier).map { ResolvedItem(item: i, key: $0, confidence: .exact) } } },
                               sleep: { _ in }, log: { bar.add($0) }, config: .multiMove)
     await engine.start()
-    return HoldRig(engine: engine, state: state, actuator: act, bar: bar)
+    _ = await engine.reconcileOnce()   // observes the bar (the folded set), plans nothing: the drawn order is the record's
+    if !drop.isEmpty { await engine.setLayout(layout, moved: Set(drop.map(k))) }
+    return HoldRig(engine: engine, state: state, actuator: act, bar: bar, layout: layout)
+}
+
+/// Regular (non-user) passes through the real request path, like the live poll: they end a user-edit restriction (gdu.136 / gdu.144 D5).
+@MainActor
+func regularPasses(_ e: LayoutEngine, _ st: EngineState, n: Int = 8) async {
+    for _ in 0..<n {
+        let b = st.passesStarted
+        await e.requestReconcile(reason: "trigger")
+        for _ in 0..<200 where st.passesStarted == b { try? await Task.sleep(for: .milliseconds(2)) }
+        for _ in 0..<10 { try? await Task.sleep(for: .milliseconds(2)) }
+    }
 }
 
 func moveCalls(_ a: FakeActuator) async -> Int {
@@ -241,28 +255,36 @@ func moveCalls(_ a: FakeActuator) async -> Int {
 @MainActor
 @Suite struct StripOpenHoldTests {
     @Test func aFailedStripOpenIsOneClickPerBarStateNotThreePerKey() async {
-        let r = await holdRig(failCalls: 10)
+        // a LIVE drawn mismatch (D4 / D3 swapped in the record) is pending the whole time: only the hold keeps it from being dragged
+        let r = await holdRig(failCalls: 10, record: ["D1", "P1", "D2", "P2", "D4", "P3", "D3"])
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
+        await regularPasses(r.engine, r.state)   // the regular pass plans the D3 / D4 mismatch; only the hold keeps it from being dragged
         let n = await moveCalls(r.actuator)
         #expect(n == 1)
         #expect(await r.engine.stripOpenHold != nil)
-        #expect(r.bar.lines.contains { $0.contains("plan:") && $0.contains(Reconciler.stripUnavailableSkipReason) })
-        // the held subject: skipped with the reason, never pending, and its attempt counter was not touched
-        #expect(!r.state.lastPlan.stripHeld.isEmpty && r.state.lastPlan.stripHoldFolded == 3)
-        for k in r.state.lastPlan.stripHeld { #expect(r.state.perItem[k] == .notFitting) }
+        // gdu.144: P2/P3 were never asked for, so nothing is planned for them (nothing to hold); the hold still reports N folded
+        #expect(r.state.lastPlan.stripHoldFolded == 3 && !r.state.lastPlan.stripHeld.isEmpty)   // the drawn mismatch is held, not dragged
+        for key in r.state.lastPlan.stripHeld {   // held: a neutral row, never pending / moving / a warning
+            switch r.state.perItem[key] { case .pending?, .moving?, .unsupported?, .failed?: Issue.record("held \(key) reads \(String(describing: r.state.perItem[key]))"); default: break }
+        }
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
     }
 
-    @Test func aChangedBarAllowsOneMoreClickAndRetryOneMore() async {
+    @Test func aChangedBarReleasesNothingTheUsersDropAndRetryDo() async {
+        // gdu.144 item 2: a changed bar releases nothing; each further drag is the user's own drop of a folded key (which clears the hold), or Retry
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
-        await r.actuator.removeItem(k("D4"))        // the drawn count changes: a different bar state, released only when seen on two consecutive observations (gdu.131)
+        await r.actuator.removeItem(k("D4"))        // the drawn count changes, on every one of these passes
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 2)
-        await r.engine.clearFailures()               // Retry
+        #expect(await r.engine.stripOpenHold != nil)   // NOT released
+        #expect(await moveCalls(r.actuator) == 1)
+        await r.engine.setLayout(r.layout, moved: [k("P2")])   // the user drops the next folded key: its one attempt
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 3)
+        #expect(await moveCalls(r.actuator) == 2)
+        await r.engine.userRetry()               // Retry releases the hold; the folded requests are spent, so only the engine's budgeted moves may follow
+        let (released, calls) = (await r.engine.stripOpenHold == nil, await moveCalls(r.actuator))
+        #expect(released && calls == 2)
     }
 
     @Test func withoutTheHoldTheSameWorldWouldDragAgainEveryPass() async {
@@ -295,7 +317,7 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         #expect(r.stateNote?.contains(Reconciler.stripUnavailableSkipReason) == true)
         var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 1
         let line = ArrangeSections.statusLine(perItem: [p1: .notFitting, d1: .inPlace, d2: .inPlace], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx)
-        #expect(line == "The bar is too narrow for this order: macOS folds 1 item behind « and the strip would not open")
+        #expect(line == "The bar is full: macOS folds 1 item behind «. Hide items to make room.")
         ctx.stripHoldFolded = 31
         #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx).contains("folds 31 items behind «"))
         #expect(!line.contains("Moving") && !line.contains("Waiting"))

@@ -116,7 +116,8 @@ private struct Rig {
 
 extension LayoutEngine.Config {
     /// Tests written before 9o9.3 drag several items per pass; the one-move-per-pass default is covered by its own tests.
-    nonisolated static var multiMove: LayoutEngine.Config { var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max; return c }
+    /// gdu.144 D1: and from "known not full": production starts every launch with the bar assumed full; the plain-bar tests below do not exercise that.
+    nonisolated static var multiMove: LayoutEngine.Config { var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max; c.assumeFullBarAtLaunch = false; return c }
 }
 
 @MainActor

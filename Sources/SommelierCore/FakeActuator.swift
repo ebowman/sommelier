@@ -31,6 +31,12 @@ public actor FakeActuator: MenuBarActuator {
     /// The record order the engine last handed over (`setRecordOrder`, 9o9.19).
     public private(set) var recordOrder: [ItemKey] = []
     public func setRecordOrder(_ keys: [ItemKey]) async { recordOrder = keys }
+    /// gdu.144: the single-drag flag the engine last handed over, and the flag as it stood at each move (`moveSingleDrag`).
+    public private(set) var singleDrag = false
+    public private(set) var moveSingleDrag: [(ItemKey, Bool)] = []
+    public func setSingleDrag(_ on: Bool) async { singleDrag = on }
+    public private(set) var engineInitiated = false
+    public func setEngineInitiated(_ on: Bool) async { engineInitiated = on }
     private var scripted: [Int: ActuationError] = [:]
     private var drift: [Int: (String, String)] = [:]
     private let capabilities: any CapabilityProvider
@@ -99,7 +105,16 @@ public actor FakeActuator: MenuBarActuator {
         return nil
     }
 
+    /// The fake "posts" a drag unless the move failed before any (notFound, an overflow refusal).
+    public private(set) var touchedLast = false
+    public var lastMoveTouchedMouse: Bool { touchedLast }
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        let r = await moveImpl(key, relation: relation)
+        touchedLast = !(r.error == .notFound || (r.error?.isOverflowRefusal ?? false))
+        return r
+    }
+    private func moveImpl(_ key: ItemKey, relation: Relation) async -> ActuationResult {
+        moveSingleDrag.append((key, singleDrag))
         let strip = stripPolicy?(order, key, relation) ?? false
         if strip { stripEvents.append(.expanded); stripEvents.append(.moved(key, relation)) }
         defer { if strip { stripEvents.append(.collapsed) } }

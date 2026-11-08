@@ -3,8 +3,8 @@ import Foundation
 import Testing
 @testable import SommelierCore
 
-// gdu.131: the strip hold compares chevron + drawn only (never the folded set), releases a change only when seen on two consecutive
-// observations, has no time expiry, and is cleared by Retry and by a layout edit.
+// gdu.131 / gdu.144: the strip hold has no time expiry and is cleared by Retry and by a layout edit touching a folded key. (gdu.131's two-observation
+// release by a changed bar is gone since gdu.144: only user intent or the proof that the bar is not full releases it.)
 
 private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosaveName: n) }
 
@@ -12,20 +12,6 @@ private func clearedLines(_ r: HoldRig) -> Int { r.bar.lines.filter { $0.contain
 
 @MainActor
 @Suite struct StripHoldDebounceTests {
-    @Test func theFingerprintIgnoresTheFoldedSetAndKeepsTheChevronAndDrawn() {
-        func obs(pile: [String]) -> ObservedOrder {
-            let c = ItemKey.module(name: MenuBarItem.overflowChevronName)
-            return ObservedOrder(onBar: pile.map(k) + [k("D1"), k("D2"), k("D3"), c], parked: [], systemOverflow: Set(pile.map(k)), overflowChevron: c)
-        }
-        let a = BarFingerprint(obs(pile: ["P1", "P2", "P3"]))
-        // 14 -> 11 folded flapping with the same drawn count and chevron
-        let big = obs(pile: (1...14).map { "P\($0)" }), small = obs(pile: (1...11).map { "P\($0)" })
-        #expect(BarFingerprint(big) == BarFingerprint(small))
-        #expect(BarFingerprint.folded(big).count == 14 && BarFingerprint.folded(small).count == 11)
-        #expect(a == BarFingerprint(hasChevron: true, drawn: 3))
-        #expect(a != BarFingerprint(hasChevron: true, drawn: 4) && a != BarFingerprint(hasChevron: false, drawn: 3))
-    }
-
     @Test func aHeldBarStaysQuietOverManyPassesWithZeroFurtherSessions() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
@@ -34,49 +20,39 @@ private func clearedLines(_ r: HoldRig) -> Int { r.bar.lines.filter { $0.contain
         #expect(held && clearedLines(r) == 0)
     }
 
-    @Test func aSinglePassDrawnBlipDoesNotRelease() async {
+    // gdu.144 item 2: the two-observation bar-change release (and its debounce state) is gone. A change of the bar, seen once or on any number of
+    // consecutive passes, releases NOTHING: only user intent (Retry, Try again, an edit touching a folded key) or the proof that the bar is not full does.
+    @Test func aBarChangeSeenOnceOrOftenNeverReleasesTheHold() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
         await r.actuator.removeItem(k("D4"))
-        var seen = false
-        for _ in 0..<6 where !seen { _ = await r.engine.reconcileOnce(); seen = await r.engine.stripPending != nil }
-        #expect(seen)                                              // one plan saw the changed bar
-        let c1 = await r.engine.stripPending?.count, h1 = await r.engine.stripOpenHold != nil
-        #expect(c1 == 1 && h1)
-        await r.actuator.addItem(k("D4"))                          // ... and the next one sees the old bar again
+        for _ in 0..<20 { _ = await r.engine.reconcileOnce() }     // the drawn count differs on every one of these passes
+        let still = await r.engine.stripOpenHold != nil
+        #expect(still && clearedLines(r) == 0)
+        await r.actuator.addItem(k("D4"))
         for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
-        let p2 = await r.engine.stripPending == nil, h2 = await r.engine.stripOpenHold != nil, m2 = await moveCalls(r.actuator)
-        #expect(p2 && h2 && m2 == 1 && clearedLines(r) == 0)
-    }
-
-    @Test func aDrawnChangeOnTwoConsecutiveObservationsReleasesExactlyOnce() async {
-        let r = await holdRig(failCalls: 10)
-        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 1)
-        await r.actuator.removeItem(k("D4"))
-        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
-        #expect(r.bar.lines.filter { $0.contains("strip hold cleared (the bar changed: drawn 4->3, chevron true->true)") }.count == 1)
-        #expect(await moveCalls(r.actuator) == 2)                  // one more session, then held again on the new bar
+        let m = await moveCalls(r.actuator), h = await r.engine.stripOpenHold != nil
+        #expect(h && m == 1 && clearedLines(r) == 0)
     }
 
     @Test func retryReleasesOnce() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        await r.engine.clearFailures()
+        await r.engine.userRetry()
         let h3 = await r.engine.stripOpenHold == nil
         #expect(h3 && clearedLines(r) == 1)
         for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
         let m3 = await moveCalls(r.actuator)
-        #expect(m3 == 2 && clearedLines(r) == 1)
+        #expect(m3 == 1 && clearedLines(r) == 1)   // gdu.144: Retry releases the hold; the consumed request is not replayed
     }
 
     @Test func aLayoutEditReleasesOnce() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await r.engine.stripOpenHold != nil)
-        let edited = Layout.placedAll(visible: [k("P1"), k("D1"), k("D2"), k("P2"), k("D3"), k("P3"), k("D4")])
-        _ = await r.engine.setLayout(edited, moved: [k("P1")])   // gdu.136: an edit releases the hold only when it touches a folded key
+        let edited = Layout.placedAll(visible: [k("D1"), k("P2"), k("P1"), k("D2"), k("D3"), k("P3"), k("D4")])
+        _ = await r.engine.setLayout(edited, moved: [k("P2")])   // gdu.144: the user drops the folded P2 right of the fold line: its own attempt. gdu.136: an edit releases the hold only when it touches a folded key
         await r.engine.requestReconcile(reason: "trigger")   // gdu.136: a regular pass; a bare reconcileOnce right after an edit is a chained one
         #expect(r.bar.lines.contains { $0.contains("strip hold cleared (layout edit)") } && !r.bar.lines.contains { $0.contains("strip hold cleared (retry)") })
         let h3 = await r.engine.stripOpenHold == nil
@@ -137,57 +113,48 @@ private func flapRig() async -> (LayoutEngine, FakeActuator, ScanMode, HoldBar, 
     let mode = ScanMode()
         let key: (String) -> ItemKey = { k($0) }
         let order = ["P1", "P2", "P3", "D1", "D2", "D3"].map(key)
-        // X (folded only in the small scans, absent from the hold's folded set) wants to sit between the drawn keys
-        let layout = Layout.placedAll(visible: ["D1", "X", "P1", "D2", "P2", "D3", "P3"].map(key) + (1...11).map { key("F\($0)") })
+        // X (folded only in the small scans, absent from the hold's folded set) wants to sit between the drawn keys; D3 / D2 are SWAPPED in the record: a live drawn
+        // mismatch that only the hold keeps the engine from dragging (gdu.144: a re-dispatch would show as a second move)
+        let layout = Layout.placedAll(visible: ["D1", "X", "P1", "D3", "P2", "D2", "P3"].map(key) + (1...11).map { key("F\($0)") })
         let act = FakeActuator(order: order, hidden: [], capabilities: AllCaps(), makeSnapshot: { _, _ in flapSnapshot(mode) })
         for n in 0..<20 { await act.failOnCall(n + 1, .mechanismFailed(ActuationError.stripOpenFailureMessage)) }
         let state = EngineState(), bar = HoldBar()
         let engine = LayoutEngine(observer: FlapObserver(mode: mode), actuator: act, store: InMemoryLayoutStore(layout), capabilities: AllCaps(),
                                   state: state, resolveSnapshot: flapResolve, sleep: { _ in }, log: { bar.add($0) }, config: .multiMove)
         await engine.start()
+        _ = await engine.reconcileOnce()                                     // gdu.144: observe the bar, then the USER drops P1 (the one pull-out attempt)
+        await engine.setLayout(layout, moved: [key("P1")])
     return (engine, act, mode, bar, state)
 }
 
 @MainActor
 @Suite struct StripHoldFlappingEngineTests {
-    @Test func aCarriedChevronNeitherCountsNorResetsAPendingDrawnChange() async {
-        let (engine, act, mode, bar, _) = await flapRig()
-        for _ in 0..<4 { _ = await engine.reconcileOnce() }
-        mode.dropD3 = true                                                    // a real drawn change, 3 -> 2 ...
-        var seen = false
-        for _ in 0..<6 where !seen { _ = await engine.reconcileOnce(); seen = await engine.stripPending != nil }
-        #expect(seen)
-        mode.value = (false, true)                                            // ... a carried-chevron scan in between ...
-        for _ in 0..<2 { _ = await engine.reconcileOnce() }
-        let pendingKept = await engine.stripPending?.count == 1
-        #expect(pendingKept)
-        mode.value = (true, false)                                            // ... then the same change again: second consecutive sighting
-        for _ in 0..<2 { _ = await engine.reconcileOnce() }
-        #expect(bar.lines.filter { $0.contains("strip hold cleared (the bar changed: drawn 3->2") }.count == 1)
-        _ = act
-    }
-
     @Test func foldedFlappingAndCarriedChevronsNeverReleaseOrReDispatch() async {
         let (engine, act, mode, bar, state) = await flapRig()
         let key: (String) -> ItemKey = { k($0) }
         for _ in 0..<4 { _ = await engine.reconcileOnce() }                  // big, fresh chevron: the hold is set at 14 folded
+        await regularPasses(engine, state, n: 2)                             // gdu.144: the regular pass plans the live D3 / D2 mismatch; only the hold withholds it
         let set = await engine.stripOpenHold != nil, first = await moveCalls(act)
         #expect(set && first == 1 && state.lastPlan.stripHoldFolded == 14)
         // 10 passes: folded 14 -> 11 -> 14, at least two passes with only a carried chevron, X folded now but not in the hold's set
         let script: [(big: Bool, carried: Bool)] = [(false, false), (true, false), (false, true), (true, true), (false, false), (true, true),
                                                     (false, false), (true, true), (false, true), (false, false)]
         var heldX = 0
+        var sawHeldMismatch = false
         for m in script {
             mode.value = m
             _ = await engine.reconcileOnce()
             if !m.carried, !m.big, state.lastPlan.stripHeld.contains(key("X")) { heldX += 1 }
+            if !m.carried, !state.lastPlan.stripHeld.isEmpty { sawHeldMismatch = true }
             #expect(state.lastPlan.moving.isEmpty)
         }
         let stillHeld = await engine.stripOpenHold != nil, moves = await moveCalls(act)
         #expect(stillHeld && moves == 1)
         #expect(!bar.lines.contains { $0.contains("strip hold cleared") })
-        #expect(bar.lines.contains { $0.contains(Reconciler.stripUnavailableSkipReason) })
-        #expect(heldX >= 1)                                                   // the fold move of X was recognised as held and skipped
-        #expect(state.lastPlan.stripHeld.allSatisfy { state.perItem[$0] == .notFitting })
+        #expect(heldX == 0)                                                   // gdu.144: X was never asked for, so no move of it is ever planned (nor held)
+        #expect(sawHeldMismatch)   // the live mismatch WAS planned and held (a re-dispatch would have been a second drag)
+        #expect(state.lastPlan.stripHeld.allSatisfy { key in
+            switch state.perItem[key] { case .pending?, .moving?, .unsupported?, .failed?: false; default: true }
+        })
     }
 }

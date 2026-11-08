@@ -174,16 +174,14 @@ private func incident(chevron: Bool = true) -> Incident {
         #expect(!line.contains("Waiting") && !line.contains("Moving"))
     }
 
-    @Test func theFoldIsConsistentForFoldedKeysAndDrawnKeys() {
+    @Test func whereTheFoldFallsNeverMakesAKeyPendingWhateverTheRecord() {
+        // gdu.144: the fold is macOS's decision; no record makes a drawn key wait for a folded one or the reverse.
         let inc = incident()
         let o = ObservedOrder(resolved: inc.resolved)
-        for key in inc.folded + inc.drawn { #expect(ArrangeSections.foldConsistent(key, layout: inc.layout, observed: o)) }
-        // A drawn key the record places BEFORE a folded key is not judged against it (nothing can pull the folded key out).
-        let l = Layout(visible: inc.drawn + inc.folded + inc.pile)
-        let judged = ArrangeSections.foldConsistent(inc.drawn[0], layout: l, observed: o)
-        #expect(judged == false)   // the hosted pile still stands right of it in this record
-        let l2 = Layout(visible: inc.pile + inc.drawn + inc.folded)
-        #expect(ArrangeSections.foldConsistent(inc.drawn[0], layout: l2, observed: o))
+        for l in [inc.layout, Layout(visible: inc.drawn + inc.folded + inc.pile), Layout(visible: inc.pile + inc.drawn + inc.folded)] {
+            for key in inc.folded + inc.pile { #expect(ArrangeSections.foldBaseStatus(key, layout: l, observed: o) == .notFitting) }
+            for key in inc.drawn { #expect(ArrangeSections.foldBaseStatus(key, layout: l, observed: o) == .inPlace) }
+        }
     }
 }
 

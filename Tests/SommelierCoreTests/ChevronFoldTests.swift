@@ -15,6 +15,10 @@ private func obs(_ bar: [String], ovf: [String] = [], stale: [String] = [], unco
     o.stripExpanded = expanded
     return o
 }
+/// gdu.144: the planner pulls a folded key out only when the user dropped it (`foldDropRequest`); these planner-mechanics tests ask for every folded key.
+private func pullPlan(observed: ObservedOrder, layout: Layout, capabilities: @escaping @Sendable (ItemKey) -> Capability, held: Set<ItemKey> = []) -> Plan {
+    Reconciler().plan(observed: observed, layout: layout, capabilities: capabilities, held: held, foldDropRequest: observed.systemOverflow)
+}
 private let foldWording = "behind the « chevron; its order there is set when the strip is next opened"
 
 // MARK: step 1, observation
@@ -83,7 +87,7 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 @Test func aPullOutPlansExactlyOneMoveAfterTheNearestDrawnKeyLeftOfItInTheRecord() {
     // x1 is behind the chevron; the record wants it after a (and before b, c).
     let o = obs(["x1", "ch", "a", "b", "c"], ovf: ["x1"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "b", "c"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["a", "x1", "b", "c"]), capabilities: anchorCh)
     #expect(p.phase == .order && p.actions == [.move(k("x1"), .after(k("a")))])
     #expect(p.skipped.isEmpty)
     #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("x1")]))
@@ -92,25 +96,26 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 @Test func aPullOutIsPreferredToAPushInEvenWhenThePileIsLarger() {
     // 9o9.22: the record puts a before both pile keys. The pull-out moves the key the user dragged (x1 after a), never the push-in.
     let o = obs(["x1", "x2", "ch", "a", "b"], ovf: ["x1", "x2"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "x2", "b"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["a", "x1", "x2", "b"]), capabilities: anchorCh)
     #expect(p.phase == .order && p.actions == [.move(k("x1"), .after(k("a")))])
     #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("x1"), k("x2")]))
 }
 
 @Test func thereIsNoPushInWhenThePileKeyCannotBePulledOut() {
-    // gdu.134 rule 1: the former push-in (a .before(x1)) aimed at a folded key; the drawn key is reported instead, never moved.
+    // gdu.134 rule 1: the former push-in (a .before(x1)) aimed at a folded key; gdu.144: nothing is reported or moved for it.
     let rec = ["a", "x1", "b"].map(k)
-    let m = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { $0 != k("x1") }, blockStart: 2)
+    let m = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], requested: [k("x1")], excluded: [], canMove: { $0 != k("x1") }, blockStart: 2)
     #expect(m == nil)
-    #expect(Reconciler.foldedNeighbourSubject(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { $0 != k("x1") }, blockStart: 2) == k("a"))
-    let both = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { _ in true }, blockStart: 2)
+    let both = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], requested: [k("x1")], excluded: [], canMove: { _ in true }, blockStart: 2)
     #expect(both == .move(k("x1"), .after(k("a"))))
+    // gdu.144 rule 1: a pile key the user did not just drop is never a pull-out subject
+    #expect(Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], requested: [], excluded: [], canMove: { _ in true }, blockStart: 2) == nil)
 }
 
 @Test func anAmbiguousPileKeyIsPulledOutAfterTheLiveDrawnKey() {
     // 9o9.22 live shape: record [KYA(pile), Jump(drawn), TimeMachine(pile, uncorroborated), ..., GateOpener]: exactly TimeMachine after Jump.
     let o = obs(["kya", "tm", "focus", "ch", "jump", "gate"], ovf: ["kya", "tm", "focus"], uncorroborated: ["tm", "focus"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["kya", "jump", "tm", "focus", "gate"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["kya", "jump", "tm", "focus", "gate"]), capabilities: anchorCh)
     #expect(p.phase == .order && p.actions == [.move(k("tm"), .after(k("jump")))], "actions=\(p.actions) skipped=\(p.skipped)")
     #expect(!p.skipped.contains { $0.key == k("tm") })
 }
@@ -118,28 +123,31 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 @Test func anAmbiguousPileKeyThatIsTheRecordSlotAfterADrawnKeyComesOut() {
     // The first live shape: Jump ambiguous in the pile, the record puts it after KYA (drawn).
     let o = obs(["jump", "ch", "kya", "b"], ovf: ["jump"], uncorroborated: ["jump"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["kya", "jump", "b"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["kya", "jump", "b"]), capabilities: anchorCh)
     #expect(p.actions == [.move(k("jump"), .after(k("kya")))])
 }
 
 @Test func aHeldPileKeyIsNeverCrossedAndSaysItsOwnPositionIsUnread() {
     let o = obs(["x1", "ch", "a", "b"], ovf: ["x1"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh, held: [k("x1")])
+    let p = pullPlan(observed: o, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh, held: [k("x1")])
     #expect(p.actions.isEmpty)
     #expect(p.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingOwnPositionSkipReason])
 }
 
-@Test func theDrawnOrderIsSettledBeforeAnyMoveAcrossTheFold() {
+@Test func aRequestedPullOutGoesBeforeAPendingDrawnMove() {
+    // gdu.144 B2: the user's dropped folded key is planned first; the drawn mismatch (b / c) waits for a later pass.
     let o = obs(["x1", "ch", "a", "b", "c"], ovf: ["x1"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "c", "b"]), capabilities: anchorCh)
-    #expect(p.actions.count == 1)
-    if case .move(let s, _)? = p.actions.first { #expect([k("b"), k("c")].contains(s)) } else { Issue.record("expected a drawn move") }
-    #expect(!Reconciler.crossesFold(p.actions[0], overflow: [k("x1")]))
+    let p = pullPlan(observed: o, layout: lay(v: ["a", "x1", "c", "b"]), capabilities: anchorCh)
+    #expect(p.actions == [.move(k("x1"), .after(k("a")))])
+    // without the request the drawn mismatch is the only move
+    let q = Reconciler().plan(observed: o, layout: lay(v: ["a", "x1", "c", "b"]), capabilities: anchorCh)
+    #expect(q.actions.count == 1)
+    if case .move(let s, _)? = q.actions.first { #expect([k("b"), k("c")].contains(s)) } else { Issue.record("expected a drawn move") }
 }
 
 @Test func anAmongPileReorderIsNeverPlannedAndIsSkippedWithTheNewReason() {
     let o = obs(["x1", "x2", "x3", "ch", "a", "b"], ovf: ["x1", "x2", "x3"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["x3", "x1", "x2", "a", "b"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["x3", "x1", "x2", "a", "b"]), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty)
     #expect(!p.skipped.isEmpty && p.skipped.allSatisfy { $0.reason == foldWording && $0.reason == Reconciler.overflowSkipReason })
     #expect(p.skipped.allSatisfy { [k("x1"), k("x2"), k("x3")].contains($0.key) })
@@ -147,7 +155,7 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 
 @Test func aFoldThatIsAPrefixOfTheRecordPlansNothingAndSaysNothing() {
     let o = obs(["x1", "x2", "ch", "a", "b"], ovf: ["x1", "x2"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["x1", "x2", "a", "b"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["x1", "x2", "a", "b"]), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
 }
 
@@ -155,32 +163,32 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     // a is the only drawn key left of x1 in the record. Stale (a carried frame): no pull-out target, no push-in subject.
     // 9o9.28: b (right of x1) is untrusted too here; a trusted b would be a `.before(b)` target.
     let stale = obs(["x1", "ch", "a", "b"], ovf: ["x1"], stale: ["a", "b"])
-    let p = Reconciler().plan(observed: stale, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
+    let p = pullPlan(observed: stale, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(p.actions.isEmpty)
     #expect(p.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingSkipReason])
     let unc = obs(["x1", "ch", "a", "b"], ovf: ["x1"], uncorroborated: ["a", "b"])
-    let up = Reconciler().plan(observed: unc, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
+    let up = pullPlan(observed: unc, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(up.actions.isEmpty)
     #expect(up.skipped.filter { $0.key == k("x1") }.map(\.reason) == [Reconciler.noCrossingSkipReason])
     // 9o9.22: an uncorroborated PILE key is a legal pull-out subject (its stacked frame is ambiguous by construction); only a held one is not.
     let ux = obs(["x1", "ch", "a", "b"], ovf: ["x1"], uncorroborated: ["x1"])
-    let uxp = Reconciler().plan(observed: ux, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
+    let uxp = pullPlan(observed: ux, layout: lay(v: ["a", "x1", "b"]), capabilities: anchorCh)
     #expect(uxp.actions == [.move(k("x1"), .after(k("a")))])
     // Only the order among pile keys differs (fold-consistent): the gdu.69 wording stays, never the no-crossing one.
     let among = obs(["x1", "x2", "ch", "a"], ovf: ["x1", "x2"])
-    let ap = Reconciler().plan(observed: among, layout: lay(v: ["x2", "x1", "a"]), capabilities: anchorCh)
+    let ap = pullPlan(observed: among, layout: lay(v: ["x2", "x1", "a"]), capabilities: anchorCh)
     #expect(ap.actions.isEmpty)
     #expect(ap.skipped.contains { $0.reason == Reconciler.overflowSkipReason })
     #expect(!ap.skipped.contains { $0.reason == Reconciler.noCrossingSkipReason || $0.reason == Reconciler.noCrossingOwnPositionSkipReason })
     // With a trusted drawn key the stale one is passed over: x1 goes after the trusted b, never after the stale a.
     let two = obs(["x1", "ch", "a", "b", "c"], ovf: ["x1"], stale: ["a"])
-    let q = Reconciler().plan(observed: two, layout: lay(v: ["a", "b", "x1", "c"]), capabilities: anchorCh)
+    let q = pullPlan(observed: two, layout: lay(v: ["a", "b", "x1", "c"]), capabilities: anchorCh)
     #expect(q.actions == [.move(k("x1"), .after(k("b")))])
 }
 
 @Test func aKeyTheLayoutDoesNotListYetIsNeverPulledOut() {
     let o = obs(["u", "ch", "a", "b"], ovf: ["u"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "b"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["a", "b"]), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty)
 }
 
@@ -188,7 +196,7 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     // clock is pinned at the right end; the only drawn key left of x1 in the record is the clock itself: no legal pull-out.
     let caps: @Sendable (ItemKey) -> Capability = { [k("ch"), k("clock")].contains($0) ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }
     let o = obs(["x1", "ch", "a", "clock"], ovf: ["x1"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "clock", "x1"]), capabilities: caps)
+    let p = pullPlan(observed: o, layout: lay(v: ["a", "clock", "x1"]), capabilities: caps)
     #expect(!p.actions.contains { if case .move(_, .after(let t)) = $0 { return t == k("clock") }; return false })
 }
 
@@ -210,25 +218,28 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 
 // MARK: step 5, convergence rule
 
-@Test func theFoldMustBeAPrefixOfTheRecordToMatch() {
+@Test func theFoldNeedNotBeAPrefixOfTheRecordToMatch() {
     let o = obs(["x1", "x2", "ch", "a", "b"], ovf: ["x1", "x2"])
     func match(_ rec: [String], _ key: String) -> Bool { ArrangeSections.placementMatches(k(key), layout: lay(v: rec), observed: o) }
     // prefix: matches, and the order among pile keys is not tracked
     #expect(["x1", "x2", "a", "b"].allSatisfy { match(["x1", "x2", "a", "b"], $0) })
     #expect(["x1", "x2", "a", "b"].allSatisfy { match(["x2", "x1", "a", "b"], $0) })
-    // a drawn key the record places left of a pile key: neither the drawn key nor the pile key matches; the others do
-    #expect(!match(["a", "x1", "x2", "b"], "a") && !match(["a", "x1", "x2", "b"], "x1"))
-    #expect(match(["a", "x1", "x2", "b"], "b"))
+    // gdu.144: a drawn key the record places left of a pile key matches all the same: the fold is macOS's decision, only the drawn order counts
+    #expect(["a", "x1", "x2", "b"].allSatisfy { match(["a", "x1", "x2", "b"], $0) })
+    #expect(!match(["b", "x1", "x2", "a"], "a") && !match(["b", "x1", "x2", "a"], "b"))   // a drawn order mismatch still does not match
     // an open strip has no fold at all
     let open = obs(["a", "x1", "x2", "ch", "b"], expanded: true)   // drawn at real frames: ordinary order check, no prefix rule
     #expect(["a", "x1", "x2", "b"].allSatisfy { ArrangeSections.placementMatches(k($0), layout: lay(v: ["a", "x1", "x2", "b"]), observed: open) })
 }
 
-@Test func statusIsNotFittingOnlyWhileTheRecordLeavesTheKeyBehindTheChevron() {
+@Test func aFoldedKeyIsNotFittingWhateverTheRecordSaysAndADrawnKeyIsNeverPendingForIt() {
+    // gdu.144: the fold is macOS's decision, so the record's position never makes a key pending.
     let o = obs(["x1", "x2", "ch", "a", "b"], ovf: ["x1", "x2"])
-    #expect(ArrangeSections.foldConsistent(k("x1"), layout: lay(v: ["x1", "x2", "a", "b"]), observed: o))
-    #expect(!ArrangeSections.foldConsistent(k("x2"), layout: lay(v: ["a", "x1", "x2", "b"]), observed: o))
-    #expect(ArrangeSections.foldConsistent(k("zz"), layout: lay(v: ["a", "x1", "x2", "b"]), observed: o))   // not in the record
+    for rec in [["x1", "x2", "a", "b"], ["a", "x1", "x2", "b"]] {
+        #expect(ArrangeSections.foldBaseStatus(k("x1"), layout: lay(v: rec), observed: o) == .notFitting)
+        #expect(ArrangeSections.foldBaseStatus(k("x2"), layout: lay(v: rec), observed: o) == .notFitting)
+        #expect(ArrangeSections.foldBaseStatus(k("a"), layout: lay(v: rec), observed: o) == .inPlace)
+    }
 }
 
 // MARK: churn does not exclude crossings or (9o9.12) any other move
@@ -236,7 +247,7 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 @Test func aChurnZoneDrawnKeyIsTheTargetOfAPullOutOnAFullBar() {
     let o = obs(["p1", "x", "ch", "d1", "d2", "d3", "d4"], ovf: ["p1", "x"])
     let l = lay(v: ["p1", "d1", "d2", "x", "d3", "d4"])
-    let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: l, capabilities: anchorCh)
     #expect(p.phase == .order && p.actions == [.move(k("x"), .after(k("d2")))])
 }
 
@@ -251,11 +262,11 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     #expect(touchesA)
 }
 
-@Test func keysInconsistentWithTheFoldAreNeverInPlace() {
+@Test func theFoldNeverMakesAKeyPendingAndAFoldedKeyIsNeverInPlace() {
     let o = obs(["p1", "x", "ch", "d1", "d2", "d3", "d4"], ovf: ["p1", "x"])
     let l = lay(v: ["p1", "d1", "d2", "x", "d3", "d4"])
-    for n in ["x", "d1", "d2"] { #expect(ArrangeSections.foldBaseStatus(k(n), layout: l, observed: o) == .pending) }
-    #expect(ArrangeSections.foldBaseStatus(k("p1"), layout: l, observed: o) == .notFitting)
+    for n in ["d1", "d2"] { #expect(ArrangeSections.foldBaseStatus(k(n), layout: l, observed: o) == .inPlace) }   // gdu.144: was .pending
+    for n in ["x", "p1"] { #expect(ArrangeSections.foldBaseStatus(k(n), layout: l, observed: o) == .notFitting) }
     #expect(ArrangeSections.foldBaseStatus(k("d3"), layout: l, observed: o) == .inPlace)
     let line = ArrangeSections.statusLine(perItem: [k("x"): .pending, k("d1"): .pending], lastError: nil, isConverged: true, inFlight: false)
     #expect(!line.contains("matches"))
@@ -266,7 +277,7 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 @Test func aPullOutWithNoTrustedKeyOnTheLeftDropsBeforeTheNearestTrustedDrawnKeyOnTheRight() {
     // The live 21:03 shape: record [p1, TimeMachine(drawn, uncorroborated), Jump(pile, ambiguous), GateOpener(drawn, trusted)].
     let o = obs(["p1", "jump", "ch", "tm", "gate"], ovf: ["p1", "jump"], uncorroborated: ["tm", "jump"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
     #expect(p.phase == .order && p.actions == [.move(k("jump"), .before(k("gate")))], "actions=\(p.actions) skipped=\(p.skipped)")
     #expect(!p.skipped.contains { $0.key == k("jump") })
     #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("p1"), k("jump")]))
@@ -274,20 +285,20 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
 
 @Test func aTrustedDrawnKeyOnTheLeftStillWinsOverOneOnTheRight() {
     let o = obs(["p1", "jump", "ch", "tm", "gate"], ovf: ["p1", "jump"], uncorroborated: ["jump"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
     #expect(p.actions == [.move(k("jump"), .after(k("tm")))], "actions=\(p.actions) skipped=\(p.skipped)")
 }
 
 @Test func aPullOutWithNoTrustedDrawnKeyOnEitherSideKeepsTheNoCrossingReason() {
     let o = obs(["p1", "jump", "ch", "tm", "gate"], ovf: ["p1", "jump"], uncorroborated: ["tm", "gate", "jump"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
+    let p = pullPlan(observed: o, layout: lay(v: ["p1", "tm", "jump", "gate"]), capabilities: anchorCh)
     #expect(p.actions.isEmpty)
     #expect(p.skipped.contains { $0.key == k("jump") && $0.reason == Reconciler.noCrossingSkipReason }, "skipped=\(p.skipped)")
 }
 
 @Test func aBeforeTargetIsNeverInTheTrailingBlock() {
     let rec = ["tm", "x1", "gate"].map(k)
-    let m = Reconciler.crossFoldMove(record: rec, drawn: [k("tm"), k("gate")], pile: [k("x1")], excluded: [k("tm")], canMove: { $0 != k("gate") },
+    let m = Reconciler.crossFoldMove(record: rec, drawn: [k("tm"), k("gate")], pile: [k("x1")], requested: [k("x1")], excluded: [k("tm")], canMove: { $0 != k("gate") },
                                      blockStart: 1)
     #expect(m == nil)
 }
