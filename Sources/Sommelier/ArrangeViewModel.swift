@@ -179,6 +179,7 @@ final class ArrangeViewModel {
                                                 adoptionPending: state.layout.pendingAdoption, handDragNotice: state.handDragNotice, systemSettingsNotice: state.systemSettingsNotice)
         ctx.stripHoldFolded = state.lastPlan.stripHoldFolded
         ctx.stripHoldUnplaceable = state.lastPlan.stripHoldUnplaceable
+        ctx.stripHoldDidNotHold = state.lastPlan.stripHoldDidNotHold
         if let k = state.inFlight.flatMap(Self.subject(of:)) { ctx.movingName = (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
         return ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                           inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,

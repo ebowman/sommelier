@@ -144,6 +144,8 @@ public struct Plan: Equatable, Sendable {
     public var stripHoldFolded: Int?
     /// gdu.129: the hold was set because the strip opened but could not place the subject (status text differs).
     public var stripHoldUnplaceable = false
+    /// gdu.134: the hold was set because a move across the fold did not hold (verified elsewhere / moved back).
+    public var stripHoldDidNotHold = false
 }
 
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).
@@ -420,12 +422,12 @@ public struct Reconciler: Sendable {
             actions = planned.actions
             walls = planned.blockedBy
             for (k, u) in planned.moving { walls[k] = u }
-            // 9o9.11: with the drawn order settled, one move across the fold (pull-out or push-in) if the record asks for it.
+            // 9o9.11: with the drawn order settled, one move across the fold (a pull-out; gdu.134: never a push-in) if the record asks for it.
             var foldKeys = Set<ItemKey>()
             if actions.isEmpty, chevron != nil, !observed.stripExpanded {
                 let pile = ovfKept.filter { observed.systemOverflow.contains($0) }
                 // The actuator performs a crossing with the strip OPEN after a fresh re-scan (real frames, nothing re-folds until it closes),
-                // so churn-zone drawn keys may be the pull-out target or the push-in subject.
+                // so churn-zone drawn keys may be the pull-out target.
                 // 9o9.22: a pile key is excluded only when HELD. Stacked pile frames are frameAmbiguous by construction, so requiring
                 // them to be corroborated on the collapsed read would refuse nearly every crossing; the strip session re-scans with the
                 // strip open (every frame real) and LiveActuator.prepare() applies the normal trust rules there. Drawn keys keep full trust.
@@ -452,13 +454,18 @@ public struct Reconciler: Sendable {
                 }
                 // A pile key the record places right of a drawn key but for which no crossing could be planned (no trusted drawn neighbour)
                 // is reported, never silently left.
+                if fold == nil, let y = Self.foldedNeighbourSubject(record: fullRecord, drawn: drawnAll, pile: pile, excluded: cannot, canMove: { capabilities($0).canMove },
+                                                                    blockStart: foldBlockStart), !skipped.contains(where: { $0.key == y }) {
+                    skipped.append(SkippedAction(y, Reconciler.foldedNeighbourSkipReason))
+                }
                 if fold == nil {
                     let drawnRec = drawnAll.compactMap { rec[$0] }
                     for k in pile where !skipped.contains(where: { $0.key == k && $0.reason != Reconciler.overflowSkipReason }) {
                         guard let ik = rec[k], drawnRec.contains(where: { $0 < ik }) else { continue }
                         // The gdu.69 wording promises the strip will be opened for this key; here nothing will, so the truer reason replaces it.
                         skipped.removeAll { $0.key == k }
-                        skipped.append(SkippedAction(k, held.contains(k) ? Reconciler.noCrossingOwnPositionSkipReason : Reconciler.noCrossingSkipReason))
+                        skipped.append(SkippedAction(k, held.contains(k) ? Reconciler.noCrossingOwnPositionSkipReason
+                                                   : !capabilities(k).canMove ? Reconciler.foldedSystemItemSkipReason : Reconciler.noCrossingSkipReason))
                     }
                 }
             }
@@ -528,6 +535,12 @@ public struct Reconciler: Sendable {
     /// Why an item in macOS's own overflow area is not planned (gdu.69).
     public static let overflowSkipReason = "behind the « chevron; its order there is set when the strip is next opened"
 
+    /// gdu.134: why a drawn key whose record neighbour (the next key right of it) is folded behind « is not moved: nothing is aimed at a folded key.
+    public static let foldedNeighbourSkipReason = "its record neighbour is folded too"
+
+    /// gdu.134: a folded key that cannot be moved (a system item) and so cannot be pulled out.
+    public static let foldedSystemItemSkipReason = "folded behind « with the system items; macOS places it"
+
     /// 9o9.11: why a key behind the chevron that the record places right of a drawn key is not pulled out.
     public static let noCrossingSkipReason = "behind the « chevron; cannot be brought out yet: the item it should follow is not trusted on the bar"
     /// Same, when the pile key ITSELF is the one whose position is unread (carried / uncorroborated / held).
@@ -543,8 +556,8 @@ public struct Reconciler: Sendable {
         }
     }
 
-    /// 9o9.11: a cross-fold move is legal when it is a pull-out (overflowed subject, drawn target) or a push-in (drawn subject,
-    /// overflowed target); never between two overflowed keys and never involving the chevron.
+    /// 9o9.11: a cross-fold move is legal when it crosses the fold and never involves the chevron. The planner emits only pull-outs
+    /// (gdu.134: no push-in); the actuator refuses a move whose target is behind the chevron.
     static func isLegalFoldMove(_ a: PlannedAction, overflow: Set<ItemKey>, chevron: ItemKey?) -> Bool {
         guard case .move(let k, let rel) = a else { return false }
         switch rel {
@@ -556,8 +569,7 @@ public struct Reconciler: Sendable {
     /// 9o9.11: the one move across the fold the record asks for, or nil. With a collapsed strip the fold must be a PREFIX of the record:
     /// every key behind the chevron sits left of every drawn key. A violation is a pair (drawn Y, pile X) with the record placing Y
     /// left of X. It is repaired by a pull-out first (9o9.22): `X .after(A)` (X behind the chevron and movable, A the nearest trusted
-    /// drawn key left of X in the record, not in the trailing block); else (9o9.28) `X .before(B)` with B the nearest trusted drawn key RIGHT of X when none exists on the left; else a push-in `Y .before(X)` (Y trusted, drawn, movable, X the
-    /// record-first pile key right of Y). `excluded`: keys never chosen as subject or target (drawn keys that are untrusted
+    /// drawn key left of X in the record, not in the trailing block); else (9o9.28) `X .before(B)` with B the nearest trusted drawn key RIGHT of X when none exists on the left; (gdu.134: no push-in). `excluded`: keys never chosen as subject or target (drawn keys that are untrusted
     /// (uncorroborated / stale / held) and pile keys that are held; churn-zone keys are allowed, the strip session covers them). A stale pile key is NOT excluded: the actuator
     /// opens the strip and the fresh read taken with it open decides (9o9.23). The order among pile keys is never touched.
     static func crossFoldMove(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
@@ -570,12 +582,6 @@ public struct Reconciler: Sendable {
             guard let ix = rec[x], !excluded.contains(x), canMove(x) else { return false }
             return drawnInRecord.contains { rec[$0]! < ix }
         }.sorted { rec[$0]! < rec[$1]! }
-        // Push-in candidates: trusted movable drawn keys with a trusted pile key right of them in the record.
-        let targets = pile.filter { rec[$0] != nil && !excluded.contains($0) }
-        let ys = drawn.enumerated().filter { (i, y) in
-            guard let iy = rec[y], i < blockStart, !excluded.contains(y), canMove(y) else { return false }
-            return targets.contains { rec[$0]! > iy }
-        }.map(\.element)
         func pullOut() -> PlannedAction? {
             for x in xs {
                 let ix = rec[x]!
@@ -594,14 +600,22 @@ public struct Reconciler: Sendable {
             }
             return nil
         }
-        func pushIn() -> PlannedAction? {
-            guard let y = ys.first else { return nil }
-            let iy = rec[y]!
-            guard let x = targets.filter({ rec[$0]! > iy }).min(by: { rec[$0]! < rec[$1]! }) else { return nil }
-            return .move(y, .before(x))
-        }
-        // 9o9.22: the pull-out moves the key the user dragged; push-in is the fallback only.
-        return pullOut() ?? pushIn()
+        // gdu.134 rule 1: a pull-out is the ONLY cross-fold move, and its target is always a DRAWN trusted key. The former push-in
+        // (`Y .before(X)` with X a pile key) aimed across the fold at a folded target; it is gone (see `foldedNeighbourSubject`).
+        return pullOut()
+    }
+
+    /// gdu.134: the drawn key the retired push-in would have moved (the nearest to the fold in the record): trusted, movable, drawn, with a trusted pile key right of it in the
+    /// record. It is never moved (its record neighbour is folded too, so no drawn target exists); the planner reports it as skipped.
+    static func foldedNeighbourSubject(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
+                                       blockStart: Int) -> ItemKey? {
+        let rec = Dictionary(uniqueKeysWithValues: record.enumerated().map { ($1, $0) })
+        let targets = pile.filter { rec[$0] != nil && !excluded.contains($0) }
+        // The one nearest the fold in the record (its record neighbour is the folded key), which is what the 08:21:53 push-in moved.
+        return drawn.enumerated().filter { (i, y) in
+            guard let iy = rec[y], i < blockStart, !excluded.contains(y), canMove(y) else { return false }
+            return targets.contains { rec[$0]! > iy }
+        }.max { rec[$0.element]! < rec[$1.element]! }?.element
     }
 
     /// Post-condition (gdu.45): a move whose subject or relation target is overflowed or the chevron, or (with a chevron)

@@ -607,6 +607,8 @@ public enum ArrangeSections {
         public var stripHoldFolded: Int?
         /// gdu.129: the hold is for a strip that opened but could not place an item.
         public var stripHoldUnplaceable = false
+        /// gdu.134: the hold is for a move across the fold that did not hold.
+        public var stripHoldDidNotHold = false
         public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
                     handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
             self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
@@ -615,9 +617,9 @@ public enum ArrangeSections {
     }
 
     /// gdu.126: the status line while the strip hold is active and nothing else is pending.
-    public static func barTooNarrowText(_ n: Int, unplaceable: Bool = false) -> String {
+    public static func barTooNarrowText(_ n: Int, unplaceable: Bool = false, didNotHold: Bool = false) -> String {
         "The bar is too narrow for this order: macOS folds \(n) item\(n == 1 ? "" : "s") behind « and "
-            + (unplaceable ? "Sommelier could not place an item inside the strip." : "the strip would not open")
+            + (didNotHold ? "a move across the fold did not hold." : unplaceable ? "Sommelier could not place an item inside the strip." : "the strip would not open")
     }
     public static func blockedByGivenUpText(_ wall: String) -> String { "Blocked by \(wall), which Sommelier can't place — right-click it to try again" }
     public static let checkingMenuBar = "Checking the menu bar…"
@@ -661,6 +663,11 @@ public enum ArrangeSections {
         else if let why = context.pauseReason { primary = "Paused: \(why)" }
         else if context.orderCapActive { primary = orderCapText }
         else if context.adoptionPending { primary = readingOrder }
+        // gdu.134 rule 5: an active bar-level hold LEADS (it explains the rest); gdu.133 item 1: the pinned-down count follows it.
+        else if let n = context.stripHoldFolded {
+            primary = barTooNarrowText(n, unplaceable: context.stripHoldUnplaceable, didNotHold: context.stripHoldDidNotHold)
+            if pinnedDown > 0 { primary! += " · \(pinnedDown) item\(pinnedDown == 1 ? "" : "s") can't be pinned down" }
+        }
         else if cannotPlace > 0 { primary = cannotPlaceText(cannotPlace) }
         else if pinnedDown > 0 { primary = cannotPinDownText(pinnedDown) }
         else if moving {
@@ -668,7 +675,6 @@ public enum ArrangeSections {
             else if movingCandidates.count == movingCount, (1...2).contains(movingCount) { primary = "Moving \(movingCandidates.map(\.title).joined(separator: ", "))…" }
             else { primary = movingCount > 1 ? "Moving \(movingCount) items…" : "Moving…" }
         }
-        else if let n = context.stripHoldFolded { primary = barTooNarrowText(n, unplaceable: context.stripHoldUnplaceable) }
         else if waiting > 0 { primary = waitingToReadText(waiting) }
         else if let w = blockedRows.first?.waitingOn { primary = waitingToSettleText(w) }
         else if let n = context.handDragNotice { primary = n }

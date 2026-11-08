@@ -43,8 +43,15 @@ extension ActuationError {
         if case .mechanismFailed(let m) = self { return m == Self.stripUnplaceableMessage }
         return false
     }
-    /// gdu.126 / gdu.129: either bar-level strip failure (open failed, or opened but unplaceable).
-    public var isStripHoldFailure: Bool { isStripOpenFailure || isStripUnplaceable }
+    /// gdu.134: a drag across the fold was posted inside a strip session we opened and did not verify (or the menu bar moved the item back).
+    /// Also BAR-level: at most one fold-crossing drag per bar state.
+    public static let stripMoveDidNotHoldMessage = "a move across the fold did not hold"
+    public var isStripMoveDidNotHold: Bool {
+        if case .mechanismFailed(let m) = self { return m == Self.stripMoveDidNotHoldMessage }
+        return false
+    }
+    /// gdu.126 / gdu.129 / gdu.134: any bar-level strip failure (open failed, opened but unplaceable, or a cross-fold move did not hold).
+    public var isStripHoldFailure: Bool { isStripOpenFailure || isStripUnplaceable || isStripMoveDidNotHold }
     /// Text carried by the actuator's refusal to drag an item (or anchor) that sits in macOS's overflow area (gdu.25, gdu.69).
     public static let overflowRefusalMarker = "is in the menu bar overflow area"
     /// The actuator refused BEFORE any drag because the subject or relation anchor is in macOS's overflow area. Not a failure

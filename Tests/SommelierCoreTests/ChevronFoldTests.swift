@@ -97,10 +97,12 @@ private func nineItemSource(stacked: Bool, menuBarMinX: CGFloat?) -> FixtureSour
     #expect(Reconciler.crossesFold(p.actions[0], overflow: [k("x1"), k("x2")]))
 }
 
-@Test func aPushInIsTheFallbackWhenThePileKeyCannotBePulledOut() {
+@Test func thereIsNoPushInWhenThePileKeyCannotBePulledOut() {
+    // gdu.134 rule 1: the former push-in (a .before(x1)) aimed at a folded key; the drawn key is reported instead, never moved.
     let rec = ["a", "x1", "b"].map(k)
     let m = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { $0 != k("x1") }, blockStart: 2)
-    #expect(m == .move(k("a"), .before(k("x1"))))
+    #expect(m == nil)
+    #expect(Reconciler.foldedNeighbourSubject(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { $0 != k("x1") }, blockStart: 2) == k("a"))
     let both = Reconciler.crossFoldMove(record: rec, drawn: [k("a"), k("b")], pile: [k("x1")], excluded: [], canMove: { _ in true }, blockStart: 2)
     #expect(both == .move(k("x1"), .after(k("a"))))
 }

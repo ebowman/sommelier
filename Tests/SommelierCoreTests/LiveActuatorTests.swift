@@ -1172,7 +1172,7 @@ private final class FakePrefs: @unchecked Sendable {
 @Test func moveOfAnOverflowedItemWithNoStripToOpenFailsHonestlyWithoutDragging() async {
     let w = World(["A", "B", "Show Hidden Menu Bar Items", "C", "D"])
     w.modules = ["Show Hidden Menu Bar Items"]
-    let r = await actuator(w, fallback: false).move(key("A"), relation: .after(key("B")))
+    let r = await actuator(w, fallback: false).move(key("A"), relation: .after(key("C")))   // gdu.134: a folded subject with a DRAWN target
     guard case .failed(.mechanismFailed(let why), _)? = Optional(r) else { Issue.record("expected mechanismFailed, got \(r)"); return }
     #expect(why == "could not open the « strip")   // 9o9.12: the chevron cannot be clicked here (no probe), so nothing is dragged
     #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)
@@ -1183,7 +1183,7 @@ private final class FakePrefs: @unchecked Sendable {
     w.modules = ["Show Hidden Menu Bar Items"]
     let r = await actuator(w).move(key("D"), relation: .before(key("B")))
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
-    #expect(why == "could not open the « strip")
+    #expect(why.contains(ActuationError.overflowRefusalMarker) && why.contains(Reconciler.foldedNeighbourSkipReason))   // gdu.134: refused, no strip session
     #expect(w.dragCalls.isEmpty && w.restarts == 0 && w.storeWrites.isEmpty)   // the agent is never restarted for a move behind the fold
 }
 

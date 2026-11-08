@@ -160,7 +160,8 @@ public actor LayoutEngine {
     private var orderAttempts: [ItemKey: [(at: Date, cause: String)]] = [:]
     private var cannotPlace: [ItemKey: (reason: String, attempts: Int)] = [:]
     /// A verified move planned again, identically, within `passesLeft` passes was reverted by macOS or the app: one more attempt.
-    private var revertWatch: [ItemKey: (action: PlannedAction, passesLeft: Int)] = [:]
+    /// gdu.134: `crossFold` = the verified move crossed the fold; its revert sets the bar-level hold instead of counting an attempt.
+    private var revertWatch: [ItemKey: (action: PlannedAction, passesLeft: Int, crossFold: Bool)] = [:]
     private var orderMoveTimes: [Date] = []
     private var capLoggedUntil: Date?
     private var lastPauseLogged: String?
@@ -445,6 +446,8 @@ public actor LayoutEngine {
     private var stripHoldLogged: String?
     /// gdu.129: the hold was set by a strip that OPENED but could not place the subject (not by a failed open): selects the status text.
     private var stripHoldUnplaceable = false
+    /// gdu.134: the hold was set by a move across the fold that did not hold (selects the status text).
+    private var stripHoldDidNotHold = false
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -1144,7 +1147,13 @@ public actor LayoutEngine {
     }
 
     private func resetStripHold() {
-        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false; stripPending = nil; stripHoldFoldedSet = []
+        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false; stripHoldDidNotHold = false; stripPending = nil; stripHoldFoldedSet = []
+    }
+
+    /// gdu.126/129/134: records the bar-level hold from the current observation (one fold-crossing attempt per bar state).
+    private func setStripHold(_ obs: ObservedOrder, unplaceable: Bool, didNotHold: Bool) {
+        stripOpenHold = BarFingerprint(obs); stripHoldFoldedSet = BarFingerprint.folded(obs); stripPending = nil; stripHoldLogged = nil
+        stripHoldUnplaceable = unplaceable; stripHoldDidNotHold = didNotHold
     }
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
@@ -1676,7 +1685,7 @@ public actor LayoutEngine {
             return involved.contains(where: foldedNow.contains) ? k : nil
         }
         let held = p.actions.compactMap(needsStrip)
-        p.stripHoldFolded = stripHoldFoldedSet.count; p.stripHoldUnplaceable = stripHoldUnplaceable
+        p.stripHoldFolded = stripHoldFoldedSet.count; p.stripHoldUnplaceable = stripHoldUnplaceable; p.stripHoldDidNotHold = stripHoldDidNotHold
         guard !held.isEmpty else { return }
         p.actions.removeAll { needsStrip($0) != nil }
         for k in held {
@@ -2248,12 +2257,18 @@ public actor LayoutEngine {
                 let again = plan.actions.contains { $0 == w.action }   // the very same move planned again: it did not hold
                 if again {
                     revertWatch[k] = nil
+                    if w.crossFold {   // gdu.134 rule 3: a reverted move across the fold is a property of the bar: hold, not an attempt
+                        log("engine: \(k) was moved across the fold by a verified drag and a plan wants it moved again: the move did not hold; holding every fold move until the bar changes or Retry")
+                        setStripHold(obs, unplaceable: false, didNotHold: true)
+                        gaveUp = true
+                        continue
+                    }
                     log("engine: \(k) was moved by a verified drag and a plan wants it moved again: counted as an attempt")
                     let before = cannotPlace[k] == nil
                     noteAttempt(k, cause: "the menu bar moved it back")
                     if before, cannotPlace[k] != nil { gaveUp = true }
                 } else if w.passesLeft <= 1 { revertWatch[k] = nil }
-                else { revertWatch[k] = (w.action, w.passesLeft - 1) }
+                else { revertWatch[k] = (w.action, w.passesLeft - 1, w.crossFold) }
             }
             if gaveUp { plan = makePlan(obs) }
         }
@@ -2525,8 +2540,18 @@ public actor LayoutEngine {
             if lastAction == action || lastVerifiedOrderMove[key] == action {
                 // The strike streak resets when another key is the one struck in a later pass (the engine plans around a struck key),
                 // so verdict/observation disagreements are also counted per key across passes: the budget is spent once, not forever.
-                if revertWatch[key] != nil {   // 9o9.4: reverted within this pass (a later pass's revert was counted at its start)
+                if let w = revertWatch[key] {   // 9o9.4: reverted within this pass (a later pass's revert was counted at its start)
                     revertWatch[key] = nil
+                    if w.crossFold {   // gdu.134 rule 3: hold the bar instead of striking the key or counting an attempt
+                        log("order: \(key) was moved across the fold by a verified drag and is planned again: the move did not hold; holding every fold move until the bar changes or Retry")
+                        setStripHold(obs, unplaceable: false, didNotHold: true)
+                        lastVerifiedOrderMove[key] = nil
+                        lastAction = nil
+                        plan = makePlan(obs)
+                        phaseReached = plan.phase
+                        await publishObserved(obs, plan)
+                        continue
+                    }
                     noteAttempt(key, cause: "the menu bar moved it back")
                 }
                 let disagreements = (unverifiedStrikes[key] ?? 0) + 1
@@ -2587,6 +2612,7 @@ public actor LayoutEngine {
             await setStatus(key, .moving, inFlight: action)
             await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
             await actuator.setRecordOrder(layout.visible)   // 9o9.19: a crossing is verified by the fold rule against the record
+            let crossesFold = Reconciler.crossesFold(action, overflow: obs.systemOverflow)   // gdu.134: judged on the pre-move observation
             let result = await actuator.move(key, relation: rel)
             flightBox.end()
             actionCount += 1
@@ -2596,7 +2622,7 @@ public actor LayoutEngine {
             case .verified(let snap):
                 consecutiveFailures = 0; allFailedStreak = 0
                 lastVerifiedOrderMove[key] = action
-                revertWatch[key] = (action, 2)
+                revertWatch[key] = (action, 2, crossesFold)
                 noteAttempt(key, cause: "it keeps being moved without holding its place")
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
                 previousSettledBar = obs.onBar   // 9o9.9: the engine's own verified move is not the untrusted key's doing
@@ -2613,7 +2639,8 @@ public actor LayoutEngine {
                 if !e.isOverflowRefusal, !e.isStripHoldFailure { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
                 if e.isStripHoldFailure {
                     consecutiveFailures -= 1
-                    log(e.isStripUnplaceable ? "\(key): the « strip opened but the item could not be pinned down inside it; holding every fold move until the bar changes or Retry"
+                    log(e.isStripMoveDidNotHold ? "\(key): a move across the fold did not hold; one attempt per bar state, holding every fold move until the bar changes or Retry"
+                        : e.isStripUnplaceable ? "\(key): the « strip opened but the item could not be pinned down inside it; holding every fold move until the bar changes or Retry"
                                              : "\(key): the « strip could not be opened; holding every fold move until the bar changes or Retry")
                 } else if e.isOverflowRefusal {
                     // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
@@ -2627,7 +2654,7 @@ public actor LayoutEngine {
                     }
                 } else { markFailed(key, e) }
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
-                if e.isStripHoldFailure { stripOpenHold = BarFingerprint(obs); stripHoldFoldedSet = BarFingerprint.folded(obs); stripPending = nil; stripHoldLogged = nil; stripHoldUnplaceable = e.isStripUnplaceable }
+                if e.isStripHoldFailure { setStripHold(obs, unplaceable: e.isStripUnplaceable, didNotHold: e.isStripMoveDidNotHold) }
             }
             plan = makePlan(obs)
             phaseReached = plan.phase

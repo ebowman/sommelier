@@ -127,11 +127,15 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     #expect(trace.contains { $0.hasPrefix("phase strip: closed t=") })
 }
 
-@Test func aPushInAlsoRunsInsideOneSession() async {
+@Test func aMoveWhoseTargetIsBehindTheChevronIsRefusedWithoutAStripSession() async {
+    // gdu.134 rule 1: the former push-in. Nothing is aimed at a folded key: no chevron click, no drag.
     let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
-    let r = await actuator(w).move(key("A"), relation: .before(key("X1")))
-    #expect(r.isVerified)
-    #expect(w.events == ["open", "drag", "close"])
+    let a = actuator(w)
+    let r = await a.move(key("A"), relation: .before(key("X1")))
+    guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected a refusal, got \(r)"); return }
+    #expect(why.contains(Reconciler.foldedNeighbourSkipReason) && r.error?.isOverflowRefusal == true)
+    #expect(w.events.isEmpty)
+    #expect(!(await a.trace).contains { $0.hasPrefix("strip: needed") })
     #expect(!w.expanded)
 }
 
@@ -213,22 +217,25 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     }
 }
 
-@Test func aDropOnTheChevronIsRefusedAndTheStripStillCloses() async {
-    // Y (drawn) after X2, the LAST pile key: moving left, the hover neighbour is the chevron itself.
+@Test func aDrawnSubjectAfterTheLastPileKeyIsRefusedBeforeAnyStripSession() async {
+    // Y (drawn) after X2, the LAST pile key (its drop would land on the chevron): gdu.134 refuses it outright, a folded target.
     let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
     let r = await actuator(w, fallback: false).move(key("B"), relation: .after(key("X2")))
-    guard case .failed(.notVerified(_, let observed), _) = r else { Issue.record("expected notVerified, got \(r)"); return }
-    #expect(observed.contains("chevron"))
-    #expect(w.events == ["open", "close"])
+    guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected a refusal, got \(r)"); return }
+    #expect(why.contains(Reconciler.foldedNeighbourSkipReason))
+    #expect(w.events.isEmpty)
     #expect(!w.expanded)
 }
 
-@Test func aSessionIsOneOrderMoveAndAtMostOneOpensPerCall() async {
+@Test func aCrossFoldDragThatDoesNotHoldPostsOneDragAndReturnsTheHoldFailure() async {
+    // gdu.134 rule 3: no retry drag across the fold; the failure is the bar-level "did not hold" outcome.
     let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
-    w.dragScript = [false, true]       // the first attempt does nothing, the retry applies: still ONE open and ONE close
+    w.dragScript = [false, true]       // the first drag does nothing; a retry WOULD apply, and must not be posted
     let r = await actuator(w).move(key("X2"), relation: .after(key("A")))
-    #expect(r.isVerified)
-    #expect(w.events == ["open", "drag", "drag", "close"])
+    guard case .failed(let e, _) = r else { Issue.record("expected failed, got \(r)"); return }
+    #expect(e.isStripMoveDidNotHold && e.isStripHoldFailure)
+    #expect(w.events == ["open", "drag", "close"])
+    #expect(w.dragTargets.count == 1 && !w.expanded)
 }
 
 @Test func aSecondAttemptIsRefusedWhenTheSubjectFoldedAfterTheFirstDragFailed() async {
@@ -247,7 +254,7 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     w.afterDrag = { w.expanded = false }       // the strip closes under the session
     let r = await actuator(w).move(key("X2"), relation: .after(key("A")))
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
-    #expect(why.contains("closed") || why.contains("not trustworthy"))   // refused either by the fold re-check or by the stacked-frame proof
+    #expect(why == ActuationError.stripMoveDidNotHoldMessage)   // gdu.134: the one posted drag did not hold; no second attempt
     #expect(w.events.filter { $0 == "drag" }.count == 1)
     #expect(w.events.filter { $0 == "open" }.count == 1)
     #expect(!w.expanded)
@@ -258,11 +265,10 @@ private func names(_ w: StripWorld) -> [String] { w.all }
     w.dragScript = [false]
     w.afterDrag = { w.expanded = false }       // the strip closes under the session after attempt 1
     let a = actuator(w)
-    let r = await a.move(key("C"), relation: .before(key("X1")))
+    let r = await a.move(key("X1"), relation: .after(key("B")))
     guard case .failed(.mechanismFailed(let why), _) = r else { Issue.record("expected mechanismFailed, got \(r)"); return }
-    #expect(why == "the « strip closed during the move")
+    #expect(why == ActuationError.stripMoveDidNotHoldMessage)   // gdu.134: one drag, no re-plan, the hold failure
     let trace = await a.trace
-    #expect(trace.contains("re-plan refused: the strip closed under the session"))
     #expect(w.events.filter { $0 == "drag" }.count == 1)
     // the world closed the strip itself, so the session's close finds it collapsed: no click, and the trace says so
     #expect(w.events.filter { $0 == "close" }.isEmpty)
@@ -328,19 +334,17 @@ private func refoldWorld() -> StripWorld {
     #expect(w.events.filter { $0 == "open" }.count == 1 && w.events.filter { $0 == "close" }.count == 1)
 }
 
-@Test func aReplanWithTheTargetInThePileAimsAtTheNearestDrawnKeyLeftOfTheSubjectInTheRecordNeverTheChevron() async {
+@Test func aTargetThatReFoldedIsNeverReplacedByASubstituteTarget() async {
+    // gdu.134 rule 2: the 08:21:53 shape. The target re-folds after the drag; K2 (record-left of Jump) is drawn, but no second drag is posted.
     let w = StripWorld(pile: ["Jump"], drawn: ["KYA", "K2"])
-    w.afterDrag = { w.all = ["KYA", chev, "Jump", "K2"] }   // the target re-folded; K2 (record-left of Jump) is drawn right of it
+    w.afterDrag = { w.all = ["KYA", chev, "Jump", "K2"] }
     let a = await actuator(w, record: ["K2", "KYA", "Jump"])
     let r = await a.move(key("Jump"), relation: .after(key("KYA")))
-    let chevronFrame = w.frames().first { $0.name == chev }!.frame
-    #expect(w.dragTargets.count == 2)
-    #expect(w.dragTargets.allSatisfy { !chevronFrame.insetBy(dx: -2, dy: 0).contains(CGPoint(x: $0, y: chevronFrame.midY)) })
-    let trace = await a.trace
-    #expect(trace.contains { $0.contains("aiming after") && $0.contains("K2") })
-    #expect(!trace.contains { $0.contains("drop refused") })
-    #expect(r.isVerified)
-    #expect(w.events.filter { $0 == "open" }.count == 1 && w.events.last == "close")
+    guard case .failed(let e, _) = r else { Issue.record("expected failed, got \(r)"); return }
+    #expect(e.isStripMoveDidNotHold)
+    #expect(w.dragTargets.count == 1)
+    #expect(w.events == ["open", "drag", "close"])
+    #expect(!(await a.trace).contains { $0.contains("aiming after") })
 }
 
 @Test func aReplanWithNoDrawnKeyToStandInEndsHonestlyWithoutAnotherDrag() async {
@@ -351,7 +355,7 @@ private func refoldWorld() -> StripWorld {
     #expect(!r.isVerified)
     #expect(w.dragTargets.count == 1)
     #expect(w.events == ["open", "drag", "close"])
-    #expect((await a.trace).contains { $0.contains("no drawn trusted key left of") })
+    #expect((await a.trace).contains { $0.contains("no substitute target") })
 }
 
 @Test func aBeforeSpelledPullOutOpensTheStripDragsAndVerifiesByTheFoldRuleWithTheUntrustedKeyDrawnLeftOfTheSubject() async {
@@ -455,12 +459,12 @@ private func refoldWorld() -> StripWorld {
     #expect(!w.expanded)
 }
 
-@Test func aCarriedPileTargetOpensTheStripAndDragsOnceTheOpenReadIsFresh() async {
+@Test func aCarriedPileTargetIsRefusedWithoutAStripSession() async {
     let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
     w.carried = ["X1"]
     let r = await actuator(w).move(key("A"), relation: .before(key("X1")))
-    #expect(r.isVerified)
-    #expect(w.events == ["open", "drag", "close"])
+    #expect(!r.isVerified && r.error?.isOverflowRefusal == true)   // gdu.134: a folded target is refused, whatever its frame
+    #expect(w.events.isEmpty)
     #expect(!w.dragWhileCollapsed)
 }
 
@@ -469,7 +473,7 @@ private func refoldWorld() -> StripWorld {
     w.carried = ["X1"]; w.carriedOpen = ["X1"]
     let r = await actuator(w).move(key("A"), relation: .before(key("X1")))
     guard case .failed = r else { Issue.record("expected failed, got \(r)"); return }
-    #expect(w.events == ["open", "close"])
+    #expect(w.events.isEmpty)   // gdu.134: refused before any strip session
 }
 
 // MARK: - 9o9.29: a `.before` target that is the first drawn key (right of the chevron)

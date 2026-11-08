@@ -897,3 +897,12 @@ Orchestrator only; narrow display with more items than fit even when the strip i
 5. [ ] Retry, a layout edit, or a changed bar (quit an item; seen on two consecutive passes) allows exactly one more chevron click.
 6. [ ] (gdu.129) After one strip session the plan is held, the status line names the hold ("... and Sommelier could not place an item inside the strip." when the strip opened), and there are no give-ups (`giving up on` never appears); folded rows stay « through carried-chevron scans.
 7. [ ] (gdu.131) No time expiry and no flapping release: with the bar unchanged, zero further strip sessions after the first over 5 minutes (one `chevron clicked`, no `strip hold cleared (the bar changed ...)` while the chevron and drawn count are steady, even as the folded count flaps), `phase=converged` after it and the status line shown.
+
+## Live checklist: overfull wide bar after a display change (gdu.134, 2026-11-08)
+
+Orchestrator only; the 1352 pt display with 49 Visible items (more than fit) returning after a launch on the 644 pt display. Log 2026-11-08 08:16-08:25 is the failing baseline (22 sessions, 32 drags, 8 give-ups).
+
+1. [ ] After the display change the engine pulls folded items out one per pass toward the record; each item moves at most once. After a failed cross-fold drag there are no further drags: `plan: ... fold move(s) held` and phase=converged for 10 minutes.
+2. [ ] No `re-plan: ... aiming after` line and no drag toward a key behind «: every `order: moving ... before|after X` has X drawn.
+3. [ ] The status line leads with "The bar is too narrow for this order: macOS folds N items behind « and a move across the fold did not hold."; no item moves twice; zero `giving up` lines; the status line names the hold.
+4. [ ] Drawn-only moves (both keys drawn) still work and keep their caps; Retry or a layout edit allows exactly one more attempt.

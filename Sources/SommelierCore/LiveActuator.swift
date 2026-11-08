@@ -336,11 +336,16 @@ public actor LiveActuator: MenuBarActuator {
         if let f = globalPrecheck() { return f }
         let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback, staleToStrip: !config.forceFallback)
         if let early { return early }
-        var plan = planOpt!
+        let plan = planOpt!
         let cap = CapabilityRules(hasTrackedEntry: { _ in true }).capability(for: key)
         guard cap.canMove else { return .failed(.unsupportedItem(reason: cap.reason ?? "cannot move"), plan.snapshot) }
         // 9o9.12: a move that crosses the fold or touches the churn zone (macOS may re-fold what it touches) is performed inside a strip
         // session: open the « strip, re-scan, drag with every frame real, close it again. Not with `forceFallback` (no drag at all).
+        // gdu.134 rule 1: never aim across the fold at a folded target. Only a folded SUBJECT with a DRAWN target opens the strip.
+        if !config.forceFallback, !plan.snapshot.stripExpanded, let t = plan.target?.key, ActuationVerifier.overflowed(plan.resolved).contains(t) {
+            note("refused: the target \(t) is behind the « chevron; nothing is aimed at a folded key (no strip session)")
+            return .failed(.mechanismFailed("\(t) \(ActuationError.overflowRefusalMarker); \(Reconciler.foldedNeighbourSkipReason)"), plan.snapshot)
+        }
         if !config.forceFallback, let need = stripNeed(plan, relation) {
             return await stripMove(key, relation, plan: plan, need: need)
         }
@@ -350,8 +355,9 @@ public actor LiveActuator: MenuBarActuator {
     /// The satisfied-check, the drag attempts with their verification, and (outside a strip session) the order-store fallback.
     /// `avoid`: a frame no drop may land on (the chevron, inside a strip session). `inStrip`: the strip is open around this call.
     /// `ours`: the strip session was opened by us (so it closes after this call and the fold-rule verdict is taken on the closed bar).
-    private func moveCore(_ key: ItemKey, _ relation: Relation, plan startPlan: Plan, avoid: CGRect?, inStrip: Bool, ours: Bool = false) async -> ActuationResult {
-        var relation = relation   // 9o9.19: a re-plan may replace a relation target that re-folded into the pile
+    /// `singleDrag` (gdu.134): a cross-fold drag in our own session posts at most ONE drag; a failed verification is returned, never retried.
+    private func moveCore(_ key: ItemKey, _ relation: Relation, plan startPlan: Plan, avoid: CGRect?, inStrip: Bool, ours: Bool = false,
+                          singleDrag: Bool = false) async -> ActuationResult {
         var plan = startPlan
         if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
             // gdu.26: prepare() took ONE full scan; `.verified` needs the settle rule (two agreeing scans), so confirm first.
@@ -433,32 +439,14 @@ public actor LiveActuator: MenuBarActuator {
                     if let r = foldRefusal(key, relation, plan: plan, inStrip: inStrip) { return r }
                     if inStrip || plan.snapshot.stripExpanded {   // our session, or a strip the user had open: every frame is real
                         if let done = foldSettled(key, relation, resolved: plan.resolved, snapshot: plan.snapshot, ours: ours, fallback: lastError) { return done }
-                        // The target is in the pile and the rule is not satisfied: aim at the nearest drawn trusted key left of the subject in the
-                        // record, or end honestly. Never at the chevron.
+                        // gdu.134 rule 2: the target is in the pile and the fold rule is not satisfied. There is NO substitute target: a cross-fold
+                        // move verifies as planned or fails; a second drag toward a key the record never asked for is never posted.
                         switch relation {
                         case .before(let t), .after(let t):
                             let pile = ActuationVerifier.foldPile(plan.resolved)
-                            if !recordOrder.isEmpty, let i = recordOrder.firstIndex(of: key), pile.contains(t) {
-                                let stand = recordOrder[..<i].reversed().first { k in
-                                    guard let r = plan.resolved.first(where: { $0.key == k }), ActuationVerifier.onBar(r), !r.item.isOverflowChevron,
-                                          !r.item.stale, !pile.contains(k), !ActuationVerifier.uncorroborated(r) else { return false }
-                                    return Self.frameTrustworthy(subject: r, among: plan.resolved) == nil
-                                }
-                                guard let stand else {
-                                    note("re-plan: \(t) is behind the « chevron and no drawn trusted key left of \(key) in the record can stand in; ending")
-                                    return .failed(.notVerified(expected: "\(key) \(relation)", observed: "\(t) re-folded behind the « chevron; no drawn key to aim at"), plan.snapshot)
-                                }
-                                note("re-plan: \(t) re-folded behind the « chevron; aiming after \(stand) instead")
-                                relation = .after(stand)
-                                let (p2, e2) = await prepare(key, relation, from: plan.snapshot)
-                                if let e2 { return e2 }
-                                plan = p2!
-                                if let r = foldRefusal(key, relation, plan: plan, inStrip: inStrip) { return r }
-                                if ActuationVerifier.moveVerdict(subject: key, relation: relation, resolved: plan.resolved).ok {
-                                    let again = await observe(key, relation, subjectPID: pid)
-                                    lastSnapshot = again.snapshot
-                                    if again.verified { return .verified(again.snapshot) }
-                                }
+                            if !recordOrder.isEmpty, recordOrder.contains(key), pile.contains(t) {
+                                note("re-plan: \(t) is behind the « chevron and the fold rule is not satisfied; ending (no substitute target)")
+                                return .failed(.notVerified(expected: "\(key) \(relation)", observed: "\(t) re-folded behind the « chevron; the move did not hold"), plan.snapshot)
                             }
                         default: break
                         }
@@ -471,7 +459,10 @@ public actor LiveActuator: MenuBarActuator {
                         if again.verified { return .verified(again.snapshot) }
                         lastError = .timeout
                     }
+                    // gdu.134 rule 3: one fold-crossing drag per call; the caller turns this failure into the bar-level hold.
+                    if singleDrag { note("attempt \(attempt): not verified; no second drag across the fold"); return .failed(lastError, lastSnapshot) }
                 }
+                if singleDrag { return .failed(lastError, lastSnapshot) }
             }
         }
 
@@ -603,7 +594,8 @@ public actor LiveActuator: MenuBarActuator {
                 let open = planOpt!
                 let chevronFrame = open.resolved.first(where: { $0.item.isOverflowChevron && !$0.item.stale })?.item.frame ?? chevron
                 mouseEventsPosted = false
-                result = await moveCore(key, relation, plan: open, avoid: chevronFrame, inStrip: true, ours: session.openedByUs)
+                result = await moveCore(key, relation, plan: open, avoid: chevronFrame, inStrip: true, ours: session.openedByUs,
+                                        singleDrag: session.openedByUs && need.pile)
                 if session.openedByUs, !mouseEventsPosted, case .failed(let e, let s) = result, Self.isPinDownFailure(e) {
                     noteUnplaceable(key, s ?? fresh, error: e)
                     result = .failed(.mechanismFailed(ActuationError.stripUnplaceableMessage), s ?? fresh)
@@ -634,7 +626,22 @@ public actor LiveActuator: MenuBarActuator {
         } else {
             note("strip: left open (the user had it open)")
         }
+        // gdu.134 rule 3: a drag across the fold was posted in a session we opened and did not verify. That is a property of the BAR (macOS
+        // re-folds by width), not of the key: the engine holds every fold move for this bar state instead of counting an attempt.
+        if session.openedByUs, need.pile, mouseEventsPosted, case .failed(let e, let s) = result, Self.isCrossFoldHoldFailure(e) {
+            note("strip: a move across the fold did not hold (\(e)); at most one such drag per bar state")
+            return .failed(.mechanismFailed(ActuationError.stripMoveDidNotHoldMessage), s)
+        }
         return result
+    }
+
+    /// gdu.134: failures after a posted cross-fold drag that mean "it did not hold" (not a busy user, a conflict or an already-bar-level outcome).
+    private static func isCrossFoldHoldFailure(_ e: ActuationError) -> Bool {
+        switch e {
+        case .userBusy, .conflictingManager, .liveWriteFailed, .memberStale, .unsupportedItem: return false
+        case .mechanismFailed(let m): return !m.hasPrefix("could not post mouse events") && !e.isStripHoldFailure
+        default: return true
+        }
     }
 
     /// Order-store edit + one agent restart. Only the values already present in the store are permuted, so unrelated

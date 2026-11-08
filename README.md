@@ -122,7 +122,7 @@ Alpha software (0.1.x). Please expect rough edges.
 - Apps with no "Allow in the Menu Bar" entry in Control Center cannot be hidden yet.
 - Reordering takes about 6 to 11 seconds per item because it uses real drags and moves your mouse. Hide and show take 1 to 5 seconds.
 - Order among items behind the « is not tracked while that area is closed.
-- On a display too narrow for your order (many items folded behind «), Sommelier does not keep trying: after one look inside the « strip it stops, the status line says the bar is too narrow, and the folded rows show «. Widen the bar or hide some items.
+- If more items are Visible than fit on your bar, macOS decides what folds behind «. Sommelier keeps the order among the items that are drawn and pulls folded items out one per pass toward your order, each item at most once. If a pull-out does not hold, or macOS moves the item back, Sommelier holds the whole bar until it changes (or you press Retry) and the status line tells you the bar is too narrow. It never aims a drag at an item that is folded and never substitutes another target. Widen the bar or hide some items.
 - Multiple displays are untested. macOS 15 and earlier are not supported.
 - Rebuilding from source changes the ad-hoc signature, so Accessibility must be granted again. The notarized release keeps a stable identity.
 

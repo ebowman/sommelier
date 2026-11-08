@@ -301,7 +301,7 @@ verified moves) makes crossing moves skip with "neighbour K is moving"; a pass c
 keeps its last verified move, and re-plans on the position-retry timer, so a flipping neighbour ends in a strike and a give-up (e).
 A move the actuator verified but the next read still plans is struck `.notVerified` before the cap.
 
-**Crossings.** See "Crossing the « fold" below: one cross-fold move at most, after the drawn order is settled, pull-out before push-in.
+**Crossings.** See "Crossing the « fold" below: one cross-fold move at most, after the drawn order is settled, a pull-out only (gdu.134: no push-in).
 
 **Convergence rule.** With a collapsed strip the bar matches the record when every DRAWN trusted key is in record order AND every
 overflowed key is left of every drawn key in the record (`ArrangeSections.placementMatches` = drawn order + `foldConsistent`). The
@@ -373,9 +373,7 @@ Product rule: everything in Visible is in order, including what macOS hides behi
   violation is a pair (drawn Y, pile X) with the record placing Y left of X. After the drawn order is settled (drawn moves always come
   first, unchanged: one move per pass, 9o9.9 trusted/untrusted rule, anchors, `lands`), at most ONE cross-fold move is planned, on
   the pull-out first: `X .after(A)` (X movable, behind the chevron; A the nearest trusted drawn key left of X in the record, not in the
-  trailing block), or, when no trusted drawn key exists on the left, `X .before(B)` with B the nearest trusted drawn key RIGHT of X in the record (not in the trailing block; 9o9.28: X then lands left of B, and the untrusted key left of X stays drawn left of it, which the fold rule verifies); the push-in `Y .before(X)` (Y trusted, movable, drawn, not in the trailing block; X the record-first pile key right
-  of Y) is only the fallback when no pull-out exists (9o9.22: the pull-out moves the key the user dragged; the old smaller-side
-  heuristic chose push-in on every full bar). Trust rule for crossings (9o9.22): DRAWN keys keep the full requirement (fresh and
+  trailing block), or, when no trusted drawn key exists on the left, `X .before(B)` with B the nearest trusted drawn key RIGHT of X in the record (not in the trailing block; 9o9.28: X then lands left of B, and the untrusted key left of X stays drawn left of it, which the fold rule verifies). gdu.134 retired the push-in (`Y .before(X)` with X a pile key): it aimed across the fold at a FOLDED target, and its verification depended on macOS's re-fold. The drawn key it would have moved is reported as skipped with `Reconciler.foldedNeighbourSkipReason` ("its record neighbour is folded too"). Trust rule for crossings (9o9.22): DRAWN keys keep the full requirement (fresh and
   corroborated, never held), so a stale frame left of the chevron is never touched; a PILE key is excluded only when HELD
   (cannotPlace / held / handDragUnverified). Stacked pile frames are frameAmbiguous by construction, so requiring them corroborated on
   the collapsed read would refuse nearly every crossing; the strip session re-scans with the strip open (every frame real) and
@@ -383,8 +381,8 @@ Product rule: everything in Visible is in order, including what macOS hides behi
   among-pile skip yields to a plannable crossing; the own-position reason (9o9.17) is for HELD pile keys only. The gdu.80 churn rule used to exclude churn-zone keys: a
   drag near the fold on a COLLAPSED bar lands in a region whose frames shift when macOS re-folds. Since 9o9.12 neither a crossing nor
   any other move touching the zone is excluded: the actuator performs it with the strip OPEN after a fresh re-scan, where every frame
-  is real and nothing re-folds until the strip closes (a churn-zone drawn trusted key may be the pull-out target or the push-in
-  subject, and a drawn key in the zone is ordered like any other; excluding them stalled the real bar). A crossing is judged against the real pile (`systemOverflow`), not the churn set. A pile key the record places right of a
+  is real and nothing re-folds until the strip closes (a churn-zone drawn trusted key may be the pull-out target,
+  and a drawn key in the zone is ordered like any other; excluding them stalled the real bar). A crossing is judged against the real pile (`systemOverflow`), not the churn set. A pile key the record places right of a
   drawn key for which no crossing can be planned is skipped with `Reconciler.noCrossingSkipReason` ("... cannot be brought out yet: the item it should follow is not trusted on the bar"), never silently; it REPLACES the gdu.69 wording for that key, since nothing will open the strip for it. A move whose subject AND target are both behind the chevron is
   never planned: such a key is skipped with `Reconciler.overflowSkipReason` = "behind the « chevron; its order there is set when the
   strip is next opened" (also used for a pile key whose only problem is its order among other pile keys). Cross-fold actions are not tagged on `PlannedAction`: `Reconciler.crossesFold(action, overflow:)` derives them (exactly one
@@ -408,6 +406,17 @@ Product rule: everything in Visible is in order, including what macOS hides behi
   stall (the churn exclusion that caused it is gone, 9o9.12).
 
 
+
+### Overfull bars (gdu.134)
+
+The record is an ORDER; what folds behind « is macOS's width decision, not ours. When more items are Visible than fit (live 2026-11-08: 49 on a 1352 pt bar), the record cannot be realised: every pull-out pushes another item into the fold, and every verification across the fold depends on how macOS re-folds afterwards. On 0.1.2 the engine kept dragging for nine minutes (22 strip sessions, 32 drags, 8 give-ups). What the engine does now:
+
+- It keeps the order among the DRAWN items (drawn-only moves, rule 4: unchanged behaviour and per-key caps).
+- It pulls folded items out one per pass toward the record, each item at most once (a verified pull-out may be followed by the next on the next pass). A cross-fold drag (a strip session we opened, a pile subject, a drawn target) that does not verify, or a verified one the menu bar then moves back, sets the bar-level strip hold (`LayoutEngine.stripOpenHold`, same release rules as gdu.126/129/131: two consecutive changed observations, Retry, layout edit) instead of counting a per-key attempt: no further cross-fold drags until the bar changes or Retry. `ActuationError.stripMoveDidNotHoldMessage` carries it from the actuator; the status line reads "The bar is too narrow for this order: macOS folds N items behind « and a move across the fold did not hold." and leads the line (the "N items can't be pinned down" count follows it).
+- It never aims at a folded target. The planner has no push-in; a pull-out targets a drawn trusted key only. The actuator refuses any move whose relation target is behind the chevron (an `overflowRefusalMarker` refusal, no strip session, no click).
+- It never substitutes targets. The former in-session re-plan ("re-folded behind the « chevron; aiming after X instead") is gone; inside a session we opened a cross-fold move posts exactly ONE drag (`moveCore(singleDrag:)`) and a failed verification ends the call.
+
+Why: after a cross-fold drag macOS re-folds by width, so "observed between A and B" and even the fold rule are unreliable evidence; a second drag toward a substitute the record never asked for only moves another item. One honest attempt, then a visible hold, is bounded and tells the user the truth.
 
 ## (d) The actuator
 

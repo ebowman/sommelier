@@ -43,13 +43,14 @@ public struct PlanSummary: Equatable, Sendable {
     public var stripHeld: Set<ItemKey> = []
     public var stripHoldFolded: Int?
     public var stripHoldUnplaceable = false
+    public var stripHoldDidNotHold = false   // gdu.134
     public init(moving: Set<ItemKey> = [], blocked: [ItemKey: ItemKey] = [:], held: Set<ItemKey> = [], blockedNoWall: Set<ItemKey> = [], passStarted: Int = 0) {
         self.moving = moving; self.blocked = blocked; self.held = held; self.blockedNoWall = blockedNoWall; self.passStarted = passStarted
     }
     public init(plan: Plan, held: Set<ItemKey>) {
         self.init(moving: Set(plan.actions.map { a -> ItemKey in switch a { case .move(let k, _), .hide(let k), .show(let k): return k } }),
                   blocked: plan.blockedBy, held: held, blockedNoWall: plan.blockedNoWall)
-        stripHeld = plan.stripHeld; stripHoldFolded = plan.stripHoldFolded; stripHoldUnplaceable = plan.stripHoldUnplaceable
+        stripHeld = plan.stripHeld; stripHoldFolded = plan.stripHoldFolded; stripHoldUnplaceable = plan.stripHoldUnplaceable; stripHoldDidNotHold = plan.stripHoldDidNotHold
     }
 }
 
