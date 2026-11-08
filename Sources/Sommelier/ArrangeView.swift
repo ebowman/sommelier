@@ -27,6 +27,10 @@ final class ArrangeWindowController: NSObject, NSWindowDelegate {
             w.setFrameAutosaveName("Arrange")
             window = w
             viewModel.onWindowCommand = { [weak self] cmd in self?.apply(cmd) }
+            viewModel.windowProbe = { [weak self] in
+                guard let w = self?.window else { return (false, false, false) }
+                return (w.isVisible && !w.isMiniaturized, w.isVisible && w.occlusionState.contains(.visible), w.isKeyWindow)
+            }
         }
         viewModel.start()
         window?.makeKeyAndOrderFront(nil)
@@ -40,9 +44,11 @@ final class ArrangeWindowController: NSObject, NSWindowDelegate {
         case .float:
             AppLog.log(.arrange, "arrange window: float")
             w.level = .floating
-        case .restore(let reactivate):
-            AppLog.log(.arrange, "arrange window: restore(reactivate: \(reactivate))")
+        case .restore(let orderFront, let reactivate):
+            AppLog.log(.arrange, "arrange window: restore(orderFront: \(orderFront), reactivate: \(reactivate))")
             w.level = .normal
+            // gdu.136: the window ends the action at least as visible as it began it: in front of the app the drag activated.
+            if orderFront, w.isVisible, !w.isMiniaturized { w.orderFrontRegardless() }
             if reactivate {
                 w.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)

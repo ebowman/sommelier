@@ -83,6 +83,9 @@ public actor LayoutEngine {
         public var selfPositioningOwners: Set<String> = SelfPositioning.defaultOwners
         /// `setLayout` calls closer together than this are one request: only the last layout is planned (gdu.47). Zero = no window.
         public var layoutCoalesce: Duration = .milliseconds(300)
+        /// gdu.136: after a user edit whose other pending order moves were deferred, the regular pass that performs them runs this long
+        /// after the pass that announced them (the status line says "Done: X. Next: Y" meanwhile).
+        public var userEditFollowUp: Duration = .seconds(3)
         /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
         public var layoutCoalesceMax: Duration = .seconds(1)
         /// The Control Center tracked entries as stored now (nil = unreadable or not wired: owner-key hide units). Read at the start of
@@ -448,6 +451,15 @@ public actor LayoutEngine {
     private var stripHoldUnplaceable = false
     /// gdu.134: the hold was set by a move across the fold that did not hold (selects the status text).
     private var stripHoldDidNotHold = false
+    /// gdu.136: the keys the user's last edit moved (`setLayout(moved:)`), until the first regular pass: while set, a USER pass (the one
+    /// started for the edit's `setLayout`) and the passes chained from it plan no order move of any other subject (one surprise at a time).
+    private var userEditMoved: Set<ItemKey>?
+    /// gdu.136: the current pass is such a restricted pass (set at pass start; read by `makePlan`).
+    private var userEditRestricting = false
+    /// gdu.136: the folded keys (pile + folded-parked) of the latest planned observation.
+    private var lastFolded: Set<ItemKey> = []
+    static let userEditFollowUpReason = "userEditFollowUp"
+    private var deferredThisPass = false
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -614,9 +626,21 @@ public actor LayoutEngine {
         noteSupersede("setLayout")
         do { try store.save(new) } catch { log("cannot save layout: \(error)") }
         let stamp = await publishLayout(new, normalized: moved)
-        if stripOpenHold != nil { log("engine: strip hold cleared (layout edit)") }   // gdu.131: a changed record may make the move unnecessary
-        resetStripHold()
-        await clearFailures()
+        // gdu.136: one surprise at a time. The edit's moved keys are the only order subjects the pass for it (and the passes chained from it) may move.
+        if userPlacement, !movedKeys.isEmpty { userEditMoved = (userEditMoved ?? []).union(movedKeys) }
+        // gdu.136: the hold is a property of the bar. An edit releases it only when it touches a folded item (the hold's set or the current one);
+        // a drawn-only edit leaves the bar as it was. Retry (`clearFailures()`) always releases.
+        var keepHold = false
+        if stripOpenHold != nil {
+            if movedKeys.isDisjoint(with: stripHoldFoldedSet.union(lastFolded)) {
+                keepHold = true
+                log("engine: strip hold kept: the edit did not touch folded items")
+            } else {
+                log("engine: strip hold cleared (layout edit)")   // gdu.131: a changed record may make the move unnecessary
+                resetStripHold()
+            }
+        }
+        await clearFailures(keepingStripHold: keepHold)
         if config.layoutCoalesce > .zero {
             // The pass for this layout starts after the window; a further setLayout inside it replaces this one (same reason
             // key), so a quick change of mind plans only the final layout. The drop's revision stamp is unaffected: the first
@@ -1157,10 +1181,14 @@ public actor LayoutEngine {
     }
 
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
-    public func clearFailures() async {
+    public func clearFailures() async { await clearFailures(keepingStripHold: false) }
+
+    private func clearFailures(keepingStripHold: Bool) async {
         lastVerifiedOrderMove = [:]; revertWatch = [:]   // 9o9.4: a Retry drags on its first plan
-        if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
-        resetStripHold()
+        if !keepingStripHold {
+            if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
+            resetStripHold()
+        }
         failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
@@ -1648,7 +1676,37 @@ public actor LayoutEngine {
             }
         }
         applyStripHold(&p, obs: planObs)
+        lastFolded = BarFingerprint.folded(planObs)
+        applyUserEditDeferral(&p)
         return p
+    }
+
+    /// gdu.136: one surprise at a time. In a restricted pass (see `userEditMoved`) an order move whose subject is not among the user's
+    /// moved keys is withheld (membership actions stay) and reported as skipped with `deferredAfterUserEditReason`; it is planned again by
+    /// the next regular pass.
+    private func applyUserEditDeferral(_ p: inout Plan) {
+        guard userEditRestricting, let moved = userEditMoved else { return }
+        // The planner may realise a drop of B by moving its neighbour A after B: a move whose subject OR relation target is a moved key is the
+        // edit's own move. Anything else is a different surprise.
+        func isTheEdits(_ a: PlannedAction) -> Bool {
+            guard case .move(let k, let rel) = a else { return true }
+            if moved.contains(k) { return true }
+            switch rel { case .before(let t), .after(let t): return moved.contains(t); case .leftmost, .rightmost: return false }
+        }
+        let deferred: [ItemKey] = p.actions.compactMap { a in
+            if case .move(let k, _) = a, !isTheEdits(a) { return k }
+            return nil
+        }
+        guard !deferred.isEmpty else { return }
+        p.actions.removeAll { !isTheEdits($0) }
+        for k in deferred {
+            p.skipped.removeAll { $0.key == k }
+            p.skipped.append(SkippedAction(k, Reconciler.deferredAfterUserEditReason))
+        }
+        p.deferredAfterUserEdit = deferred
+        p.userEditMoved = moved.sorted { $0.description < $1.description }
+        // The phase stays `.order` even with no action left: the pass is NOT converged (deferred moves remain, and the edit's own move may
+        // not be plannable yet), so it ends incomplete and, if it did something, chains once more (see the end of `runPassBody`).
     }
 
     /// gdu.126: the bar-level strip hold. See `stripOpenHold`. A held fold move is reported as skipped (never dispatched, never counted as
@@ -1813,7 +1871,7 @@ public actor LayoutEngine {
         for k in plan.stripHeld where out[k] != nil { out[k] = .notFitting }   // gdu.126: held, not pending: never "Moving…"
         var waiting = Set<ItemKey>()
         let now = ContinuousClock.now
-        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting && s.reason != Reconciler.noCrossingOwnPositionSkipReason && s.reason != Reconciler.foldedParkedSkipReason && s.reason != Reconciler.stripUnavailableSkipReason {   // own position unread = temporary unknown: keeps its .pending base
+        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting && s.reason != Reconciler.noCrossingOwnPositionSkipReason && s.reason != Reconciler.foldedParkedSkipReason && s.reason != Reconciler.stripUnavailableSkipReason && s.reason != Reconciler.deferredAfterUserEditReason {   // own position unread = temporary unknown: keeps its .pending base
             if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason || s.reason == Reconciler.noSafeMoveSkipReason || Reconciler.isMovingNeighbourSkip(s.reason) {   // gdu.105: transient, see positionWaitTimeout
                 let since = positionWaitSince[s.key] ?? now
                 positionWaitSince[s.key] = since
@@ -1939,6 +1997,12 @@ public actor LayoutEngine {
             }
         }
         if converged, !unsettledKeys.isEmpty { await clearUnsettled() }   // gdu.78
+        // gdu.136: moves withheld after the user's edit are performed by a REGULAR pass (a request of its own, never a chained one), scheduled
+        // when the pass that announced them ends; a chained pass in between pushes it out again.
+        if deferredThisPass, userEditRestricting, userEditMoved != nil {
+            deferredThisPass = false
+            scheduleReconcile(after: config.userEditFollowUp, reason: Self.userEditFollowUpReason)
+        }
         // A key that failed fewer than `maxKeyFailures` passes in a row is retried by one more pass (bounded by the strikes).
         if !converged, draining, !pending, !stopped, !cutThisPass, chained < config.maxChainedPasses, hasRetryableFailure { chained += 1; pending = true }
         return report
@@ -2141,9 +2205,11 @@ public actor LayoutEngine {
         lastStart = config.instant()
         var actionCount = 0
         passSerial += 1
+        deferredThisPass = false
         await publish { $0.passesStarted += 1; if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil }; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
 
         var userPass = false
+        let hadRequest = requestedAt != nil
         if let r = requestedAt {
             requestedAt = nil
             userPass = requestUserInitiated
@@ -2154,6 +2220,13 @@ public actor LayoutEngine {
                 log("pass delayed: \(requestedDuringPass ? "a pass was already running when the request arrived" : "scheduling (min interval or busy wait)") \(ms) ms")
             }
         }
+
+        // gdu.136: a pass started for a user's edit (`userPass`: the setLayout request, from the Arrange window / a drop) or chained from it
+        // (no request of its own: `!hadRequest`) is restricted to the edit's moved keys; the first regular pass (poll, trigger, the follow-up) ends it.
+        if userEditMoved != nil {
+            if userPass || !hadRequest { userEditRestricting = true }
+            else { log("engine: user-edit restriction ended (regular pass)"); userEditMoved = nil; userEditRestricting = false }
+        } else { userEditRestricting = false }
 
         // (a0) 9o9.8: locked / asleep -> do not observe at all (wake signal or the long retry resumes); otherwise the pause episode is over.
         if let why = dormantReason() { return await endPausedForInteraction(why, PassReport(outcome: .paused)) }
@@ -2287,6 +2360,10 @@ public actor LayoutEngine {
             plan = makePlan(obs)
         }
         log(Self.describe(plan))
+        if !plan.deferredAfterUserEdit.isEmpty {
+            log("order: \(plan.deferredAfterUserEdit.count) move(s) deferred after your change (\(plan.deferredAfterUserEdit.map(\.description).joined(separator: ", "))); next regular pass")
+            deferredThisPass = true   // `finish` schedules the regular pass that performs them
+        }
         for sk in plan.skipped where sk.reason == Reconciler.staleFrameSkipReason { log("order: skipped \(sk.key): stale frame") }
         for sk in plan.skipped where sk.reason == Reconciler.noSafeMoveSkipReason { log("order: skipped \(sk.key): \(sk.reason)") }
         for sk in plan.skipped where Reconciler.isMovingNeighbourSkip(sk.reason) { log("order: skipped \(sk.key): \(sk.reason)") }
@@ -2671,6 +2748,9 @@ public actor LayoutEngine {
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
+        // gdu.136: only the moves withheld after the user's edit remain: chain (bounded, only if this pass did something) so the edit's own
+        // move, not yet plannable before this pass's membership write, is made in a restricted chained pass; `finish` schedules the regular one.
+        if !plan.deferredAfterUserEdit.isEmpty { return await rescheduleIncomplete(report(.incomplete), converged: false) }
         return await abort(.incomplete)
     }
 

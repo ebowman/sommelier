@@ -76,7 +76,8 @@ private func clearedLines(_ r: HoldRig) -> Int { r.bar.lines.filter { $0.contain
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await r.engine.stripOpenHold != nil)
         let edited = Layout.placedAll(visible: [k("P1"), k("D1"), k("D2"), k("P2"), k("D3"), k("P3"), k("D4")])
-        _ = await r.engine.setLayout(edited)
+        _ = await r.engine.setLayout(edited, moved: [k("P1")])   // gdu.136: an edit releases the hold only when it touches a folded key
+        await r.engine.requestReconcile(reason: "trigger")   // gdu.136: a regular pass; a bare reconcileOnce right after an edit is a chained one
         #expect(r.bar.lines.contains { $0.contains("strip hold cleared (layout edit)") } && !r.bar.lines.contains { $0.contains("strip hold cleared (retry)") })
         let h3 = await r.engine.stripOpenHold == nil
         #expect(h3 && clearedLines(r) == 1)

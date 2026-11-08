@@ -88,6 +88,8 @@ final class ArrangeViewModel {
     /// Floats the Arrange window while the engine drags and takes activation back afterwards (gdu.100).
     @ObservationIgnored private var windowGuard = ArrangeWindowGuard()
     @ObservationIgnored var onWindowCommand: ((ArrangeWindowGuard.Command) -> Void)?
+    /// gdu.136: the window's real state for the guard: on screen (open, not miniaturized), unoccluded, key.
+    @ObservationIgnored var windowProbe: (() -> (onScreen: Bool, unoccluded: Bool, key: Bool))?
     @ObservationIgnored private var lastSignature = ""
     @ObservationIgnored private var loggedGeneration = -1
     /// gdu.117 live counters: `ArrangeView.body` evaluations and `ArrangeSections.make` runs. Logged (`arrange: renders=...`) at most once
@@ -180,6 +182,16 @@ final class ArrangeViewModel {
         ctx.stripHoldFolded = state.lastPlan.stripHoldFolded
         ctx.stripHoldUnplaceable = state.lastPlan.stripHoldUnplaceable
         ctx.stripHoldDidNotHold = state.lastPlan.stripHoldDidNotHold
+        // gdu.136: "Done: X. Next: Y" once the edit's own move is no longer pending or in flight.
+        let editDone = state.lastPlan.userEditMoved.allSatisfy { k in
+            switch state.perItem[k] { case .pending?, .moving?: return false; default: return true }
+        }
+        if !state.lastPlan.deferredAfterUserEdit.isEmpty, editDone {
+            let rows = c.visible.rows + c.hidden.rows + c.alwaysHidden.rows
+            func title(_ k: ItemKey) -> String { rows.first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
+            ctx.userEditDone = state.lastPlan.userEditMoved.map(title)
+            ctx.userEditNext = state.lastPlan.deferredAfterUserEdit.map(title)
+        }
         if let k = state.inFlight.flatMap(Self.subject(of:)) { ctx.movingName = (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
         return ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
                                           inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
@@ -215,7 +227,9 @@ final class ArrangeViewModel {
     }
 
     private func driveWindowGuard() {
-        if let cmd = windowGuard.update(inFlight: state.inFlight != nil, windowVisible: windowVisible, appActive: NSApp.isActive) {
+        let probe = windowProbe?() ?? (onScreen: windowVisible, unoccluded: windowVisible, key: false)
+        if let cmd = windowGuard.update(inFlight: state.inFlight != nil, windowVisible: windowVisible && probe.unoccluded, appActive: NSApp.isActive,
+                                        windowKey: probe.key, windowOnScreen: windowVisible && probe.onScreen, now: Date()) {
             onWindowCommand?(cmd)
         }
     }

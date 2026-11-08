@@ -609,6 +609,9 @@ public enum ArrangeSections {
         public var stripHoldUnplaceable = false
         /// gdu.134: the hold is for a move across the fold that did not hold.
         public var stripHoldDidNotHold = false
+        /// gdu.136: titles of the keys the user's edit moved (done) and of the order moves now deferred to the next pass (next, in plan order).
+        public var userEditDone: [String] = []
+        public var userEditNext: [String] = []
         public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
                     handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
             self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
@@ -620,6 +623,11 @@ public enum ArrangeSections {
     public static func barTooNarrowText(_ n: Int, unplaceable: Bool = false, didNotHold: Bool = false) -> String {
         "The bar is too narrow for this order: macOS folds \(n) item\(n == 1 ? "" : "s") behind « and "
             + (didNotHold ? "a move across the fold did not hold." : unplaceable ? "Sommelier could not place an item inside the strip." : "the strip would not open")
+    }
+    /// gdu.136: one surprise at a time: what the user's edit did, and the first move that follows on the next pass.
+    public static func userEditDeferredText(done: [String], next: [String]) -> String {
+        let more = next.count - 1
+        return "Done: \(done.joined(separator: ", ")). Next: \(next[0])" + (more > 0 ? " (\(more) more to match your order)" : "")
     }
     public static func blockedByGivenUpText(_ wall: String) -> String { "Blocked by \(wall), which Sommelier can't place — right-click it to try again" }
     public static let checkingMenuBar = "Checking the menu bar…"
@@ -667,6 +675,9 @@ public enum ArrangeSections {
         else if let n = context.stripHoldFolded {
             primary = barTooNarrowText(n, unplaceable: context.stripHoldUnplaceable, didNotHold: context.stripHoldDidNotHold)
             if pinnedDown > 0 { primary! += " · \(pinnedDown) item\(pinnedDown == 1 ? "" : "s") can't be pinned down" }
+        }
+        else if !context.userEditNext.isEmpty, !context.userEditDone.isEmpty, !inFlight {
+            primary = userEditDeferredText(done: context.userEditDone, next: context.userEditNext)
         }
         else if cannotPlace > 0 { primary = cannotPlaceText(cannotPlace) }
         else if pinnedDown > 0 { primary = cannotPinDownText(pinnedDown) }

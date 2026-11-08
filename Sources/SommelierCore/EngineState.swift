@@ -44,6 +44,9 @@ public struct PlanSummary: Equatable, Sendable {
     public var stripHoldFolded: Int?
     public var stripHoldUnplaceable = false
     public var stripHoldDidNotHold = false   // gdu.134
+    /// gdu.136: moves withheld after the user's edit, and the keys the edit moved (the status line's "Done: X. Next: Y").
+    public var deferredAfterUserEdit: [ItemKey] = []
+    public var userEditMoved: [ItemKey] = []
     public init(moving: Set<ItemKey> = [], blocked: [ItemKey: ItemKey] = [:], held: Set<ItemKey> = [], blockedNoWall: Set<ItemKey> = [], passStarted: Int = 0) {
         self.moving = moving; self.blocked = blocked; self.held = held; self.blockedNoWall = blockedNoWall; self.passStarted = passStarted
     }
@@ -51,6 +54,7 @@ public struct PlanSummary: Equatable, Sendable {
         self.init(moving: Set(plan.actions.map { a -> ItemKey in switch a { case .move(let k, _), .hide(let k), .show(let k): return k } }),
                   blocked: plan.blockedBy, held: held, blockedNoWall: plan.blockedNoWall)
         stripHeld = plan.stripHeld; stripHoldFolded = plan.stripHoldFolded; stripHoldUnplaceable = plan.stripHoldUnplaceable; stripHoldDidNotHold = plan.stripHoldDidNotHold
+        deferredAfterUserEdit = plan.deferredAfterUserEdit; userEditMoved = plan.userEditMoved
     }
 }
 

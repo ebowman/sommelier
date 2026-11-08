@@ -225,6 +225,7 @@ Dev safety: always run with `SOMMELIER_LAYOUT_FILE=<scratch>/layout.json` (READM
 window shows, `arrange:` lines give drop -> verified timings). Act on MBDummy items only. Relaunch Bartender at the end.
 
 Manual checklist (every step: the capsule shows "⟳" until `mbprobe list` agrees, then "✓"):
+0. (gdu.136, live) Drop a drawn item in Arrange: exactly that item moves; the Arrange window stays in front (it is ordered in front of the app the bar drag activated, also when two actions run back to back); any follow-up move comes on the next pass after the status line announced it ("Done: X. Next: Y").
 1. Visible -> Hidden: drag Dummy A into the Hidden strip (or right-click > Move to Hidden). Dummy A AND Dummy B (same app = one hide
    unit; in general one Control Center entry, so a helper hides with its parent app, gdu.75 `HideUnitEntryTests`) show "⟳", leave the bar (agent pid unchanged), appear in Hidden with "✓".
 2. Hidden -> Visible at the first movable slot (index 0 among movable items; with Wi-Fi leftmost that is right after it): drag Dummy A to

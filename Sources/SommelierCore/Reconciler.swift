@@ -146,6 +146,10 @@ public struct Plan: Equatable, Sendable {
     public var stripHoldUnplaceable = false
     /// gdu.134: the hold was set because a move across the fold did not hold (verified elsewhere / moved back).
     public var stripHoldDidNotHold = false
+    /// gdu.136: order moves withheld because they follow the user's own edit (one surprise at a time), in plan order.
+    public var deferredAfterUserEdit: [ItemKey] = []
+    /// gdu.136: the keys the user's edit moved while `deferredAfterUserEdit` is non-empty (the status line's "Done:").
+    public var userEditMoved: [ItemKey] = []
 }
 
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).
@@ -528,6 +532,9 @@ public struct Reconciler: Sendable {
 
     /// gdu.121: why a parked, allowed key is not shown while the chevron is fresh.
     public static let foldedParkedSkipReason = "behind « (the bar is full; macOS folds it for width)"
+
+    /// gdu.136: why an order move that is not the user's own is withheld right after the user's edit: it waits for the next regular pass.
+    public static let deferredAfterUserEditReason = "waiting a moment after your change"
 
     /// gdu.126: why a fold move (pull-out / push-in) is not dispatched: opening the « strip failed on this bar state and is held.
     public static let stripUnavailableSkipReason = "the « strip could not be opened on this bar; widen the bar or hide items"
