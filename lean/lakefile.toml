@@ -1,0 +1,9 @@
+name = "sommelier"
+defaultTargets = ["Sommelier", "fuzz"]
+
+[[lean_lib]]
+name = "Sommelier"
+
+[[lean_exe]]
+name = "fuzz"
+root = "Sommelier.Fuzz"

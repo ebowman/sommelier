@@ -17,3 +17,7 @@ build/
 
 # Release artifacts
 dist/
+
+# Lean
+lean/.lake/
+lean/scripts/mutants.json
