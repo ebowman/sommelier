@@ -28,6 +28,7 @@ private func entry(_ key: ItemKey, x: CGFloat, y: CGFloat = 3, onBar: Bool, stal
 }
 
 // MARK: - ObservedOrder classification
+// NOTE: these items set controlCenterAllowed by hand; the scanner populates it for parked/not-hosted items (gdu.121 corrective) and ScannerFoldedParkedTests.swift covers that.
 
 /// One drawn item, a chevron (configurable), one parked item (configurable).
 private func small(chevron: Bool = true, chevronStale: Bool = false, expanded: Bool = false, parkedStale: Bool = false, allowed: Bool? = true,

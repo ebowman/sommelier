@@ -957,6 +957,13 @@ public struct MenuBarScanner {
                     if state.authorityLogged.insert("\(c.app.pid)|\(c.info.identityKey)|\(line)").inserted { log(line) }
                 }
             }
+            // gdu.121 (corrective): a parked (off-strip) or not-hosted candidate never passed the on-bar gate above, so its Control Center
+            // flag stayed nil and the planner could not tell "folded for width" from "unknown". Read ONLY the flag here; no other outcome changes.
+            if ccAllowed == nil, agent != nil, c.info.frame.width > 1, !onBar(c.info.frame) || reportNotHosted,
+               let r = tracked(), let tk = r.trackedKey(candidates: [c.app.bundleID].compactMap { $0 }),
+               let e = r.entries.first(where: { $0.key == tk }) {
+                ccAllowed = e.isAllowed
+            }
             // gdu.87: with the store unreadable no item can be told hidden from visible, so an item that has no corroborated hosted
             // element is NOT on the bar (placement unknown) rather than being believed on its stale app-side frame. Apple's own
             // extras are not governed by the store.
