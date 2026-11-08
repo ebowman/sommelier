@@ -257,8 +257,8 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
-        await r.actuator.removeItem(k("D4"))        // the drawn count changes: a different bar state
-        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        await r.actuator.removeItem(k("D4"))        // the drawn count changes: a different bar state, released only when seen on two consecutive observations (gdu.131)
+        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 2)
         await r.engine.clearFailures()               // Retry
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }

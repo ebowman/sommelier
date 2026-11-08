@@ -434,7 +434,14 @@ public actor LayoutEngine {
     /// gdu.126: the bar state in which opening the « strip failed. While the current observation has the same fingerprint, no fold move
     /// (a move with a subject or target behind «) is dispatched: ONE chevron click per bar state, not three per folded key. Cleared by a
     /// changed fingerprint, Retry (`retry(key:)`, `clearFailures()`).
+    /// gdu.131: no time expiry. The fingerprint is chevron + drawn count only; a change releases the hold only when seen on two consecutive
+    /// passes (`stripPending`, counted once per pass: `passSerial`). Retry, `clearFailures()` and any `setLayout` (which calls it) clear it.
     private(set) var stripOpenHold: BarFingerprint?
+    /// The folded keys when the hold was set (the status line's N; a held fold move may involve these or the current observation's folded keys).
+    private var stripHoldFoldedSet: Set<ItemKey> = []
+    private(set) var stripPending: (fingerprint: BarFingerprint, count: Int)?
+    private var stripCountedPass = -1
+    private var passSerial = 0
     private var stripHoldLogged: String?
     /// gdu.129: the hold was set by a strip that OPENED but could not place the subject (not by a failed open): selects the status text.
     private var stripHoldUnplaceable = false
@@ -604,6 +611,8 @@ public actor LayoutEngine {
         noteSupersede("setLayout")
         do { try store.save(new) } catch { log("cannot save layout: \(error)") }
         let stamp = await publishLayout(new, normalized: moved)
+        if stripOpenHold != nil { log("engine: strip hold cleared (layout edit)") }   // gdu.131: a changed record may make the move unnecessary
+        resetStripHold()
         await clearFailures()
         if config.layoutCoalesce > .zero {
             // The pass for this layout starts after the window; a further setLayout inside it replaces this one (same reason
@@ -1134,11 +1143,15 @@ public actor LayoutEngine {
         requestReconcile(supersede: true, reason: "setShowHiddenSection", userInitiated: true)
     }
 
+    private func resetStripHold() {
+        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false; stripPending = nil; stripHoldFoldedSet = []
+    }
+
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
         lastVerifiedOrderMove = [:]; revertWatch = [:]   // 9o9.4: a Retry drags on its first plan
         if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
-        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false
+        resetStripHold()
         failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
@@ -1163,7 +1176,7 @@ public actor LayoutEngine {
         positionWaitSince[key] = nil; positionTimedOut.remove(key)   // 9o9.24: a fresh 60 s wait
         log("engine: retry \(key): attempts cleared")
         if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
-        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false
+        resetStripHold()
         await publish { s in
             if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
         }
@@ -1634,24 +1647,36 @@ public actor LayoutEngine {
     private func applyStripHold(_ p: inout Plan, obs: ObservedOrder) {
         guard let hold = stripOpenHold else { return }
         // gdu.129: a scan whose chevron is only carried (recently verified) cannot tell whether the bar changed: keep the hold, plan nothing new.
-        if obs.overflowChevron == nil, obs.chevronRecent {
-            p.stripHoldFolded = hold.folded.count; p.stripHoldUnplaceable = stripHoldUnplaceable
-            return
-        }
+        // gdu.131: that includes planning no order move at all: the carried scan knows no pile, so any move may cross the fold (a second
+        // consecutive carried scan settles and would otherwise dispatch one, failing the strip again and re-recording the hold from it).
+        let carried = obs.overflowChevron == nil && obs.chevronRecent
         let now = BarFingerprint(obs)
-        guard now == hold else {
-            log("engine: strip hold cleared (the bar changed: drawn \(hold.drawn)->\(now.drawn), folded \(hold.folded.count)->\(now.folded.count))")
-            stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false
-            return
+        if carried {
+            // neither counts nor resets the pending change
+        } else if now == hold {
+            stripPending = nil
+        } else if stripCountedPass != passSerial {
+            // gdu.131: one observation per pass; a change must be seen on two consecutive ones. A pass has only settled observations
+            // (the engine plans nothing from an unsettled read), so consecutive passes are consecutive agreed observations.
+            stripCountedPass = passSerial
+            let n = stripPending?.fingerprint == now ? (stripPending?.count ?? 0) + 1 : 1
+            stripPending = (now, n)
+            if n >= 2 {
+                log("engine: strip hold cleared (the bar changed: drawn \(hold.drawn)->\(now.drawn), chevron \(hold.hasChevron)->\(now.hasChevron))")
+                resetStripHold()
+                return
+            }
         }
+        let foldedNow = stripHoldFoldedSet.union(BarFingerprint.folded(obs))
         func needsStrip(_ a: PlannedAction) -> ItemKey? {
             guard case .move(let k, let rel) = a else { return nil }
+            if carried { return k }
             var involved = [k]
             switch rel { case .before(let t), .after(let t): involved.append(t); default: break }
-            return involved.contains(where: hold.folded.contains) ? k : nil
+            return involved.contains(where: foldedNow.contains) ? k : nil
         }
         let held = p.actions.compactMap(needsStrip)
-        p.stripHoldFolded = hold.folded.count; p.stripHoldUnplaceable = stripHoldUnplaceable
+        p.stripHoldFolded = stripHoldFoldedSet.count; p.stripHoldUnplaceable = stripHoldUnplaceable
         guard !held.isEmpty else { return }
         p.actions.removeAll { needsStrip($0) != nil }
         for k in held {
@@ -1660,7 +1685,7 @@ public actor LayoutEngine {
         }
         p.stripHeld = Set(held)
         if p.phase == .order, p.actions.isEmpty { p.phase = .converged }
-        let line = "plan: \(held.count) fold move(s) held, \(Reconciler.stripUnavailableSkipReason) (\(hold.folded.count) folded)"
+        let line = "plan: \(held.count) fold move(s) held, \(Reconciler.stripUnavailableSkipReason) (\(stripHoldFoldedSet.count) folded)"
         if stripHoldLogged != line { stripHoldLogged = line; log(line) }
     }
 
@@ -2106,6 +2131,7 @@ public actor LayoutEngine {
         let generation = layoutGeneration
         lastStart = config.instant()
         var actionCount = 0
+        passSerial += 1
         await publish { $0.passesStarted += 1; if $0.orderNotAppliedNotice != nil { $0.orderNotAppliedNotice = nil }; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
 
         var userPass = false
@@ -2601,7 +2627,7 @@ public actor LayoutEngine {
                     }
                 } else { markFailed(key, e) }
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
-                if e.isStripHoldFailure { stripOpenHold = BarFingerprint(obs); stripHoldLogged = nil; stripHoldUnplaceable = e.isStripUnplaceable }
+                if e.isStripHoldFailure { stripOpenHold = BarFingerprint(obs); stripHoldFoldedSet = BarFingerprint.folded(obs); stripPending = nil; stripHoldLogged = nil; stripHoldUnplaceable = e.isStripUnplaceable }
             }
             plan = makePlan(obs)
             phaseReached = plan.phase

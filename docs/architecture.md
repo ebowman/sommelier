@@ -37,7 +37,13 @@ per section), it is never a new item, never shown or hidden, never a move subjec
 open-strip scan cannot pin the subject down (`.parkedSubject`, untrusted frame, not found, timeout; no drag was posted), returns
 `.mechanismFailed(stripOpenFailureMessage | stripUnplaceableMessage)`. The engine treats either as a property of the bar, not of the key:
 no attempt, no strike, no `.unsupported`; it sets `stripOpenHold` (a `BarFingerprint`) and every fold move is skipped with
-`Reconciler.stripUnavailableSkipReason` until the bar changes or Retry. One diagnostic line (`strip: subject not placeable inside the open
+`Reconciler.stripUnavailableSkipReason` until the bar changes or Retry. **gdu.131:** the fingerprint is the chevron and the drawn count
+ONLY; the folded set (system overflow plus `foldedParked`) flaps between reads (iStat items alternating stale and fresh, 14 <-> 11) and is
+kept beside the hold only for the status line's N and for recognising a held fold move. A chevron/drawn change releases the hold only when
+seen on two consecutive passes (`stripPending`, counted once per pass; engine plans come only from settled observations; a carried-chevron
+scan neither counts nor resets, and while a hold is active it holds EVERY order move, not only fold moves, because a carried scan cannot tell a drawn-only move from one that crosses the fold); the line stays `strip hold cleared (the bar changed: drawn A->B, chevron X->Y)`. There is NO time expiry: a bar
+that does not change stays held and quiet (zero further strip sessions); the status line explains and Retry (or any layout edit, which
+runs `clearFailures()`) is the way out. One diagnostic line (`strip: subject not placeable inside the open
 strip:`) logs the subject's app-side frame and the hosted elements left of the chevron. A carried chevron that was `recentlyVerified`
 keeps `foldedParked` (`ObservedOrder.chevronRecent`) but never plans a fold move or opens a strip.
 
