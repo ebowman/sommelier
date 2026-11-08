@@ -240,6 +240,7 @@ public enum ArrangeSections {
         guard let sec = layout.section(of: key) else { return true }
         switch sec {
         case .visible:
+            if observed.foldedParked.contains(key) { return true }   // gdu.121: folded for width; macOS decides, nothing to realize
             guard observed.onBar.contains(key) else { return false }
             return drawnOrder(layout.visible, observed) == drawnOrder(observed.onBar, observed, within: layout.visible)
                 && foldConsistent(key, layout: layout, observed: observed)
@@ -254,20 +255,25 @@ public enum ArrangeSections {
     /// drawn key stands left of it in the record; a drawn key when no overflowed key stands right of it. Keys outside the Visible record
     /// and an open strip (nothing overflowed) are always consistent. The order AMONG overflowed keys is not tracked.
     public static func foldConsistent(_ key: ItemKey, layout: Layout, observed: ObservedOrder) -> Bool {
-        let pile = observed.systemOverflow.intersection(observed.onBar)
+        // gdu.121: parked keys macOS folded for width count as overflowed, like pile keys. They are never pulled out (no hosted element to
+        // drag), so a folded key is always consistent and a drawn key is judged against the hosted pile only (otherwise it would read
+        // "pending" forever for a crossing nothing plans).
+        let real = observed.systemOverflow.intersection(observed.onBar)
+        let pile = real.union(observed.foldedParked)
         guard !pile.isEmpty, !observed.stripExpanded, let i = layout.visible.firstIndex(of: key) else { return true }
+        if observed.foldedParked.contains(key) { return true }
         let bar = Set(observed.onBar)
         if pile.contains(key) {
             return !layout.visible[..<i].contains { bar.contains($0) && !pile.contains($0) && $0 != observed.overflowChevron }
         }
-        return !layout.visible[(i + 1)...].contains { pile.contains($0) }
+        return !layout.visible[(i + 1)...].contains { real.contains($0) }
     }
 
     /// 9o9.11: the status of an on-bar key before plan actions, skips and failures are applied. Inconsistent with the fold: `.pending`,
     /// never `.inPlace` (no check badge, no "matches"); a consistent pile key: `.notFitting`; otherwise `.inPlace`.
     public static func foldBaseStatus(_ key: ItemKey, layout: Layout, observed: ObservedOrder) -> ItemStatus {
         if !foldConsistent(key, layout: layout, observed: observed) { return .pending }
-        return observed.systemOverflow.contains(key) ? .notFitting : .inPlace
+        return observed.systemOverflow.contains(key) || observed.foldedParked.contains(key) ? .notFitting : .inPlace
     }
 
     private static func drawnOrder(_ keys: [ItemKey], _ o: ObservedOrder, within: [ItemKey]? = nil) -> [ItemKey] {
@@ -344,7 +350,7 @@ public enum ArrangeSections {
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
         let parked = Set(observed.parked)
-        let pile = observed.systemOverflow.intersection(onBar)
+        let pile = observed.systemOverflow.intersection(onBar).union(observed.foldedParked)   // gdu.121: folded parked keys are overflowed too
 
         // 9o9.5: Arrange DISPLAYS the engine's last plan (`lastPlan`) and never re-derives what the planner would do. The only thing it
         // computes itself is whether a drawn key's immediate observed neighbours are the ones the record has (the check's evidence).
@@ -409,6 +415,9 @@ public enum ArrangeSections {
             var waitName: String?
             if timedOut.contains(k) {
                 state = .cannotPlace(ArrangeTracker.timeoutText)
+            } else if observed.foldedParked.contains(k), !(status.map { if case .failed = $0 { true } else { false } } ?? false) {
+                // gdu.121: parked, allowed, running while « is fresh: folded for width. Never moving / waiting / not on the bar.
+                state = .behindChevron
             } else if suppressed && isAwaiting {
                 // Right after a drop, before a pass has judged it: the tracker's word, not the engine's last (older) plan.
                 state = .moving
@@ -494,7 +503,7 @@ public enum ArrangeSections {
         var vNot: [ArrangeRow] = []
         if hasObs {
             for k in layout.visible where !k.isOverflowChevron {
-                if onBar.contains(k) { vRows.append(visibleRow(k, ghost: false)); continue }
+                if onBar.contains(k) || observed.foldedParked.contains(k) { vRows.append(visibleRow(k, ghost: false)); continue }
                 if case .module = k { continue }
                 if items[k] == nil && !parked.contains(k) { vNot.append(row(k, ghost: false, running: false)); continue }
                 vRows.append(visibleRow(k, ghost: true))

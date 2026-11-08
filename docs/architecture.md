@@ -33,6 +33,13 @@ that stay behind « is not tracked while the strip is closed (their collapsed fr
 itself is the agent's own control: its key never enters the record (`ItemKey.isOverflowChevron`, healed on decode with one warning
 per section), it is never a new item, never shown or hidden, never a move subject or target.
 
+**Folded for width (gdu.121).** macOS hides items that do not fit behind «, and the agent hosts only part of that pile. A parked
+Visible item whose owner runs, whose Control Center flag already allows it, while a FRESH « is on the bar and the strip is
+collapsed, is *folded for width* (`ObservedOrder.foldedParked`; still in `parked`). The planner never plans a `show` for it (one
+skip, `Reconciler.foldedParkedSkipReason`), never pulls it out and never uses it as a move target; Arrange renders it « (not moving,
+not waiting, not "not on the bar") and the fold line follows the last overflowed key. No « (wide bar), a stale «, an open strip, an
+unknown or false Control Center flag, a hidden-in-Control-Center or placement-unknown item: unchanged (shows are planned as before).
+
 **Honesty.** The Visible strip is the record in record order and never reorders itself to match the bar. Each row's badge is the
 only claim about the bar, and it comes from the engine's last plan and a settled observation, not from the window's own guess (g).
 

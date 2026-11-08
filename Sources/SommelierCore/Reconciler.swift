@@ -24,6 +24,10 @@ public struct ObservedOrder: Equatable, Sendable {
     /// 9o9.11: the overflow strip was open in the scan this was built from (the fresh chevron's own read). Nothing is overflowed
     /// then (`systemOverflow` is empty), the chevron is fixed (never subject or target) but moves across it are ordinary.
     public var stripExpanded = false
+    /// gdu.121: parked keys macOS folded for width (a subset of `parked`, which keeps them). macOS hides items that do not fit behind «;
+    /// the agent hosts only part of that pile, so a parked, allowed, running item while « is fresh is folded, not hidden by
+    /// membership — never a show.
+    public var foldedParked: Set<ItemKey> = []
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
                 placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = [], staleOnBar: Set<ItemKey> = []) {
         self.staleOnBar = staleOnBar
@@ -52,6 +56,7 @@ public struct ObservedOrder: Equatable, Sendable {
         var recent = Set<ItemKey>()
         var chevron: ItemKey?
         var expanded = false
+        var foldCandidates = Set<ItemKey>()
         for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
             guard seen.insert(r.key).inserted else { continue }
             if r.item.isOnMenuBar {
@@ -62,7 +67,11 @@ public struct ObservedOrder: Equatable, Sendable {
                 // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
                 if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
                     || r.item.hiddenInControlCenter { uncorr.insert(r.key) }
-            } else { off.append(r.key); if r.item.placementUnknown { unknown.insert(r.key) } }
+            } else {
+                off.append(r.key)
+                if r.item.placementUnknown { unknown.insert(r.key) }
+                else if r.item.controlCenterAllowed == true, !r.item.hiddenInControlCenter { foldCandidates.insert(r.key) }
+            }
         }
         // 9o9.17: a stale item keeps its pile flag (carried frame), but only against a fresh chevron of the read (gdu.45).
         if chevron == nil { ovf.subtract(staleOvf) }
@@ -72,6 +81,8 @@ public struct ObservedOrder: Equatable, Sendable {
         self.carriedRecently = recent
         self.stripExpanded = expanded && chevron != nil
         if stripExpanded { systemOverflow = [] }   // an open strip draws every item at a real frame
+        // gdu.121: with a fresh chevron and the strip collapsed, an allowed parked item is folded for width.
+        if chevron != nil, !stripExpanded { foldedParked = foldCandidates }
     }
 }
 
@@ -242,7 +253,10 @@ public struct Reconciler: Sendable {
                 hides.append(k)
             }
         }
-        for k in parked where wantOnBar.contains(k) { shows.append(k) }
+        for k in parked where wantOnBar.contains(k) {
+            // gdu.121: folded for width (behind « while the bar is full): never a show, only reported.
+            if observed.foldedParked.contains(k) { skipped.append(SkippedAction(k, Reconciler.foldedParkedSkipReason)) } else { shows.append(k) }
+        }
 
         // Desired order of everything that may sit on the bar. Hidden-listed keys pulled onto the bar by their unit
         // follow the visible ones, in layout order.
@@ -293,7 +307,7 @@ public struct Reconciler: Sendable {
         // by the policy) and revealed hidden-section keys are not in the record: nothing is pulled out or pushed in because of them.
         let visibleRecord = Set(layout.visible)
         let fullRecord = desired.filter { onBarSet.contains($0) && visibleRecord.contains($0) }
-        desired = desired.filter { !ovf.contains($0) && $0 != chevronKey }
+        desired = desired.filter { !ovf.contains($0) && $0 != chevronKey && !observed.foldedParked.contains($0) }
         let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevronKey }
         let base = kept + shows
         // gdu.94 / 9o9.3: an on-bar key whose frame is not trusted (slot not corroborated by a hosted element, or a stale frame) keeps its
@@ -491,6 +505,9 @@ public struct Reconciler: Sendable {
 
     /// gdu.94: why a placed key whose bar position is not corroborated is not dragged.
     public static let uncorroboratedSkipReason = "its position on the bar is not corroborated by a hosted element (stale app-side frame or hidden in Control Center); no drag"
+
+    /// gdu.121: why a parked, allowed key is not shown while the chevron is fresh.
+    public static let foldedParkedSkipReason = "behind « (the bar is full; macOS folds it for width)"
 
     /// Why an item in macOS's own overflow area is not planned (gdu.69).
     public static let overflowSkipReason = "behind the « chevron; its order there is set when the strip is next opened"

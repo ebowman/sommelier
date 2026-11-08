@@ -875,3 +875,13 @@ A drag must not die when the dragged capsule's data changes mid-drag (Filter, st
 4. [ ] A follow-up quick drag delivers `arrange: drop#N+1 ...` (before the fix it was swallowed until `tell application id "ie.boboco.sommelier" to activate`).
 5. [ ] Same with an iStat capsule while it is fresh and a forced pass during the hold (`open -g -a Calculator`): the drop is delivered; if the row went stale the log reads `drop ... (source not draggable)` followed by `rejected ...: Its position is not fresh right now ...` and a callout shows.
 6. [ ] Control: the same hold without any change delivers the drop (as before).
+
+## Live checklist: narrow display, parked Visible items (gdu.121, 2026-11-08)
+
+On 0.1.0 a 644 pt display planned `show` for 8 allowed Visible items every pass (no-op Control Center writes, never converged). Orchestrator only; narrow display (Sidecar/portrait, or a window of items wide enough to fill the bar so « appears).
+
+1. [ ] Launch with « on the bar and many allowed Visible items parked (macOS folded them for width).
+2. [ ] Within two passes the log reads `plan: phase=converged` (the `plan:` line prints only `skipped=N`; the folded skip reason is visible in the Arrange window's « rows, not in the log).
+3. [ ] Zero `membership write` lines in the log while the bar stays full.
+4. [ ] Arrange: every parked Visible row reads « (behind), none "moving" or "not on the bar", the status line is not "Waiting..." / "Moving...", the fold line follows the last overflowed row.
+5. [ ] Widen the bar (quit a few items / bigger display): « disappears and the parked items are shown again as before.
