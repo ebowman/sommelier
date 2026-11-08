@@ -353,6 +353,39 @@ example : (run (State.init [1, 2, 3])
     [.read (mkRead .fresh [1, 2, 3] []), .userEdit [3, 1, 2] [3], .read (mkRead .fresh [1, 2, 3] []), .userEdit [1, 2] [2],
      .moveResult 3 .busy false, .read (mkRead .fresh [3, 1, 2] [])]).2 = [⟨3, .before 1, false, true⟩] := by decide
 
+/-- T3: a later edit that pulls out another folded key REPLACES the fold request (5 stays owed, but no pull-out is planned for it). -/
+example : (run (State.init [1, 2, 5, 6])
+    [.read (mkRead .fresh [1, 2] [5, 6]), .userEdit [1, 5, 2, 6] [5], .userEdit [1, 6, 2, 5] [6]]).1.foldRequest = some 6 := by decide
+example : (run (State.init [1, 2, 5, 6])
+    [.read (mkRead .fresh [1, 2] [5, 6]), .userEdit [1, 5, 2, 6] [5], .userEdit [1, 6, 2, 5] [6]]).1.owedKeys = [5, 6] := by decide
+/-- T4: the pull of 5 is in flight, an edit asks for 6, the result of 5 is busy: the request for 6 is not lost. -/
+def t4 : List Event :=
+  [.read (mkRead .fresh [1, 2] [5, 6]), .userEdit [1, 5, 2, 6] [5], .read (mkRead .fresh [1, 2] [5, 6]),
+   .userEdit [1, 6, 5, 2] [6], .moveResult 5 .busy false]
+example : (run (State.init [1, 2, 5, 6]) t4).1.foldRequest = some 6 := by decide
+example : (run (State.init [1, 2, 5, 6]) t4).1.owedKeys.contains 5 = true := by decide
+/-- T5: the pull of 5 is in flight, an edit puts 5 before every drawn key (no pull-out), the result is busy, 9 becomes drawn:
+5 is not pulled out after 9. -/
+def t5 : List Event :=
+  [.read (mkRead .fresh [1, 2] [5, 6]), .userEdit [1, 5, 2, 6] [5], .read (mkRead .fresh [1, 2] [5, 6]),
+   .userEdit [5, 1, 2, 6] [5], .moveResult 5 .busy false, .read (mkRead .fresh [1, 2, 9] [5, 6])]
+example : (run (State.init [1, 2, 5, 6, 9]) t5).1.foldRequest = none := by decide
+example : (run (State.init [1, 2, 5, 6, 9]) t5).2.length = 1 := by decide
+
+/-- T6: the pull of 5 is in flight, the drawn keys change, Try again on 5 recomputes the pull (no longer valid), busy:
+5 is owed but not re-armed as a fold request, so no strip pull follows. -/
+def t6 : List Event :=
+  [.read (mkRead .fresh [7] [5]), .userEdit [7, 5] [5], .read (mkRead .fresh [7] [5]),
+   .read (mkRead .fresh [3] [5]), .retryKey 5, .moveResult 5 .busy false, .read (mkRead .fresh [7] [5])]
+example : (run (State.init [7, 5]) t6).2 = [⟨5, .after 7, true, true⟩] := by decide
+example : (run (State.init [7, 5]) (t6.take 6)).1.foldRequest = none := by decide
+/-- T7: the same with a record-reordering edit that moved nothing. -/
+def t7 : List Event :=
+  [.read (mkRead .fresh [7] [5]), .userEdit [7, 5] [5], .read (mkRead .fresh [7] [5]),
+   .userEdit [5, 7] [], .moveResult 5 .busy false]
+example : (run (State.init [7, 5]) t7).1.foldRequest = none := by decide
+example : (run (State.init [7, 5]) t7).1.owedKeys = [5] := by decide
+
 /-- B3 (settled pass read at level `incomplete` must not become `lastDrawn`). -/
 example : (run (State.init [1, 2, 5])
     [.read (mkRead .fresh [1, 2] [5]), .read { mkRead .fresh [] [] with level := .incomplete },

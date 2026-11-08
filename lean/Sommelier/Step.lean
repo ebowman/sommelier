@@ -172,7 +172,7 @@ def result (s : State) (a : Action) (o : Outcome) (posted : Bool) : State :=
     -- a user's interrupted drag is re-armed ONCE, and only if the CURRENT chain owed it (never a granted move)
     if o == .busy && s0.flightOwed == some s0.gen && !was && s0.record.contains a.subject then
       { s1 with owedKeys := (a.subject :: s1.owedKeys).eraseDups,
-                foldRequest := if s0.flightReq then some a.subject else s1.foldRequest }
+                foldRequest := if s0.flightReq && s1.foldRequest.isNone then some a.subject else s1.foldRequest }
     else s1
 
 def step (s : State) : Event → State × List Action
@@ -184,10 +184,13 @@ def step (s : State) : Event → State × List Action
   | .userEdit rec moved =>
       if moved.isEmpty then
         ({ s with record := rec, owedKeys := s.owedKeys.filter (fun k => rec.contains k),
-                  foldRequest := s.foldRequest.filter (fun k => rec.contains k) }, [])
+                  foldRequest := s.foldRequest.filter (fun k => rec.contains k),
+                  -- a reorder can invalidate the in-flight pull-out: a busy result must not re-arm it
+                  flightReq := s.flightReq && rec == s.record }, [])
       else
         let owed := (s.owedKeys ++ rec.filter (fun k => moved.contains k)).eraseDups.filter (fun k => rec.contains k)
-        -- a pull-out is asked for only for a key folded NOW with a drawn key before it in the record; first such key only
+        -- a pull-out is asked for only for a key folded NOW with a drawn key before it in the record; first such key only; it REPLACES an earlier request (T3)
+        -- a later edit that moves the in-flight key clears `flightReq` (T5: the busy result must not re-arm a stale pull-out)
         let pull := rec.find? (fun k => moved.contains k && s.lastFreshPile.contains k
                                  && (rec.takeWhile (fun x => x != k)).any (fun x => s.lastDrawn.contains x))
         let release := moved.any (fun k => s.holdFolded.contains k || s.lastFreshPile.contains k)
@@ -197,6 +200,7 @@ def step (s : State) : Event → State × List Action
                     | some p => some p
                     | none => s.foldRequest.filter (fun k => !moved.contains k && rec.contains k),
                   hold := s.hold && !release,
+                  flightReq := s.flightReq && !(s.inFlight.any (fun a => moved.contains a.subject)),
                   skipped := [],
                   strikes := s.strikes.filter (fun k => !moved.contains k),
                   givenUp := s.givenUp.filter (fun k => !moved.contains k) }, [])
@@ -210,7 +214,9 @@ def step (s : State) : Event → State × List Action
                 strikes := s.strikes.filter (fun x => x != k), skipped := [], restricted := true,
                 editSessionUsed := false,
                 owedKeys := (k :: s.owedKeys).eraseDups.filter (fun x => s.record.contains x),
-                foldRequest := if pull then some k else s.foldRequest }, [])
+                foldRequest := if pull then some k else s.foldRequest,
+                -- the pull-out is recomputed for k: an in-flight drag of k no longer stands for the request
+                flightReq := s.flightReq && !(s.inFlight.any (fun a => a.subject == k)) }, [])
   | .moveResult k o posted =>
       match s.inFlight with
       | some a => if a.subject == k then (result s a o posted, []) else (s, [])

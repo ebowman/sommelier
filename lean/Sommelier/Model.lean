@@ -106,7 +106,7 @@ structure State where
   owedKeys : List Key
   /-- the one folded key the user dropped right of the fold: the only key a pull-out is planned for -/
   foldRequest : Option Key
-  /-- Re-apply / Try again authorise ONE strip session for an engine move that needs it -/
+  /-- `userRetry` (Re-apply) only: authorises ONE strip session for an engine move that needs it.  `retryKey` never sets it. -/
   stripGrant : Bool
   /-- only `owedKeys` may move: the user's pass and its chain -/
   restricted : Bool
@@ -114,7 +114,7 @@ structure State where
   editSessionUsed : Bool
   /-- folded keys of the last fresh chevron, kept through chevronless reads until the proof -/
   lastFreshPile : List Key
-  /-- drawn keys of the last read -/
+  /-- drawn keys of the last plannable read (settled pass read, not `incomplete`) -/
   lastDrawn : List Key
   /-- keys given up: no engine move of them until a user event -/
   givenUp : List Key
@@ -126,7 +126,8 @@ structure State where
   gen : Nat
   /-- set when a drag leaves: `some gen` iff its subject was owed by the CURRENT chain (never a granted move) -/
   flightOwed : Option Nat
-  /-- set when a drag leaves: its subject was the fold request (a busy result re-arms the request only then) -/
+  /-- set when a drag leaves: its subject was the fold request (a busy result re-arms the request only then, and only
+  if no later request exists); cleared when a later edit moves that subject -/
   flightReq : Bool
   /-- the drag in flight (at most one); only its `moveResult` clears it -/
   inFlight : Option Action

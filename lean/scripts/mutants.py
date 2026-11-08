@@ -99,12 +99,12 @@ M=[
 ('rearm_granted',"if o == .busy && s0.flightOwed == some s0.gen && !was","if o == .busy && !was"),
 ('rearm_repeat',"s0.flightOwed == some s0.gen && !was &&","s0.flightOwed == some s0.gen &&"),
 ('rearm_not_in_record',"!was && s0.record.contains a.subject then","!was then"),
-('rearm_no_request','foldRequest := if s0.flightReq then some a.subject else s1.foldRequest }','foldRequest := s1.foldRequest }'),
+('rearm_no_request','foldRequest := if s0.flightReq && s1.foldRequest.isNone then some a.subject else s1.foldRequest }','foldRequest := s1.foldRequest }'),
 ('never_rearm',"if o == .busy && s0.flightOwed == some s0.gen","if false && s0.flightOwed == some s0.gen"),
 # events
 ('step_emit_drop',"| some a => (emit s' a, [a])","| some a => (s', [a])"),
 ('edit_empty_no_filter_owed',"({ s with record := rec, owedKeys := s.owedKeys.filter (fun k => rec.contains k),\n","({ s with record := rec,\n"),
-('edit_empty_no_filter_req',"\n                  foldRequest := s.foldRequest.filter (fun k => rec.contains k) }, [])"," }, [])"),
+('edit_empty_no_filter_req',"\n                  foldRequest := s.foldRequest.filter (fun k => rec.contains k),","\n                  foldRequest := s.foldRequest,"),
 ('edit_overwrite_owed',"let owed := (s.owedKeys ++ rec.filter (fun k => moved.contains k)).eraseDups","let owed := (rec.filter (fun k => moved.contains k)).eraseDups"),
 ('edit_owed_no_record_filter',".eraseDups.filter (fun k => rec.contains k)\n",".eraseDups\n"),
 ('edit_pull_no_pile',"moved.contains k && s.lastFreshPile.contains k\n","moved.contains k\n"),
@@ -143,7 +143,7 @@ M=[
 ('rk_not_restricted',"skipped := [], restricted := true,\n","skipped := [],\n"),
 ('rk_no_session','editSessionUsed := false,\n                owedKeys := (k ::','owedKeys := (k ::'),
 ('rk_no_owed_filter',"(k :: s.owedKeys).eraseDups.filter (fun x => s.record.contains x)","(k :: s.owedKeys).eraseDups"),
-('rk_no_request',"foldRequest := if pull then some k else s.foldRequest }","foldRequest := s.foldRequest }"),
+('rk_no_request',"foldRequest := if pull then some k else s.foldRequest,","foldRequest := s.foldRequest,"),
 ('mr_no_match',"| some a => if a.subject == k then (result s a o posted, []) else (s, [])","| some a => (result s a o posted, [])"),
 ('pb_grant_survives',"foldRequest := none, stripGrant := false, gen := s.gen + 1 }","foldRequest := none, gen := s.gen + 1 }"),
 ('pb_owed_survives',"({ s with restricted := false, owedKeys := [], foldRequest := none, stripGrant := false,","({ s with restricted := false, foldRequest := none, stripGrant := false,"),
@@ -159,9 +159,18 @@ M=[
 ('prefix_superset_only','(l.take i).all (fun a => want.contains a) && want.all (fun a => (l.take i).contains a)','want.all (fun a => (l.take i).contains a)'),
 ('um_gap_after_last','| none => anchors.head?.map (fun t => mk (.before t))','| none => anchors.getLast?.map (fun t => mk (.after t))'),
 ('emit_flightReq_always','flightReq := s.foldRequest == some a.subject,','flightReq := true,'),
+('rearm_overwrites_request',"foldRequest := if s0.flightReq && s1.foldRequest.isNone then some a.subject else s1.foldRequest }","foldRequest := if s0.flightReq then some a.subject else s1.foldRequest }"),
+('edit_keeps_flightReq',"flightReq := s.flightReq && !(s.inFlight.any (fun a => moved.contains a.subject)),\n",""),
+('retryKey_keeps_flightReq',"flightReq := s.flightReq && !(s.inFlight.any (fun a => a.subject == k)) }","flightReq := s.flightReq }"),
+('empty_edit_keeps_flightReq',"flightReq := s.flightReq && rec == s.record }","flightReq := s.flightReq }"),
+('needsStrip_false',"  let f := foldedAll s r ++ r.nearFold\n  f.contains subject || f.contains rel.target","  let f := foldedAll s r ++ r.nearFold\n  false"),
+('engine_grant_bypasses_budget',"!r.stripOpen && s.moveCount < cap (fullBar s r)","!r.stripOpen && (s.moveCount < cap (fullBar s r) || s.stripGrant)"),
+('postedEngine_skips_case',"| .moveResult k _ true, some a => if a.subject == k && !a.user then 1 else 0","| .moveResult k _ true, some a => 0"),
+('F1_label_user',"            else some a\n","            else some (if s.stripGrant then { a with user := true } else a)\n"),
 ('applyMove_noop_always',"if !l'.contains a.rel.target then l",'if true then l'),
 ]
 
+PROOF_MUST_KILL = {'engine_grant_bypasses_budget', 'needsStrip_false', 'postedEngine_skips_case', 'F1_label_user'}
 EQUIVALENT = {}  # name -> reason (filled in below)
 
 def fresh(d):
@@ -169,7 +178,7 @@ def fresh(d):
     shutil.copytree(LEAN, d, symlinks=True, ignore=shutil.ignore_patterns('.lake', 'scripts'))
 
 def apply(d, old, new):
-    for f in ['Sommelier/Step.lean', 'Sommelier/Model.lean']:
+    for f in ['Sommelier/Step.lean', 'Sommelier/Model.lean', 'Sommelier/Safety.lean']:
         t = open(f'{d}/{f}').read()
         if t.count(old) == 1:
             open(f'{d}/{f}', 'w').write(t.replace(old, new)); return True
@@ -182,11 +191,13 @@ def run(m, w):
     if not apply(d, old, new): return name, 'BADPATCH', None, None
     b = subprocess.run(['lake', 'build', 'fuzz'], cwd=d, capture_output=True, text=True)
     if b.returncode: return name, 'NOCOMPILE', None, (b.stdout + b.stderr)[-300:]
+    sf = subprocess.run(['lake', 'build', 'Sommelier.Safety', 'Sommelier.Pins'], cwd=d, capture_output=True, text=True).returncode != 0
     e = subprocess.run(['lake', 'build', 'Sommelier.Examples'], cwd=d, capture_output=True, text=True)
     ex = sorted(set(int(x) for x in re.findall(r'error: Sommelier/Examples.lean:(\d+)', e.stdout + e.stderr)))
     f = subprocess.run(['.lake/build/bin/fuzz', '6000', '1500', '1'], cwd=d, capture_output=True, text=True)
     kills = {n: int(k) for n, _, k in re.findall(r'  (\w+): (\d+) instances, (\d+) failures', f.stdout) if int(k)}
     if f.returncode and not kills: kills['budget_saturation'] = 1
+    if sf: kills['theorems'] = 1
     return name, 'OK', ex, kills
 
 if __name__ == '__main__':
@@ -210,10 +221,17 @@ if __name__ == '__main__':
         finally: q.put(w)
     res = list(ThreadPoolExecutor(jobs).map(job, ms))
     json.dump(res, open(HERE + '/mutants.json', 'w'), indent=0)
-    surv = []
+    surv = []; invalid = []
     for n, st, ex, k in res:
-        if st != 'OK': print(f'{n:32} {st} {k or ""}'); continue
+        if st != 'OK': invalid.append(n); print(f'{n:32} {st} {k or ""}'); continue
         if not ex and not k: surv.append(n); print(f'{n:32} SURVIVES')
-    print(f'{len(res)} mutants: {len(res) - len(surv)} killed, {len(surv)} survived')
+    blind = [n for n, st, ex, k in res if st == 'OK' and not (k or {}).get('theorems')]
+    print(f'{len(res) - len(invalid) - len(blind)} mutants break Safety.lean/Pins.lean (a theorem or a pin); {len(blind)} do not:')
+    for n in blind: print('  proof-blind:', n)
+    must = [n for n in blind if n in PROOF_MUST_KILL]
+    for n in must: print('  FINDING: a theorem should have caught', n)
+    killed = len(res) - len(surv) - len(invalid)
+    print(f'{len(res)} mutants: {killed} killed, {len(surv)} survived, {len(invalid)} invalid (BADPATCH/NOCOMPILE, not counted as killed)')
     for n in surv: print('  survivor:', n, '-', EQUIVALENT.get(n, 'UNEXPLAINED'))
-    sys.exit(0)
+    # exit non-zero on any invalid mutant or any survivor that is not a documented equivalent
+    sys.exit(1 if invalid or must or any(n not in EQUIVALENT for n in surv) else 0)
