@@ -539,6 +539,18 @@ open, `MenuBarSnapshot.stripExpanded`, which is the user's doing). A STALE (carr
 `ItemActivator`'s gdu.65 path uses the same expand/collapse code): click the chevron (70 ms hold, `SyntheticClick`), poll until
 `OverflowProbe.expanded` and the chevron and every hosted frame are equal on two polls (`openSteady`; timeout `stripExpandTimeout`
 1.5 s), act, then click the chevron until `expanded == false` (two tries of `stripCollapseTimeout` 1 s each; Escape does not close it).
+Whether the strip is open is decided by ONE rule, `StripExpansionRule` (gdu.126), used by `LiveAccessibilitySource.overflowProbe` and by
+`MenuBarScanner` (`stripExpanded`): the chevron's description is "Hide Menu Bar Items", OR the agent's AXMenuBar starts left of the chevron,
+OR the pile left of the chevron is de-stacked (docs/findings-drag.md "The expanded strip on a narrow display"). `StripController` never
+leaves an undetected-open strip: when the strip does not settle after OUR click, the last probe decides (open per any clause: treated as
+open; collapsed but the description or the pile changed: one closing click verified against the pre-click state; nothing changed: no
+click), and `collapse` uses the same rule and logs the deciding clause.
+**Bar-level hold (gdu.126).** A `.mechanismFailed("could not open the « strip")` is a property of the bar, not of a key: the engine records
+`stripOpenHold = BarFingerprint(chevron present, drawn count, folded set)` without counting an attempt or a strike. While the fingerprint of
+the current observation equals the hold, `makePlan` drops every move whose subject or target is folded (pile or folded-parked) and reports
+it as skipped with `Reconciler.stripUnavailableSkipReason`. A changed fingerprint or Retry (`retry(key:)`, `clearFailures()`) clears it, so a
+failing bar costs ONE chevron click per bar state. Arrange renders the held subject as « with the reason, and the status line reads "The bar
+is too narrow for this order: macOS folds N items behind « and the strip would not open".
 Sequence in `LiveActuator.stripMove`:
 1. Gate, exactly as before a drag: `waitMouseIdle` (no button down) and `ActuatorPlatform.interactionBlockingReason()` (the
    `LiveInteractionSource` conditions: menu open, button down, modifier held, screen locked, display asleep; a reason returns

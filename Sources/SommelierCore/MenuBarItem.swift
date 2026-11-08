@@ -61,6 +61,9 @@ public enum JoinEvidence: String, Codable, Sendable {
 public struct MenuBarItem: @unchecked Sendable {
     /// macOS's English name for the overflow chevron; also the stable `.module` key name for it under every locale.
     public static let overflowChevronName = "Show Hidden Menu Bar Items"
+    /// gdu.126: the chevron's description while the strip is OPEN (the glyph turns to », the frame does not move). The chevron KEY stays
+    /// the one built from `overflowChevronName`; this name only says the strip is expanded (`StripExpansionRule`).
+    public static let overflowChevronOpenName = "Hide Menu Bar Items"
 
     public var ownerPID: pid_t
     public var ownerBundleID: String?
@@ -210,14 +213,27 @@ public struct OverflowProbe: Equatable, Sendable {
     public var expanded: Bool
     /// Frames of the other hosted groups, whatever their state (stacked frames included).
     public var hosted: [CGRect]
-    public init(chevron: CGRect?, expanded: Bool = false, hosted: [CGRect] = []) {
+    /// gdu.126: the chevron's AX description at this read ("Show Hidden Menu Bar Items" / "Hide Menu Bar Items"); nil when unread.
+    public var chevronDescription: String?
+    /// gdu.126: minX of the agent's AXMenuBar at this read (the geometric clause of `StripExpansionRule`); nil when not read.
+    public var stripMinX: CGFloat?
+    public init(chevron: CGRect?, expanded: Bool = false, hosted: [CGRect] = [], chevronDescription: String? = nil, stripMinX: CGFloat? = nil) {
         self.chevron = chevron; self.expanded = expanded; self.hosted = hosted
+        self.chevronDescription = chevronDescription; self.stripMinX = stripMinX
     }
+
+    /// gdu.126: which clause of the shared `StripExpansionRule` says the strip is open in THIS probe; nil when none does.
+    public var expansionClause: StripExpansionRule.Clause? {
+        StripExpansionRule.clause(chevron: chevron, chevronDescription: chevronDescription, stripMinX: stripMinX, hosted: hosted)
+    }
+
+    /// gdu.126: the strip is open: the stored flag, or any clause of the shared rule.
+    public var isOpen: Bool { expanded || expansionClause != nil }
 
     /// Is `frame` (a revealed item's settled frame) a system-overflow frame? The shared `SystemOverflowRule` (gdu.69), against
     /// this probe's chevron and hosted groups. Never true when the bar has no chevron or it is expanded.
     public func isStacked(_ frame: CGRect) -> Bool {
-        guard let c = chevron, !expanded else { return false }
+        guard let c = chevron, !isOpen else { return false }
         return SystemOverflowRule.isOverflowed(frame, chevron: c, hosted: hosted)
     }
 }

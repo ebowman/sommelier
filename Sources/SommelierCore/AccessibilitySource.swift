@@ -51,7 +51,7 @@ public struct AXElementInfo: @unchecked Sendable {
     /// description is only a fallback for trees that do not report the nesting.
     public var isOverflowChevron: Bool {
         if directWindowChild && identifier.isEmpty && title.isEmpty && frame.width > 0 { return true }
-        return axDescription == MenuBarItem.overflowChevronName
+        return axDescription == MenuBarItem.overflowChevronName || axDescription == MenuBarItem.overflowChevronOpenName
     }
 
     /// Identity across scans (frames move): identifier, else description, else frame.
@@ -331,6 +331,8 @@ public struct LiveAccessibilitySource: AccessibilitySource {
         }
         func str(_ e: AXUIElement, _ a: String) -> String { (copy(e, a).0 as? String) ?? "" }
         var chevron: CGRect?
+        var chevronDescription: String?
+        var chevronByName = false
         var hosted: [CGRect] = []
         var stripMinX: CGFloat?
         for t in tops {
@@ -339,14 +341,20 @@ public struct LiveAccessibilitySource: AccessibilitySource {
             guard let kids = children(t, attempts: 1) else { return nil }
             for k in kids {
                 guard let f = rect(k) else { return nil }
+                let desc = str(k, kAXDescriptionAttribute)
+                let byName = desc == MenuBarItem.overflowChevronName || desc == MenuBarItem.overflowChevronOpenName
                 let isChevron = str(k, kAXRoleAttribute) == "AXButton"
-                    && ((str(k, kAXIdentifierAttribute).isEmpty && str(k, kAXTitleAttribute).isEmpty)
-                        || str(k, kAXDescriptionAttribute) == MenuBarItem.overflowChevronName)
-                if isChevron { chevron = f } else if f.width > 1 { hosted.append(f) }
+                    && ((str(k, kAXIdentifierAttribute).isEmpty && str(k, kAXTitleAttribute).isEmpty) || byName)
+                // gdu.126: a chevron named by its description wins over a structurally matching hosted button (an item without
+                // identifier or title); otherwise the last structural match, as before.
+                if isChevron, byName || !chevronByName {
+                    if let old = chevron, !chevronByName, f.width > 1 { hosted.append(old) }
+                    chevron = f; chevronDescription = desc; chevronByName = byName
+                } else if f.width > 1 { hosted.append(f) }
             }
         }
-        let expanded = chevron.map { c in stripMinX.map { $0 < c.minX - 2 } ?? false } ?? false
-        return OverflowProbe(chevron: chevron, expanded: expanded, hosted: hosted)
+        let clause = StripExpansionRule.clause(chevron: chevron, chevronDescription: chevronDescription, stripMinX: stripMinX, hosted: hosted)
+        return OverflowProbe(chevron: chevron, expanded: clause != nil, hosted: hosted, chevronDescription: chevronDescription, stripMinX: stripMinX)
     }
 
     private struct ReadResult { var info: AXElementInfo; var role: String; var subrole: String; var ok: Bool; var err: Int32 = 0

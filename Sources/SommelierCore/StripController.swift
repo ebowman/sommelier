@@ -54,18 +54,41 @@ public struct StripController: Sendable {
         self.click = click; self.probe = probe; self.pressedButtons = pressedButtons; self.sleep = sleep; self.now = now; self.timing = timing
     }
 
+    /// What a probe shows about the strip, apart from the rule's verdict: compared before and after OUR click (gdu.126).
+    struct Signature: Equatable {
+        var description: String?
+        var chevron: CGRect?
+        var left: [CGRect]
+        init(_ p: OverflowProbe) {
+            description = p.chevronDescription; chevron = p.chevron
+            left = p.hosted.filter { h in p.chevron.map { h.minX < $0.minX } ?? false }.sorted { ($0.minX, $0.width) < ($1.minX, $1.width) }
+        }
+        /// The chevron's description or the pile's layout differs (the chevron frame alone does not count: it slides while settling).
+        func changed(from other: Signature) -> Bool { description != other.description || left != other.left }
+    }
+
     /// Opens the strip. `checkAlreadyExpanded`: read the probe first and, when the strip is already expanded (the user opened it),
     /// click nothing and report `openedByUs == false`. Otherwise click the chevron (70 ms hold) and poll `ready` until it says true.
     /// `ready` is the caller's own readiness test (e.g. "the item's frame is real and equal on two polls"); it runs on every poll.
-    public func open(chevron: CGRect, checkAlreadyExpanded: Bool, ready: () async -> Bool, say: (String) -> Void,
-                     isolation: isolated (any Actor)? = #isolation) async -> OpenOutcome {
+    ///
+    /// gdu.126: when `ready` never becomes true after OUR click, the LAST probe decides, never leaving an undetected-open strip:
+    /// the shared `StripExpansionRule` says open and `acceptOpenOnTimeout` -> `.ready` (treated as open); says collapsed but the chevron's
+    /// description or the pile's layout changed since before the click -> ONE closing click, verified against the pre-click state; nothing
+    /// changed -> `.timedOut` with no closing click (there is nothing to close).
+    public func open(chevron: CGRect, checkAlreadyExpanded: Bool, acceptOpenOnTimeout: Bool = false, ready: () async -> Bool,
+                     say: (String) -> Void, isolation: isolated (any Actor)? = #isolation) async -> OpenOutcome {
         let point = CGPoint(x: chevron.midX, y: chevron.midY)
         var clickedAt = now()
         var openedByUs = true
-        if checkAlreadyExpanded, let p = await probe(), p.expanded {
-            openedByUs = false
-            say("phase overflow: the strip is already expanded (opened by the user); it will be left open")
-        } else {
+        var baseline: Signature?
+        if checkAlreadyExpanded, let p = await probe() {
+            baseline = Signature(p)
+            if p.isOpen {
+                openedByUs = false
+                say("phase overflow: the strip is already expanded (opened by the user, \(p.expansionClause?.rawValue ?? "flag")); it will be left open")
+            }
+        } else if !checkAlreadyExpanded, let p = await probe() { baseline = Signature(p) }
+        if openedByUs {
             if pressedButtons() != 0 { return .mouseBusy }
             guard click(point) else { return .clickFailed }
             clickedAt = now()
@@ -75,9 +98,34 @@ public struct StripController: Sendable {
         while true {
             if Task.isCancelled { return .cancelled(openedByUs ? session : nil) }
             if await ready() { return .ready(session) }
-            if now().timeIntervalSince(clickedAt) > timing.expandTimeout { return .timedOut(openedByUs ? session : nil) }
+            if now().timeIntervalSince(clickedAt) > timing.expandTimeout { break }
             await sleep(timing.poll)
         }
+        guard openedByUs else { return .timedOut(nil) }
+        // Not ready in time. Ask the shared rule once more before giving up.
+        guard let last = await probe() else { return .timedOut(session) }
+        if let clause = last.expansionClause ?? (last.expanded ? .geometric : nil) {
+            say("phase overflow: the strip is open (\(clause.rawValue)) though it did not settle in time")
+            return acceptOpenOnTimeout ? .ready(session) : .timedOut(session)
+        }
+        guard let baseline, Signature(last).changed(from: baseline) else {
+            say("phase overflow: the strip did not change after the click; nothing to close")
+            return .timedOut(session)
+        }
+        // Collapsed per the rule, yet the chevron or the pile changed: the strip may be open and undetected. One closing click, verified
+        // against the state before our click.
+        say("phase overflow: the strip looks changed but is not recognised as open; posting one closing click")
+        guard click(CGPoint(x: (last.chevron ?? chevron).midX, y: (last.chevron ?? chevron).midY)) else { return .timedOut(session) }
+        let start = now()
+        while now().timeIntervalSince(start) < timing.collapseTimeout {
+            await sleep(timing.poll)
+            if let p = await probe(), !p.isOpen, !Signature(p).changed(from: baseline) {
+                say("phase overflow: strip back to its state before the click (closing click verified)")
+                return .timedOut(nil)
+            }
+        }
+        say("phase overflow: strip state after the closing click is not the one before the click")
+        return .timedOut(session)
     }
 
     /// `open` with the standard readiness test: the probe says expanded, and the chevron and every hosted frame are equal on two polls in
@@ -85,8 +133,8 @@ public struct StripController: Sendable {
     public func openSteady(chevron: CGRect, say: (String) -> Void, isolation: isolated (any Actor)? = #isolation) async -> OpenOutcome {
         var previous: [CGRect]?
         let probe = self.probe
-        return await open(chevron: chevron, checkAlreadyExpanded: true, ready: {
-            guard let pr = await probe(), pr.expanded, let c = pr.chevron else { previous = nil; return false }
+        return await open(chevron: chevron, checkAlreadyExpanded: true, acceptOpenOnTimeout: true, ready: {
+            guard let pr = await probe(), pr.isOpen, let c = pr.chevron else { previous = nil; return false }
             let sig = [c] + pr.hosted
             defer { previous = sig }
             return previous == sig
@@ -107,14 +155,16 @@ public struct StripController: Sendable {
             say("overflow: probe unavailable at collapse; strip state unknown")
             return "overflowStripStateUnknown"
         }
-        guard probe.expanded else { say("phase strip: already closed"); return nil }   // found collapsed: no click was posted
+        // gdu.126: the shared rule decides (flag, description, geometry or a de-stacked pile), and the log says which clause.
+        guard probe.isOpen else { say("phase strip: already closed"); return nil }   // found collapsed: no click was posted
+        say("phase strip: open per \(probe.expansionClause?.rawValue ?? "flag"); closing")
         let at = probe.chevron.map { CGPoint(x: $0.midX, y: $0.midY) } ?? point
         for attempt in 1...2 {
             guard click(at) else { break }
             let start = now()
             while now().timeIntervalSince(start) < timing.collapseTimeout {
                 await sleep(timing.poll)
-                if let p = await self.probe(), !p.expanded {
+                if let p = await self.probe(), !p.isOpen {
                     say("phase overflow: strip collapsed (\(attempt) click\(attempt == 1 ? "" : "s"))")
                     return nil
                 }

@@ -885,3 +885,13 @@ On 0.1.0 a 644 pt display planned `show` for 8 allowed Visible items every pass 
 3. [ ] Zero `membership write` lines in the log while the bar stays full.
 4. [ ] Arrange: every parked Visible row reads « (behind), none "moving" or "not on the bar", the status line is not "Waiting..." / "Moving...", the fold line follows the last overflowed row.
 5. [ ] Widen the bar (quit a few items / bigger display): « disappears and the parked items are shown again as before.
+
+## Live checklist: narrow display, failed strip open (gdu.126, 2026-11-08)
+
+Orchestrator only; narrow display with more items than fit even when the strip is open (644 pt portrait).
+
+1. [ ] At most one chevron click per bar state: the log shows one `chevron clicked` and then `plan: ... fold move(s) held, the « strip could not be opened` instead of a click every pass.
+2. [ ] The strip is never left open: after a pass the chevron's description reads "Show Hidden Menu Bar Items" (or the log says `strip collapsed` / `closing click verified`); the bar does not toggle open and closed every 15 s.
+3. [ ] If the strip opens (menu titles covered by the items), the log reads `strip: open per description|geometric|deStacked`, not `did not show as expanded`.
+4. [ ] Arrange: the held subject row reads « with "the « strip could not be opened on this bar; widen the bar or hide items"; the status line names the hold ("The bar is too narrow for this order: macOS folds N items behind « ...") and never "Moving..." / "Waiting...".
+5. [ ] Retry, or a changed bar (quit an item), allows exactly one more chevron click.

@@ -91,6 +91,8 @@ public enum ArrangeBarState: Equatable, Sendable {
     public static let staleText = "Position being re-read"
     public static let notOnBarText = "Not on the menu bar right now: this is where it is going, not where it is."
     public static let behindChevronText = "Behind «: macOS hides it because the bar is full. Drag it right of the fold line to bring it out."
+    /// gdu.126: the note of a fold move the engine holds because the « strip would not open.
+    public static let stripHeldText = Reconciler.stripUnavailableSkipReason
     public static let unreadAfterHandDragText = "Moved by you in the menu bar; waiting to read its new position"
     public static let matchesText = "In place (verified against the real menu bar)"
     public static let movingText = "Waiting for the menu bar to change"
@@ -415,6 +417,10 @@ public enum ArrangeSections {
             var waitName: String?
             if timedOut.contains(k) {
                 state = .cannotPlace(ArrangeTracker.timeoutText)
+            } else if !suppressed, lastPlan.stripHeld.contains(k) {
+                // gdu.126: the engine could not open the « strip on this bar state and holds the fold move: « with the reason, never "moving".
+                state = .behindChevron
+                note = ArrangeBarState.behindChevronText + "\n" + ArrangeBarState.stripHeldText
             } else if observed.foldedParked.contains(k), !(status.map { if case .failed = $0 { true } else { false } } ?? false) {
                 // gdu.121: parked, allowed, running while « is fresh: folded for width. Never moving / waiting / not on the bar.
                 state = .behindChevron
@@ -597,6 +603,8 @@ public enum ArrangeSections {
         public var systemSettingsNotice: String?
         /// Display name of the item the engine is moving right now, when known.
         public var movingName: String?
+        /// gdu.126: the bar-level strip hold is active: how many items are folded behind « (nil = no hold).
+        public var stripHoldFolded: Int?
         public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
                     handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
             self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
@@ -604,6 +612,8 @@ public enum ArrangeSections {
         }
     }
 
+    /// gdu.126: the status line while the strip hold is active and nothing else is pending.
+    public static func barTooNarrowText(_ n: Int) -> String { "The bar is too narrow for this order: macOS folds \(n) item\(n == 1 ? "" : "s") behind « and the strip would not open" }
     public static func blockedByGivenUpText(_ wall: String) -> String { "Blocked by \(wall), which Sommelier can't place — right-click it to try again" }
     public static let checkingMenuBar = "Checking the menu bar…"
     public static let menuBarMatches = "Menu bar matches"
@@ -653,6 +663,7 @@ public enum ArrangeSections {
             else if movingCandidates.count == movingCount, (1...2).contains(movingCount) { primary = "Moving \(movingCandidates.map(\.title).joined(separator: ", "))…" }
             else { primary = movingCount > 1 ? "Moving \(movingCount) items…" : "Moving…" }
         }
+        else if let n = context.stripHoldFolded { primary = barTooNarrowText(n) }
         else if waiting > 0 { primary = waitingToReadText(waiting) }
         else if let w = blockedRows.first?.waitingOn { primary = waitingToSettleText(w) }
         else if let n = context.handDragNotice { primary = n }

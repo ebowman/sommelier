@@ -1073,7 +1073,16 @@ public struct MenuBarScanner {
         }
         // 9o9.11: the strip is open when the agent's AXMenuBar of THIS read starts left of a FRESH chevron of the same read (a carried
         // chevron is stale and never says so). An open strip draws the overflowed items at real frames: nothing is flagged.
-        let stripExpanded = tree.menuBarMinX.map { m in tree.elements.contains { $0.isOverflowChevron && !$0.stale && m < $0.frame.minX - 2 } } ?? false
+        // gdu.126: ONE rule with the probe (`StripExpansionRule`): the geometric clause above, the chevron's own description ("Hide Menu Bar
+        // Items"), or a de-stacked pile left of the chevron (the narrow display, where neither the chevron nor the AXMenuBar moves).
+        let freshChevron = tree.elements.first { $0.isOverflowChevron && !$0.stale }
+        let stripClause = freshChevron.flatMap { c in
+            StripExpansionRule.clause(chevron: c.frame, chevronDescription: c.axDescription, stripMinX: tree.menuBarMinX,
+                                      // A read that did not see the agent's AXMenuBar never infers "open" from frames alone (the description
+                                      // clause is direct evidence and stays).
+                                      hosted: tree.menuBarMinX == nil ? [] : tree.elements.filter { !$0.isOverflowChevron && !$0.stale }.map(\.frame))
+        }
+        let stripExpanded = stripClause != nil
         if stripExpanded { for i in reported.indices where reported[i].isOverflowChevron && !reported[i].stale { reported[i].stripExpanded = true } }
         let marked = SystemOverflow.mark(reported)
         var snapshot = MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,

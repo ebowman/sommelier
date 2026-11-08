@@ -30,6 +30,12 @@ public enum ActuationError: Error, Equatable, Sendable {
 }
 
 extension ActuationError {
+    /// gdu.126: the message of a failed strip open. A BAR-level failure: the engine holds every fold move for the current bar state.
+    public static let stripOpenFailureMessage = "could not open the « strip"
+    public var isStripOpenFailure: Bool {
+        if case .mechanismFailed(let m) = self { return m == Self.stripOpenFailureMessage }
+        return false
+    }
     /// Text carried by the actuator's refusal to drag an item (or anchor) that sits in macOS's overflow area (gdu.25, gdu.69).
     public static let overflowRefusalMarker = "is in the menu bar overflow area"
     /// The actuator refused BEFORE any drag because the subject or relation anchor is in macOS's overflow area. Not a failure

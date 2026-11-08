@@ -215,3 +215,21 @@ macOS 27.0.1, full bar, 9 items behind the chevron (bd memory `system-overflow-s
 - Stacked x carries NO order: while collapsed, stacked frames x 781/783/786 read Jump, TimeMachine, WiFi while the real order was Jump,
   WiFi, TimeMachine. Only an open strip shows the order of the pile.
 - Hence the actuator's strip session (docs/architecture.md "The strip session (9o9.12)"): open, fresh re-scan, drag, close.
+
+### The expanded strip on a narrow display (gdu.126, 2026-11-08)
+644 x 1346 pt portrait display, ~30 items folded for width, Finder frontmost. AX dumps of MenuBarAgent's direct children, collapsed vs
+expanded (the engine log of the same run showed three chevron clicks per folded key and "strip: did not show as expanded").
+- A manual click DID expand the strip: the overflow items are drawn over the app's menu titles (Finder's), x about 135 to 445. The
+  strip is an overlay on the left of the bar, it does not push the chevron anywhere.
+- The chevron's frame is UNCHANGED between the states: x 453, w 18 both times. Only its description toggles: collapsed "Show Hidden Menu
+  Bar Items", expanded "Hide Menu Bar Items" (the glyph turns to »).
+- The pile DE-STACKS. Collapsed, the hosted elements sit stacked right behind the chevron (x 405/63, 427/41, 443/24, 443/24, 444/24,
+  447/24, overlapping); expanded, the same elements have distinct real frames (x 141/51, 197/24, 226/41, 302/24, 331/24, 356/24, 381/63,
+  i.e. 141 to 444, no overlaps).
+- The 9o9.11 / gdu.65 rule (the agent's AXMenuBar minX LEFT of the chevron) stayed silent in both states: `stripExpanded` read none, so
+  the actuator opened the strip, did not see it, did not close it (the collapse check read the same probe) and the next pass's click
+  closed it again; the bar toggled under the user every 15 s.
+- Fix: ONE shared `StripExpansionRule` (probe and scanner): description flips to "Hide Menu Bar Items", OR the geometric rule, OR a
+  de-stacked pile (at least two non-overlapping hosted frames left of the chevron spanning at least 60 pt). Any clause says open. The
+  chevron KEY is unchanged (it is derived from the English closed name; the open name is recognised as the chevron too).
+- A failed open is a property of the BAR, not of a key: the engine holds every fold move for the current bar state (docs/architecture.md).

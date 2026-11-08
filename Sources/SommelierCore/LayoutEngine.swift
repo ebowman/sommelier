@@ -431,6 +431,11 @@ public actor LayoutEngine {
     private var actuatorRefused: [ItemKey: String] = [:]
     /// The `snapshotEpoch` each `actuatorRefused` key was refused in (gdu.74): re-evaluated when the snapshot has changed since.
     private var refusedEpoch: [ItemKey: Int] = [:]
+    /// gdu.126: the bar state in which opening the « strip failed. While the current observation has the same fingerprint, no fold move
+    /// (a move with a subject or target behind «) is dispatched: ONE chevron click per bar state, not three per folded key. Cleared by a
+    /// changed fingerprint, Retry (`retry(key:)`, `clearFailures()`).
+    private(set) var stripOpenHold: BarFingerprint?
+    private var stripHoldLogged: String?
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -1130,6 +1135,8 @@ public actor LayoutEngine {
     /// Forgets suppressed failures and resumes a stopped engine. Does not itself trigger a pass.
     public func clearFailures() async {
         lastVerifiedOrderMove = [:]; revertWatch = [:]   // 9o9.4: a Retry drags on its first plan
+        if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
+        stripOpenHold = nil; stripHoldLogged = nil
         failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
@@ -1153,6 +1160,8 @@ public actor LayoutEngine {
         failures[key] = nil; strikes[key] = nil; unverifiedStrikes[key] = nil; lastVerifiedOrderMove[key] = nil; revertWatch[key] = nil
         positionWaitSince[key] = nil; positionTimedOut.remove(key)   // 9o9.24: a fresh 60 s wait
         log("engine: retry \(key): attempts cleared")
+        if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
+        stripOpenHold = nil; stripHoldLogged = nil
         await publish { s in
             if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
         }
@@ -1614,7 +1623,38 @@ public actor LayoutEngine {
                 if p.phase == .order, p.actions.isEmpty { p.phase = .converged }
             }
         }
+        applyStripHold(&p, obs: planObs)
         return p
+    }
+
+    /// gdu.126: the bar-level strip hold. See `stripOpenHold`. A held fold move is reported as skipped (never dispatched, never counted as
+    /// an attempt); the plan says so once per distinct state in the log.
+    private func applyStripHold(_ p: inout Plan, obs: ObservedOrder) {
+        guard let hold = stripOpenHold else { return }
+        let now = BarFingerprint(obs)
+        guard now == hold else {
+            log("engine: strip hold cleared (the bar changed: drawn \(hold.drawn)->\(now.drawn), folded \(hold.folded.count)->\(now.folded.count))")
+            stripOpenHold = nil; stripHoldLogged = nil
+            return
+        }
+        func needsStrip(_ a: PlannedAction) -> ItemKey? {
+            guard case .move(let k, let rel) = a else { return nil }
+            var involved = [k]
+            switch rel { case .before(let t), .after(let t): involved.append(t); default: break }
+            return involved.contains(where: hold.folded.contains) ? k : nil
+        }
+        let held = p.actions.compactMap(needsStrip)
+        p.stripHoldFolded = hold.folded.count
+        guard !held.isEmpty else { return }
+        p.actions.removeAll { needsStrip($0) != nil }
+        for k in held {
+            p.skipped.removeAll { $0.key == k }
+            p.skipped.append(SkippedAction(k, Reconciler.stripUnavailableSkipReason))
+        }
+        p.stripHeld = Set(held)
+        if p.phase == .order, p.actions.isEmpty { p.phase = .converged }
+        let line = "plan: \(held.count) fold move(s) held, \(Reconciler.stripUnavailableSkipReason) (\(hold.folded.count) folded)"
+        if stripHoldLogged != line { stripHoldLogged = line; log(line) }
     }
 
     /// Keys of units under a transient reveal are invisible to the planner: it neither hides nor orders them.
@@ -1729,9 +1769,10 @@ public actor LayoutEngine {
         }
         for a in plan.actions { out[Self.key(of: a)] = .pending }
         for k in obs.onBar + obs.parked where transientReveals[rule.unit(of: k)] != nil { out[k] = .pending }
+        for k in plan.stripHeld where out[k] != nil { out[k] = .notFitting }   // gdu.126: held, not pending: never "Moving…"
         var waiting = Set<ItemKey>()
         let now = ContinuousClock.now
-        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting && s.reason != Reconciler.noCrossingOwnPositionSkipReason && s.reason != Reconciler.foldedParkedSkipReason {   // own position unread = temporary unknown: keeps its .pending base
+        for s in plan.skipped where failures[s.key] == nil && out[s.key] != .notFitting && s.reason != Reconciler.noCrossingOwnPositionSkipReason && s.reason != Reconciler.foldedParkedSkipReason && s.reason != Reconciler.stripUnavailableSkipReason {   // own position unread = temporary unknown: keeps its .pending base
             if s.reason == Reconciler.uncorroboratedSkipReason || s.reason == Reconciler.staleFrameSkipReason || s.reason == Reconciler.noSafeMoveSkipReason || Reconciler.isMovingNeighbourSkip(s.reason) {   // gdu.105: transient, see positionWaitTimeout
                 let since = positionWaitSince[s.key] ?? now
                 positionWaitSince[s.key] = since
@@ -2535,8 +2576,12 @@ public actor LayoutEngine {
                     if draining { pending = true }
                     return await abort(.incomplete)
                 }
-                if !e.isOverflowRefusal { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
-                if e.isOverflowRefusal {
+                // gdu.126: a failed strip open is a property of the BAR, not of the key: no attempt, no strike; the hold below stops the rest.
+                if !e.isOverflowRefusal, !e.isStripOpenFailure { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
+                if e.isStripOpenFailure {
+                    consecutiveFailures -= 1
+                    log("\(key): the « strip could not be opened; holding every fold move until the bar changes or Retry")
+                } else if e.isOverflowRefusal {
                     // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
                     consecutiveFailures -= 1
                     if Reconciler.crossesFold(action, overflow: obs.systemOverflow) {
@@ -2548,6 +2593,7 @@ public actor LayoutEngine {
                     }
                 } else { markFailed(key, e) }
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
+                if e.isStripOpenFailure { stripOpenHold = BarFingerprint(obs); stripHoldLogged = nil }
             }
             plan = makePlan(obs)
             phaseReached = plan.phase

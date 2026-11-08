@@ -131,6 +131,10 @@ public struct Plan: Equatable, Sendable {
     public var blockedBy: [ItemKey: ItemKey] = [:]
     /// 9o9.5: trusted keys the planner would move but for which no candidate move lands safely and no untrusted wall is to blame.
     public var blockedNoWall: Set<ItemKey> = []
+    /// gdu.126: subjects of fold moves withheld because the « strip could not be opened on this bar state (the bar-level hold).
+    public var stripHeld: Set<ItemKey> = []
+    /// gdu.126: while the hold is active, how many items are folded behind « (pile ∪ folded-parked); nil otherwise.
+    public var stripHoldFolded: Int?
 }
 
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).
@@ -508,6 +512,9 @@ public struct Reconciler: Sendable {
 
     /// gdu.121: why a parked, allowed key is not shown while the chevron is fresh.
     public static let foldedParkedSkipReason = "behind « (the bar is full; macOS folds it for width)"
+
+    /// gdu.126: why a fold move (pull-out / push-in) is not dispatched: opening the « strip failed on this bar state and is held.
+    public static let stripUnavailableSkipReason = "the « strip could not be opened on this bar; widen the bar or hide items"
 
     /// Why an item in macOS's own overflow area is not planned (gdu.69).
     public static let overflowSkipReason = "behind the « chevron; its order there is set when the strip is next opened"

@@ -521,7 +521,7 @@ public actor LiveActuator: MenuBarActuator {
                 return await moveCore(key, relation, plan: plan, avoid: nil, inStrip: false)
             }
             note("strip: no chevron to click")
-            return .failed(.mechanismFailed("could not open the « strip"), plan.snapshot)
+            return .failed(.mechanismFailed(ActuationError.stripOpenFailureMessage), plan.snapshot)
         }
         let p = platform
         let controller = StripController(click: { p.clickChevron(at: $0) }, probe: { await p.overflowProbe() },
@@ -536,11 +536,11 @@ public actor LiveActuator: MenuBarActuator {
         case .mouseBusy: return .failed(.userBusy, plan.snapshot)
         case .clickFailed:
             note("strip: could not post the chevron click")
-            return .failed(.mechanismFailed("could not open the « strip"), plan.snapshot)
+            return .failed(.mechanismFailed(ActuationError.stripOpenFailureMessage), plan.snapshot)
         case .timedOut(let s), .cancelled(let s):
             note("strip: did not show as expanded and settled within \(Int(config.stripExpandTimeout * 1000)) ms")
             if let n = await controller.close(s, say: { [self] in note($0) }) { note("note: \(n)") }
-            return .failed(.mechanismFailed("could not open the « strip"), plan.snapshot)
+            return .failed(.mechanismFailed(ActuationError.stripOpenFailureMessage), plan.snapshot)
         }
         if session.openedByUs { note("phase strip: open t=\(ms())") }
         // Every frame left of the chevron changed: plan again from a FRESH scan taken with the strip open.
@@ -554,7 +554,7 @@ public actor LiveActuator: MenuBarActuator {
         }
         if !fresh.stripExpanded {
             note("strip: the fresh scan does not show the strip open")
-            result = .failed(.mechanismFailed("could not open the « strip"), fresh)
+            result = .failed(.mechanismFailed(ActuationError.stripOpenFailureMessage), fresh)
         } else {
             let (planOpt, early) = await prepare(key, relation, from: fresh)
             if let early { result = early }
