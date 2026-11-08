@@ -208,7 +208,7 @@ public actor LiveActuator: MenuBarActuator {
             switch found {
             case .absent: return (nil, .failed(.notFound, snap))
             case .parkedSubject:
-                return (nil, .failed(.unsupportedItem(reason: "The item is hidden (off the bar); show it before moving it."), snap))
+                return (nil, .failed(.unsupportedItem(reason: Self.parkedRefusalText(key, snap, resolved: platform.resolve(snap))), snap))
             case .untrustedFrame(let why):
                 let item = resolvedSubject(key, snap)?.item
                 note("refusing drag: subject \(key) frame not trustworthy: \(why); item: \(item.map { "source=\($0.source.rawValue) frame=\($0.frame) onBar=\($0.isOnMenuBar) join=\($0.joinEvidence.rawValue) ccHidden=\($0.hiddenInControlCenter) ccAllowed=\($0.controlCenterAllowed.map(String.init(describing:)) ?? "?")" } ?? "absent")")
@@ -223,6 +223,38 @@ public actor LiveActuator: MenuBarActuator {
             }
         }
         return (nil, .failed(.timeout, snap))
+    }
+
+    /// gdu.129: the shown refusal of a parked subject. "Hidden (off the bar)" is only true on a COLLAPSED scan with no chevron; a subject in
+    /// the pile or folded set, or any subject while the strip is open, is folded behind « (and, open, simply not drawn in the strip).
+    static let foldedRefusalText = "folded behind « and not drawn in the open strip"
+    static let hiddenRefusalText = "The item is hidden (off the bar); show it before moving it."
+    static func parkedRefusalText(_ key: ItemKey, _ snap: MenuBarSnapshot, resolved: [ResolvedItem]) -> String {
+        if snap.stripExpanded { return foldedRefusalText }
+        let o = ObservedOrder(resolved: resolved)
+        if o.systemOverflow.contains(key) || o.foldedParked.contains(key) { return foldedRefusalText }
+        return hiddenRefusalText
+    }
+
+    /// gdu.129: the ONE diagnostic line when the strip is open and the subject cannot be placed in it.
+    private func noteUnplaceable(_ key: ItemKey, _ snap: MenuBarSnapshot, error: ActuationError) {
+        let resolved = platform.resolve(snap)
+        let subject = resolved.first(where: { $0.key == key })?.item
+        let sub = subject.map { "frame=\($0.frame) stale=\($0.stale) onBar=\($0.isOnMenuBar) source=\($0.source.rawValue) join=\($0.joinEvidence.rawValue)" } ?? "absent from the scan"
+        let chevronX = resolved.first(where: { $0.item.isOverflowChevron && !$0.item.stale })?.item.frame.minX
+        let hosted = resolved.map(\.item).filter { i in i.isOnMenuBar && !i.isOverflowChevron && i.frame.width > 1 && (chevronX.map { i.frame.minX < $0 } ?? true) }
+            .sorted { $0.frame.minX < $1.frame.minX }
+            .map { "[x=\(Int($0.frame.minX)) w=\(Int($0.frame.width)) desc=\"\($0.axDescription)\" id=\"\($0.axIdentifier)\"]" }
+        note("strip: subject not placeable inside the open strip: \(key) (\(error)); app-side candidate \(sub); hosted left of the chevron (\(hosted.count)): \(hosted.joined(separator: " "))")
+    }
+
+    /// gdu.129: a failure that posted no mouse event and means "this item cannot be pinned down inside the open strip".
+    private static func isPinDownFailure(_ e: ActuationError) -> Bool {
+        switch e {
+        case .notFound, .timeout, .unsupportedItem: return true
+        case .mechanismFailed(let m): return m.hasPrefix("subject ") && m.contains("frame not trustworthy")
+        default: return false
+        }
     }
 
     private func resolvedSubject(_ key: ItemKey, _ snap: MenuBarSnapshot) -> ResolvedItem? {
@@ -289,6 +321,8 @@ public actor LiveActuator: MenuBarActuator {
     /// 9o9.19: set by `moveCore` inside a session WE opened when the expanded read already satisfies the fold rule: the verdict waits
     /// for a settled read taken after the strip closes (`stripMove`).
     private var foldCandidate = false
+    /// gdu.129: a drag's mouse events were posted in this call (a failure before that is a refusal, not an attempt).
+    private var mouseEventsPosted = false
 
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         await acquire(); defer { release() }
@@ -298,6 +332,7 @@ public actor LiveActuator: MenuBarActuator {
     private func performMove(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         trace = []
         foldCandidate = false
+        mouseEventsPosted = false
         if let f = globalPrecheck() { return f }
         let (planOpt, early) = await prepare(key, relation, from: nil, allowStacked: !config.forceFallback, staleToStrip: !config.forceFallback)
         if let early { return early }
@@ -355,6 +390,7 @@ public actor LiveActuator: MenuBarActuator {
                 note("attempt \(attempt): drag subject frame=\(plan.subject.item.frame) fresh=\(!plan.subject.item.stale) target=\(targetText) expect=\(relation) toX=\(Int(x)) steps=\(steps) bar=\(DropTrace.truncated(ActuationVerifier.barOrder(plan.resolved).map { "\(Int($0.item.frame.minX))" }))")
                 let probeBefore = platform.menuProbe(for: plan.subject.item)
                 let upAt: Date
+                mouseEventsPosted = true
                 do { upAt = try await platform.drag(itemFrame: plan.subject.item.frame, toX: x, steps: steps) }
                 catch DragError.userBusy { return .failed(.userBusy, lastSnapshot) }
                 catch { return .failed(.mechanismFailed("could not post mouse events: \(error)"), lastSnapshot) }
@@ -557,11 +593,21 @@ public actor LiveActuator: MenuBarActuator {
             result = .failed(.mechanismFailed(ActuationError.stripOpenFailureMessage), fresh)
         } else {
             let (planOpt, early) = await prepare(key, relation, from: fresh)
-            if let early { result = early }
-            else {
+            if let early {
+                result = early
+                if session.openedByUs, case .failed(let e, let s) = early, Self.isPinDownFailure(e) {
+                    noteUnplaceable(key, s ?? fresh, error: e)
+                    result = .failed(.mechanismFailed(ActuationError.stripUnplaceableMessage), s ?? fresh)
+                }
+            } else {
                 let open = planOpt!
                 let chevronFrame = open.resolved.first(where: { $0.item.isOverflowChevron && !$0.item.stale })?.item.frame ?? chevron
+                mouseEventsPosted = false
                 result = await moveCore(key, relation, plan: open, avoid: chevronFrame, inStrip: true, ours: session.openedByUs)
+                if session.openedByUs, !mouseEventsPosted, case .failed(let e, let s) = result, Self.isPinDownFailure(e) {
+                    noteUnplaceable(key, s ?? fresh, error: e)
+                    result = .failed(.mechanismFailed(ActuationError.stripUnplaceableMessage), s ?? fresh)
+                }
             }
         }
         if session.openedByUs {

@@ -895,3 +895,4 @@ Orchestrator only; narrow display with more items than fit even when the strip i
 3. [ ] If the strip opens (menu titles covered by the items), the log reads `strip: open per description|geometric|deStacked`, not `did not show as expanded`.
 4. [ ] Arrange: the held subject row reads « with "the « strip could not be opened on this bar; widen the bar or hide items"; the status line names the hold ("The bar is too narrow for this order: macOS folds N items behind « ...") and never "Moving..." / "Waiting...".
 5. [ ] Retry, or a changed bar (quit an item), allows exactly one more chevron click.
+6. [ ] (gdu.129) After one strip session the plan is held, the status line names the hold ("... and Sommelier could not place an item inside the strip." when the strip opened), and there are no give-ups (`giving up on` never appears); folded rows stay « through carried-chevron scans.

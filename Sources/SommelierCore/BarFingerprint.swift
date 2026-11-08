@@ -13,7 +13,7 @@ public struct BarFingerprint: Equatable, Sendable {
     }
 
     public init(_ o: ObservedOrder) {
-        self.init(hasChevron: o.overflowChevron != nil,
+        self.init(hasChevron: o.overflowChevron != nil || o.chevronRecent,
                   drawn: o.onBar.filter { !o.systemOverflow.contains($0) && $0 != o.overflowChevron && !$0.isOverflowChevron }.count,
                   folded: o.systemOverflow.union(o.foldedParked))
     }

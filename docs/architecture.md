@@ -33,6 +33,14 @@ that stay behind « is not tracked while the strip is closed (their collapsed fr
 itself is the agent's own control: its key never enters the record (`ItemKey.isOverflowChevron`, healed on decode with one warning
 per section), it is never a new item, never shown or hidden, never a move subject or target.
 
+**Strip refusal is a bar-level hold (gdu.126, gdu.129).** A strip session that fails to open, or that opens (by us) but whose fresh
+open-strip scan cannot pin the subject down (`.parkedSubject`, untrusted frame, not found, timeout; no drag was posted), returns
+`.mechanismFailed(stripOpenFailureMessage | stripUnplaceableMessage)`. The engine treats either as a property of the bar, not of the key:
+no attempt, no strike, no `.unsupported`; it sets `stripOpenHold` (a `BarFingerprint`) and every fold move is skipped with
+`Reconciler.stripUnavailableSkipReason` until the bar changes or Retry. One diagnostic line (`strip: subject not placeable inside the open
+strip:`) logs the subject's app-side frame and the hosted elements left of the chevron. A carried chevron that was `recentlyVerified`
+keeps `foldedParked` (`ObservedOrder.chevronRecent`) but never plans a fold move or opens a strip.
+
 **Folded for width (gdu.121).** macOS hides items that do not fit behind «, and the agent hosts only part of that pile. A parked
 Visible item whose owner runs, whose Control Center flag already allows it, while a FRESH « is on the bar and the strip is
 collapsed, is *folded for width* (`ObservedOrder.foldedParked`; still in `parked`). The planner never plans a `show` for it (one

@@ -28,6 +28,9 @@ public struct ObservedOrder: Equatable, Sendable {
     /// the agent hosts only part of that pile, so a parked, allowed, running item while « is fresh is folded, not hidden by
     /// membership — never a show.
     public var foldedParked: Set<ItemKey> = []
+    /// gdu.129: the chevron of THIS scan is carried (stale) but was `recentlyVerified` (gdu.120). Display and fold stability only: the
+    /// fold (`foldedParked`) and the « rows hold through it; `overflowChevron` stays nil, so no fold move is planned and no strip opens.
+    public var chevronRecent = false
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
                 placementUnknown: Set<ItemKey> = [], uncorroborated: Set<ItemKey> = [], staleOnBar: Set<ItemKey> = []) {
         self.staleOnBar = staleOnBar
@@ -55,6 +58,7 @@ public struct ObservedOrder: Equatable, Sendable {
         var stale = Set<ItemKey>()
         var recent = Set<ItemKey>()
         var chevron: ItemKey?
+        var chevronRecentSeen = false
         var expanded = false
         var foldCandidates = Set<ItemKey>()
         for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
@@ -63,6 +67,7 @@ public struct ObservedOrder: Equatable, Sendable {
                 if r.item.stale { stale.insert(r.key); uncorr.insert(r.key); if r.item.recentlyVerified { recent.insert(r.key) } }
                 bar.append((r.item.frame.minX, r.key))
                 if r.item.systemOverflow { ovf.insert(r.key); if r.item.stale { staleOvf.insert(r.key) } }
+                if r.item.isOverflowChevron, r.item.stale, r.item.recentlyVerified { chevronRecentSeen = true }
                 if r.item.isOverflowChevron, !r.item.stale { chevron = chevron ?? r.key; if r.item.stripExpanded { expanded = true } }
                 // Hosted-only items (modules, clock) are the agent's own elements: no join to corroborate.
                 if (r.item.source == .appExtras && !r.item.joinEvidence.corroborated) || r.item.controlCenterAllowed == false
@@ -82,7 +87,9 @@ public struct ObservedOrder: Equatable, Sendable {
         self.stripExpanded = expanded && chevron != nil
         if stripExpanded { systemOverflow = [] }   // an open strip draws every item at a real frame
         // gdu.121: with a fresh chevron and the strip collapsed, an allowed parked item is folded for width.
-        if chevron != nil, !stripExpanded { foldedParked = foldCandidates }
+        // gdu.129: a carried chevron verified within the recency window keeps the fold (no flicker between « and "not on the bar").
+        chevronRecent = chevron == nil && chevronRecentSeen
+        if chevron != nil || chevronRecent, !stripExpanded { foldedParked = foldCandidates }
     }
 }
 
@@ -135,6 +142,8 @@ public struct Plan: Equatable, Sendable {
     public var stripHeld: Set<ItemKey> = []
     /// gdu.126: while the hold is active, how many items are folded behind « (pile ∪ folded-parked); nil otherwise.
     public var stripHoldFolded: Int?
+    /// gdu.129: the hold was set because the strip opened but could not place the subject (status text differs).
+    public var stripHoldUnplaceable = false
 }
 
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).

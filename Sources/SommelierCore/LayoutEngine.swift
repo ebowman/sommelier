@@ -436,6 +436,8 @@ public actor LayoutEngine {
     /// changed fingerprint, Retry (`retry(key:)`, `clearFailures()`).
     private(set) var stripOpenHold: BarFingerprint?
     private var stripHoldLogged: String?
+    /// gdu.129: the hold was set by a strip that OPENED but could not place the subject (not by a failed open): selects the status text.
+    private var stripHoldUnplaceable = false
     private var failedThisPass: Set<ItemKey> = []
     private var allFailedStreak = 0
     private var cutThisPass = false
@@ -1136,7 +1138,7 @@ public actor LayoutEngine {
     public func clearFailures() async {
         lastVerifiedOrderMove = [:]; revertWatch = [:]   // 9o9.4: a Retry drags on its first plan
         if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
-        stripOpenHold = nil; stripHoldLogged = nil
+        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false
         failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
@@ -1161,7 +1163,7 @@ public actor LayoutEngine {
         positionWaitSince[key] = nil; positionTimedOut.remove(key)   // 9o9.24: a fresh 60 s wait
         log("engine: retry \(key): attempts cleared")
         if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
-        stripOpenHold = nil; stripHoldLogged = nil
+        stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false
         await publish { s in
             if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
         }
@@ -1631,10 +1633,15 @@ public actor LayoutEngine {
     /// an attempt); the plan says so once per distinct state in the log.
     private func applyStripHold(_ p: inout Plan, obs: ObservedOrder) {
         guard let hold = stripOpenHold else { return }
+        // gdu.129: a scan whose chevron is only carried (recently verified) cannot tell whether the bar changed: keep the hold, plan nothing new.
+        if obs.overflowChevron == nil, obs.chevronRecent {
+            p.stripHoldFolded = hold.folded.count; p.stripHoldUnplaceable = stripHoldUnplaceable
+            return
+        }
         let now = BarFingerprint(obs)
         guard now == hold else {
             log("engine: strip hold cleared (the bar changed: drawn \(hold.drawn)->\(now.drawn), folded \(hold.folded.count)->\(now.folded.count))")
-            stripOpenHold = nil; stripHoldLogged = nil
+            stripOpenHold = nil; stripHoldLogged = nil; stripHoldUnplaceable = false
             return
         }
         func needsStrip(_ a: PlannedAction) -> ItemKey? {
@@ -1644,7 +1651,7 @@ public actor LayoutEngine {
             return involved.contains(where: hold.folded.contains) ? k : nil
         }
         let held = p.actions.compactMap(needsStrip)
-        p.stripHoldFolded = hold.folded.count
+        p.stripHoldFolded = hold.folded.count; p.stripHoldUnplaceable = stripHoldUnplaceable
         guard !held.isEmpty else { return }
         p.actions.removeAll { needsStrip($0) != nil }
         for k in held {
@@ -2577,10 +2584,11 @@ public actor LayoutEngine {
                     return await abort(.incomplete)
                 }
                 // gdu.126: a failed strip open is a property of the BAR, not of the key: no attempt, no strike; the hold below stops the rest.
-                if !e.isOverflowRefusal, !e.isStripOpenFailure { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
-                if e.isStripOpenFailure {
+                if !e.isOverflowRefusal, !e.isStripHoldFailure { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
+                if e.isStripHoldFailure {
                     consecutiveFailures -= 1
-                    log("\(key): the « strip could not be opened; holding every fold move until the bar changes or Retry")
+                    log(e.isStripUnplaceable ? "\(key): the « strip opened but the item could not be pinned down inside it; holding every fold move until the bar changes or Retry"
+                                             : "\(key): the « strip could not be opened; holding every fold move until the bar changes or Retry")
                 } else if e.isOverflowRefusal {
                     // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
                     consecutiveFailures -= 1
@@ -2593,7 +2601,7 @@ public actor LayoutEngine {
                     }
                 } else { markFailed(key, e) }
                 guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
-                if e.isStripOpenFailure { stripOpenHold = BarFingerprint(obs); stripHoldLogged = nil }
+                if e.isStripHoldFailure { stripOpenHold = BarFingerprint(obs); stripHoldLogged = nil; stripHoldUnplaceable = e.isStripUnplaceable }
             }
             plan = makePlan(obs)
             phaseReached = plan.phase

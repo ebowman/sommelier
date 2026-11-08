@@ -179,7 +179,7 @@ private final class StripFake: @unchecked Sendable {
 
 private let chevKey = ItemKey.module(name: MenuBarItem.overflowChevronName)
 
-private final class HoldBar: @unchecked Sendable {
+final class HoldBar: @unchecked Sendable {
     let lock = NSLock()
     var logs: [String] = []
     func add(_ s: String) { lock.lock(); logs.append(s); lock.unlock() }
@@ -213,17 +213,17 @@ private struct HoldObserver: MenuBarObserver {
     }
 }
 
-private struct HoldRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let bar: HoldBar }
+struct HoldRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let bar: HoldBar }
 
 @MainActor
-private func holdRig(failCalls: Int) async -> HoldRig {
+func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMessage) async -> HoldRig {
     // P1..P3 folded behind «; the record wants each of them out between the drawn keys: three pull-outs, one per pass.
     let (p1, p2, p3, d1, d2, d3, d4) = (k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4"))
     let order = [p1, p2, p3, d1, d2, d3, d4]
     let layout = Layout.placedAll(visible: [d1, p1, d2, p2, d3, p3, d4])
     let act = FakeActuator(order: order, hidden: [], capabilities: HoldCaps(), makeSnapshot: { holdSnapshot(order: $0, hidden: $1) })
     // The strip never opens: every move across the fold the engine dispatches fails like the live actuator's failed strip open.
-    for n in 0..<failCalls { await act.failOnCall(n + 1, .mechanismFailed(ActuationError.stripOpenFailureMessage)) }
+    for n in 0..<failCalls { await act.failOnCall(n + 1, .mechanismFailed(message)) }
     let state = EngineState()
     let bar = HoldBar()
     let engine = LayoutEngine(observer: HoldObserver(actuator: act), actuator: act, store: InMemoryLayoutStore(layout), capabilities: HoldCaps(),
@@ -234,7 +234,7 @@ private func holdRig(failCalls: Int) async -> HoldRig {
     return HoldRig(engine: engine, state: state, actuator: act, bar: bar)
 }
 
-private func moveCalls(_ a: FakeActuator) async -> Int {
+func moveCalls(_ a: FakeActuator) async -> Int {
     await a.calls.filter { if case .move = $0 { true } else { false } }.count
 }
 

@@ -494,3 +494,18 @@ private func refoldWorld() -> StripWorld {
     #expect(w.dragTargets.count >= 1)
     #expect(w.dragTargets[0] != 329)
 }
+
+// MARK: - gdu.129: an open strip that cannot place the subject is a bar-level failure, with ONE diagnostic line
+
+@Test func aSubjectNotPlaceableInTheOpenStripIsABarLevelFailureWithOneDiagnosticLine() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    w.carried = ["X2"]; w.carriedOpen = ["X2"]
+    let a = actuator(w)
+    let r = await a.move(key("X2"), relation: .after(key("A")))
+    guard case .failed(let e, _) = r else { Issue.record("expected failed, got \(r)"); return }
+    #expect(e.isStripUnplaceable && e == .mechanismFailed(ActuationError.stripUnplaceableMessage))
+    #expect(w.events == ["open", "close"])
+    let lines = await a.trace.filter { $0.hasPrefix("strip: subject not placeable inside the open strip:") }
+    #expect(lines.count == 1)
+    #expect(lines[0].contains("stale=true") && lines[0].contains("join=identifier") && lines[0].contains("hosted left of the chevron"))
+}

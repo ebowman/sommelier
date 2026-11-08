@@ -605,6 +605,8 @@ public enum ArrangeSections {
         public var movingName: String?
         /// gdu.126: the bar-level strip hold is active: how many items are folded behind « (nil = no hold).
         public var stripHoldFolded: Int?
+        /// gdu.129: the hold is for a strip that opened but could not place an item.
+        public var stripHoldUnplaceable = false
         public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
                     handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
             self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
@@ -613,7 +615,10 @@ public enum ArrangeSections {
     }
 
     /// gdu.126: the status line while the strip hold is active and nothing else is pending.
-    public static func barTooNarrowText(_ n: Int) -> String { "The bar is too narrow for this order: macOS folds \(n) item\(n == 1 ? "" : "s") behind « and the strip would not open" }
+    public static func barTooNarrowText(_ n: Int, unplaceable: Bool = false) -> String {
+        "The bar is too narrow for this order: macOS folds \(n) item\(n == 1 ? "" : "s") behind « and "
+            + (unplaceable ? "Sommelier could not place an item inside the strip." : "the strip would not open")
+    }
     public static func blockedByGivenUpText(_ wall: String) -> String { "Blocked by \(wall), which Sommelier can't place — right-click it to try again" }
     public static let checkingMenuBar = "Checking the menu bar…"
     public static let menuBarMatches = "Menu bar matches"
@@ -663,7 +668,7 @@ public enum ArrangeSections {
             else if movingCandidates.count == movingCount, (1...2).contains(movingCount) { primary = "Moving \(movingCandidates.map(\.title).joined(separator: ", "))…" }
             else { primary = movingCount > 1 ? "Moving \(movingCount) items…" : "Moving…" }
         }
-        else if let n = context.stripHoldFolded { primary = barTooNarrowText(n) }
+        else if let n = context.stripHoldFolded { primary = barTooNarrowText(n, unplaceable: context.stripHoldUnplaceable) }
         else if waiting > 0 { primary = waitingToReadText(waiting) }
         else if let w = blockedRows.first?.waitingOn { primary = waitingToSettleText(w) }
         else if let n = context.handDragNotice { primary = n }

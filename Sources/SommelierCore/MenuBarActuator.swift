@@ -36,6 +36,15 @@ extension ActuationError {
         if case .mechanismFailed(let m) = self { return m == Self.stripOpenFailureMessage }
         return false
     }
+    /// gdu.129: the strip opened (we opened it) but the fresh open-strip scan could not pin the subject down: no drag was posted. Also a
+    /// BAR-level outcome, held exactly like a failed open.
+    public static let stripUnplaceableMessage = "the « strip opened but the item could not be pinned down inside it"
+    public var isStripUnplaceable: Bool {
+        if case .mechanismFailed(let m) = self { return m == Self.stripUnplaceableMessage }
+        return false
+    }
+    /// gdu.126 / gdu.129: either bar-level strip failure (open failed, or opened but unplaceable).
+    public var isStripHoldFailure: Bool { isStripOpenFailure || isStripUnplaceable }
     /// Text carried by the actuator's refusal to drag an item (or anchor) that sits in macOS's overflow area (gdu.25, gdu.69).
     public static let overflowRefusalMarker = "is in the menu bar overflow area"
     /// The actuator refused BEFORE any drag because the subject or relation anchor is in macOS's overflow area. Not a failure
