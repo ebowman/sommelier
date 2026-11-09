@@ -7,3 +7,4 @@ import Sommelier.Truth
 import Sommelier.Status
 import Sommelier.Honesty
 import Sommelier.Pins
+import Sommelier.Fast

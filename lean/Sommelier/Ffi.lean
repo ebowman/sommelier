@@ -1,4 +1,5 @@
 import Sommelier.Status
+import Sommelier.Fast
 
 /-!
 # C boundary: the thin exports the Swift app links
@@ -6,6 +7,10 @@ import Sommelier.Status
 The app holds an opaque `State` and sends flat `Nat` token lists (the C shim turns `UInt32` words into `Nat`s).  Every export only
 DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`), and ENCODES the answer.
 No decision is made here.  This file adds no definition to any other module.
+
+The exports call the FAST versions of `Fast.lean` (`stepF`, `statusLineF`, `shownVerdictF`, `rowLineF`, `rowVerdictF`); each is PROVED EQUAL to the specification
+(`stepF_eq`, ...), and below `stepTokF = stepTok` etc. say the same of the token functions, so every wrapper theorem about the specification is a theorem
+about what the export computes.  (The specification takes 22-45 ms to `step` a 36-key record; see docs/verified-core.md.)
 
 Protocol.  An input that does not decode is never given a default: the export answers the single word `[errTag]` (and `step` leaves
 the state unchanged).  A decoded input is answered `okTag :: payload`.  `okTag ≠ errTag`, so the two cannot be confused.
@@ -302,6 +307,55 @@ theorem rowVerdictTok_bad_read (s : State) (rd key : List Nat) (h : decRead rd =
 theorem rowVerdictTok_bad_key (s : State) (rd key : List Nat) (h : decKey key = none) : rowVerdictTok s rd key = errAns := by
   simp [rowVerdictTok, h]
 
+/-! ## The token functions the exports compute: the fast versions, proved equal to the ones above -/
+
+def stepTokF (s : State) (ev : List Nat) : State × List Nat :=
+  match decEvent ev with
+  | none => (s, errAns)
+  | some e => let (s', as) := stepF s e; (s', okAns (encActions as))
+
+def statusTokF (s : State) (rd : List Nat) : List Nat :=
+  match decRead rd with | none => errAns | some r => okAns (encStatus (statusLineF s r))
+
+def shownTokF (s : State) (rd : List Nat) : List Nat :=
+  match decRead rd with | none => errAns | some r => okAns (encVerdict (shownVerdictF s r))
+
+def rowLineTokF (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
+  match decRead rd, decKey key with
+  | some r, some k => okAns [encRowLine (rowLineF s r k)]
+  | _, _ => errAns
+
+def rowVerdictTokF (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
+  match decRead rd, decKey key with
+  | some r, some k => okAns [encRowVerdict (rowVerdictF s.record (s.view r) k)]
+  | _, _ => errAns
+
+theorem stepTokF_eq (s : State) (ev : List Nat) : stepTokF s ev = stepTok s ev := by
+  unfold stepTokF stepTok
+  cases decEvent ev with
+  | none => rfl
+  | some e => simp only [stepF_eq]
+
+theorem statusTokF_eq (s : State) (rd : List Nat) : statusTokF s rd = statusTok s rd := by
+  unfold statusTokF statusTok
+  cases decRead rd with
+  | none => rfl
+  | some r => simp only [statusLineF_eq]
+
+theorem shownTokF_eq (s : State) (rd : List Nat) : shownTokF s rd = shownTok s rd := by
+  unfold shownTokF shownTok
+  cases decRead rd with
+  | none => rfl
+  | some r => simp only [shownVerdictF_eq]
+
+theorem rowLineTokF_eq (s : State) (rd key : List Nat) : rowLineTokF s rd key = rowLineTok s rd key := by
+  unfold rowLineTokF rowLineTok
+  cases decRead rd <;> cases decKey key <;> simp only [rowLineF_eq]
+
+theorem rowVerdictTokF_eq (s : State) (rd key : List Nat) : rowVerdictTokF s rd key = rowVerdictTok s rd key := by
+  unfold rowVerdictTokF rowVerdictTok
+  cases decRead rd <;> cases decKey key <;> simp only [rowVerdictF_eq]
+
 /-! ## Names (test support, not part of the proofs)
 
 A rendering of every boundary value as text, by explicit name tables.  `lake exe fixture` prints the expected OUTPUTS with it and
@@ -351,20 +405,20 @@ def exInit (record : Array Nat) : State := initTok record.toList
 /-- Result: (new state, answer).  A malformed event leaves the state unchanged and answers `[errTag]`. -/
 @[export sommelier_step]
 def exStep (s : State) (ev : Array Nat) : State × Array Nat :=
-  let (s', o) := stepTok s ev.toList
+  let (s', o) := stepTokF s ev.toList
   (s', o.toArray)
 
 @[export sommelier_status]
-def exStatus (s : State) (r : Array Nat) : Array Nat := (statusTok s r.toList).toArray
+def exStatus (s : State) (r : Array Nat) : Array Nat := (statusTokF s r.toList).toArray
 
 @[export sommelier_shown_verdict]
-def exShown (s : State) (r : Array Nat) : Array Nat := (shownTok s r.toList).toArray
+def exShown (s : State) (r : Array Nat) : Array Nat := (shownTokF s r.toList).toArray
 
 @[export sommelier_row_line]
-def exRowLine (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowLineTok s r.toList k.toList).toArray
+def exRowLine (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowLineTokF s r.toList k.toList).toArray
 
 @[export sommelier_row_verdict]
-def exRowVerdict (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowVerdictTok s r.toList k.toList).toArray
+def exRowVerdict (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowVerdictTokF s r.toList k.toList).toArray
 
 
 /-- Test support: the name of the event the words decode to, as UTF-8 bytes (`[errTag]` if they do not decode). -/

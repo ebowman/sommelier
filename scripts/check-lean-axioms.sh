@@ -1,10 +1,10 @@
 #!/bin/sh
-# Fails unless every theorem in lean/Sommelier/{Eqns,Safety,Gates,Truth,Honesty}.lean (and the named headline theorems) depends only on
+# Fails unless every theorem in lean/Sommelier/{Eqns,Safety,Gates,Truth,Honesty,Fast}.lean (and the named headline theorems) depends only on
 # propext, Classical.choice and Quot.sound, and lean/Sommelier/Pins.lean (the full statements) builds: no sorryAx, no native_decide (Lean.ofReduceBool), no new axioms.
 set -eu
 cd "$(dirname "$0")/../lean"
-lake build Sommelier.Safety Sommelier.Gates Sommelier.Truth Sommelier.Honesty Sommelier.Pins Sommelier.Ffi >/dev/null || { echo "FAIL: Safety.lean, Gates.lean, Truth.lean, Honesty.lean, Pins.lean or Ffi.lean does not build (a weakened statement breaks a pin)"; exit 1; }
-FILES="Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Status.lean Sommelier/Step.lean Sommelier/Pins.lean Sommelier/Examples.lean Sommelier/Fuzz.lean Sommelier/Ffi.lean Sommelier.lean"
+lake build Sommelier.Safety Sommelier.Gates Sommelier.Truth Sommelier.Honesty Sommelier.Fast Sommelier.Pins Sommelier.Ffi >/dev/null || { echo "FAIL: Safety.lean, Gates.lean, Truth.lean, Honesty.lean, Fast.lean, Pins.lean or Ffi.lean does not build (a weakened statement breaks a pin)"; exit 1; }
+FILES="Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Status.lean Sommelier/Step.lean Sommelier/Pins.lean Sommelier/Examples.lean Sommelier/Fuzz.lean Sommelier/Fast.lean Sommelier/Ffi.lean Sommelier.lean"
 for f in $FILES; do
   for bad in sorry native_decide 'axiom '; do
     if grep -n "^[^-]*\b$bad" $f | grep -v '^[0-9]*:\s*--' >/dev/null 2>&1; then
@@ -40,16 +40,20 @@ anchorMove_spec anchorMove_right_place anchorMove_moves anchorMove_target fallba
 fallbackMove_none_cases fallbackMove_exists legal_mem_cands argmin_spec fallback_reduces_inversions fallback_best right_everywhere_no_move noMoveHelps_true userRetry_answers plain_is_no_move drop_no_gap_note bar_open_record applyMove_filter fallback_improves_bar noMoveHelps_bar cantJudge_iff exists_drag applyMove_split filter_ins wholeBar_cases invCount_ignores_unmovable userPick_exists userPick_none userPick_head1 userMove_phases userMove_none_reason rowNote_true rowNote_reason queue_move_decides try_again_core try_again_answers
 drain_potential potential_le drops_drain drop_mutual_inversion drop_no_gap drop_keys_around_say_so drain_bound_attained
 wholeBar_unlisted wholeBar_iff_free penalty_wholeBar worstCount_wholeBar fallback_best_whole cantJudge_iff cantJudge_free move_bound move_cmp_left move_cmp_right
-bar_movable_facts invs_split fallback_improves_bar noMoveHelps_bar"
-ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
+bar_movable_facts invs_split fallback_improves_bar noMoveHelps_bar
+invs_eq_invN costScan_get argminV_eq argmin_congr' afterCount_eq penalty_eq fallbackMoveF_eq nodupB_eq consistentF_eq gateF_eq rowVerdictF_eq
+verdictF_eq shownVerdictF_eq freeKeysF_eq userMoveF_eq userMove2F_eq userPickF_eq decideMoveF_eq stepF_eq pendingF_eq statusLineF_eq
+movingKeyF_eq waitingKeyF_eq rowLineF_eq"
+ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Fast.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $HEADLINE; do
-  echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty.lean"; exit 1; }
+  echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty/Fast.lean"; exit 1; }
 done
 # The C boundary (Ffi.lean, namespace Sommelier.Ffi): every round-trip and wrapper theorem must exist, and they join the axiom check below.
 FFI_HEADLINE="ub_b ok_ne_err decList_enc decList_enc' decKeys_enc decKey_enc decKey_nil decKey_two decOutcome_enc decRead_enc decEvent_enc decEvent_malformed
 decActions_enc decWhy_enc decStatus_enc decVerdict_enc decRowLine_enc decRowVerdict_enc decAns_ok decAns_err
 initTok_enc stepTok_enc stepTok_bad statusTok_enc statusTok_bad shownTok_enc shownTok_bad rowLineTok_enc rowLineTok_bad_read rowLineTok_bad_key
-rowVerdictTok_enc rowVerdictTok_bad_read rowVerdictTok_bad_key"
+rowVerdictTok_enc rowVerdictTok_bad_read rowVerdictTok_bad_key
+stepTokF_eq statusTokF_eq shownTokF_eq rowLineTokF_eq rowVerdictTokF_eq"
 FFI_ALL=$(grep -E '^theorem [^ ]+' Sommelier/Ffi.lean | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $FFI_HEADLINE; do
   echo "$FFI_ALL" | grep -qx "$h" || { echo "FAIL: boundary theorem $h is missing from Ffi.lean"; exit 1; }

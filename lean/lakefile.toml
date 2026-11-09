@@ -1,5 +1,5 @@
 name = "sommelier"
-defaultTargets = ["Sommelier", "fuzz", "oracle", "SommelierFfi", "fixture"]
+defaultTargets = ["Sommelier", "fuzz", "oracle", "SommelierFfi", "fixture", "fastfuzz"]
 
 [[lean_lib]]
 name = "Sommelier"
@@ -19,3 +19,7 @@ roots = ["Sommelier.Ffi"]
 [[lean_exe]]
 name = "fixture"
 root = "Fixture"
+
+[[lean_exe]]
+name = "fastfuzz"
+root = "FastFuzz"

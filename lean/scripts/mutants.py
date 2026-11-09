@@ -310,6 +310,33 @@ M=[
 ('fb_leftward_flipped',"decide (r.drawn.idxOf rel.target < r.drawn.idxOf k)","decide (r.drawn.idxOf k < r.drawn.idxOf rel.target)"),
 ('fb_argmin_after_only',"argmin (worstCount s r k) (fallbackCands s r k)","argmin (afterCount s r k) (fallbackCands s r k)"),
 ('fb_fires_on_after_only',"decide (worstCount s r k a.rel < invCount s r r.drawn)","decide (afterCount s r k a.rel < invCount s r r.drawn)"),
+# ejb.12: the fast versions (Fast.lean).  Each breaks a fast definition; the equality theorem `…F_eq` (or a lemma it rests on) must fail to elaborate.
+('fast_cost_offbyone',"(g + l) :: costScan pk ys","(g + l + 1) :: costScan pk ys"),
+('fast_cost_gt_flipped',"costScan pk ys (g + (if pk < y then 1 else 0))","costScan pk ys (g + (if y < pk then 1 else 0))"),
+('fast_cost_lt_not_decreased',"(l - (if y < pk then 1 else 0))\n","l\n"),
+('fast_relOff_after_zero',"| .after _ => 1","| .after _ => 0"),
+('fast_relOff_before_one',"def relOff : Rel → Nat | .before _ => 0","def relOff : Rel → Nat | .before _ => 1"),
+('fast_score_direction_swapped',"(if D.idxOf rel.target < kd then pl else pr)","(if D.idxOf rel.target < kd then pr else pl)"),
+('fast_score_base_missing',"base + cs.getD (M.idxOf rel.target + relOff rel) 0 +","cs.getD (M.idxOf rel.target + relOff rel) 0 +"),
+('fast_threshold_wrong',"pickF k (needsStrip s r k) (invN ((r.drawn.filter (kp hv s.record)).map s.record.idxOf))","pickF k (needsStrip s r k) (invN P)"),
+('fast_nodup_guard_dropped',"    if r.drawn.Nodup then\n      let M := mkM","    if true then\n      let M := mkM"),
+('fast_fallback_cond_dropped',"if s.owedKeys.contains k && s.record.contains k && hv.contains k && misplaced s r k then","if s.owedKeys.contains k && s.record.contains k && hv.contains k then"),
+('fast_argmin_last',"| some (b, bv) => if v < bv then some (x, v) else acc) none","| some (b, bv) => if v ≤ bv then some (x, v) else acc) none"),
+('fast_invN_nonstrict',"(xs.filter (fun y => decide (y < x))).length + invN xs","(xs.filter (fun y => decide (y ≤ x))).length + invN xs"),
+('fast_gate_ignores_consistent',"decide (s.view r).usable && (s.view r).consistentF","decide (s.view r).usable"),
+('fast_nodup_ignores_tail',"| x :: xs => !xs.contains x && nodupB xs","| x :: xs => nodupB xs"),
+('fast_allNotIn_inverted',"def allNotIn (po pb : List Key) : Bool := po.all (fun k => !pb.contains k)","def allNotIn (po pb : List Key) : Bool := po.all (fun k => pb.contains k)"),
+('fast_row_behind_swapped',"then .behindOutOfTurn\n    else .behindChevron\n  else if po.contains k then\n    if anyCrossed","then .behindChevron\n    else .behindOutOfTurn\n  else if po.contains k then\n    if anyCrossed"),
+('fast_row_crossed_eq',"(decide (x ∈ bef) != decide (po.idxOf x < pk))","(decide (x ∈ bef) == decide (po.idxOf x < pk))"),
+('fast_forcedBad_order',"decide (rec.idxOf y < ix))))\n\n/-- `r.free k","decide (rec.idxOf y > ix))))\n\n/-- `r.free k"),
+('fast_party_side',"(pb.contains y && decide (ik < rec.idxOf y))","(pb.contains y && decide (rec.idxOf y < ik))"),
+('fast_verdict_R_threshold',"let R := partyR rec po pb us r U\n    if R.length ≥ 2","let R := partyR rec po pb us r U\n    if R.length ≥ 3"),
+('fast_step_no_emit',"| some a => (emit s' a, [a])\n  | e => step s e","| some a => (s', [a])\n  | e => step s e"),
+('fast_decide_gate_dropped',"|| !s.gateF r then none","then none"),
+('fast_userMove2_folded',"if (userMove1 s r k).isNone && !(foldedAll s r).contains k && (movable s r).contains k then fallbackMoveF s r k else none","if (userMove1 s r k).isNone && (movable s r).contains k then fallbackMoveF s r k else none"),
+('fast_status_never_moving',"def statusLineF (s : State) (r : Read) : Status :=\n  if pendingF s r then .moving","def statusLineF (s : State) (r : Read) : Status :=\n  if false then .moving"),
+('fast_row_never_moving',"def rowLineF (s : State) (r : Read) (k : Key) : RowLine :=\n  if movingKeyF s r k then .moving","def rowLineF (s : State) (r : Read) (k : Key) : RowLine :=\n  if false then .moving"),
+('fast_free_movable_inverted',"&& !hv.contains x && !(fresh && fs.contains x))","&& hv.contains x && !(fresh && fs.contains x))"),
 ]
 
 
@@ -375,6 +402,8 @@ HONESTY_MUST_KILL = {
   'waiting_shown_on_good_read', 'waiting_only_when_move', 'waiting_only_when_not_good',
   # ejb.10: the note beside a row
   'note_never', 'note_without_owed', 'note_on_any_owed', 'note_on_tick', 'helps_ignores_others', 'helps_ignores_fallback', 'helps_not_misplaced', 'helps_always', 'helps_not_movable', 'helps_ignores_whole', 'cant_flipped', 'cant_ignores_decide', 'cant_not_misplaced', 'own_cant_no_owed', 'own_cant_userpick', 'cant_ignores_fallback'}
+# ejb.12: a mutant of a fast definition must make an equality theorem of Fast.lean fail (the fast version is PROVED equal to the specification).
+FAST_MUST_KILL = {m[0] for m in M if m[0].startswith('fast_')}
 # Redundant guards: `decideMove` returns `none` unless `s.gate r`, and the gate requires `Read.usable` (a settled pass read, level not incomplete, strip
 # closed, chevron fresh or proven absent), so the same conditions repeated in `decideMove`'s own guard and in `engineAllowed` change no decision.  The
 # check is `gate_facts` (Honesty.lean) and the runner below: a mutant listed here must not be noticed by any example or fuzz check; it may still break a
@@ -392,7 +421,7 @@ def fresh(d):
     shutil.copytree(LEAN, d, symlinks=True, ignore=shutil.ignore_patterns('.lake', 'scripts'))
 
 def apply(d, old, new):
-    for f in ['Sommelier/Step.lean', 'Sommelier/Model.lean', 'Sommelier/Safety.lean', 'Sommelier/Status.lean', 'Sommelier/Truth.lean']:
+    for f in ['Sommelier/Step.lean', 'Sommelier/Model.lean', 'Sommelier/Safety.lean', 'Sommelier/Status.lean', 'Sommelier/Truth.lean', 'Sommelier/Fast.lean']:
         t = open(f'{d}/{f}').read()
         if t.count(old) == 1:
             open(f'{d}/{f}', 'w').write(t.replace(old, new)); return True
@@ -431,6 +460,7 @@ def run(m, w):
     gf = failing_theorems(d, 'Gates')
     tf = failing_theorems(d, 'Truth')
     hf = failing_theorems(d, 'Honesty') if (gf is None and tf is None) else None
+    ff = failing_theorems(d, 'Fast') if (gf is None and tf is None and hf is None) else None
     pf = subprocess.run(['lake', 'build', 'Sommelier.Pins'], cwd=d, capture_output=True, text=True).returncode != 0
     e = subprocess.run(['lake', 'build', 'Sommelier.Examples'], cwd=d, capture_output=True, text=True)
     ex = sorted(set(int(x) for x in re.findall(r'error: Sommelier/Examples.lean:(\d+)', e.stdout + e.stderr)))
@@ -450,8 +480,9 @@ def run(m, w):
     if gf: kills['gates'] = gf
     if hf: kills['honesty'] = hf
     if tf: kills['truth'] = tf
-    if pf and not (eq or sf or gf or hf or tf): kills['pins'] = ['<pin>']
-    if sf or gf or hf or pf or eq or tf: kills['theorems'] = 1
+    if ff: kills['fast'] = ff
+    if pf and not (eq or sf or gf or hf or tf or ff): kills['pins'] = ['<pin>']
+    if sf or gf or hf or pf or eq or tf or ff: kills['theorems'] = 1
     return name, 'OK', ex, kills
 
 if __name__ == '__main__':
@@ -484,20 +515,20 @@ if __name__ == '__main__':
     by_gh = [n for n, ex, k in ok if any(t in k for t in TH)]   # a Gates/Truth/Honesty theorem fails
     by_saf = [n for n, ex, k in ok if 'theorems' in k and n not in by_gh]       # only Safety.lean / Eqns.lean / Pins.lean fails
     only_ef = [n for n, ex, k in ok if 'theorems' not in k]                      # only examples / fuzz notice
-    print(f'{len(by_gh)} mutants fail a Gates.lean/Truth.lean/Honesty.lean theorem; {len(by_saf)} only a Safety.lean/Eqns.lean theorem or a pin; '
+    print(f'{len(by_gh)} mutants fail a Gates.lean/Truth.lean/Honesty.lean theorem; {len(by_saf)} only a Safety.lean/Eqns.lean/Fast.lean theorem or a pin; '
           f'{len(only_ef)} are noticed only by examples/fuzz:')
-    for n in by_saf: print('  Safety-only:', n)
+    for n in by_saf: print('  Safety/Fast-only:', n)
     for n in only_ef: print('  examples/fuzz-only:', n)
     # does a HEADLINE theorem (the named statements of scripts/check-lean-axioms.sh) fail, or only a helper / specification lemma?
     hl = set(re.search(r'HEADLINE="(.*?)"', open(os.path.join(LEAN, '..', 'scripts', 'check-lean-axioms.sh')).read(), re.S).group(1).split())
-    def failing(k): return set(sum([k[t] for t in ('eqns', 'safety', 'gates', 'truth', 'honesty') if t in k], []))
+    def failing(k): return set(sum([k[t] for t in ('eqns', 'safety', 'gates', 'truth', 'honesty', 'fast') if t in k], []))
     by_head = [n for n, ex, k in ok if failing(k) & hl]
     by_helper = [n for n, ex, k in ok if 'theorems' in k and not (failing(k) & hl)]
     print(f'of the theorem kills, {len(by_head)} fail a named headline theorem (a theorem about the property) and {len(by_helper)} fail only a '
           f'helper/specification lemma or a pin (a break that may be incidental):')
     # semantic detection: an example (a concrete trace) or the fuzz harness (counterexample against a random honest bar) notices the
     # mutant; a mutant noticed ONLY by a broken proof script may be an incidental (positional) break, not a falsified property
-    MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems'}
+    MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems', 'fast'}
     sem = [n for n, ex, k in ok if ex or any(t not in MODK for t in k)]
     proof_only = [n for n, ex, k in ok if n not in sem]
     print(f'{len(sem)} killed mutants are also noticed semantically (a failing example or a fuzz counterexample); {len(proof_only)} die only to a broken proof/pin:')
@@ -516,7 +547,10 @@ if __name__ == '__main__':
     for n in must_t: print('  FINDING: no Truth.lean theorem catches', n)
     eqv = [n for n, ex, k in ok if n in EQUIVALENT and (ex or any(t not in MODK for t in k))]
     for n in eqv: print('  FINDING: labelled equivalent but noticed by an example or the fuzz', n)
-    must = must + must_h + must_t + eqv
+    by_f = {n for n, ex, k in ok if 'fast' in k}
+    must_f = [n for n in sorted(FAST_MUST_KILL) if n in ran and n not in by_f]
+    for n in must_f: print('  FINDING: no Fast.lean equality theorem catches', n)
+    must = must + must_h + must_t + eqv + must_f
     killed = len(res) - len(surv) - len(invalid)
     print(f'{len(res)} mutants: {killed} killed, {len(surv)} survived, {len(invalid)} invalid (BADPATCH/NOCOMPILE, not counted as killed)')
     for n in surv: print('  survivor:', n, '-', EQUIVALENT.get(n, 'UNEXPLAINED'))
