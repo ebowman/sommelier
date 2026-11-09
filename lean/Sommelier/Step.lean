@@ -101,12 +101,88 @@ def prefixFor (want : List Key) (l : List Key) : Option Nat :=
   (List.range (l.length + 1)).find? fun i =>
     (l.take i).all (fun a => want.contains a) && want.all (fun a => (l.take i).contains a)
 
-/-- The user's own move of an owed key `k`.  Every OTHER still-owed key is pinned; a key already SERVED is an
-ordinary anchor (and may be a target).  Anchors are the movable keys of the record that are not owed.
-A drawn `k` is RIGHT when exactly the anchors that precede it in the record precede it on the bar.  Otherwise it goes to the
-first gap, in DRAWN order, whose preceding anchors are exactly those: right after the last anchor of that gap, or before the first
-anchor if the gap is empty.  If no gap satisfies the test (anchors out of record order) there is no move; the drag then never changes nothing
-(fuzz-checked: `noop_user`).  A folded `k` is pulled out only if it is the fold request or owed, the chevron is fresh and THIS read lists `k` as folded, to just after the
+/-- The ANCHOR rule for a movable `k`.  Anchors are the movable keys of the record that are not owed (every OTHER still-owed key is pinned out; a key already
+SERVED is an ordinary anchor and may be a target).  `k` is RIGHT when exactly the anchors that precede it in the record precede it on the bar.  Otherwise it goes to the
+first gap, in DRAWN order, whose preceding anchors are exactly those: right after the last anchor of that gap, or before the first anchor if the gap is empty.
+If no gap satisfies the test (anchors out of record order) there is no move (and `fallbackMove` is asked). -/
+def anchorMove (s : State) (r : Read) (k : Key) : Option Action :=
+  let hv := movable s r
+  let before := s.record.takeWhile (fun x => x != k)
+  let mk (rel : Rel) : Action := ⟨k, rel, needsStrip s r k rel, true⟩
+  let anchors := hv.filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a)
+  let want := before.filter (fun a => anchors.contains a)
+  let seen := (hv.filter (fun a => a == k || anchors.contains a)).takeWhile (fun x => x != k)
+  if seen.all (fun a => want.contains a) && want.all (fun a => seen.contains a) then none
+  else match prefixFor want anchors with
+    | none => none
+    | some i =>
+        match (anchors.take i).getLast? with
+        | some p => some (mk (.after p))
+        | none => anchors.head?.map (fun t => mk (.before t))
+
+/-- `k` is out of place among ALL the movable keys of the record (owed ones included): some such key `x` stands before `k` in the record and after it on the bar, or
+the other way round. -/
+def misplaced (s : State) (r : Read) (k : Key) : Bool :=
+  let hv := movable s r
+  let before := s.record.takeWhile (fun x => x != k)
+  let seen := hv.takeWhile (fun x => x != k)
+  hv.any (fun x => x != k && s.record.contains x && (before.contains x != seen.contains x))
+
+/-- Inversions (pairs in the wrong order against the record) in a list of keys. -/
+def invs (rec : List Key) : List Key → Nat
+  | [] => 0
+  | x :: xs => (xs.filter (fun y => decide (rec.idxOf y < rec.idxOf x))).length + invs rec xs
+
+/-- The inversions among the MOVABLE RECORD keys of the bar `l` (the keys a drag may name, as subject or target). -/
+def invCount (s : State) (r : Read) (l : List Key) : Nat :=
+  invs s.record (l.filter (fun x => (movable s r).contains x && s.record.contains x))
+
+/-- Where the fallback puts `k` when two places tie: just after `k`'s nearest movable record predecessor; if it has none, just before the first movable key that
+follows `k` in the record. -/
+def fallbackRel (s : State) (r : Read) (k : Key) : Option Rel :=
+  let hv := movable s r
+  let before := s.record.takeWhile (fun x => x != k)
+  match (before.filter (fun x => hv.contains x)).getLast? with
+  | some p => some (.after p)
+  | none => ((s.record.dropWhile (fun x => x != k)).tail.find? (fun x => x != k && hv.contains x)).map Rel.before
+
+/-- Every single drag of `k` the engine may make: next to a movable record key other than `k`, on either side.  The tie-break place comes first. -/
+def fallbackCands (s : State) (r : Read) (k : Key) : List Rel :=
+  (fallbackRel s r k).toList ++
+    ((movable s r).filter (fun t => t != k && s.record.contains t)).flatMap (fun t => [Rel.before t, Rel.after t])
+
+/-- The first minimum of `f` over a list. -/
+def argmin (f : Rel → Nat) (l : List Rel) : Option Rel :=
+  l.foldl (fun acc x => match acc with
+    | none => some x
+    | some b => if f x < f b then some x else acc) none
+
+/-- The inversion count of the bar after dragging `k` by `rel`. -/
+def afterCount (s : State) (r : Read) (k : Key) (rel : Rel) : Nat :=
+  invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩)
+
+/-- THE READ VERIFIES THE WHOLE BAR (for the record's keys).  Every record key that the read lists anywhere (drawn, in the pile, folded or unread) is either movable (drawn,
+trusted, not counted as folded: its place in the open order is corroborated) or listed folded under a FRESH chevron (pinned behind the « by A2: it is not open, so it takes no
+part in the order of the open keys and a fallback drag never names it).  A drawn record key that is untrusted, an unread record key, and a pile or folded record key under a chevron that
+is not fresh all FAIL the condition: they could sit anywhere among the open keys, so no drag can be judged against them.  Record keys the read lists nowhere are not on the bar. -/
+def wholeBar (s : State) (r : Read) : Bool :=
+  s.record.all (fun x =>
+    !(r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) ||
+    (movable s r).contains x || (r.chevron == .fresh && r.foldedSet.contains x))
+
+/-- THE FALLBACK for an OWED movable `k` that is `misplaced`, when the anchor rule gave no move (the other owed keys are not anchors, or the anchors have no gap), and ONLY when
+the read verifies the whole bar (`wholeBar`).  Among ALL single drags of `k` (`fallbackCands`) it takes the one that leaves the fewest inversions among the movable record keys
+(which, under `wholeBar`, are exactly the record keys open on every possible bar), ties to the place nearest `k`'s record
+predecessor (`fallbackRel` is tried first and only a strictly lower count replaces it), and it fires ONLY if that count is STRICTLY lower than the bar's now.  Otherwise
+there is no drag (`NoReducingDrag`, or the bar is not verified). -/
+def fallbackMove (s : State) (r : Read) (k : Key) : Option Action :=
+  let mk (rel : Rel) : Action := ⟨k, rel, needsStrip s r k rel, true⟩
+  if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then
+    ((argmin (afterCount s r k) (fallbackCands s r k)).map mk).filter (fun a => decide (afterCount s r k a.rel < invCount s r r.drawn))
+  else none
+
+/-- The user's own move of an owed key `k`.  A drawn `k` gets the anchor rule's move, or, when that gives none, the fallback.
+A folded `k` is pulled out only if it is the fold request or owed, the chevron is fresh and THIS read lists `k` as folded, to just after the
 rightmost drawn key that precedes it in the record (unless that changes nothing). -/
 def userMove (s : State) (r : Read) (k : Key) : Option Action :=
   let hv := movable s r
@@ -120,18 +196,20 @@ def userMove (s : State) (r : Read) (k : Key) : Option Action :=
         (fun a => applyMove r.drawn a != r.drawn)
     else none
   else if hv.contains k then
-    let anchors := hv.filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a)
-    let want := before.filter (fun a => anchors.contains a)
-    let seen := (hv.filter (fun a => a == k || anchors.contains a)).takeWhile (fun x => x != k)
-    if seen.all (fun a => want.contains a) && want.all (fun a => seen.contains a) then none
-    else match prefixFor want anchors with
-      | none => none
-      | some i =>
-          let a? := match (anchors.take i).getLast? with
-            | some p => some (mk (.after p))
-            | none => anchors.head?.map (fun t => mk (.before t))
-          a?
+    match anchorMove s r k with
+    | some a => some a
+    | none => fallbackMove s r k
   else none
+
+/-- PHASE ONE of the user's queue: the move of `k` by the anchor rule or the licensed pull-out (exactly `userMove` without the fallback). -/
+def userMove1 (s : State) (r : Read) (k : Key) : Option Action :=
+  if (foldedAll s r).contains k then userMove s r k
+  else if (movable s r).contains k then anchorMove s r k
+  else none
+
+/-- PHASE TWO: the fallback of a drawn key that has no phase-one move. -/
+def userMove2 (s : State) (r : Read) (k : Key) : Option Action :=
+  if (userMove1 s r k).isNone && !(foldedAll s r).contains k && (movable s r).contains k then fallbackMove s r k else none
 
 /-- A user's move that may open the strip waits once this edit's session is used, and while the strip is open. -/
 def userAllowed (s : State) (r : Read) (a : Action) : Bool := !(a.strip && (s.editSessionUsed || r.stripOpen))
@@ -166,13 +244,20 @@ def State.gate (s : State) (r : Read) : Bool := decide (s.view r).usable && (s.v
 def engineAllowed (s : State) (r : Read) : Bool :=
   !s.restricted && !s.hold && r.chevron != .stale && !r.stripOpen && s.moveCount < cap (fullBar s r)
 
+/-- The user's queue, in two phases.  FIRST every queued key by the anchor rule and the licensed pull-out (the fold request first, then the owed keys);
+only if none of them yields an allowed move, the fallback in queue order. -/
+def userPick (s : State) (r : Read) : Option Action :=
+  match (s.foldRequest.toList ++ s.owedKeys).findSome? (fun k => (userMove1 s r k).filter (userAllowed s r)) with
+  | some a => some a
+  | none => (s.foldRequest.toList ++ s.owedKeys).findSome? (fun k => (userMove2 s r k).filter (userAllowed s r))
+
 /-- The one decision per read: at most one move.  Only a settled pass read with a readable tree may plan.
 Owed user moves first (the fold request, then the rest), then the engine's; an engine move that needs the
 strip is withheld unless Re-apply granted a session. -/
 def decideMove (s : State) (r : Read) : Option Action :=
   if r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r then none
   else
-    match (s.foldRequest.toList ++ s.owedKeys).findSome? (fun k => (userMove s r k).filter (userAllowed s r)) with
+    match userPick s r with
     | some a => some a
     | none =>
       if !engineAllowed s r then none

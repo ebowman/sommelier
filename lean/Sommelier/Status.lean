@@ -19,7 +19,8 @@ def pending (s : State) (r : Read) : Bool := s.inFlight.isSome || (decideMove s 
 def budgetSpent (s : State) (r : Read) : Bool := cap (fullBar s r) ≤ s.moveCount
 
 /-- Why the bar differs and nothing is happening: `stopped` (the budget is spent), `barFull` (a hold: macOS folded items the engine
-cannot unfold), or `plain` (no reason is claimed). -/
+cannot unfold), or `plain` (no reason of the budget or a hold; the text is "Sommelier has no move to make right now": `plain_is_no_move` proves that nothing is in flight
+and no move is decided on that read, and nothing more: the planner is not optimal, so it does NOT claim that no move would help). -/
 inductive Why where
   | stopped | barFull | plain
   deriving DecidableEq, Repr
@@ -94,5 +95,30 @@ def rowLine (s : State) (r : Read) (k : Key) : RowLine :=
   if movingKey s r k then .moving
   else if waitingKey s r k then .waiting
   else (rowVerdict s.record (s.view r) k).line
+
+/-- What a row says BESIDE its mark when the drop it carries gets no move.  Three notes, all beside a row that says "not where you put it" (the mark is untouched):
+* `noMoveHelps` ("No single move of this item would improve the order"): the read verifies the whole bar (`wholeBar`), the key is movable and misplaced, NO single drag of it
+  leaves fewer inversions, and no other queued key has a move on this read.  `noMoveHelps_true` proves it over every possible bar and every place the key could go.
+* `cantJudge` ("Sommelier can't judge this item until it can read the whole bar"): the key is owed, movable and misplaced among the keys the read corroborates, the read does NOT verify the
+  whole bar (a drawn record key is untrusted, or a record key is unread or listed folded without a fresh chevron), and no move is decided on this read (`cantJudge_iff`).
+* `noMoveHere` ("Sommelier has no move for this item right now"): only that no move of this key exists on this read.  `rowNote_reason` classifies it. -/
+inductive RowNote where
+  | noMoveHelps
+  | cantJudge
+  | noMoveHere
+  deriving DecidableEq, Repr
+
+/-- The note beside the row of `k`.  Present exactly when the key is owed (or requested) and the row says "not where you put it" (so the row is neither moving nor
+waiting: the gate is true and `userMove` is none). -/
+def rowNote (s : State) (r : Read) (k : Key) : Option RowNote :=
+  if rowLine s r k == .notWherePut && owedNow s k then
+    if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && wholeBar s r && misplaced s r k
+        && (fallbackMove s r k).isNone && (userPick s r).isNone then
+      some .noMoveHelps
+    else if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && !wholeBar s r && misplaced s r k
+        && (decideMove s r).isNone then
+      some .cantJudge
+    else some .noMoveHere
+  else none
 
 end Sommelier

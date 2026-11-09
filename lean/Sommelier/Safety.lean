@@ -101,23 +101,12 @@ theorem userMove_spec {s : State} {r : Read} {k : Key} {a : Action} (h : userMov
     · simp at h
   · split at h
     · split at h
-      · simp at h
-      · split at h
-        · simp at h
-        · rename_i i hi
-          split at h
-          · rename_i p hp
-            have hp' := List.mem_of_mem_take (List.mem_of_getLast? hp)
-            simp at h; subst h; simp [Rel.target]
-            exact (List.mem_filter.1 hp').1
-          · rename_i hn
-            cases hh : (List.filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a) (movable s r)).head? with
-            | none => simp only [hh, Option.map] at h; cases h
-            | some t =>
-              have ht := List.mem_of_mem_head? (by rw [hh]; simp : t ∈ _ )
-              simp only [hh, Option.map] at h
-              simp at h; subst h; simp [Rel.target]
-              exact (List.mem_filter.1 ht).1
+      · rename_i a' ha'
+        simp only [Option.some.injEq] at h; subst h
+        have := anchorMove_basic ha'
+        exact ⟨this.1, this.2.1, this.2.2.1⟩
+      · have := fallbackMove_basic h
+        exact ⟨this.1, this.2.1, this.2.2.1⟩
     · simp at h
 
 theorem decideMove_spec {s : State} {r : Read} {a : Action} (h : decideMove s r = some a) :
@@ -135,7 +124,7 @@ theorem decideMove_spec {s : State} {r : Read} {a : Action} (h : decideMove s r 
       | some x => simp [hi] at hc
     · split at h
       · rename_i b hb
-        obtain ⟨k, hk, hk2⟩ := List.exists_of_findSome?_eq_some hb
+        obtain ⟨k, hk, hk2⟩ := userPick_exists hb
         simp at h; subst h
         left
         refine ⟨k, ?_, ?_⟩
@@ -1500,9 +1489,23 @@ theorem userMove_strip {s : State} {r : Read} {k : Key} {a : Action} (h : userMo
   have hk := (userMove_spec h).2.1
   subst hk
   simp only [userMove] at h
-  repeat' split at h
-  all_goals (first | (simp at h; done) | skip)
-  all_goals (simp_all [Option.filter, Option.map]; try grind)
+  split at h
+  · split at h
+    · cases hg : List.getLast? (List.filter (fun x => (List.takeWhile (fun x => x != a.subject) s.record).contains x) (movable s r)) with
+      | none => simp only [hg, Option.map, Option.filter] at h; cases h
+      | some p =>
+        simp only [hg, Option.map, Option.filter] at h
+        split at h
+        · simp at h; rw [← h]
+        · simp at h
+    · simp at h
+  · split at h
+    · split at h
+      · rename_i a' ha'
+        simp only [Option.some.injEq] at h; subst h
+        exact (anchorMove_basic ha').2.2.2
+      · exact (fallbackMove_basic h).2.2.2.2.2.1
+    · simp at h
 theorem strip_honest {s : State} {r : Read} {a : Action} (h : a ∈ (step s (.read r)).2) :
     a.strip = needsStrip s r a.subject a.rel := by
   obtain ⟨r', he, hd, _⟩ := step_acts h

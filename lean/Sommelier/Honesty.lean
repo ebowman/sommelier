@@ -56,7 +56,7 @@ def Idle (s : State) : Prop := s.inFlight = none ∧ s.owedKeys = [] ∧ s.foldR
 
 theorem decide_none_idle {s : State} {r : Read} (hi : Idle s) (hc : engineAllowed s r = false) :
     decideMove s r = none := by
-  simp only [decideMove, hi.2.1, hi.2.2, hc]
+  simp only [decideMove, userPick, hi.2.1, hi.2.2, hc]
   simp
 
 theorem idle_step {s : State} (hi : Idle s) {e : Event} (hn : userEv e = false)
@@ -272,17 +272,12 @@ theorem fresh_drawn_not_folded {s : State} {r : Read} (h : s.gate r = true) (hc 
 the read decides, whatever else is owed. -/
 theorem decide_head {s : State} {r : Read} {k : Key} {a : Action} (hi : s.inFlight = none) (hg : s.gate r = true)
     (hfirst : (s.foldRequest.toList ++ s.owedKeys).head? = some k)
-    (hum : userMove s r k = some a) (hal : userAllowed s r a = true) : decideMove s r = some a := by
+    (hum : userMove1 s r k = some a) (hal : userAllowed s r a = true) : decideMove s r = some a := by
   obtain ⟨hpass, hset, hinc, _⟩ := gate_facts hg
   have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
     simp [hpass, hset, hinc, hi, hg]
-  obtain ⟨tl, htl⟩ : ∃ tl, (s.foldRequest.toList ++ s.owedKeys) = k :: tl := by
-    cases hl : (s.foldRequest.toList ++ s.owedKeys) with
-    | nil => simp [hl] at hfirst
-    | cons x xs => simp [hl] at hfirst; exact ⟨xs, by rw [hfirst]⟩
   simp only [decideMove]
-  rw [if_neg hc, htl]
-  simp [List.findSome?, hum, Option.filter, hal]
+  rw [if_neg hc, userPick_head1 hfirst hum hal]
 
 /-- After the drop, `k` heads the queue when nothing else was owed or requested (the usual case), and in general when the hypothesis says so. -/
 theorem edited_first_of_idle (s : State) (rec : List Key) (k : Key) (hk : k ∈ rec) (ho : s.owedKeys = []) (hq : s.foldRequest = none) :
@@ -321,10 +316,12 @@ theorem userAlwaysAnswered_drawn (s : State) (rec : List Key) (k : Key) (r : Rea
   have F := edited_facts s rec k hk
   obtain ⟨_, _, _, hso⟩ := gate_facts hg
   have hmov : k ∈ movable (edited s rec k) r := (mem_movable_iff _ _ _).2 ⟨hd, ht, hnf⟩
-  obtain ⟨a, ha⟩ := userMove_moves hmov hne hpf
+  obtain ⟨a, ha0⟩ := anchorMove_moves hmov hne hpf
+  have ha1 : userMove1 (edited s rec k) r k = some a := by rw [userMove1_movable hmov]; exact ha0
+  have ha : userMove (edited s rec k) r k = some a := userMove_of_phase1 ha1
   have hallowed : userAllowed (edited s rec k) r a = true := by
     simp [userAllowed, F.2.1, hso]
-  have hdm : decideMove (edited s rec k) r = some a := decide_head (by rw [F.1]; exact hi) hg hfirst ha hallowed
+  have hdm : decideMove (edited s rec k) r = some a := decide_head (by rw [F.1]; exact hi) hg hfirst ha1 hallowed
   obtain ⟨hu, hsub⟩ := gate_userMove_user ha
   refine ⟨a, ?_, hsub, hu, ha⟩
   simp [step, hdm]
@@ -403,7 +400,7 @@ theorem userAlwaysAnswered_pull (s : State) (rec : List Key) (k : Key) (r : Read
   have hum := userMove_folded_some hfold (Or.inr F.2.2.2.2.2) hc (by simpa using hfs) hpl hchg
   have hallowed : userAllowed (edited s rec k) r ⟨k, .after p, needsStrip (edited s rec k) r k (.after p), true⟩ = true := by
     simp [userAllowed, needsStrip, F.2.1, hso]
-  have hdm := decide_head (by rw [F.1]; exact hi) hg hfirst hum hallowed
+  have hdm := decide_head (by rw [F.1]; exact hi) hg hfirst ((userMove1_folded hfold).trans hum) hallowed
   have hst := (userMove_folded hfold hum).2.2.2
   obtain ⟨p', _, _, hsub, hs2, hu2⟩ := hst
   refine ⟨_, ?_, hs2, hu2, hsub, hum⟩
@@ -429,16 +426,56 @@ theorem fold_crossed_only_by_drop {s : State} {r : Read} {a : Action} (h : a ∈
       rcases hcase with ⟨_, rfl⟩ | ⟨_, _, rfl⟩ <;> rfl
     exact gate_movable_not_folded (hsub ▸ hw ▸ hwm) hfa
 
+/-- **Why a key gets no move (`userMove` is none).**  The six causes (the seventh and eighth of `owed_unanswered_reason` need a move to exist or another key to go first). -/
+theorem userMove_none_reason (s : State) (r : Read) (k : Key) (howed : k ∈ s.owedKeys)
+    (hum : userMove s r k = none) :
+    (k ∈ movable s r ∧ misplaced s r k = false) ∨
+    (k ∈ movable s r ∧ misplaced s r k = true ∧ (k ∉ s.record ∨ wholeBar s r = false ∨ NoReducingDrag s r k)) ∨
+    (k ∉ foldedAll s r ∧ ¬ (k ∈ r.drawn ∧ k ∈ r.trusted)) ∨
+    (k ∈ foldedAll s r ∧ ¬ (r.chevron = .fresh ∧ k ∈ r.foldedSet)) ∨
+    (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = none) ∨
+    (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧ ∃ p,
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = some p ∧
+      applyMove r.drawn ⟨k, .after p, needsStrip s r k (.after p), true⟩ = r.drawn) := by
+  by_cases hfd : k ∈ foldedAll s r
+  · by_cases hlic : r.chevron = .fresh ∧ k ∈ r.foldedSet
+    · right; right; right; right
+      cases hl : ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? with
+      | none => left; exact ⟨hfd, hlic.1, hlic.2, rfl⟩
+      | some p =>
+        right
+        refine ⟨hfd, hlic.1, hlic.2, p, rfl, ?_⟩
+        by_cases hchg : applyMove r.drawn ⟨k, .after p, needsStrip s r k (.after p), true⟩ = r.drawn
+        · exact hchg
+        · exfalso
+          have := userMove_folded_some hfd (Or.inr howed) hlic.1 (by simpa using hlic.2) hl hchg
+          rw [hum] at this; simp at this
+    · right; right; right; left; exact ⟨hfd, hlic⟩
+  · by_cases hmv : k ∈ movable s r
+    · have hfm : fallbackMove s r k = none := by
+        rw [userMove_drawn_spec hmv] at hum
+        cases ha : anchorMove s r k with
+        | some a => rw [ha] at hum; simp at hum
+        | none => rw [ha] at hum; exact hum
+      rcases fallbackMove_none_cases howed hmv hfm with h | ⟨hm, hn⟩
+      · left; exact ⟨hmv, h⟩
+      · right; left; exact ⟨hmv, hm, hn⟩
+    · right; right; left
+      refine ⟨hfd, fun ⟨h1, h2⟩ => hmv ((mem_movable_iff _ _ _).2 ⟨h1, h2, hfd⟩)⟩
+
 /-- **The converse: an owed key that gets no move has a named reason.**  From ANY state with nothing in flight, on a read where the gate is true, if the
-read emits no move of the owed key `k`, then one of these holds: (1) `k` is a movable key already right among its anchors; (2) it is movable but its anchors
-admit no gap (they are out of record order); (3) it is not a trusted drawn key and not counted as folded (it is not on the bar, or not read); (4) it is counted
-as folded but this read does not license a pull-out (no fresh chevron listing it: the pile memory alone never does); (5) it is folded and licensed but no
-movable key precedes it in the record; (6) the pull-out would change nothing (the key is drawn already, right after its predecessor); (7) a move exists and
-needs the strip, and this edit's session is used (the strip being open is excluded by the gate); (8) another queued key went first. -/
+read emits no move of the owed key `k`, then one of these holds: (1) it is a movable key that is not misplaced: exactly the movable record keys that precede it in
+the record precede it on the bar; (2) it is movable and misplaced, but the one place `fallbackRel` names (just after its nearest movable record predecessor, else just
+before its first movable follower) is where it already stands, so the move would change nothing: the keys AROUND it are out of order; (3) it is not a trusted drawn key
+and not counted as folded (it is not on the bar, or not read); (4) it is counted as folded but this read does not license a pull-out (no fresh chevron listing it: the
+pile memory alone never does); (5) it is folded and licensed but no movable key precedes it in the record; (6) the pull-out would change nothing (the key is drawn
+already, right after its predecessor); (7) a move exists and needs the strip, and this edit's session is used (the strip being open is excluded by the gate); (8)
+another queued key went first.  (The old reasons "right among its anchors" and "the anchors admit no gap" are GONE: the fallback answers both when the key is misplaced.) -/
 theorem owed_unanswered_reason (s : State) (r : Read) (k : Key) (hi : s.inFlight = none) (hg : s.gate r = true)
     (howed : k ∈ s.owedKeys) (hno : ∀ a ∈ (step s (.read r)).2, a.subject ≠ k) :
-    (k ∈ movable s r ∧ SameKeys (seenOf s r k) (wantOf s r k)) ∨
-    (k ∈ movable s r ∧ prefixFor (wantOf s r k) (anchorsOf s r k) = none) ∨
+    (k ∈ movable s r ∧ misplaced s r k = false) ∨
+    (k ∈ movable s r ∧ misplaced s r k = true ∧ (k ∉ s.record ∨ wholeBar s r = false ∨ NoReducingDrag s r k)) ∨
     (k ∉ foldedAll s r ∧ ¬ (k ∈ r.drawn ∧ k ∈ r.trusted)) ∨
     (k ∈ foldedAll s r ∧ ¬ (r.chevron = .fresh ∧ k ∈ r.foldedSet)) ∨
     (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧
@@ -452,11 +489,10 @@ theorem owed_unanswered_reason (s : State) (r : Read) (k : Key) (hi : s.inFlight
   have hq : k ∈ s.foldRequest.toList ++ s.owedKeys := List.mem_append_right _ howed
   have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
     simp [hpass, hset, hinc, hi, hg]
-  cases hb : (s.foldRequest.toList ++ s.owedKeys).findSome? (fun j => (userMove s r j).filter (userAllowed s r)) with
+  cases hb : userPick s r with
   | some b =>
     -- another queued key's move is the decision
-    obtain ⟨l1, j, l2, hqeq, hj, _⟩ := List.findSome?_eq_some_iff.mp hb
-    have hjq : j ∈ s.foldRequest.toList ++ s.owedKeys := by rw [hqeq]; simp
+    obtain ⟨j, hjq, hj⟩ := userPick_exists hb
     have hdb : decideMove s r = some b := by simp only [decideMove]; rw [if_neg hc, hb]
     have hstep : (step s (.read r)).2 = [b] := by simp [step, hdb]
     cases hu : userMove s r j with
@@ -471,7 +507,7 @@ theorem owed_unanswered_reason (s : State) (r : Read) (k : Key) (hi : s.inFlight
         exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inr ⟨j, c, hjq, hjk, hstep, hsub, hu1⟩))))))
       · simp at hj
   | none =>
-    have hfk : (userMove s r k).filter (userAllowed s r) = none := (List.findSome?_eq_none_iff.mp hb) k hq
+    have hfk : (userMove s r k).filter (userAllowed s r) = none := userPick_none hb k hq
     cases hum : userMove s r k with
     | some a =>
       -- a move exists but is not allowed: the strip session is used
@@ -489,33 +525,13 @@ theorem owed_unanswered_reason (s : State) (r : Read) (k : Key) (hi : s.inFlight
         · exact h
         · rw [hso] at h; simp at h
     | none =>
-      by_cases hfd : k ∈ foldedAll s r
-      · by_cases hlic : r.chevron = .fresh ∧ k ∈ r.foldedSet
-        · right; right; right; right
-          cases hl : ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? with
-          | none => left; exact ⟨hfd, hlic.1, hlic.2, rfl⟩
-          | some p =>
-            right; left
-            refine ⟨hfd, hlic.1, hlic.2, p, rfl, ?_⟩
-            by_cases hchg : applyMove r.drawn ⟨k, .after p, needsStrip s r k (.after p), true⟩ = r.drawn
-            · exact hchg
-            · exfalso
-              have := userMove_folded_some hfd (Or.inr howed) hlic.1 (by simpa using hlic.2) hl hchg
-              rw [hum] at this; simp at this
-        · right; right; right; left; exact ⟨hfd, hlic⟩
-      · by_cases hmv : k ∈ movable s r
-        · by_cases hsk : SameKeys (seenOf s r k) (wantOf s r k)
-          · left; exact ⟨hmv, hsk⟩
-          · right; left
-            refine ⟨hmv, ?_⟩
-            cases hp : prefixFor (wantOf s r k) (anchorsOf s r k) with
-            | none => rfl
-            | some i =>
-              exfalso
-              obtain ⟨a, ha⟩ := userMove_moves hmv hsk (by simp [hp])
-              rw [hum] at ha; simp at ha
-        · right; right; left
-          refine ⟨hfd, fun ⟨h1, h2⟩ => hmv ((mem_movable_iff _ _ _).2 ⟨h1, h2, hfd⟩)⟩
+      rcases userMove_none_reason s r k howed hum with h | h | h | h | h | h
+      · exact Or.inl h
+      · exact Or.inr (Or.inl h)
+      · exact Or.inr (Or.inr (Or.inl h))
+      · exact Or.inr (Or.inr (Or.inr (Or.inl h)))
+      · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inl h))))
+      · exact Or.inr (Or.inr (Or.inr (Or.inr (Or.inr (Or.inl h)))))
 
 /-- Re-apply leaves every state the user could be stuck in: no hold, no given-up key, no spent budget, no restriction,
 no owed drop, and a strip session granted. -/
@@ -539,12 +555,11 @@ the next read decides exactly that move, whatever else is owed. -/
 theorem request_first {s : State} {r : Read} {q : Key} {a : Action} (hq : s.foldRequest = some q)
     (hpass : r.kind = .pass) (hset : r.settled = true) (hinc : r.level ≠ .incomplete) (hi : s.inFlight = none)
     (hg : s.gate r = true)
-    (hum : userMove s r q = some a) (hal : userAllowed s r a = true) : decideMove s r = some a := by
+    (hum : userMove1 s r q = some a) (hal : userAllowed s r a = true) : decideMove s r = some a := by
   have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
     simp [hpass, hset, hinc, hi, hg]
   simp only [decideMove]
-  rw [if_neg hc, hq]
-  simp [hum, Option.filter, hal]
+  rw [if_neg hc, userPick_head1 (by simp [hq]) hum hal]
 
 /-! ### 6. No needless drag -/
 
@@ -808,7 +823,9 @@ theorem noNeedlessDrag_user {s : State} {r : Read} {k : Key} {a : Action} (h : u
       have hf' : (foldedAll s r).contains k = false := by simpa using hf
       have hk' : (movable s r).contains k = false := by simpa using hk
       simp [userMove, hf, hk] at h
-  obtain ⟨hns, hsub, hu, hstr, i, hpi, hcase⟩ := userMove_target hk h
+  rcases userMove_target hk h with ⟨hns, hsub, hu, hstr, i, hpi, hcase⟩ | ⟨_, _, _, _, _, _, hch⟩
+  rotate_left
+  · exact hch
   intro heq
   have hsp := prefixFor_spec hpi
   have hanc_sub : (anchorsOf s r k).Sublist r.drawn :=
@@ -1457,5 +1474,1002 @@ theorem unanswered_row {s : State} {r : Read} {k : Key} (hi : s.inFlight = none)
   | some a =>
     exact Or.inr ⟨row_waiting_conv hm (Or.inl howed) (Or.inr (by simp [hu])), a, rfl⟩
 
+/-! ### A drop that gets no move says so (ejb.10)
+
+`rowNote` (Status.lean) is the text beside a row whose drop is not answered by a drag of its key.  It is shown exactly for an owed key whose row says "not where you put it"
+(`rowNote_true`), and the reasons behind it are classified (`rowNote_reason`).  `try_again_answers`: pressing "Try again" on such a row either makes a move leave, or the
+row, after the press, carries the note. -/
+
+/-- The note is shown only where it is true: the key is owed, the row says "not where you put it" (so nothing of the key is leaving and it is not waiting), the read is good,
+and no move of the key exists. -/
+theorem rowNote_true {s : State} {r : Read} {k : Key} {w : RowNote} (h : rowNote s r k = some w) :
+    rowLine s r k = .notWherePut ∧ owedNow s k = true ∧ s.gate r = true ∧ userMove s r k = none ∧ movingKey s r k = false ∧
+    (rowVerdict s.record (s.view r) k = .outOfPlace ∨ rowVerdict s.record (s.view r) k = .behindOutOfTurn) := by
+  unfold rowNote at h
+  split at h
+  · rename_i hc
+    simp only [Bool.and_eq_true, beq_iff_eq] at hc
+    obtain ⟨hrow, hown⟩ := hc
+    have hm : movingKey s r k = false := by
+      cases hm : movingKey s r k
+      · rfl
+      · have := row_moving_iff.mpr hm
+        rw [hrow] at this; cases this
+    have hown' : k ∈ s.owedKeys ∨ s.foldRequest = some k := by
+      simpa [owedNow] using hown
+    have hg : s.gate r = true := by
+      cases hg : s.gate r
+      · have := row_waiting_conv hm hown' (Or.inl hg)
+        rw [hrow] at this; cases this
+      · rfl
+    have hu : userMove s r k = none := by
+      cases hu : userMove s r k
+      · rfl
+      · have := row_waiting_conv hm hown' (Or.inr (by simp [hu]))
+        rw [hrow] at this; cases this
+    exact ⟨hrow, hown, hg, hu, hm, row_notWherePut_bridge hrow⟩
+  · simp at h
+
+/-- **The reasons behind the note.**  An owed key with the note shown has a row that says `outOfPlace` or `behindOutOfTurn`, no move of it exists, and one of the causes
+`userMove_none_reason` lists holds: the keys AROUND it are out of order (movable and misplaced, the one place `fallbackRel` names changes nothing), or the reading contradicts itself
+about the key (counted folded and also drawn and trusted; a pull-out that changes nothing; ...).  There is no cause hidden from the screen. -/
+theorem rowNote_reason {s : State} {r : Read} {k : Key} {w : RowNote} (howed : k ∈ s.owedKeys) (h : rowNote s r k = some w) :
+    (rowVerdict s.record (s.view r) k = .outOfPlace ∨ rowVerdict s.record (s.view r) k = .behindOutOfTurn) ∧ userMove s r k = none ∧
+    ((k ∈ movable s r ∧ misplaced s r k = false) ∨
+    (k ∈ movable s r ∧ misplaced s r k = true ∧ (k ∉ s.record ∨ wholeBar s r = false ∨ NoReducingDrag s r k)) ∨
+    (k ∉ foldedAll s r ∧ ¬ (k ∈ r.drawn ∧ k ∈ r.trusted)) ∨
+    (k ∈ foldedAll s r ∧ ¬ (r.chevron = .fresh ∧ k ∈ r.foldedSet)) ∨
+    (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = none) ∨
+    (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧ ∃ p,
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = some p ∧
+      applyMove r.drawn ⟨k, .after p, needsStrip s r k (.after p), true⟩ = r.drawn)) := by
+  have ht := rowNote_true h
+  exact ⟨ht.2.2.2.2.2, ht.2.2.2.1, userMove_none_reason s r k howed ht.2.2.2.1⟩
+
+/-- A queued key with an allowed move makes the read decide a move (maybe another queued key's, which comes first). -/
+theorem queue_move_decides {s : State} {r : Read} {j : Key} {a : Action} (hi : s.inFlight = none) (hg : s.gate r = true)
+    (hq : j ∈ s.foldRequest.toList ++ s.owedKeys) (hum : userMove s r j = some a) (hal : userAllowed s r a = true) :
+    ∃ b, decideMove s r = some b := by
+  obtain ⟨hpass, hset, hinc, _⟩ := gate_facts hg
+  have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
+    simp [hpass, hset, hinc, hi, hg]
+  cases hb : userPick s r with
+  | some b => exact ⟨b, by simp only [decideMove]; rw [if_neg hc, hb]⟩
+  | none =>
+    have := userPick_none hb j hq
+    simp [hum, Option.filter, hal] at this
+
+/-- The core of `try_again_answers` for any state `S` that differs from `s` only as a press of "Try again" does. -/
+theorem try_again_core (s S : State) (r : Read) (k : Key) (hrec : S.record = s.record) (hinf : S.inFlight = none)
+    (hpn : S.provenNotFull = s.provenNotFull) (hed : S.editSessionUsed = false) (hres : S.restricted = true)
+    (hown : k ∈ S.owedKeys) (hg : s.gate r = true) (hrow : rowLine s r k = .notWherePut) :
+    (∃ a, (step S (.read r)).2 = [a] ∧ a.user = true) ∨
+    (rowLine S r k = .notWherePut ∧ (rowNote S r k).isSome = true ∧ userMove S r k = none) := by
+  have hg' : S.gate r = true := by
+    simp only [State.gate, State.view, hpn]; exact hg
+  have hview : S.view r = s.view r := by simp only [State.view, hpn]
+  obtain ⟨_, _, _, hso⟩ := gate_facts hg
+  cases hd : decideMove S r with
+  | some b =>
+    left
+    refine ⟨b, by simp [step, hd], ?_⟩
+    rcases (gate_decide_cases hd).2 with ⟨j, _, hj, _⟩ | ⟨hea, _⟩
+    · exact (gate_userMove_user hj).1
+    · simp [engineAllowed, hres] at hea
+  | none =>
+    right
+    have hu : userMove S r k = none := by
+      cases hu : userMove S r k with
+      | none => rfl
+      | some a =>
+        exfalso
+        have hal : userAllowed S r a = true := by
+          simp [userAllowed, hed, hso]
+        obtain ⟨b, hb⟩ := queue_move_decides hinf hg' (List.mem_append_right _ hown) hu hal
+        rw [hd] at hb; cases hb
+    have hm : movingKey S r k = false := by
+      simp [movingKey, hinf, hd]
+    have hwait : waitingKey S r k = false := by
+      simp [waitingKey, hg', hu]
+    have hv := row_notWherePut_bridge hrow
+    have hl : rowLine S r k = .notWherePut := by
+      unfold rowLine
+      rw [hm, hwait]
+      simp only [Bool.false_eq_true, ite_false, hrec, hview]
+      rcases hv with hv | hv <;> simp [hv, RowVerdict.line]
+    refine ⟨hl, ?_, hu⟩
+    unfold rowNote
+    have : owedNow S k = true := by simp [owedNow, hown]
+    simp only [hl, this, beq_self_eq_true, Bool.and_self, ite_true]
+    split <;> (try split) <;> simp
+
+/-- **try_again_answers.**  A row that says "not where you put it", on a good read with nothing in flight: pressing its "Try again" (`retryKey`) either makes a user's move leave on
+this read (the key's own, or another queued key's that goes first), or the row after the press still says "not where you put it" AND carries the note, with no move of the key existing
+(`rowNote_reason` classifies why).  A press never does nothing silently.  (A press restricts the engine, so every move that leaves is the user's; the strip session is fresh.) -/
+theorem try_again_answers (s : State) (r : Read) (k : Key) (hi : s.inFlight = none) (hk : k ∈ s.record)
+    (hg : s.gate r = true) (hrow : rowLine s r k = .notWherePut) :
+    (∃ a, (step (step s (.retryKey k)).1 (.read r)).2 = [a] ∧ a.user = true) ∨
+    (rowLine (step s (.retryKey k)).1 r k = .notWherePut ∧ (rowNote (step s (.retryKey k)).1 r k).isSome = true ∧
+      userMove (step s (.retryKey k)).1 r k = none) :=
+  try_again_core s _ r k (by simp [step]) (by simp [step, hi]) (by simp [step]) (by simp [step]) (by simp [step])
+    ((rk_owed s k k).2 ⟨hk, Or.inl rfl⟩) hg hrow
+
+
+/-! ### The drain -/
+
+/-- Weighted length of a list of keys. -/
+def wsum (f : Key → Nat) : List Key → Nat
+  | [] => 0
+  | x :: xs => f x + wsum f xs
+
+theorem wsum_erase_add (f : Key → Nat) : ∀ (l : List Key) (j : Key), j ∈ l → wsum f (l.erase j) + f j = wsum f l
+  | [], _, h => by simp at h
+  | x :: xs, j, h => by
+    by_cases hx : x = j
+    · subst hx; simp [wsum, List.erase_cons]; omega
+    · have hj : j ∈ xs := by simpa [Ne.symm hx] using h
+      have := wsum_erase_add f xs j hj
+      have hb : (x == j) = false := by simpa using hx
+      simp [wsum, List.erase_cons, hb]
+      omega
+
+theorem wsum_erase_not (f : Key → Nat) (l : List Key) (j : Key) (h : j ∉ l) : wsum f (l.erase j) = wsum f l := by
+  rw [List.erase_of_not_mem h]
+
+theorem wsum_le (f g : Key → Nat) (hfg : ∀ x, f x ≤ g x) : ∀ l : List Key, wsum f l ≤ wsum g l
+  | [] => by simp [wsum]
+  | x :: xs => by
+    have := wsum_le f g hfg xs
+    have := hfg x
+    simp [wsum]; omega
+
+theorem wsum_filter_le (f : Key → Nat) (p : Key → Bool) : ∀ l : List Key, wsum f (l.filter p) ≤ wsum f l
+  | [] => by simp [wsum]
+  | x :: xs => by
+    have := wsum_filter_le f p xs
+    by_cases hp : p x = true
+    · simp [List.filter_cons, hp, wsum]; omega
+    · simp [List.filter_cons, hp, wsum]; omega
+
+theorem wsum_eraseDups_le (f : Key → Nat) : ∀ (n : Nat) (l : List Key), l.length ≤ n → wsum f l.eraseDups ≤ wsum f l
+  | 0, l, h => by
+    have : l = [] := List.eq_nil_of_length_eq_zero (by omega)
+    subst this; simp [List.eraseDups, wsum]
+  | n+1, [], _ => by simp [List.eraseDups, wsum]
+  | n+1, a :: as, h => by
+    rw [List.eraseDups_cons]
+    have ih := wsum_eraseDups_le f n (as.filter (fun b => !b == a)) (by
+      have := List.length_filter_le (fun b => !b == a) as
+      simp at h; omega)
+    have h2 := wsum_filter_le f (fun b => !b == a) as
+    simp only [wsum]; omega
+
+theorem wsum_le_two (sk : List Key) (f : Key → Nat) (hf : ∀ x, f x ≤ 2) : ∀ l : List Key, wsum f l ≤ 2 * l.length
+  | [] => by simp [wsum]
+  | x :: xs => by
+    have := wsum_le_two sk f hf xs
+    have := hf x
+    simp [wsum]; omega
+
+/-- A key's weight in the potential: two attempts left if it was never skipped (an interrupted drag re-arms it once), one if it was. -/
+def skipW (sk : List Key) (j : Key) : Nat := if sk.contains j then 1 else 2
+
+/-- The request-only key (the request is not also owed) is one more thing to serve. -/
+def reqExtra (s : State) : Nat :=
+  match s.foldRequest with
+  | some j => if s.owedKeys.contains j then 0 else 1
+  | none => 0
+
+/-- The drag in flight, if its busy result could re-arm its key once more. -/
+def flightPot (s : State) : Nat :=
+  match s.inFlight with
+  | some a => if s.flightOwed == some s.gen && !s.skipped.contains a.subject then 1 else 0
+  | none => 0
+
+/-- The potential of the owed queue: attempts left, counting the one a busy result may give back. -/
+def potential (s : State) : Nat := wsum (skipW s.skipped) s.owedKeys + reqExtra s + flightPot s
+
+theorem potential_noteRead (s : State) (r : Read) : potential (noteRead s r) = potential s := by
+  have nk := noteRead_keeps s r
+  unfold potential reqExtra flightPot
+  rw [nk.1, nk.2.1, nk.2.2.2.1, nk.2.2.2.2.2.1, nk.2.2.2.2.2.2.1, nk.2.2.2.2.2.2.2.2.2.2.1]
+
+
+theorem contains_erase_ne (l : List Key) (i j : Key) (h : i ≠ j) : (l.erase j).contains i = l.contains i := by
+  cases hl : l.contains i
+  · cases hh : (l.erase j).contains i
+    · rfl
+    · simp [List.contains_iff_mem] at hh hl
+      exact absurd (List.mem_of_mem_erase hh) (by simpa using hl)
+  · simp [List.contains_iff_mem] at hl ⊢
+    exact List.mem_erase_of_ne h |>.2 hl
+
+theorem emit_flightPot (S : State) (a : Action) :
+    flightPot (emit S a) = if S.owedKeys.contains a.subject && !S.skipped.contains a.subject then 1 else 0 := by
+  unfold flightPot emit
+  cases hc : S.owedKeys.contains a.subject <;> simp [hc]
+
+theorem emit_wsum_req (S : State) (a : Action) (hjc : S.owedKeys.contains a.subject = true) :
+    reqExtra (emit S a) = reqExtra S := by
+  unfold reqExtra emit
+  cases hf : S.foldRequest with
+  | none => simp [hf]
+  | some i =>
+    by_cases hij : i = a.subject
+    · subst hij
+      have hjm : a.subject ∈ S.owedKeys := by simpa [List.contains_iff_mem] using hjc
+      simp [hf, hjm]
+    · have hb : (some i == some a.subject) = false := by simpa using hij
+      simp only [hf, hb, Bool.false_eq_true, ite_false]
+      rw [contains_erase_ne _ _ _ hij]
+
+theorem potential_emit_queue (S : State) (a : Action) (hi : S.inFlight = none)
+    (hq : S.owedKeys.contains a.subject = true ∨ S.foldRequest = some a.subject) : potential (emit S a) + 1 ≤ potential S := by
+  have hpS : potential S = wsum (skipW S.skipped) S.owedKeys + reqExtra S := by
+    simp [potential, flightPot, hi]
+  rw [hpS]
+  cases hjc : S.owedKeys.contains a.subject
+  · have hf : S.foldRequest = some a.subject := by
+      rcases hq with h | h
+      · rw [hjc] at h; cases h
+      · exact h
+    have hj : a.subject ∉ S.owedKeys := by simpa [List.contains_iff_mem] using hjc
+    have e := wsum_erase_not (skipW S.skipped) S.owedKeys a.subject hj
+    have h1 : reqExtra S = 1 := by simp [reqExtra, hf, hj]
+    have h2 : reqExtra (emit S a) = 0 := by simp [reqExtra, emit, hf]
+    unfold potential
+    rw [emit_flightPot, hjc]
+    simp only [emit, e] at h2 ⊢
+    rw [h2, h1]; simp
+  · have hj : a.subject ∈ S.owedKeys := by simpa [List.contains_iff_mem] using hjc
+    have e := wsum_erase_add (skipW S.skipped) S.owedKeys a.subject hj
+    have hreq := emit_wsum_req S a hjc
+    have eo : (emit S a).owedKeys = S.owedKeys.erase a.subject := rfl
+    have es : (emit S a).skipped = S.skipped := rfl
+    unfold potential
+    rw [eo, es, emit_flightPot, hjc, hreq]
+    cases hs : S.skipped.contains a.subject
+    · have hs' : a.subject ∉ S.skipped := by simpa [List.contains_iff_mem] using hs
+      have : skipW S.skipped a.subject = 2 := by simp [skipW, hs']
+      rw [this] at e
+      simp [hs']; omega
+    · have hs' : a.subject ∈ S.skipped := by simpa [List.contains_iff_mem] using hs
+      have : skipW S.skipped a.subject = 1 := by simp [skipW, hs']
+      rw [this] at e
+      simp [hs']; omega
+
+theorem potential_emit_other (S : State) (a : Action) (hi : S.inFlight = none)
+    (hq : S.owedKeys.contains a.subject = false ∧ S.foldRequest ≠ some a.subject) : potential (emit S a) ≤ potential S := by
+  have hpS : potential S = wsum (skipW S.skipped) S.owedKeys + reqExtra S := by
+    simp [potential, flightPot, hi]
+  have hj : a.subject ∉ S.owedKeys := by simpa [List.contains_iff_mem] using hq.1
+  have e := wsum_erase_not (skipW S.skipped) S.owedKeys a.subject hj
+  have hb : (S.foldRequest == some a.subject) = false := by simpa using hq.2
+  have h2 : reqExtra (emit S a) = reqExtra S := by
+    unfold reqExtra emit
+    simp only [hb, Bool.false_eq_true, ite_false]
+    rw [List.erase_of_not_mem hj]
+  rw [hpS]
+  unfold potential
+  rw [emit_flightPot, hq.1]
+  simp only [emit] at h2 ⊢
+  rw [h2, e]; simp
+
+
+theorem result_fields (s : State) (a : Action) (o : Outcome) (p : Bool) :
+    (result s a o p).inFlight = none ∧ (result s a o p).gen = s.gen ∧ (result s a o p).flightOwed = s.flightOwed ∧
+    (result s a o p).stripGrant = s.stripGrant := by
+  unfold result; grind
+
+theorem result_skipped_mono (s : State) (a : Action) (o : Outcome) (p : Bool) (j : Key)
+    (h : s.skipped.contains j = true) : (result s a o p).skipped.contains j = true := by
+  unfold result; grind
+
+theorem result_shape (s : State) (a : Action) (o : Outcome) (p : Bool) :
+    ((result s a o p).owedKeys = s.owedKeys ∧ (result s a o p).foldRequest = s.foldRequest) ∨
+    ((result s a o p).owedKeys = (a.subject :: s.owedKeys).eraseDups ∧ s.flightOwed = some s.gen ∧
+      s.skipped.contains a.subject = false ∧ (result s a o p).skipped.contains a.subject = true ∧
+      ((result s a o p).foldRequest = s.foldRequest ∨ (result s a o p).foldRequest = some a.subject)) := by
+  unfold result; grind
+
+
+theorem skipW_true (sk : List Key) (j : Key) (h : sk.contains j = true) : skipW sk j = 1 := by
+  unfold skipW; rw [if_pos h]
+
+theorem skipW_false (sk : List Key) (j : Key) (h : sk.contains j = false) : skipW sk j = 2 := by
+  unfold skipW; rw [if_neg (by intro hh; rw [h] at hh; cases hh)]
+
+theorem skipW_mono (sk sk' : List Key) (h : ∀ j, sk.contains j = true → sk'.contains j = true) (j : Key) :
+    skipW sk' j ≤ skipW sk j := by
+  cases h1 : sk.contains j
+  · rw [skipW_false _ _ h1]
+    cases h2 : sk'.contains j
+    · rw [skipW_false _ _ h2]; exact Nat.le_refl _
+    · rw [skipW_true _ _ h2]; omega
+  · rw [skipW_true _ _ h1, skipW_true _ _ (h j h1)]; exact Nat.le_refl _
+
+theorem potential_result (s : State) (a : Action) (o : Outcome) (p : Bool) (hf : s.inFlight = some a) :
+    potential (result s a o p) ≤ potential s := by
+  obtain ⟨hi, hg, hfo, _⟩ := result_fields s a o p
+  have hw : wsum (skipW (result s a o p).skipped) s.owedKeys ≤ wsum (skipW s.skipped) s.owedKeys :=
+    wsum_le _ _ (skipW_mono _ _ (result_skipped_mono s a o p)) _
+  have hpf : potential (result s a o p) = wsum (skipW (result s a o p).skipped) (result s a o p).owedKeys + reqExtra (result s a o p) := by
+    simp [potential, flightPot, hi]
+  rcases result_shape s a o p with ⟨ho, hr⟩ | ⟨ho, hflo, hns, hsk, hr⟩
+  · rw [hpf, ho]
+    have : reqExtra (result s a o p) = reqExtra s := by unfold reqExtra; rw [hr, ho]
+    rw [this]
+    unfold potential
+    omega
+  · rw [hpf, ho]
+    have hfp : flightPot s = 1 := by
+      unfold flightPot; rw [hf]; simp only [hflo, hns]; simp
+    have hsw : skipW (result s a o p).skipped a.subject = 1 := skipW_true _ _ hsk
+    have h1 := wsum_eraseDups_le (skipW (result s a o p).skipped) _ (a.subject :: s.owedKeys) (Nat.le_refl _)
+    have h2 : wsum (skipW (result s a o p).skipped) (a.subject :: s.owedKeys) =
+        1 + wsum (skipW (result s a o p).skipped) s.owedKeys := by simp [wsum, hsw]
+    have hreq : reqExtra (result s a o p) ≤ reqExtra s := by
+      unfold reqExtra
+      rw [ho]
+      rcases hr with hr | hr
+      · rw [hr]
+        cases hq : s.foldRequest with
+        | none => exact Nat.le_refl _
+        | some i =>
+          show (if ((a.subject :: s.owedKeys).eraseDups).contains i = true then 0 else 1) ≤ (if s.owedKeys.contains i = true then 0 else 1)
+          by_cases hio : s.owedKeys.contains i = true
+          · have : ((a.subject :: s.owedKeys).eraseDups).contains i = true := by
+              rw [List.contains_iff_mem, List.mem_eraseDups]
+              exact List.mem_cons_of_mem _ (List.contains_iff_mem.1 hio)
+            rw [if_pos this, if_pos hio]; exact Nat.le_refl _
+          · rw [if_neg hio]
+            by_cases hn : ((a.subject :: s.owedKeys).eraseDups).contains i = true
+            · rw [if_pos hn]; omega
+            · rw [if_neg hn]; exact Nat.le_refl _
+      · rw [hr]
+        have : ((a.subject :: s.owedKeys).eraseDups).contains a.subject = true := by
+          rw [List.contains_iff_mem, List.mem_eraseDups]; exact List.mem_cons_self
+        show (if ((a.subject :: s.owedKeys).eraseDups).contains a.subject = true then 0 else 1) ≤ _
+        rw [if_pos this]; omega
+    unfold potential
+    rw [hfp]
+    omega
+
+
+theorem planOrderMoves_user {s : State} {r : Read} {b : Action} (h : planOrderMoves s r = some b) : b.user = false := by
+  unfold planOrderMoves at h
+  simp only at h
+  split at h
+  · rename_i w h' _
+    split at h
+    · simp at h
+    · simp at h; subst h; rfl
+  · simp at h
+
+/-- With no strip grant, a user's action is the move of a queued key. -/
+theorem decide_user_queue {s : State} {r : Read} {a : Action} (hd : decideMove s r = some a) (hu : a.user = true)
+    (hgr : s.stripGrant = false) : s.owedKeys.contains a.subject = true ∨ s.foldRequest = some a.subject := by
+  rcases (gate_decide_cases hd).2 with ⟨k, hk, hum, _⟩ | ⟨_, b, hb, hh⟩
+  · have hs := (gate_userMove_user hum).2
+    rw [hs]
+    rcases hk with hk | hk
+    · right; simpa using hk
+    · left; simpa using hk
+  · rcases hh with ⟨_, rfl⟩ | ⟨_, hsg, _⟩
+    · rw [planOrderMoves_user hb] at hu; cases hu
+    · rw [hgr] at hsg; cases hsg
+
+theorem emit_stripGrant (S : State) (a : Action) (h : S.stripGrant = false) : (emit S a).stripGrant = false := by
+  unfold emit; split <;> simp [h]
+
+theorem potential_read (s : State) (r : Read) (hgr : s.stripGrant = false) :
+    potential (step s (.read r)).1 + ((step s (.read r)).2.filter (fun a => a.user)).length ≤ potential s ∧
+    (step s (.read r)).1.stripGrant = false := by
+  have nk := noteRead_keeps s r
+  cases hd : decideMove s r with
+  | none =>
+    simp only [step, hd]
+    refine ⟨?_, by rw [nk.2.2.2.2.2.2.2.2.2.2.2.2.1]; exact hgr⟩
+    simp [potential_noteRead]
+  | some a =>
+    have hi := (gate_decide_cases hd).1
+    have hSi : (noteRead s r).inFlight = none := by rw [nk.2.2.2.1]; exact hi
+    have hq : (noteRead s r).owedKeys = s.owedKeys := nk.1
+    have hqf : (noteRead s r).foldRequest = s.foldRequest := nk.2.1
+    have hgS : (noteRead s r).stripGrant = false := by rw [nk.2.2.2.2.2.2.2.2.2.2.2.2.1]; exact hgr
+    simp only [step, hd]
+    refine ⟨?_, emit_stripGrant _ _ hgS⟩
+    by_cases hqm : (noteRead s r).owedKeys.contains a.subject = true ∨ (noteRead s r).foldRequest = some a.subject
+    · have := potential_emit_queue (noteRead s r) a hSi hqm
+      rw [potential_noteRead] at this
+      have hl : ([a].filter (fun a => a.user)).length ≤ 1 := by
+        have := List.length_filter_le (fun a : Action => a.user) [a]
+        simpa using this
+      omega
+    · have hu : a.user = false := by
+        cases hu : a.user
+        · rfl
+        · exfalso; apply hqm; rw [hq, hqf]; exact decide_user_queue hd hu hgr
+      have hq2 : (noteRead s r).owedKeys.contains a.subject = false ∧ (noteRead s r).foldRequest ≠ some a.subject := by
+        constructor
+        · cases hc : (noteRead s r).owedKeys.contains a.subject
+          · rfl
+          · exact absurd (Or.inl hc) hqm
+        · intro h; exact hqm (Or.inr h)
+      have := potential_emit_other (noteRead s r) a hSi hq2
+      rw [potential_noteRead] at this
+      simp [hu]
+      exact this
+
+theorem potential_result_step (s : State) (k : Key) (o : Outcome) (p : Bool) (hgr : s.stripGrant = false) :
+    potential (step s (.moveResult k o p)).1 ≤ potential s ∧ (step s (.moveResult k o p)).1.stripGrant = false := by
+  simp only [step]
+  cases hf : s.inFlight with
+  | none => exact ⟨Nat.le_refl _, hgr⟩
+  | some a =>
+    simp only []
+    split
+    · exact ⟨potential_result s a o p hf, by rw [(result_fields s a o p).2.2.2]; exact hgr⟩
+    · exact ⟨Nat.le_refl _, hgr⟩
+
+/-- Over any events that are reads and results of drags (an adversarial macOS may answer each drag `verified`, `failed`, `refused` or `busy`, posted or not),
+the user's moves that leave number at most `potential s`. -/
+theorem drain_potential (s : State) (hgr : s.stripGrant = false) (es : List Event)
+    (hes : ∀ e ∈ es, (∃ r, e = .read r) ∨ (∃ k o p, e = .moveResult k o p)) :
+    ((run s es).2.filter (fun a => a.user)).length ≤ potential s := by
+  induction es generalizing s with
+  | nil => simp [run]
+  | cons e es ih =>
+    have he := hes e (by simp)
+    have hes' : ∀ e' ∈ es, (∃ r, e' = .read r) ∨ (∃ k o p, e' = .moveResult k o p) := fun e' h => hes e' (by simp [h])
+    simp only [run, List.filter_append, List.length_append]
+    rcases he with ⟨r, rfl⟩ | ⟨k, o, p, rfl⟩
+    · obtain ⟨h1, h2⟩ := potential_read s r hgr
+      have := ih (step s (.read r)).1 h2 hes'
+      omega
+    · obtain ⟨h1, h2⟩ := potential_result_step s k o p hgr
+      have hn : ((step s (.moveResult k o p)).2.filter (fun a => a.user)).length = 0 := by
+        simp only [step]
+        cases hf : s.inFlight with
+        | none => simp
+        | some a => simp only []; split <;> simp
+      have := ih (step s (.moveResult k o p)).1 h2 hes'
+      omega
+
+theorem potential_le (s : State) (hi : s.inFlight = none) : potential s ≤ 2 * (s.owedKeys.length + reqExtra s) := by
+  have h1 : wsum (skipW s.skipped) s.owedKeys ≤ 2 * s.owedKeys.length :=
+    wsum_le_two s.skipped (skipW s.skipped) (fun x => by unfold skipW; split <;> omega) _
+  have h2 : flightPot s = 0 := by simp [flightPot, hi]
+  unfold potential
+  omega
+
+/-- **drops_drain.**  From ANY state with nothing in flight and no strip grant, over ANY events that are reads and drag results (no user event, no pass boundary; the reads need
+not be good, the results are the adversary's: `verified`, `failed`, `refused`, `busy`, posted or not), the user's moves that leave number at most `2 * n`, where `n` is the length of the
+owed queue plus one if the fold request is not itself owed.  The factor 2 is the busy re-arm: an interrupted drag (`busy`, no mouse event) gives its key back ONCE (`Rearm`), so a key is
+attempted at most twice.  Without busy results the bound is `n`.  Strip session: a move that needs the strip waits (never leaves) once the edit's session is used, so it only
+makes the count smaller; budget: user moves are exempt from it.  So after at most `2n` moves no user move leaves, on any read: each key still owed then has a named reason
+(`owed_unanswered_reason`, `rowNote_reason`).  Keys that need no move stay owed until the pass boundary (they are not "drained" by a move). -/
+theorem drops_drain (s : State) (hi : s.inFlight = none) (hgr : s.stripGrant = false) (es : List Event)
+    (hes : ∀ e ∈ es, (∃ r, e = .read r) ∨ (∃ k o p, e = .moveResult k o p)) :
+    ((run s es).2.filter (fun a => a.user)).length ≤ 2 * (s.owedKeys.length + reqExtra s) :=
+  Nat.le_trans (drain_potential s hgr es hes) (potential_le s hi)
+
+/-! ### The drops that used to get no move (ejb.10), on the exact traces
+
+A good read: a pass, settled, complete, strip closed, fresh chevron with key 9 in the pile, every drawn key trusted. -/
+
+/-- A good read of a bar drawing `d`, with key 9 behind the chevron. -/
+def dropRead (d : List Key) : Read :=
+  { kind := .pass, chevron := .fresh, level := .complete, settled := true, stripOpen := false,
+    drawn := d, pile := [9], folded := [], trusted := d ++ [9], nearFold := [] }
+
+/-- **(b) The mutual inversion is answered.**  Record [1,2,3], the user drops [1,2] (both owed), the bar draws [2,1,3]: the first good read moves key 1 before key 2; once that drag
+is verified the bar is [1,2,3] and key 2 (now right among the served key 1, which is an anchor) needs no move.  Each key dropped ALONE also gets its move. -/
+theorem drop_mutual_inversion :
+    (run (State.init [1, 2, 3]) [.userEdit [1, 2, 3] [1, 2], .read (dropRead [2, 1, 3])]).2 = [⟨1, .before 2, false, true⟩] ∧
+    (run (State.init [1, 2, 3]) [.userEdit [1, 2, 3] [1, 2], .read (dropRead [2, 1, 3]), .moveResult 1 .verified true,
+      .read (dropRead [1, 2, 3])]).2 = [⟨1, .before 2, false, true⟩] ∧
+    (run (State.init [1, 2, 3]) [.userEdit [1, 2, 3] [1], .read (dropRead [2, 1, 3])]).2 = [⟨1, .before 2, false, true⟩] ∧
+    (run (State.init [1, 2, 3]) [.userEdit [1, 2, 3] [2], .read (dropRead [2, 1, 3])]).2 = [⟨2, .after 1, false, true⟩] := by decide
+
+/-- **(c) The bar with no gap: a move exactly where it strictly helps.**  Record [1,2,4,3], bar [2,3,4,1] (4 inversions).  Dropping 1, 3 or 4 gives a move (1 `before` 2, 3 `after` 1, 4
+`after` 2); dropping 2 gives NO move, because no single drag of 2 leaves fewer inversions (the old rule dragged it to the end: 4 inversions, worse), and its row says so
+(`drop_no_gap_note`).  After a pass boundary a fresh press on 2 shows the same. -/
+theorem drop_no_gap :
+    (run (State.init [1, 2, 4, 3]) [.userEdit [1, 2, 4, 3] [1], .read (dropRead [2, 3, 4, 1])]).2 = [⟨1, .before 2, false, true⟩] ∧
+    (run (State.init [1, 2, 4, 3]) [.userEdit [1, 2, 4, 3] [2], .read (dropRead [2, 3, 4, 1])]).2 = [] ∧
+    (run (State.init [1, 2, 4, 3]) [.userEdit [1, 2, 4, 3] [3], .read (dropRead [2, 3, 4, 1])]).2 = [⟨3, .after 1, false, true⟩] ∧
+    (run (State.init [1, 2, 4, 3]) [.userEdit [1, 2, 4, 3] [4], .read (dropRead [2, 3, 4, 1])]).2 = [⟨4, .after 2, false, true⟩] ∧
+    (run (State.init [1, 2, 4, 3]) [.userEdit [1, 2, 4, 3] [4], .passBoundary, .retryKey 2, .read (dropRead [2, 3, 4, 1])]).2 = [] := by decide
+
+/-- The dropped key 2 of (c) says why: "No single move of this item would improve the order". -/
+theorem drop_no_gap_note :
+    let s := (step (State.init [1, 2, 4, 3]) (.userEdit [1, 2, 4, 3] [2])).1
+    rowLine s (dropRead [2, 3, 4, 1]) 2 = .notWherePut ∧ rowNote s (dropRead [2, 3, 4, 1]) 2 = some .noMoveHelps ∧
+    invCount s (dropRead [2, 3, 4, 1]) [2, 3, 4, 1] = 4 ∧ invCount s (dropRead [2, 3, 4, 1]) [3, 4, 1, 2] = 5 := by decide
+
+/-- **A drop that still gets no move says so.**  Record [1,2,3,4], bar [2,3,4,1], the user drops 3 and 2 is not owed: no drag of 3 improves the order, the row says "not where you put it"
+with the note `noMoveHelps`; "Try again" leaves the same note on the row. -/
+theorem drop_keys_around_say_so :
+    let s := (step (State.init [1, 2, 3, 4]) (.userEdit [1, 2, 3, 4] [2])).1
+    (step s (.read (dropRead [2, 3, 4, 1]))).2 = [] ∧
+    rowNote s (dropRead [2, 3, 4, 1]) 2 = some .noMoveHelps ∧ rowLine s (dropRead [2, 3, 4, 1]) 2 = .notWherePut ∧
+    (step (step s (.retryKey 2)).1 (.read (dropRead [2, 3, 4, 1]))).2 = [] ∧
+    rowNote (step s (.retryKey 2)).1 (dropRead [2, 3, 4, 1]) 2 = some .noMoveHelps ∧
+    rowNote s (dropRead [2, 3, 4, 1]) 3 = none := by decide
+
+/-- **The drain bound is attained.**  One owed key whose drag is interrupted twice (no mouse event, `busy`) leaves twice, the second time through the one re-arm, and never a third time:
+`2 * n` with `n = 1`. -/
+theorem drain_bound_attained :
+    let s := (step (State.init [1, 2]) (.userEdit [1, 2] [1])).1
+    ((run s [.read (dropRead [2, 1]), .moveResult 1 .busy false, .read (dropRead [2, 1]), .moveResult 1 .busy false,
+      .read (dropRead [2, 1]), .moveResult 1 .busy false]).2.filter (fun a => a.user)).length = 2 := by decide
+
+
+/-! ### The fallback minimises inversions (ejb.10, corrective pass) -/
+
+/-- **fallback_reduces_inversions.**  A fallback move strictly lowers the inversion count among the movable record keys, measured on the bar AFTER the drag (`applyMove`). -/
+theorem fallback_reduces_inversions {s : State} {r : Read} {k : Key} {a : Action} (h : fallbackMove s r k = some a) :
+    invCount s r (applyMove r.drawn a) < invCount s r r.drawn := (fallbackMove_basic h).2.2.2.2.2.2.2.2.2.2.2.2.1
+
+/-- **fallback_best.**  No other single drag of `k` (to either side of ANY movable record key other than `k`, i.e. to any place `k` may go) leaves fewer inversions than the fallback's. -/
+theorem fallback_best {s : State} {r : Read} {k : Key} {a : Action} (h : fallbackMove s r k = some a) :
+    ∀ rel : Rel, rel.target ∈ movable s r → rel.target ∈ s.record → rel.target ≠ k →
+      invCount s r (applyMove r.drawn a) ≤ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := by
+  intro rel h1 h2 h3
+  have hb := fallbackMove_basic h
+  have := hb.2.2.2.2.2.2.2.2.2.2.2.2.2 rel (legal_mem_cands h1 h2 h3)
+  have hs : a.subject = k := hb.2.1
+  have hq : a = ⟨k, a.rel, a.strip, a.user⟩ := by cases a; simp_all
+  rw [hq]
+  rw [applyMove_flags r.drawn k a.rel a.strip a.user false true]
+  exact this
+
+/-- A key that misplaced-tests false, or any movable key with a mismatch witness, bridges `misplaced` to the position test. -/
+theorem misplaced_of_witness {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r) {x : Key} (hx : x ∈ movable s r) (hxk : x ≠ k)
+    (hxr : x ∈ s.record)
+    (hn : ¬ (x ∈ s.record.takeWhile (fun y => y != k) ↔ (movable s r).idxOf x < (movable s r).idxOf k)) : misplaced s r k = true := by
+  unfold misplaced
+  apply List.any_eq_true.2
+  refine ⟨x, hx, ?_⟩
+  simp only [Bool.and_eq_true, bne_iff_ne, ne_eq, List.contains_iff_mem]
+  refine ⟨⟨hxk, hxr⟩, fun heq => hn ?_⟩
+  have e := tw_mem hk x
+  have h2 : x ∈ s.record.takeWhile (fun y => y != k) ↔ x ∈ (movable s r).takeWhile (fun y => y != k) := by
+    have := congrArg (fun b : Bool => b = true) heq
+    simpa [List.contains_iff_mem] using this
+  rw [h2, e]
+  simp [hx]
+
+/-- **right_everywhere_no_move.**  A movable key that is in order against ALL the movable record keys (`misplaced` false: each of them is before it on the bar exactly when it is before it in the
+record) gets no move at all, from the anchor rule or the fallback.  (This replaces the ejb.3 `userMove_right_place`, which was stated for the anchors only and, with the fallback, needed
+the fallback's own answer as a hypothesis.) -/
+theorem right_everywhere_no_move {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r) (h : misplaced s r k = false) : userMove s r k = none := by
+  rw [userMove_drawn_spec hk]
+  have hfm : fallbackMove s r k = none := by simp [fallbackMove, h]
+  cases ha : anchorMove s r k with
+  | none => simp [hfm]
+  | some a =>
+    exfalso
+    obtain ⟨_, _, _, _, _, _, x, hx, hxk, hxr, hn⟩ := anchorMove_drawn s r k a hk ha
+    have := misplaced_of_witness hk hx hxk hxr hn
+    rw [h] at this; cases this
+
+/-- **noMoveHelps_true.**  The note `noMoveHelps` ("No single move of this item would improve the order") is shown only where it is true: the read is good and verifies the whole bar
+(`wholeBar`); the key is owed, in the record, movable and misplaced; EVERY single drag of it (either side of any movable record key other than itself) leaves at least as many
+inversions among the movable record keys as the bar has now; no queued key has an allowed move on this read; and the row says "not where you put it".  `noMoveHelps_bar` lifts this to the
+real bar: every possible bar, every place in its open keys. -/
+theorem noMoveHelps_true {s : State} {r : Read} {k : Key} (h : rowNote s r k = some .noMoveHelps) :
+    s.gate r = true ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = true ∧ misplaced s r k = true ∧ NoReducingDrag s r k ∧
+    userPick s r = none ∧ userMove s r k = none ∧ rowLine s r k = .notWherePut := by
+  have ht := rowNote_true h
+  unfold rowNote at h
+  split at h
+  · split at h
+    · rename_i hc
+      simp only [Bool.and_eq_true, List.contains_iff_mem, Option.isNone_iff_eq_none] at hc
+      obtain ⟨⟨⟨⟨⟨⟨hm, ho⟩, hrk⟩, hwb⟩, hmis⟩, hfm⟩, hp⟩ := hc
+      rcases fallbackMove_none_cases ho hm hfm with h1 | ⟨_, h2 | h2 | hn⟩
+      · rw [hmis] at h1; cases h1
+      · exact absurd hrk h2
+      · rw [hwb] at h2; cases h2
+      · exact ⟨ht.2.2.1, ho, hrk, hm, hwb, hmis, hn, hp, ht.2.2.2.1, ht.1⟩
+    · split at h <;> simp at h
+  · simp at h
+
+/-- **cantJudge_iff.**  The note `cantJudge` ("Sommelier can't judge this item until it can read the whole bar") is shown IF AND ONLY IF the row says "not where you put it", the key is owed
+(and in the record), movable and misplaced among the keys the read corroborates, the read does NOT verify the whole bar, and no move is decided on this read. -/
+theorem cantJudge_iff {s : State} {r : Read} {k : Key} :
+    rowNote s r k = some .cantJudge ↔
+      (rowLine s r k = .notWherePut ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = false ∧ misplaced s r k = true ∧ decideMove s r = none) := by
+  unfold rowNote
+  constructor
+  · intro h
+    split at h
+    · rename_i hc
+      simp only [Bool.and_eq_true, beq_iff_eq] at hc
+      split at h
+      · rename_i hh
+        simp only [Bool.and_eq_true] at hh
+        have := hh.1.2; simp at h
+      · split at h
+        · rename_i hh
+          simp only [Bool.and_eq_true, List.contains_iff_mem, Bool.not_eq_true', Option.isNone_iff_eq_none] at hh
+          obtain ⟨⟨⟨⟨⟨hm, ho⟩, hrk⟩, hwb⟩, hmis⟩, hd⟩ := hh
+          exact ⟨hc.1, ho, hrk, hm, hwb, hmis, hd⟩
+        · simp at h
+    · simp at h
+  · rintro ⟨hrow, ho, hrk, hm, hwb, hmis, hd⟩
+    have hown : owedNow s k = true := by simp [owedNow, ho]
+    have hc : (rowLine s r k == RowLine.notWherePut && owedNow s k) = true := by simp [hrow, hown]
+    rw [if_pos hc]
+    have h1 : ¬ ((movable s r).contains k && s.owedKeys.contains k && s.record.contains k && wholeBar s r && misplaced s r k
+        && (fallbackMove s r k).isNone && (userPick s r).isNone) = true := by simp [hwb]
+    rw [if_neg h1]
+    have h2 : ((movable s r).contains k && s.owedKeys.contains k && s.record.contains k && !wholeBar s r && misplaced s r k
+        && (decideMove s r).isNone) = true := by simp [List.contains_iff_mem, hm, ho, hrk, hwb, hmis, hd]
+    rw [if_pos h2]
+
+/-- A pass whose status is "differs" without a reason of the budget or a hold (`plain`) is exactly a pass on which no move is decided and nothing is in flight. -/
+theorem plain_is_no_move {s : State} {r : Read} (h : statusLine s r = .differs .plain) :
+    s.inFlight = none ∧ decideMove s r = none ∧ shownVerdict s r = .differs := by
+  unfold statusLine at h
+  split at h
+  · simp at h
+  · rename_i hp
+    simp only [pending, Bool.or_eq_true, Bool.not_eq_true] at hp
+    refine ⟨?_, ?_, ?_⟩
+    · cases hi : s.inFlight with
+      | none => rfl
+      | some a => simp [hi] at hp
+    · cases hd : decideMove s r with
+      | none => rfl
+      | some a => simp [hd] at hp
+    · split at h <;> simp_all
+
+/-- **userRetry_answers.**  After "Re-apply layout" (`userRetry`), on a good read with nothing in flight whose verdict is "differs": either a move leaves on this read (the planner's or a granted one),
+or the status is `differs plain`, which is shown IF AND ONLY IF no move is decided on that read (nothing leaves) and carries the reason "Sommelier has no move to make right now".  This is
+all it says: the planner is not optimal, so it does NOT claim that no move would help. -/
+theorem userRetry_answers (s : State) (r : Read) (hi : s.inFlight = none) (hg : s.gate r = true)
+    (hd : shownVerdict (step s .userRetry).1 r = .differs) :
+    (∃ a, (step (step s .userRetry).1 (.read r)).2 = [a]) ∨
+    (statusLine (step s .userRetry).1 r = .differs .plain ∧ decideMove (step s .userRetry).1 r = none ∧
+      (step (step s .userRetry).1 (.read r)).2 = []) := by
+  have hpn : (step s .userRetry).1.provenNotFull = s.provenNotFull := by simp [step]
+  have hinf : (step s .userRetry).1.inFlight = none := by simp [step, hi]
+  have hg' : (step s .userRetry).1.gate r = true := by simp only [State.gate, State.view, hpn]; exact hg
+  generalize hS : (step s .userRetry).1 = S at *
+  cases hdm : decideMove S r with
+  | some a => left; exact ⟨a, by simp [step, hdm]⟩
+  | none =>
+    right
+    refine ⟨?_, rfl, by simp [step, hdm]⟩
+    have hbud : budgetSpent S r = false := by
+      have : S.moveCount = 0 := by rw [← hS]; simp [step]
+      simp [budgetSpent, this, cap]; split <;> simp [capFull, capNotFull]
+    have hhold : S.hold = false := by rw [← hS]; simp [step]
+    unfold statusLine
+    have : pending S r = false := by simp [pending, hinf, hdm]
+    rw [this]
+    simp [hd, hbud, hhold]
+
+
+/-- **The count looks at movable record keys only.**  Dropping a key the engine may not name (not movable, or not in the record) from the bar changes no inversion count. -/
+theorem invCount_ignores_unmovable {s : State} {r : Read} {x : Key} (hx : x ∉ movable s r ∨ x ∉ s.record) (l : List Key) :
+    invCount s r (l.filter (fun y => y != x)) = invCount s r l := by
+  unfold invCount
+  rw [List.filter_filter]
+  congr 1
+  apply List.filter_congr
+  intro y _
+  by_cases hy : y = x
+  · subst hy
+    rcases hx with h | h
+    · have : (movable s r).contains y = false := by simpa [List.contains_iff_mem] using h
+      simp [this]; intro h'; exact absurd h' h
+    · have : s.record.contains y = false := by simpa [List.contains_iff_mem] using h
+      simp [this]; intro _; exact h
+  · simp [hy]
+
+
+/-! ### The fallback and the note against the REAL bar (ejb.10, corrective pass 2) -/
+
+
+theorem flatMap_filter_comm (R : Key → Bool) (g : Key → List Key)
+    (h1 : ∀ x, R x = true → (g x).all R = true) (h2 : ∀ x, R x = false → (g x).filter R = []) :
+    ∀ l : List Key, (l.flatMap g).filter R = (l.filter R).flatMap g
+  | [] => by simp
+  | x :: xs => by
+    have ih := flatMap_filter_comm R g h1 h2 xs
+    cases hx : R x
+    · simp [List.flatMap_cons, List.filter_append, h2 x hx, hx, ih]
+    · have := h1 x hx
+      have e : (g x).filter R = g x := List.filter_eq_self.mpr (by simpa [List.all_eq_true] using this)
+      simp [List.flatMap_cons, List.filter_append, e, hx, ih]
+
+theorem applyMove_filter (R : Key → Bool) (l : List Key) (a : Action) (hk : R a.subject = true) (ht : R a.rel.target = true) :
+    (applyMove l a).filter R = applyMove (l.filter R) a := by
+  unfold applyMove
+  simp only []
+  have e1 : (l.filter R).filter (fun x => x != a.subject) = (l.filter (fun x => x != a.subject)).filter R := by
+    rw [List.filter_filter, List.filter_filter]
+    apply List.filter_congr
+    intro x _
+    simp [Bool.and_comm]
+  rw [e1]
+  by_cases hc : (l.filter (fun x => x != a.subject)).contains a.rel.target = true
+  · have hc2 : ((l.filter (fun x => x != a.subject)).filter R).contains a.rel.target = true := by
+      rw [List.contains_iff_mem] at hc ⊢
+      exact List.mem_filter.2 ⟨hc, ht⟩
+    rw [if_neg (by rw [hc]; simp), if_neg (by rw [hc2]; simp)]
+    apply flatMap_filter_comm
+    · intro x hx
+      by_cases hxt : (x == a.rel.target) = true
+      · simp only [hxt, ite_true]
+        cases a.rel <;> simp [hk, hx]
+      · simp only [hxt]; simp [hx]
+    · intro x hx
+      have : (x == a.rel.target) = false := by
+        cases h : (x == a.rel.target)
+        · rfl
+        · have := beq_iff_eq.1 h; subst this; rw [ht] at hx; cases hx
+      simp [this, hx]
+  · have hc2 : ¬ ((l.filter (fun x => x != a.subject)).filter R).contains a.rel.target = true := by
+      intro h
+      rw [List.contains_iff_mem] at h
+      exact hc (List.contains_iff_mem.2 (List.mem_filter.1 h).1)
+    have hc' := Bool.eq_false_iff.2 hc
+    have hc2' := Bool.eq_false_iff.2 hc2
+    rw [if_pos (by rw [hc']; rfl), if_pos (by rw [hc2']; rfl)]
+
+
+/-- Inversions among the record keys of a list of keys (the real bar's open keys). -/
+def recInv (rec l : List Key) : Nat := invs rec (l.filter (fun x => rec.contains x))
+
+/-- `k` inserted into `l` at position `i`. -/
+def ins (k : Key) (l : List Key) (i : Nat) : List Key := l.take i ++ k :: l.drop i
+
+theorem wholeBar_cases {s : State} {r : Read} (hw : wholeBar s r = true) {x : Key} (hx : x ∈ s.record)
+    (hl : x ∈ r.drawn ∨ x ∈ r.pile ∨ x ∈ r.folded ∨ x ∈ r.unread) :
+    x ∈ movable s r ∨ (r.chevron = .fresh ∧ x ∈ r.foldedSet) := by
+  unfold wholeBar at hw
+  have h2 := (List.all_eq_true.1 hw) x hx
+  have hl' : (r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) = true := by
+    simp only [Bool.or_eq_true, List.contains_iff_mem]
+    rcases hl with h | h | h | h
+    · exact Or.inl (Or.inl (Or.inl h))
+    · exact Or.inl (Or.inl (Or.inr h))
+    · exact Or.inl (Or.inr h)
+    · exact Or.inr h
+  rw [hl'] at h2
+  simp only [Bool.not_true, Bool.false_or, Bool.or_eq_true] at h2
+  rcases h2 with h | h
+  · left; exact List.contains_iff_mem.1 h
+  · right
+    simp only [Bool.and_eq_true, beq_iff_eq, List.contains_iff_mem] at h
+    exact h
+
+/-- On a good read that verifies the whole bar, the record keys open on any possible bar are exactly the movable record keys, in the order the read draws them. -/
+theorem bar_open_record {s : State} {r : Read} {b : Bar} (hg : s.gate r = true) (hw : wholeBar s r = true) (hb : Possible (s.view r) b) :
+    b.open_.filter (fun x => s.record.contains x) = r.drawn.filter (fun x => (movable s r).contains x && s.record.contains x) := by
+  have hg' := hg
+  unfold State.gate at hg'
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hg'
+  have hu : (s.view r).usable := hg'.1
+  have hcm := consistent_iff.1 hg'.2
+  have hpo : (s.view r).pinOpen = r.drawn.filter (fun k => r.trusted.contains k) := view_usable_pin hu
+  have hf := ((poss_iff hu (b)).mp hb).2.1
+  have hwf := poss_wf hb
+  have hvr : (s.view r).chevron = r.chevron := rfl
+  have hmem : ∀ x, x ∈ (s.view r).pinOpen ↔ x ∈ r.drawn ∧ x ∈ r.trusted := by
+    intro x; rw [hpo]; simp [List.mem_filter]
+  -- Claim A
+  have hA : ∀ x ∈ b.open_, x ∈ s.record → x ∈ (s.view r).pinOpen := by
+    intro x hx hxr
+    have hl := poss_open_listed hu hb hx
+    rcases wholeBar_cases hw hxr (by simpa [Read.listed, State.view] using hl) with hm | ⟨hfr, hfs⟩
+    · have := (mem_movable_iff s r x).1 hm
+      exact (hmem x).2 ⟨this.1, this.2.1⟩
+    · exfalso
+      have hbeh : x ∈ (s.view r).pinBehind := by
+        rw [pinBehind_fresh hu (by rw [hvr]; exact hfr)]; exact hfs
+      exact hwf.2.2 x hx (poss_pin_behind hu hb hbeh)
+  -- Claim B
+  have hB : ∀ x ∈ r.drawn, x ∈ r.trusted → x ∈ s.record → x ∈ movable s r := by
+    intro x hd ht hxr
+    rcases wholeBar_cases hw hxr (Or.inl hd) with hm | ⟨hfr, hfs⟩
+    · exact hm
+    · exfalso
+      have hbeh : x ∈ (s.view r).pinBehind := by
+        rw [pinBehind_fresh hu (by rw [hvr]; exact hfr)]; exact hfs
+      exact (by simpa using hcm.2 x ((hmem x).2 ⟨hd, ht⟩) : x ∉ (s.view r).pinBehind) hbeh
+  have e1 : b.open_.filter (fun x => s.record.contains x) = (b.open_.filter (fun k => decide (k ∈ (s.view r).pinOpen))).filter (fun x => s.record.contains x) := by
+    rw [List.filter_filter]
+    apply List.filter_congr
+    intro x hx
+    by_cases hxr : s.record.contains x = true
+    · have := hA x hx (List.contains_iff_mem.1 hxr)
+      have hd : decide (x ∈ (s.view r).pinOpen) = true := by simpa using this
+      simp only [hxr, hd, Bool.and_self]
+    · have hn : s.record.contains x = false := Bool.eq_false_iff.2 hxr
+      simp only [hn, Bool.and_false, Bool.false_and]
+  rw [e1, hf, hpo, List.filter_filter]
+  apply List.filter_congr
+  intro x hx
+  by_cases hxr : s.record.contains x = true
+  · by_cases ht : r.trusted.contains x = true
+    · have hm := hB x hx (List.contains_iff_mem.1 ht) (List.contains_iff_mem.1 hxr)
+      have hm' : (movable s r).contains x = true := List.contains_iff_mem.2 hm
+      simp only [hxr, ht, hm', Bool.and_self]
+    · have hm : (movable s r).contains x = false := by
+        cases h : (movable s r).contains x
+        · rfl
+        · exfalso; exact ht (List.contains_iff_mem.2 ((mem_movable_iff s r x).1 (List.contains_iff_mem.1 h)).2.1)
+      have ht' := Bool.eq_false_iff.2 ht
+      simp only [ht', hm, Bool.false_and, Bool.and_false]
+  · have hn : s.record.contains x = false := Bool.eq_false_iff.2 hxr
+    simp only [hn, Bool.and_false, Bool.false_and]
+
+
+/-- **fallback_improves_bar.**  A fallback move strictly lowers the record inversions of EVERY possible real bar: for every bar `b` the view of the read could have been taken of, the number of
+inversions against the record among the OPEN keys of `b` (record keys only) is strictly smaller on the bar after the drag (`applyMove b.open_ a`) than on `b`.  Keys behind the « take no part: under `wholeBar`
+a record key listed folded under a fresh chevron is pinned behind (A2), the drag never names it (a target is a movable key, a subject is `k`), and the open order is all the drag changes. -/
+theorem fallback_improves_bar {s : State} {r : Read} {k : Key} {a : Action} (hg : s.gate r = true) (h : fallbackMove s r k = some a) :
+    ∀ b : Bar, Possible (s.view r) b → recInv s.record (applyMove b.open_ a) < recInv s.record b.open_ := by
+  intro b hb
+  obtain ⟨_, hsub, htm, htr, _, _, _, hrk, hmk, hwb, _, _, hlt, _⟩ := fallbackMove_basic h
+  have hQk : ((movable s r).contains a.subject && s.record.contains a.subject) = true := by
+    rw [hsub]; simp [List.contains_iff_mem, hmk, hrk]
+  have hQt : ((movable s r).contains a.rel.target && s.record.contains a.rel.target) = true := by
+    simp [List.contains_iff_mem, htm, htr]
+  have hRk : s.record.contains a.subject = true := by rw [hsub]; exact List.contains_iff_mem.2 hrk
+  have hRt : s.record.contains a.rel.target = true := List.contains_iff_mem.2 htr
+  have eo := bar_open_record hg hwb hb
+  have e1 := applyMove_filter (fun x => s.record.contains x) b.open_ a hRk hRt
+  have e2 := applyMove_filter (fun x => (movable s r).contains x && s.record.contains x) r.drawn a hQk hQt
+  unfold recInv
+  rw [e1, eo]
+  unfold invCount at hlt
+  rw [e2] at hlt
+  exact hlt
+
+
+theorem fm_before (t k : Key) : ∀ l : List Key, (∀ x ∈ l, x ≠ t) →
+    l.flatMap (fun x => if (x == t) = true then [k, x] else [x]) = l
+  | [], _ => rfl
+  | x :: xs, h => by
+    have hx : (x == t) = false := by simpa using h x (by simp)
+    simp only [List.flatMap_cons, hx, Bool.false_eq_true, ite_false]
+    rw [fm_before t k xs (fun y hy => h y (by simp [hy]))]; rfl
+
+theorem fm_after (t k : Key) : ∀ l : List Key, (∀ x ∈ l, x ≠ t) →
+    l.flatMap (fun x => if (x == t) = true then [x, k] else [x]) = l
+  | [], _ => rfl
+  | x :: xs, h => by
+    have hx : (x == t) = false := by simpa using h x (by simp)
+    simp only [List.flatMap_cons, hx, Bool.false_eq_true, ite_false]
+    rw [fm_after t k xs (fun y hy => h y (by simp [hy]))]; rfl
+
+/-- Dragging `k` next to `t` in a list whose other keys are `pre ++ t :: post` (no repeats). -/
+theorem applyMove_split (l pre post : List Key) (t k : Key) (hl : l.filter (fun x => x != k) = pre ++ t :: post)
+    (hn : (pre ++ t :: post).Nodup) (sa su : Bool) :
+    applyMove l ⟨k, .before t, sa, su⟩ = pre ++ k :: t :: post ∧ applyMove l ⟨k, .after t, sa, su⟩ = pre ++ t :: k :: post := by
+  have hnd := List.nodup_append.1 hn
+  have hpre : ∀ x ∈ pre, x ≠ t := fun x hx e => by
+    subst e; exact hnd.2.2 x hx x (by simp) rfl
+  have hpost : ∀ x ∈ post, x ≠ t := fun x hx e => by subst e; exact (List.nodup_cons.1 hnd.2.1).1 hx
+  have hc : (l.filter (fun x => x != k)).contains t = true := by rw [hl]; simp
+  have hnc : ¬ (!(l.filter (fun x => x != k)).contains t) = true := by rw [hc]; simp
+  constructor
+  · have e : applyMove l ⟨k, .before t, sa, su⟩ = if (!(l.filter (fun x => x != k)).contains t) = true then l
+        else (l.filter (fun x => x != k)).flatMap (fun x => if (x == t) = true then [k, x] else [x]) := rfl
+    rw [e, if_neg hnc, hl, List.flatMap_append, List.flatMap_cons, fm_before t k pre hpre, fm_before t k post hpost]
+    simp
+  · have e : applyMove l ⟨k, .after t, sa, su⟩ = if (!(l.filter (fun x => x != k)).contains t) = true then l
+        else (l.filter (fun x => x != k)).flatMap (fun x => if (x == t) = true then [x, k] else [x]) := rfl
+    rw [e, if_neg hnc, hl, List.flatMap_append, List.flatMap_cons, fm_after t k pre hpre, fm_after t k post hpost]
+    simp
+
+theorem filter_ins (R : Key → Bool) (k : Key) (hk : R k = true) (rest : List Key) (i : Nat) :
+    (ins k rest i).filter R = ins k (rest.filter R) ((rest.take i).filter R).length := by
+  unfold ins
+  have e : rest.filter R = (rest.take i).filter R ++ (rest.drop i).filter R := by
+    rw [← List.filter_append, List.take_append_drop]
+  rw [List.filter_append, List.filter_cons_of_pos hk, e, List.take_left' rfl, List.drop_left' rfl]
+
+theorem exists_drag (M Mrest : List Key) (k : Key) (hM : M.filter (fun x => x != k) = Mrest) (hn : Mrest.Nodup) (hne : Mrest ≠ [])
+    (j : Nat) (hj : j ≤ Mrest.length) :
+    ∃ rel : Rel, rel.target ∈ Mrest ∧ applyMove M ⟨k, rel, false, true⟩ = ins k Mrest j := by
+  rcases Nat.eq_zero_or_pos j with rfl | hpos
+  · cases hm : Mrest with
+    | nil => exact absurd hm hne
+    | cons t post =>
+      refine ⟨.before t, by simp [Rel.target, hm], ?_⟩
+      have := (applyMove_split M [] post t k (by rw [hM, hm]; rfl) (by rw [hm] at hn; simpa using hn) false true).1
+      rw [this]; simp [ins]
+  · obtain ⟨j', rfl⟩ : ∃ j', j = j' + 1 := ⟨j - 1, by omega⟩
+    have hlt : j' < Mrest.length := by omega
+    obtain ⟨t, ht⟩ : ∃ t, t = Mrest[j'] := ⟨_, rfl⟩
+    have hsplit : Mrest = Mrest.take j' ++ t :: Mrest.drop (j' + 1) := by
+      have h0 := List.take_append_drop j' Mrest
+      rw [List.drop_eq_getElem_cons hlt] at h0
+      rw [ht]; exact h0.symm
+    refine ⟨.after t, by rw [ht]; exact List.getElem_mem hlt, ?_⟩
+    have := (applyMove_split M (Mrest.take j') (Mrest.drop (j' + 1)) t k (by rw [hM]; exact hsplit)
+      (by rw [← hsplit]; exact hn) false true).2
+    rw [this]
+    unfold ins
+    have h1 : Mrest.take (j' + 1) = Mrest.take j' ++ [Mrest[j']] := by
+      rw [List.take_succ, List.getElem?_eq_getElem hlt]; rfl
+    rw [h1, ← ht]; simp
+
+theorem invs_all_eq (rec : List Key) (k : Key) : ∀ l : List Key, (∀ x ∈ l, x = k) → invs rec l = 0
+  | [], _ => rfl
+  | x :: xs, h => by
+    have hx := h x (by simp)
+    have h0 : (xs.filter (fun y => decide (rec.idxOf y < rec.idxOf x))).length = 0 := by
+      apply List.length_eq_zero_iff.2
+      apply List.filter_eq_nil_iff.2
+      intro y hy
+      have := h y (by simp [hy])
+      simp [this, hx]
+    simp [invs, h0, invs_all_eq rec k xs (fun y hy => h y (by simp [hy]))]
+
+
+/-- **noMoveHelps_bar.**  Where `noMoveHelps` is shown, on EVERY possible bar `b` of the view and EVERY place in its open keys (an insertion position `i` of `k` into the other open keys of `b`,
+beside a movable key or not), moving `k` there does not lower the record inversions among the open keys of `b`.  (Keys behind the « take no part; under `wholeBar` every record key is movable or pinned behind.) -/
+theorem noMoveHelps_bar {s : State} {r : Read} {k : Key} (h : rowNote s r k = some .noMoveHelps) :
+    ∀ b : Bar, Possible (s.view r) b → ∀ i : Nat,
+      ¬ recInv s.record (ins k (b.open_.filter (fun x => x != k)) i) < recInv s.record b.open_ := by
+  obtain ⟨hg, _, hrk, hmk, hwb, _, hnr, _, _, _⟩ := noMoveHelps_true h
+  intro b hb i
+  have eo := bar_open_record hg hwb hb
+  have hwf := poss_wf hb
+  obtain ⟨M, hM⟩ : ∃ M, M = r.drawn.filter (fun x => (movable s r).contains x && s.record.contains x) := ⟨_, rfl⟩
+  rw [← hM] at eo
+  have hRk : s.record.contains k = true := List.contains_iff_mem.2 hrk
+  have hQk : ((movable s r).contains k && s.record.contains k) = true := by simp [List.contains_iff_mem, hmk, hrk]
+  have hrest : (b.open_.filter (fun x => x != k)).filter (fun x => s.record.contains x) = M.filter (fun x => x != k) := by
+    rw [← eo, List.filter_filter, List.filter_filter]
+    apply List.filter_congr; intro x _; simp [Bool.and_comm]
+  have hMn : M.Nodup := by rw [← eo]; exact nodup_filter' _ hwf.1
+  have hMrn : (M.filter (fun x => x != k)).Nodup := nodup_filter' _ hMn
+  unfold recInv
+  rw [filter_ins _ k hRk, hrest, eo]
+  obtain ⟨Mrest, hMrest⟩ : ∃ Mrest, Mrest = M.filter (fun x => x != k) := ⟨_, rfl⟩
+  rw [← hMrest] at hMrn ⊢
+  have hj : ((b.open_.filter (fun x => x != k)).take i |>.filter (fun x => s.record.contains x)).length ≤ Mrest.length := by
+    rw [← hMrest] at hrest
+    rw [← hrest]
+    have := List.length_filter_le (fun x => s.record.contains x) ((b.open_.filter (fun x => x != k)).drop i)
+    have e : (b.open_.filter (fun x => x != k)).filter (fun x => s.record.contains x) =
+        ((b.open_.filter (fun x => x != k)).take i).filter (fun x => s.record.contains x) ++ ((b.open_.filter (fun x => x != k)).drop i).filter (fun x => s.record.contains x) := by
+      rw [← List.filter_append, List.take_append_drop]
+    rw [e, List.length_append]; omega
+  generalize ((b.open_.filter (fun x => x != k)).take i |>.filter (fun x => s.record.contains x)).length = j at hj ⊢
+  by_cases hne : Mrest = []
+  · have : j = 0 := by rw [hne] at hj; simpa using hj
+    subst this
+    rw [hne]
+    have h0 : invs s.record (ins k [] 0) = 0 := by simp [ins, invs]
+    have h1 : invs s.record M = 0 := invs_all_eq s.record k M (fun x hx => by
+      refine Classical.byContradiction fun hxk => ?_
+      have : x ∈ Mrest := by rw [hMrest]; exact List.mem_filter.2 ⟨hx, by simpa using hxk⟩
+      rw [hne] at this; simp at this)
+    rw [h0, h1]; exact Nat.lt_irrefl 0
+  · obtain ⟨rel, hrelm, hrel⟩ := exists_drag M Mrest k hMrest.symm hMrn hne j hj
+    rw [hMrest] at hrelm
+    have ht := List.mem_filter.1 hrelm
+    have hmem : rel.target ∈ r.drawn.filter (fun x => (movable s r).contains x && s.record.contains x) := hM ▸ ht.1
+    have ht2 := List.mem_filter.1 hmem
+    simp only [Bool.and_eq_true, List.contains_iff_mem] at ht2
+    have htk : rel.target ≠ k := by simpa using ht.2
+    have hQt : ((movable s r).contains rel.target && s.record.contains rel.target) = true := by
+      simp [List.contains_iff_mem, ht2.2.1, ht2.2.2]
+    have := hnr rel ht2.2.1 ht2.2.2 htk
+    unfold invCount at this
+    rw [applyMove_filter _ r.drawn ⟨k, rel, false, true⟩ hQk hQt, ← hM, hrel] at this
+    exact this
 
 end Sommelier

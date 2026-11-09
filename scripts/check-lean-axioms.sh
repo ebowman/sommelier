@@ -20,7 +20,7 @@ plan_no_givenUp plan_no_skipped fullBar_ignores_chevron chevron_engine_budget pl
 pile_stale_add proof_clears_pile proof_clears_hold pile_absent_keeps res_failed_holds res_failed_gives_up res_proven_no_hold
 res_proven_strike res_proven_giveup edit_hold edit_budget_reset edit_restricts edit_givenUp retry_clears_hold retry_clears_givenUp
 retry_resets_budget retry_unrestricts retry_grants rk_clears_hold rk_resets_budget rk_givenUp emit_consumes rearm_iff
-rearm_request prefixFor_spec userMove_right_place userMove_moves userMove_target applyMove_before applyMove_after userMove_folded
+rearm_request prefixFor_spec userMove_moves userMove_target applyMove_before applyMove_after userMove_folded
 edit_request_origin edit_requests_pull rk_request rk_requests_pull emit_flightReq edit_flightReq edit_empty_flightReq rk_flightReq
 edit_owed edit_empty_owed edit_request_in_record rk_owed plan_in_record subjects_in_record postedFull_init quiescence
 userAlwaysAnswered_drawn userAlwaysAnswered_none userAlwaysAnswered_pull userRetry_leaves userRetry_opens_gate notStuck
@@ -35,7 +35,10 @@ rowVerdict_behindOutOfTurn_iff rowVerdict_notOnBar_iff rowVerdict_cannotTell_iff
 no_needless_move_user no_folded_target_truth no_move_on_cannotTell macOS_fold_preserves status_judges_view decideMove_gated owed_unanswered_reason fold_crossed_only_by_drop row_good_read_verdict
 usable_pass usable_settled usable_not_incomplete usable_observed usable_strip_closed usable_not_stale usable_absent_proven
 provenNotFull_pile_empty drop_answered_reachable foldedDrawn_chevronless in_place_row unanswered_row pileInv_step pileInv_run
-gate_facts fresh_drawn_not_folded decide_head mem_foldedAll noteRead_pile_usable"
+gate_facts fresh_drawn_not_folded decide_head mem_foldedAll noteRead_pile_usable
+anchorMove_spec anchorMove_right_place anchorMove_moves anchorMove_target fallbackMove_basic fallbackRel_target misplaced_fallbackRel
+fallbackMove_none_cases fallbackMove_exists legal_mem_cands argmin_spec fallback_reduces_inversions fallback_best right_everywhere_no_move noMoveHelps_true userRetry_answers plain_is_no_move drop_no_gap_note bar_open_record applyMove_filter fallback_improves_bar noMoveHelps_bar cantJudge_iff exists_drag applyMove_split filter_ins wholeBar_cases invCount_ignores_unmovable userPick_exists userPick_none userPick_head1 userMove_phases userMove_none_reason rowNote_true rowNote_reason queue_move_decides try_again_core try_again_answers
+drain_potential potential_le drops_drain drop_mutual_inversion drop_no_gap drop_keys_around_say_so drain_bound_attained"
 ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $HEADLINE; do
   echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty.lean"; exit 1; }

@@ -1,5 +1,6 @@
 import Sommelier.Model
 import Sommelier.Step
+import Sommelier.Eqns
 
 /-!
 # Truth: what a reading says about the REAL menu bar (statements only)
@@ -1931,7 +1932,7 @@ theorem decide_anatomy (s : State) (r : Read) (a : Action) (h : decideMove s r =
     · rename_i b hb
       left
       simp at h; subst h
-      obtain ⟨l1, k, l2, _, hk, _⟩ := List.findSome?_eq_some_iff.mp hb
+      obtain ⟨k, _, hk⟩ := userPick_exists hb
       refine ⟨k, ?_⟩
       cases hu : userMove s r k with
       | none => simp [hu] at hk
@@ -1981,6 +1982,97 @@ theorem userMove_pull (s : State) (r : Read) (k : Key) (a : Action) (h : userMov
   · rw [← hpa]
   · rw [← hpa]
 
+theorem anchorMove_drawn (s : State) (r : Read) (k : Key) (a : Action) (hkm : k ∈ movable s r) (h : anchorMove s r k = some a) :
+    a.subject = k ∧ a.user = true ∧ k ∈ movable s r ∧ a.rel.target ∈ movable s r ∧ a.rel.target ∈ s.record ∧ a.rel.target ≠ k ∧
+    ∃ x ∈ movable s r, x ≠ k ∧ x ∈ s.record ∧
+      ¬ (x ∈ s.record.takeWhile (fun y => y != k) ↔ (movable s r).idxOf x < (movable s r).idxOf k) := by
+  simp only [anchorMove] at h
+  split at h
+  · simp at h
+  · rename_i hcond
+    split at h
+    · simp at h
+    · rename_i i hi
+      have hANmem : ∀ x, x ∈ (movable s r).filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a) ↔
+          (x ∈ movable s r ∧ x ≠ k ∧ x ∈ s.record ∧ x ∉ s.owedKeys) := by
+        intro x; simp [List.mem_filter, and_assoc]
+      generalize hAN : (movable s r).filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a) = AN at *
+      have key : a.subject = k ∧ a.user = true ∧ a.rel.target ∈ AN := by
+        cases hl : (AN.take i).getLast? with
+        | some p =>
+          rw [hl] at h
+          simp at h; subst h
+          exact ⟨rfl, rfl, List.mem_of_mem_take (List.mem_of_getLast? hl)⟩
+        | none =>
+          rw [hl] at h
+          cases hh : AN.head? with
+          | none => rw [hh] at h; simp at h
+          | some t =>
+            rw [hh] at h; simp at h; subst h
+            exact ⟨rfl, rfl, List.mem_of_mem_head? hh⟩
+      obtain ⟨hsub, huser, htar⟩ := key
+      have hA := (hANmem _).mp htar
+      refine ⟨hsub, huser, hkm, hA.1, hA.2.2.1, hA.2.1, ?_⟩
+      refine Classical.byContradiction (fun hno => ?_)
+      apply hcond
+      have hqk : (k == k || AN.contains k) = true := by simp
+      simp only [Bool.and_eq_true, List.all_eq_true]
+      constructor
+      · intro x hx
+        rw [tw_mem2] at hx
+        obtain ⟨hxf, hlt⟩ := hx
+        rw [List.mem_filter] at hxf
+        obtain ⟨hxv, hxq⟩ := hxf
+        have hxk : x ≠ k := by
+          intro e; subst e; omega
+        have hxAN : x ∈ AN := by
+          have : AN.contains x = true := by simpa [hxk] using hxq
+          simpa using this
+        have hA2 := (hANmem x).mp hxAN
+        have hlt2 : (movable s r).idxOf x < (movable s r).idxOf k := by
+          have := idx_filter_iff (fun a => a == k || AN.contains a) (movable s r) x k hxv hkm hxq hqk
+          exact this.mp hlt
+        refine Classical.byContradiction (fun hnw => ?_)
+        apply hno
+        refine ⟨x, hxv, hxk, hA2.2.2.1, ?_⟩
+        intro hiff
+        have hxt : x ∈ s.record.takeWhile (fun y => y != k) := hiff.mpr hlt2
+        apply hnw
+        simp only [List.contains_iff_mem, List.mem_filter, decide_eq_true_eq]
+        exact ⟨hxt, hxAN⟩
+      · intro x hx
+        simp only [List.mem_filter, List.contains_iff_mem] at hx
+        obtain ⟨hxt, hxAN⟩ := hx
+        have hA2 := (hANmem x).mp hxAN
+        have hxq : (x == k || AN.contains x) = true := by simp [hxAN]
+        refine Classical.byContradiction (fun hns => ?_)
+        apply hno
+        refine ⟨x, hA2.1, hA2.2.1, hA2.2.2.1, ?_⟩
+        intro hiff
+        have hlt2 := hiff.mp hxt
+        apply hns
+        simp only [List.contains_iff_mem]
+        rw [tw_mem2]
+        refine ⟨List.mem_filter.mpr ⟨hA2.1, hxq⟩, ?_⟩
+        exact (idx_filter_iff (fun a => a == k || AN.contains a) (movable s r) x k hA2.1 hkm hxq hqk).mpr hlt2
+
+theorem fallbackMove_drawn (s : State) (r : Read) (k : Key) (a : Action) (hkm : k ∈ movable s r) (h : fallbackMove s r k = some a) :
+    a.subject = k ∧ a.user = true ∧ k ∈ movable s r ∧ a.rel.target ∈ movable s r ∧ a.rel.target ∈ s.record ∧ a.rel.target ≠ k ∧
+    ∃ x ∈ movable s r, x ≠ k ∧ x ∈ s.record ∧
+      ¬ (x ∈ s.record.takeWhile (fun y => y != k) ↔ (movable s r).idxOf x < (movable s r).idxOf k) := by
+  obtain ⟨hu, hsub, htm, htr, htk, _, _, _, _, _, hmis, _⟩ := fallbackMove_basic h
+  refine ⟨hsub, hu, hkm, htm, htr, htk, ?_⟩
+  unfold misplaced at hmis
+  obtain ⟨x, hx, hxd⟩ := List.any_eq_true.1 hmis
+  simp only [Bool.and_eq_true, bne_iff_ne, ne_eq, List.contains_iff_mem] at hxd
+  obtain ⟨⟨hxk, hxr⟩, hxne⟩ := hxd
+  refine ⟨x, hx, hxk, hxr, fun hiff => hxne ?_⟩
+  have e := tw_mem hkm x
+  apply Bool.eq_iff_iff.mpr
+  rw [List.contains_iff_mem, List.contains_iff_mem, e]
+  simp only [hx, true_and]
+  exact hiff
+
 theorem userMove_drawn (s : State) (r : Read) (k : Key) (a : Action) (h : userMove s r k = some a)
     (hf : k ∉ foldedAll s r) :
     a.subject = k ∧ a.user = true ∧ k ∈ movable s r ∧ a.rel.target ∈ movable s r ∧ a.rel.target ∈ s.record ∧ a.rel.target ≠ k ∧
@@ -1992,74 +2084,14 @@ theorem userMove_drawn (s : State) (r : Read) (k : Key) (a : Action) (h : userMo
   by_cases hk : (movable s r).contains k = true
   · simp only [hk, ↓reduceIte] at h
     have hkm : k ∈ movable s r := by simpa using hk
-    split at h
-    · simp at h
-    · rename_i hcond
-      split at h
-      · simp at h
-      · rename_i i hi
-        have hANmem : ∀ x, x ∈ (movable s r).filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a) ↔
-            (x ∈ movable s r ∧ x ≠ k ∧ x ∈ s.record ∧ x ∉ s.owedKeys) := by
-          intro x; simp [List.mem_filter, and_assoc]
-        generalize hAN : (movable s r).filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a) = AN at *
-        have key : a.subject = k ∧ a.user = true ∧ a.rel.target ∈ AN := by
-          cases hl : (AN.take i).getLast? with
-          | some p =>
-            rw [hl] at h
-            simp at h; subst h
-            exact ⟨rfl, rfl, List.mem_of_mem_take (List.mem_of_getLast? hl)⟩
-          | none =>
-            rw [hl] at h
-            cases hh : AN.head? with
-            | none => rw [hh] at h; simp at h
-            | some t =>
-              rw [hh] at h; simp at h; subst h
-              exact ⟨rfl, rfl, List.mem_of_mem_head? hh⟩
-        obtain ⟨hsub, huser, htar⟩ := key
-        have hA := (hANmem _).mp htar
-        refine ⟨hsub, huser, hkm, hA.1, hA.2.2.1, hA.2.1, ?_⟩
-        refine Classical.byContradiction (fun hno => ?_)
-        apply hcond
-        have hqk : (k == k || AN.contains k) = true := by simp
-        simp only [Bool.and_eq_true, List.all_eq_true]
-        constructor
-        · intro x hx
-          rw [tw_mem2] at hx
-          obtain ⟨hxf, hlt⟩ := hx
-          rw [List.mem_filter] at hxf
-          obtain ⟨hxv, hxq⟩ := hxf
-          have hxk : x ≠ k := by
-            intro e; subst e; omega
-          have hxAN : x ∈ AN := by
-            have : AN.contains x = true := by simpa [hxk] using hxq
-            simpa using this
-          have hA2 := (hANmem x).mp hxAN
-          have hlt2 : (movable s r).idxOf x < (movable s r).idxOf k := by
-            have := idx_filter_iff (fun a => a == k || AN.contains a) (movable s r) x k hxv hkm hxq hqk
-            exact this.mp hlt
-          refine Classical.byContradiction (fun hnw => ?_)
-          apply hno
-          refine ⟨x, hxv, hxk, hA2.2.2.1, ?_⟩
-          intro hiff
-          have hxt : x ∈ s.record.takeWhile (fun y => y != k) := hiff.mpr hlt2
-          apply hnw
-          simp only [List.contains_iff_mem, List.mem_filter, decide_eq_true_eq]
-          exact ⟨hxt, hxAN⟩
-        · intro x hx
-          simp only [List.mem_filter, List.contains_iff_mem] at hx
-          obtain ⟨hxt, hxAN⟩ := hx
-          have hA2 := (hANmem x).mp hxAN
-          have hxq : (x == k || AN.contains x) = true := by simp [hxAN]
-          refine Classical.byContradiction (fun hns => ?_)
-          apply hno
-          refine ⟨x, hA2.1, hA2.2.1, hA2.2.2.1, ?_⟩
-          intro hiff
-          have hlt2 := hiff.mp hxt
-          apply hns
-          simp only [List.contains_iff_mem]
-          rw [tw_mem2]
-          refine ⟨List.mem_filter.mpr ⟨hA2.1, hxq⟩, ?_⟩
-          exact (idx_filter_iff (fun a => a == k || AN.contains a) (movable s r) x k hA2.1 hkm hxq hqk).mpr hlt2
+    cases ha : anchorMove s r k with
+    | some a' =>
+      rw [ha] at h
+      simp only [Option.some.injEq] at h; subst h
+      exact anchorMove_drawn s r k _ hkm ha
+    | none =>
+      rw [ha] at h
+      exact fallbackMove_drawn s r k a hkm h
   · simp at hk
     simp [hk] at h
 

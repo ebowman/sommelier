@@ -742,4 +742,28 @@ example : verdict [1, 2] (mkRead .fresh [2, 1] []) = .differs := by decide
 example : rowVerdict [1, 2] { mkRead .fresh [2, 1] [] with kind := .poll } 1 = .cannotTell := by decide
 example : rowVerdict [1, 2] { mkRead .fresh [2, 1] [] with settled := false } 1 = .cannotTell := by decide
 
+
+/-! ## ejb.10: the fallback's queue order, phases, tie-break and the whole-bar condition (semantic pins for their mutants) -/
+
+-- phase TWO is taken in queue order: owed [1,2] moves 1, owed [2,1] moves 2 (a head-only or reversed scan changes the subject)
+example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [1], .userEdit [1, 2, 3, 4] [2], .read (mkRead .fresh [2, 1, 3, 4] [9])]).2
+    = [⟨1, .before 2, false, true⟩] := by decide
+example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [2], .userEdit [1, 2, 3, 4] [1], .read (mkRead .fresh [2, 1, 3, 4] [9])]).2
+    = [⟨2, .after 1, false, true⟩] := by decide
+-- a queue head with no move does not hide the fallback of the next key
+example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [4], .userEdit [1, 2, 3, 4] [2], .read (mkRead .fresh [3, 2, 1, 4] [9])]).2
+    = [⟨2, .after 1, false, true⟩] := by decide
+-- the two PHASES: key 4 (first in the queue) has only a fallback move (4 after 1); key 1 has an anchor move, which goes first
+example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [4], .userEdit [1, 2, 3, 4] [1], .read (mkRead .fresh [2, 3, 4, 1] [9])]).2
+    = [⟨1, .before 2, false, true⟩] := by decide
+-- the tie-break: 2 after its record predecessor 1 (not before the first key, which leaves the same count)
+example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [2], .read (mkRead .fresh [3, 2, 1, 4] [9])]).2
+    = [⟨2, .after 1, false, true⟩] := by decide
+-- reviewer trace 1: record [1..5], read [3,2,4,5,1] with 4 and 5 untrusted, drop 2: the bar is not verified, NO fallback move (it used to emit `2 after 1`, which makes the real bar worse)
+example : (run (State.init [1, 2, 3, 4, 5]) [.userEdit [1, 2, 3, 4, 5] [2], .read { mkRead .fresh [3, 2, 4, 5, 1] [9] with trusted := [3, 2, 1, 9] }]).2
+    = [] := by decide
+-- reviewer trace 2: record [1,2,3,4], read [3,2,4,1] with 2 untrusted, drop 3: no `noMoveHelps`, the row says it cannot judge
+example : rowNote (step (State.init [1, 2, 3, 4]) (.userEdit [1, 2, 3, 4] [3])).1 { mkRead .fresh [3, 2, 4, 1] [9] with trusted := [3, 4, 1, 9] } 3
+    = some .cantJudge := by decide
+
 end Sommelier

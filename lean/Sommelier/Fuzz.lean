@@ -183,7 +183,8 @@ def owedReasonCheck (s : State) (r : Read) : List (String × Bool) :=
       let mv := (movable s r).contains k
       let fa := (foldedAll s r).contains k
       [("owed_unanswered_reason",
-        (mv && same) || (mv && (prefixFor (fzWant s r k) (fzAnchors s r k)).isNone)
+        (mv && !misplaced s r k)
+        || (mv && misplaced s r k && (!s.record.contains k || !wholeBar s r || ((fallbackCands s r k).all fun rel => decide (invCount s r r.drawn ≤ afterCount s r k rel))))
         || (!fa && !(r.drawn.contains k && r.trusted.contains k))
         || (fa && !lic)
         || (fa && lic && pred.isNone)
@@ -191,6 +192,139 @@ def owedReasonCheck (s : State) (r : Read) : List (String × Bool) :=
         || (match userMove s r k with | some a => a.strip && s.editSessionUsed | none => false)
         || (acts.any (fun a => a.user && (s.foldRequest.toList ++ s.owedKeys).contains a.subject && a.subject != k))) ]
   else []
+
+/-- Inversions of the bar `d` against the record, counted pair by pair (independent of `invCount`; every key of `d` is movable in the enumerations below). -/
+def invInd (rec d : List Key) : Nat :=
+  (d.zipIdx.map fun (x, i) => (d.zipIdx.filter fun (y, j) => i < j && decide (rec.idxOf y < rec.idxOf x)).length).foldl (· + ·) 0
+
+/-- Some single drag of `k` (to any place in the bar) leaves STRICTLY fewer inversions (independent of the fallback's candidates). -/
+def canReduce (rec d : List Key) (k : Key) : Bool :=
+  let rest := d.filter (· != k)
+  (List.range (rest.length + 1)).any fun i => decide (invInd rec (insertAt k rest i) < invInd rec d)
+
+def dropRd (d : List Key) : Read :=
+  { kind := .pass, chevron := .fresh, level := .complete, settled := true, stripOpen := false, drawn := d, pile := [9], folded := [],
+    trusted := d ++ [9], nearFold := [] }
+
+def permsK : List Key → List (List Key)
+  | [] => [[]]
+  | x :: xs => (permsK xs).flatMap fun p => (List.range (p.length + 1)).map fun i => insertAt x p i
+
+def subsetsK : List Key → List (List Key)
+  | [] => [[]]
+  | x :: xs => let r := subsetsK xs; r ++ r.map (x :: ·)
+
+/-- Drain the owed queue on the bar `d` (record = [1,2,3,4] up to relabelling, which covers every 4-key bar): each read, then the result of the drag it asked for; `busy` mode answers the
+first drag of every key with an interrupted (not posted) result, then verifies.  Returns the moves and the final state and bar. -/
+def drainSim (s0 : State) (d0 : List Key) (busy : Bool) : List Action × State × List Key := Id.run do
+  let mut s := s0
+  let mut d := d0
+  let mut moves : List Action := []
+  for _ in List.range 14 do
+    let (s1, acts) := step s (.read (dropRd d))
+    s := s1
+    match acts with
+    | [a] =>
+      moves := moves ++ [a]
+      let interrupted := busy && !(moves.filter (fun m => m.subject == a.subject)).length > 1 && (moves.filter (fun m => m.subject == a.subject)).length == 1
+      if interrupted then s := (step s (.moveResult a.subject .busy false)).1
+      else
+        s := (step s (.moveResult a.subject .verified true)).1
+        d := applyMove d a
+    | _ => pure ()
+  return (moves, s, d)
+
+/-- Every 4-key bar, every dropped subset (including (b)- and (c)-shaped ones): the first read moves something whenever an owed key can be fixed by one drag and is not right;
+the drain is within `|owed|` moves (`2 |owed|` with interrupted drags), moves only owed keys, ends with no move of any owed key, and every owed key left with a
+"not where you put it" row carries the note; with every key dropped the bar ends in the record's order. -/
+def dropEnumChecks : List (String × Bool × String) := Id.run do
+  let U : List Key := [1, 2, 3, 4]
+  let mut out : List (String × Bool × String) := []
+  for d in permsK U do
+    for o in subsetsK U do
+      if o.isEmpty then continue
+      let s0 := (step (State.init U) (.userEdit U o)).1
+      let desc := s!"drawn {d} owed {o}"
+      let (s1, acts) := step s0 (.read (dropRd d))
+      let fixable := o.any fun k => canReduce U d k
+      out := out ++ [("drop_answered_if_reducible", !fixable || !acts.isEmpty, desc)]
+      for busy in [false, true] do
+        let (moves, sf, df) := drainSim s0 d busy
+        let n := o.length
+        let desc2 := desc ++ s!" busy {busy}"
+        out := out ++ [("drain_bound", decide (moves.length ≤ (if busy then 2 * n else n)), desc2),
+                       ("drain_subjects_owed", moves.all (fun m => m.user && o.contains m.subject), desc2)]
+        let r := dropRd df
+        let ended := (step sf (.read r)).2.isEmpty
+        out := out ++ [("drain_ends", ended, desc2)]
+        if !busy then
+          out := out ++ [("drain_notes", sf.owedKeys.all (fun k => rowLine sf r k != .notWherePut || rowNote sf r k == some .noMoveHelps), desc2),
+                         ("drain_final_known", true, desc2)]
+  return out
+
+/-- "Try again" on a row that says "not where you put it" either lets a user's move leave or leaves the note on the row (`try_again_answers`). -/
+def tryAgainCheck (s : State) (r : Read) : List (String × Bool) :=
+  if s.inFlight.isNone && s.gate r then
+    s.record.flatMap fun k =>
+      if rowLine s r k == .notWherePut then
+        let s' := (step s (.retryKey k)).1
+        let acts := (step s' (.read r)).2
+        [("try_again_answers", acts.any (fun a => a.user) || ((rowNote s' r k).isSome && (userMove s' r k).isNone)),
+         ("try_again_seen", true)]
+      else []
+  else []
+
+/-- The note is shown only where it is true (`rowNote_true`). -/
+def noteCheck (s : State) (r : Read) : List (String × Bool) :=
+  s.record.flatMap fun k =>
+    match rowNote s r k with
+    | some .noMoveHelps =>
+        [("note_true", rowLine s r k == .notWherePut && owedNow s k && s.gate r && (userMove s r k).isNone && !movingKey s r k
+            && (movable s r).contains k && s.owedKeys.contains k && misplaced s r k && wholeBar s r && (userPick s r).isNone
+            && ((movable s r).filter (fun t => t != k && s.record.contains t)).all (fun t =>
+                 [Rel.before t, Rel.after t].all fun rel => decide (invCount s r r.drawn ≤ afterCount s r k rel))),
+         ("note_seen", true)]
+    | some .cantJudge =>
+        [("note_cant_true", rowLine s r k == .notWherePut && (movable s r).contains k && s.owedKeys.contains k && misplaced s r k && !wholeBar s r && (decideMove s r).isNone),
+         ("note_cant_seen", true)]
+    | some .noMoveHere => [("note_here_true", rowLine s r k == .notWherePut && owedNow s k && (userMove s r k).isNone), ("note_here_seen", true)]
+    | none => [("note_absent_ok", !(rowLine s r k == .notWherePut && owedNow s k))]
+
+/-- Single-drop table over every drawn permutation of `n` keys (record = 1..n, all trusted, a fresh chevron with key 9 behind it): for each dropped key, the first
+good read's action, classified by who made it (the anchor rule, i.e. the old behaviour, or the fallback) and by what it did to the inversions.  Returns
+(fires, (worse, unchanged)) for the fallback and for the anchor rule, and the number of drops with no move. -/
+def singleDropTable (n : Nat) : (Nat × Nat × Nat) × (Nat × Nat × Nat) × Nat := Id.run do
+  let U := (List.range n).map (· + 1)
+  let mut fb := (0, 0, 0)
+  let mut an := (0, 0, 0)
+  let mut none_ := 0
+  for d in permsK U do
+    for k in U do
+      let s0 := (step (State.init U) (.userEdit U [k])).1
+      let r := dropRd d
+      match (step s0 (.read r)).2 with
+      | [a] =>
+        let after := invInd U (applyMove d a)
+        let before := invInd U d
+        let isAnchor := anchorMove s0 r k == some a
+        let bump := fun (c : Nat × Nat × Nat) => (c.1 + 1, c.2.1 + (if after > before then 1 else 0), c.2.2 + (if after == before then 1 else 0))
+        if isAnchor then an := bump an else fb := bump fb
+      | _ => none_ := none_ + 1
+  return (fb, an, none_)
+
+/-- Multi-drop: every drawn permutation of `n` keys and every nonempty dropped subset, drained with verified drags: the number of cases that END with MORE inversions than they began with. -/
+def multiDropWorse (n : Nat) : Nat × Nat := Id.run do
+  let U := (List.range n).map (· + 1)
+  let mut worse := 0
+  let mut total := 0
+  for d in permsK U do
+    for o in subsetsK U do
+      if o.isEmpty then continue
+      let s0 := (step (State.init U) (.userEdit U o)).1
+      let (_, _, df) := drainSim s0 d false
+      total := total + 1
+      if invInd U df > invInd U d then worse := worse + 1
+  return (worse, total)
 
 def extraStep (s : State) (e : Event) : List (String × Bool) :=
   let (s', acts) := step s e
@@ -214,7 +348,9 @@ def extraStep (s : State) (e : Event) : List (String × Bool) :=
           ("plan_gate", r.kind == .pass && r.settled && r.level != .incomplete) ]
         ++ (if !a.user then [("engine_gate", r.chevron != .stale && !r.stripOpen && !s.restricted && (movable s r).contains a.subject && s.record.contains t)] else [])
         ++ (if a.user && s.owedKeys.contains a.subject && r.drawn.contains a.subject && !(foldedAll s r).contains a.subject then
-              [("user_target_anchor", !s.owedKeys.contains t)] else [])
+              (if anchorMove s r a.subject == some a then [("user_target_anchor", !s.owedKeys.contains t)]
+               else [("fallback_only_when_anchor_none", anchorMove s r a.subject == none), ("fallback_owed_misplaced", misplaced s r a.subject && s.owedKeys.contains a.subject), ("fallback_reduces", decide (invCount s r (applyMove r.drawn a) < invCount s r r.drawn))])
+            else [])
         ++ (if s.restricted then [("restricted_only_owed", s.owedKeys.contains a.subject)] else [])
         ++ (if a.strip then [("strip_session_fresh", !s.editSessionUsed && !r.stripOpen)] else [])
         ++ (if !s.owedKeys.contains a.subject then [("nonowed_notgiven", !s.givenUp.contains a.subject && !s.skipped.contains a.subject), ("nonowed_notrestricted", !s.restricted)] else [])
@@ -387,6 +523,10 @@ def honestChecks (s : State) (e : Event) (ob : Option Bar) : List (String × Boo
           | _ => [])
       ++ (step s e).2.flatMap (fun a =>
           (if !a.user then [("engine_move_bar_differs", !m), ("engine_move_seen", true)] else [("user_move_seen", true)])
+          ++ (if a.user && s.owedKeys.contains a.subject && r.drawn.contains a.subject && anchorMove s r a.subject == none then
+                [("fallback_bar_improves",
+                  decide (invs s.record ((applyMove b.open_ a).filter (fun x => s.record.contains x)) < invs s.record (b.open_.filter (fun x => s.record.contains x)))),
+                 ("fallback_bar_seen", true)] else [])
           ++ [("move_target_open", decide (a.rel.target ∈ b.open_)),
               ("move_subject_open_or_pullout", decide (a.subject ∈ b.open_ ∨ (a.subject ∈ foldedAll s r ∧ a.subject ∈ b.behind))),
               ("move_not_on_cannotTell", shownVerdict s r != .cannotTell)]))
@@ -459,6 +599,11 @@ def fuzz (mixed pure_ seed : Nat) : List Tally × Nat × Nat :=
                       drawn := r0.drawn.filter (· != k), pile := k :: r0.pile.filter (· != k), trusted := r0.trusted.filter (· != k) }
         ts := addAll ts (answeredCheck s r rec_ k) desc
         ts := addAll ts (owedReasonCheck ((step s (.userEdit rec_ [k])).1) r) desc
+        let s2 := (step s (.userEdit rec_ [k])).1
+        ts := addAll ts (tryAgainCheck s2 r) desc
+        ts := addAll ts (noteCheck s2 r) desc
+    for (nm, ok, d) in dropEnumChecks do
+      ts := record ts nm ok (fun _ => d)
     for _ in List.range mixed do
       let (rec_, evs, sts) ← genHTrace 30
       let desc := fun (_ : Unit) => toString (repr (rec_, evs.map (·.1)))
@@ -487,13 +632,23 @@ def main (args : List String) : IO UInt32 := do
   IO.println s!"budget saturation: full bar, 60 reads: posted={b1.1} (cap {Sommelier.capFull}); proven not full, 60 reads: posted={b2.1} (cap {Sommelier.capNotFull})"
   let mut bad := if b1.1 == Sommelier.capFull && b2.1 == Sommelier.capNotFull then 0 else 1
   if bad == 1 then IO.println "  budget saturation FAILED: the caps are not reached (or exceeded)"
+  for n in [4, 5] do
+    let (fb, an, nn) := singleDropTable n
+    IO.println s!"single-drop table, {n} keys (fires, worse, unchanged): fallback {fb}, anchor rule {an}, no move {nn}"
+    if fb.2.1 != 0 || fb.2.2 != 0 then
+      IO.println "  FALLBACK WORSE OR UNCHANGED"
+      bad := bad + 1
+  let (w4, t4) := multiDropWorse 4
+  let (w5, t5) := multiDropWorse 5
+  IO.println s!"multi-drop ends worse (inversions): {w4} of {t4} (4 keys), {w5} of {t5} (5 keys); the anchor rule is old behaviour"
   for t in ts do
     IO.println s!"  {t.name}: {t.n} instances, {t.bad} failures"
     bad := bad + t.bad
     if let some c := t.cex then IO.println s!"    first counterexample: {c}"
   -- both sides of every claim must be exercised
   for nm in ["claim_matches", "claim_differs", "claim_except", "engine_move_bar_differs", "bar_matches_seen", "bar_differs_seen",
-             "status_checking_seen", "status_moving_seen", "row_tick_open", "row_behind_behind", "row_notOnBar_off", "user_move_seen"] do
+             "status_checking_seen", "status_moving_seen", "row_tick_open", "row_behind_behind", "row_notOnBar_off", "user_move_seen",
+             "drop_answered_if_reducible", "drain_bound", "drain_notes", "try_again_seen", "note_seen", "fallback_owed_misplaced", "fallback_bar_seen", "note_cant_seen"] do
     if !(ts.any (fun t => t.name == nm && t.n > 0)) then
       IO.println s!"  NOT EXERCISED: {nm}"
       bad := bad + 1

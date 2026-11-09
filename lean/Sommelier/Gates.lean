@@ -63,7 +63,7 @@ theorem gate_decide_cases {s : State} {r : Read} {a : Action} (h : decideMove s 
       | some x => simp [hi] at h4
     · split at h
       · rename_i b hb
-        obtain ⟨k, hk, hk2⟩ := List.exists_of_findSome?_eq_some hb
+        obtain ⟨k, hk, hk2⟩ := userPick_exists hb
         simp at h; subst h
         left
         refine ⟨k, ?_, ?_⟩
@@ -103,19 +103,10 @@ theorem gate_userMove_user {s : State} {r : Read} {k : Key} {a : Action} (h : us
     · simp at h
   · split at h
     · split at h
-      · simp at h
-      · split at h
-        · simp at h
-        · rename_i i hi
-          split at h
-          · rename_i p hp
-            simp at h; subst h; simp
-          · rename_i hn
-            cases hh : (List.filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a) (movable s r)).head? with
-            | none => simp only [hh, Option.map] at h; cases h
-            | some t =>
-              simp only [hh, Option.map] at h
-              simp at h; subst h; simp
+      · rename_i a' ha'
+        simp only [Option.some.injEq] at h; subst h
+        exact ⟨(anchorMove_basic ha').1, (anchorMove_basic ha').2.1⟩
+      · exact ⟨(fallbackMove_basic h).1, (fallbackMove_basic h).2.1⟩
     · simp at h
 
 /-- Every engine (non-user) action is the planner's, on an allowed read. -/
@@ -696,8 +687,8 @@ theorem prefixFor_isSome {want l : List Key} (i : Nat) (hi : i ≤ l.length) (hs
   rw [List.find?_isSome]
   exact ⟨i, by simp; omega, (sameKeys_bool _ _).2 hs⟩
 
-theorem userMove_drawn_spec {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r) :
-    userMove s r k =
+theorem anchorMove_spec {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r) :
+    anchorMove s r k =
       if ((seenOf s r k).all (fun a => (wantOf s r k).contains a) &&
           (wantOf s r k).all (fun a => (seenOf s r k).contains a)) = true then none
       else match prefixFor (wantOf s r k) (anchorsOf s r k) with
@@ -706,17 +697,14 @@ theorem userMove_drawn_spec {s : State} {r : Read} {k : Key} (hk : k ∈ movable
           match ((anchorsOf s r k).take i).getLast? with
           | some p => some ⟨k, .after p, needsStrip s r k (.after p), true⟩
           | none => (anchorsOf s r k).head?.map (fun t => ⟨k, .before t, needsStrip s r k (.before t), true⟩) := by
-  have hf := gate_movable_not_folded hk
-  have hc : (movable s r).contains k = true := by simpa using hk
-  have hf' : (foldedAll s r).contains k = false := by simpa using hf
-  simp only [userMove, hf', hc]
+  simp only [anchorMove]
   simp [seenOf, wantOf, anchorsOf]
   rfl
 
 /-- The key is already right: exactly the anchors that precede it in the record precede it on the bar.  No move. -/
-theorem userMove_right_place {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r)
-    (hs : SameKeys (seenOf s r k) (wantOf s r k)) : userMove s r k = none := by
-  rw [userMove_drawn_spec hk]
+theorem anchorMove_right_place {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r)
+    (hs : SameKeys (seenOf s r k) (wantOf s r k)) : anchorMove s r k = none := by
+  rw [anchorMove_spec hk]
   have := (sameKeys_bool _ _).2 hs
   rw [if_pos this]
 
@@ -725,10 +713,10 @@ theorem takeWhile_all_eq {k : Key} : ∀ (l : List Key), (∀ x ∈ l, x = k) �
   | [], _ => rfl
   | x :: xs, h => by simp [List.takeWhile, h x (by simp)]
 
-theorem userMove_moves {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r)
+theorem anchorMove_moves {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r)
     (hs : ¬ SameKeys (seenOf s r k) (wantOf s r k))
-    (hp : (prefixFor (wantOf s r k) (anchorsOf s r k)).isSome = true) : ∃ a, userMove s r k = some a := by
-  rw [userMove_drawn_spec hk]
+    (hp : (prefixFor (wantOf s r k) (anchorsOf s r k)).isSome = true) : ∃ a, anchorMove s r k = some a := by
+  rw [anchorMove_spec hk]
   have : ¬ ((seenOf s r k).all (fun a => (wantOf s r k).contains a) &&
           (wantOf s r k).all (fun a => (seenOf s r k).contains a)) = true := fun h => hs ((sameKeys_bool _ _).1 h)
   rw [if_neg this]
@@ -761,13 +749,13 @@ theorem userMove_moves {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r)
 
 /-- Where the move goes: after the last anchor of the SMALLEST prefix of anchors (in drawn order) whose set is the wanted one,
 or before the first anchor when the wanted set is empty.  And the move is not asked for when the key is already right. -/
-theorem userMove_target {s : State} {r : Read} {k : Key} {a : Action} (hk : k ∈ movable s r)
-    (h : userMove s r k = some a) :
+theorem anchorMove_target {s : State} {r : Read} {k : Key} {a : Action} (hk : k ∈ movable s r)
+    (h : anchorMove s r k = some a) :
     ¬ SameKeys (seenOf s r k) (wantOf s r k) ∧ a.subject = k ∧ a.user = true ∧ a.strip = needsStrip s r k a.rel ∧
     ∃ i, prefixFor (wantOf s r k) (anchorsOf s r k) = some i ∧
       ((∃ p, ((anchorsOf s r k).take i).getLast? = some p ∧ a.rel = .after p) ∨
        (((anchorsOf s r k).take i).getLast? = none ∧ ∃ t, (anchorsOf s r k).head? = some t ∧ a.rel = .before t)) := by
-  rw [userMove_drawn_spec hk] at h
+  rw [anchorMove_spec hk] at h
   by_cases hc : ((seenOf s r k).all (fun a => (wantOf s r k).contains a) &&
           (wantOf s r k).all (fun a => (seenOf s r k).contains a)) = true
   · rw [if_pos hc] at h; simp at h
@@ -790,6 +778,160 @@ theorem userMove_target {s : State} {r : Read} {k : Key} {a : Action} (hk : k �
           simp only [hh, Option.map, Option.some.injEq] at h
           subst h
           exact ⟨rfl, rfl, rfl, i, by simpa using hq, Or.inr ⟨by simpa using hg, t, by simpa using hh, rfl⟩⟩
+
+/-- The drawn case of a drop is the anchor rule's move, or, when that gives none, the fallback's. -/
+theorem userMove_drawn_spec {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r) :
+    userMove s r k = (match anchorMove s r k with | some a => some a | none => fallbackMove s r k) := by
+  have hf := gate_movable_not_folded hk
+  have hc : (movable s r).contains k = true := by simpa using hk
+  have hf' : (foldedAll s r).contains k = false := by simpa using hf
+  simp only [userMove, hf', hc]
+  rfl
+
+theorem userMove1_movable {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r) : userMove1 s r k = anchorMove s r k := by
+  have hf := gate_movable_not_folded hk
+  have hc : (movable s r).contains k = true := by simpa using hk
+  have hf' : (foldedAll s r).contains k = false := by simpa using hf
+  unfold userMove1; rw [if_neg (by rw [hf']; simp), if_pos hc]
+
+theorem userMove1_folded {s : State} {r : Read} {k : Key} (hf : k ∈ foldedAll s r) : userMove1 s r k = userMove s r k := by
+  have hf' : (foldedAll s r).contains k = true := by simpa using hf
+  unfold userMove1; rw [if_pos hf']
+
+theorem userMove_of_phase1 {s : State} {r : Read} {k : Key} {a : Action} (h : userMove1 s r k = some a) : userMove s r k = some a := by
+  rw [userMove_phases, h]; rfl
+
+/-- If the anchors admit a gap, there IS a move of this key (the anchor rule's, which comes first). -/
+theorem userMove_moves {s : State} {r : Read} {k : Key} (hk : k ∈ movable s r)
+    (hs : ¬ SameKeys (seenOf s r k) (wantOf s r k))
+    (hp : (prefixFor (wantOf s r k) (anchorsOf s r k)).isSome = true) : ∃ a, userMove s r k = some a := by
+  obtain ⟨a, ha⟩ := anchorMove_moves hk hs hp
+  exact ⟨a, by rw [userMove_drawn_spec hk, ha]⟩
+
+/-- Where a drawn drop's move goes: the anchor rule's (after the last anchor of the smallest prefix whose set is the wanted one, or before the first anchor), or,
+when the anchor rule gives none, the fallback's: the key is owed and misplaced among all the movable keys, and the move changes the bar. -/
+theorem userMove_target {s : State} {r : Read} {k : Key} {a : Action} (hk : k ∈ movable s r)
+    (h : userMove s r k = some a) :
+    (¬ SameKeys (seenOf s r k) (wantOf s r k) ∧ a.subject = k ∧ a.user = true ∧ a.strip = needsStrip s r k a.rel ∧
+    ∃ i, prefixFor (wantOf s r k) (anchorsOf s r k) = some i ∧
+      ((∃ p, ((anchorsOf s r k).take i).getLast? = some p ∧ a.rel = .after p) ∨
+       (((anchorsOf s r k).take i).getLast? = none ∧ ∃ t, (anchorsOf s r k).head? = some t ∧ a.rel = .before t))) ∨
+    (anchorMove s r k = none ∧ a.subject = k ∧ a.user = true ∧ a.strip = needsStrip s r k a.rel ∧ k ∈ s.owedKeys ∧
+      misplaced s r k = true ∧ applyMove r.drawn a ≠ r.drawn) := by
+  rw [userMove_drawn_spec hk] at h
+  cases ha : anchorMove s r k with
+  | some a' =>
+    rw [ha] at h
+    simp only [Option.some.injEq] at h; subst h
+    exact Or.inl (anchorMove_target hk ha)
+  | none =>
+    rw [ha] at h
+    have hb := fallbackMove_basic h
+    obtain ⟨hu, hsub, _, _, _, hst, hov, _, _, _, hmis, hch, _⟩ := hb
+    refine Or.inr ⟨rfl, hsub, hu, ?_, hov, hmis, hch⟩
+    rw [hst, hsub]
+
+/-- A misplaced key always HAS a fallback place: some movable record key `x` differs from `k` in side, so either `x` precedes `k` in the record (a movable
+predecessor exists) or it follows `k` (a movable follower exists). -/
+theorem misplaced_fallbackRel {s : State} {r : Read} {k : Key} (h : misplaced s r k = true) :
+    ∃ rel, fallbackRel s r k = some rel := by
+  unfold misplaced at h
+  obtain ⟨x, hx, hxd⟩ := List.any_eq_true.1 h
+  simp only [Bool.and_eq_true, bne_iff_ne, ne_eq, List.contains_iff_mem] at hxd
+  obtain ⟨⟨hxk, hxr⟩, hxne⟩ := hxd
+  by_cases hxb : x ∈ s.record.takeWhile (fun x => x != k)
+  · have hne : (List.filter (fun x => (movable s r).contains x) (s.record.takeWhile (fun x => x != k))) ≠ [] := by
+      intro e
+      have : x ∈ List.filter (fun x => (movable s r).contains x) (s.record.takeWhile (fun x => x != k)) := by
+        simp [List.mem_filter, hxb, hx]
+      rw [e] at this; simp at this
+    cases hl : (List.filter (fun x => (movable s r).contains x) (s.record.takeWhile (fun x => x != k))).getLast? with
+    | some p => exact ⟨Rel.after p, by simp only [fallbackRel, hl]⟩
+    | none => exact absurd (List.getLast?_eq_none_iff.1 hl) hne
+  · have hxdw : x ∈ (s.record.dropWhile (fun x => x != k)) := by
+      have := List.takeWhile_append_dropWhile (p := fun x => x != k) (l := s.record)
+      rw [← this] at hxr
+      rcases List.mem_append.1 hxr with h1 | h1
+      · exact absurd h1 hxb
+      · exact h1
+    have hxt : x ∈ (s.record.dropWhile (fun x => x != k)).tail := by
+      cases hdw : s.record.dropWhile (fun x => x != k) with
+      | nil => rw [hdw] at hxdw; simp at hxdw
+      | cons y ys =>
+        have hy := dw_head hdw
+        rw [hdw] at hxdw
+        simp only [List.mem_cons] at hxdw
+        rcases hxdw with e | e
+        · subst e
+          simp at hy
+          exact absurd hy hxk
+        · simpa using e
+    cases hl : (List.filter (fun x => (movable s r).contains x) (s.record.takeWhile (fun x => x != k))).getLast? with
+    | some p => exact ⟨Rel.after p, by simp only [fallbackRel, hl]⟩
+    | none =>
+      have hsome : ((s.record.dropWhile (fun x => x != k)).tail.find? (fun x => x != k && (movable s r).contains x)).isSome = true := by
+        rw [List.find?_isSome]
+        exact ⟨x, hxt, by simp [hxk, hx]⟩
+      cases hf : (s.record.dropWhile (fun x => x != k)).tail.find? (fun x => x != k && (movable s r).contains x) with
+      | none => rw [hf] at hsome; simp at hsome
+      | some t => exact ⟨Rel.before t, by simp only [fallbackRel, hl, hf, Option.map]⟩
+
+/-- No single drag of `k` (to either side of any movable record key other than `k`) leaves fewer inversions among the movable record keys than the bar has now. -/
+def NoReducingDrag (s : State) (r : Read) (k : Key) : Prop :=
+  ∀ rel : Rel, rel.target ∈ movable s r → rel.target ∈ s.record → rel.target ≠ k →
+    ¬ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) < invCount s r r.drawn
+
+theorem legal_mem_cands {s : State} {r : Read} {k : Key} {rel : Rel} (h1 : rel.target ∈ movable s r) (h2 : rel.target ∈ s.record)
+    (h3 : rel.target ≠ k) : rel ∈ fallbackCands s r k := by
+  unfold fallbackCands
+  apply List.mem_append_right
+  simp only [List.mem_flatMap, List.mem_filter, Bool.and_eq_true, bne_iff_ne, ne_eq, List.contains_iff_mem, decide_eq_true_eq]
+  refine ⟨rel.target, ⟨h1, h3, h2⟩, ?_⟩
+  cases rel <;> simp [Rel.target]
+
+/-- The fallback fails only when the bar is not verified (`wholeBar`) or no drag helps: for an owed misplaced key in the record, no move means `wholeBar = false` or `NoReducingDrag`. -/
+theorem fallbackMove_none_cases {s : State} {r : Read} {k : Key} (ho : k ∈ s.owedKeys) (hmv : k ∈ movable s r) (h : fallbackMove s r k = none) :
+    misplaced s r k = false ∨ (misplaced s r k = true ∧ (k ∉ s.record ∨ wholeBar s r = false ∨ NoReducingDrag s r k)) := by
+  by_cases hm : misplaced s r k = true
+  · right
+    refine ⟨hm, ?_⟩
+    by_cases hrk : k ∈ s.record
+    · by_cases hw : wholeBar s r = true
+      · right; right
+        intro rel h1 h2 h3 hlt
+        obtain ⟨q, hq⟩ := misplaced_fallbackRel hm
+        have hne : fallbackCands s r k ≠ [] := by
+          unfold fallbackCands; simp [hq]
+        obtain ⟨b, hb⟩ := argmin_isSome (f := afterCount s r k) hne
+        have hs := argmin_spec hb
+        have hle := hs.2 rel (legal_mem_cands h1 h2 h3)
+        have hlt' : afterCount s r k b < invCount s r r.drawn := by
+          have : afterCount s r k rel = invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := rfl
+          omega
+        have : fallbackMove s r k = some ⟨k, b, needsStrip s r k b, true⟩ := by
+          simp only [fallbackMove, hb, Option.map, Option.filter]
+          simp [ho, hrk, hmv, hw, hm, hlt']
+        rw [this] at h; simp at h
+      · right; left; simpa using hw
+    · left; exact hrk
+  · left; simpa using hm
+
+/-- A reducing drag of an owed misplaced key in the record, on a verified bar, gives a fallback move. -/
+theorem fallbackMove_exists {s : State} {r : Read} {k : Key} (ho : k ∈ s.owedKeys) (hrk : k ∈ s.record) (hmv : k ∈ movable s r) (hw : wholeBar s r = true)
+    (hm : misplaced s r k = true)
+    {rel : Rel} (h1 : rel.target ∈ movable s r) (h2 : rel.target ∈ s.record) (h3 : rel.target ≠ k)
+    (hlt : invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) < invCount s r r.drawn) : ∃ a, fallbackMove s r k = some a := by
+  obtain ⟨q, hq⟩ := misplaced_fallbackRel hm
+  have hne : fallbackCands s r k ≠ [] := by unfold fallbackCands; simp [hq]
+  obtain ⟨b, hb⟩ := argmin_isSome (f := afterCount s r k) hne
+  have hs := argmin_spec hb
+  have hle := hs.2 rel (legal_mem_cands h1 h2 h3)
+  have hlt' : afterCount s r k b < invCount s r r.drawn := by
+    have : afterCount s r k rel = invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := rfl
+    omega
+  exact ⟨⟨k, b, needsStrip s r k b, true⟩, by
+    simp only [fallbackMove, hb, Option.map, Option.filter]
+    simp [ho, hrk, hmv, hw, hm, hlt']⟩
 
 /-- A folded key is pulled out only if it is the fold request or owed, and the chevron is fresh; it goes just after the rightmost
 movable key that precedes it in the record, and only if that changes the drawn list. -/

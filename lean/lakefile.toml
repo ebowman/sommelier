@@ -1,5 +1,5 @@
 name = "sommelier"
-defaultTargets = ["Sommelier", "fuzz"]
+defaultTargets = ["Sommelier", "fuzz", "oracle"]
 
 [[lean_lib]]
 name = "Sommelier"
@@ -7,3 +7,7 @@ name = "Sommelier"
 [[lean_exe]]
 name = "fuzz"
 root = "Sommelier.Fuzz"
+
+[[lean_exe]]
+name = "oracle"
+root = "Oracle"
