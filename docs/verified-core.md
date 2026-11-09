@@ -318,6 +318,10 @@ What still gets no move, and where the screen says so (`owed_unanswered_reason`,
 
 The drain (`drops_drain`): over any reads and drag results the user's moves number at most `2n` (`n` = owed queue plus a request that is not owed); the busy re-arm is the factor 2. Liveness still rests on the adapter delivering `moveResult` and `passBoundary`. The queue does not "empty" by moves alone: a key that needs no move stays owed, with its reason above, until the boundary.
 
+## One gate: `make verify-core` (ejb.6)
+
+`make verify-core` (= `scripts/verify-core.sh`) runs, in order and failing fast with the failing step named: `lake build`, `scripts/check-lean-axioms.sh`, `lake exe fuzz`, `lake exe oracle`, `lake exe fastfuzz`, `scripts/build-lean-core.sh`, `swift test --filter DecisionCoreTests`, `lean/scripts/mutants.py --check` (patches still apply). It prints one line per step (name, OK or FAIL, seconds) and a summary, and exits nonzero on any failure. `MUTANTS=full make verify-core` also runs the full mutant run and fails on any survivor or invalid mutant. Expected time of the default run: about 2 minutes on a warm tree (`lake exe fastfuzz` runs 1000 cases, about 40 s; set `FASTFUZZ_CASES`, or use `MUTANTS=full`, for 10000; fuzz 40 s, oracle 11 s, the rest seconds). The full mutant run adds about 45 minutes. Because Swift links the proved code, there is no separate Swift decision logic to replay traces against; `DecisionCoreTests` (fixture by name, 2000 fuzz traces) and `fastfuzz` are the differential checks.
+
 ## Mutation testing
 
 `scripts/lean-mutants.sh` (= `python3 lean/scripts/mutants.py`; one build of every module per mutant, about 45 minutes with 8 jobs on a loaded machine; `--check` only validates the patches)

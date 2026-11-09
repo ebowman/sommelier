@@ -1,4 +1,4 @@
-.PHONY: lean-core build test app run app-run probe dummy dummy-stop clean release notarize publish check-scripts
+.PHONY: lean-core verify-core build test app run app-run probe dummy dummy-stop clean release notarize publish check-scripts
 
 APP := build/Sommelier.app
 DUMMY := build/MBDummy.app
@@ -11,6 +11,10 @@ lean-core:
 # SwiftPM caches the evaluated Package.swift by its text and environment, not by whether build/LeanCore exists; the stamp in the environment
 # makes it re-evaluate whenever the core changes. (After deleting build/LeanCore, a plain `swift build` can still see the old answer: `swift package purge-cache`.)
 export SOMMELIER_LEANCORE_STAMP = $(shell cat build/LeanCore/stamp 2>/dev/null || echo none)
+
+# Every check on the proved core, fail-fast, one line per step (MUTANTS=full adds the ~45 min mutant run). See docs/verified-core.md.
+verify-core:
+	scripts/verify-core.sh
 
 build: lean-core
 	swift build
