@@ -3,8 +3,8 @@
 
 Types only: what the engine can be told (`Event`), what it can do (`Action`),
 and what it remembers (`State`).  The decision function is in `Step.lean`.
-macOS is an adversary: nothing here says what a read MEANS, so every theorem
-quantifies over all event lists.  See docs/verified-core.md for the mapping to
+macOS is an adversary: nothing in THIS file says what a read MEANS (`Truth.lean` does, from
+stated assumptions), so every theorem quantifies over all event lists.  See docs/verified-core.md for the mapping to
 the Swift engine.
 -/
 
@@ -47,6 +47,18 @@ structure Read where
   trusted  : List Key
   /-- keys in the churn zone (adversarial; supplied by the adapter): moving them may need the « strip -/
   nearFold : List Key
+  /-- the observation actually covered a bar (Swift `observedAvailable`); false = nothing was observed.  Defaults to true. -/
+  observed : Bool := true
+  /-- keys the scan could not place this time (the app did not answer, or its placement is unknown): they may be anywhere on the bar
+  or off it, whatever the other fields say (except that a key also in the pile or folded list of a usable fresh-chevron read is pinned behind
+  by A2: "anywhere" does not apply to it) (adapter: `placementUnknown`, failed-read apps, stale off-bar items; and the inferred
+  `foldedParked`, see `Truth.lean` A2).  Every other key on the bar is in `drawn`, `pile` or `folded`.  A7: `unread` is DISJOINT from the
+  trusted drawn keys (a key the scan placed and corroborated is not unread), and the record has no duplicates.  Defaults to none. -/
+  unread : List Key := []
+  /-- the engine's proof that the bar is NOT full: three consecutive complete chevronless readings.  The field
+  maps to Swift `!fullBarState`, NOT to Swift's `notFullProven` variable, which only arms the proof (see `Truth.lean` `shownVerdict`).  Only `Truth.lean` reads this field; `step` uses its own `provenNotFull`
+  (see `State.view`).  Defaults to false. -/
+  notFullProven : Bool := false
   deriving Repr
 
 /-- Everything a read says is folded. -/

@@ -1,4 +1,4 @@
-import Sommelier.Step
+import Sommelier.Eqns
 
 /-!
 # Sommelier decision core: safety theorems over ALL event lists
@@ -30,6 +30,13 @@ theorem noteRead_frame (s : State) (r : Read) :
 theorem noteRead_pile (s : State) (r : Read) (k : Key)
     (h : k ∈ (noteRead s r).lastFreshPile) : k ∈ s.lastFreshPile ∨ k ∈ r.foldedSet := by
   unfold noteRead at h
+  grind
+
+/-- A usable fresh-chevron read replaces the pile by its own folded set. -/
+theorem noteRead_pile_usable (s : State) (r : Read) (h : r.usable ∧ r.chevron = .fresh) :
+    (noteRead s r).lastFreshPile = r.foldedSet := by
+  obtain ⟨⟨_, h2, h3, _, h5, _⟩, h6⟩ := h
+  unfold noteRead
   grind
 
 theorem noteRead_hold (s : State) (r : Read) (h1 : s.hold = true) (h2 : (noteRead s r).hold = false) :
@@ -188,6 +195,16 @@ def readsOf : List Event → List Read
 /-- A read that counts toward the proof that the bar is not full. -/
 def qualifying (r : Read) : Prop := r.chevron = .absent ∧ r.level ≠ .incomplete
 
+/-- ONLY a complete, chevronless, observed, unsettled pass read is skipped: it neither counts toward the proof nor resets the count
+(Swift: it ends the pass before `noteChevronEvidence`, and `observeOnce` resets only on a chevron or an `incomplete` level, :2259-2263).
+Every other read stays in the history of Theorem 6, so an unsettled read with a chevron or an `incomplete` one is in the sequence as what
+it is: a read that resets. -/
+def counted (r : Read) : Bool :=
+  !(r.kind == .pass && !r.settled && r.chevron == .absent && r.level != .incomplete && r.observed)
+
+/-- The counted reads of one event. -/
+def cnt (r : Read) : List Read := if counted r then [r] else []
+
 /-! ### run -/
 
 theorem run_cons (s : State) (e : Event) (es : List Event) :
@@ -270,29 +287,31 @@ theorem decide_target {s : State} {r : Read} {a : Action} (h : decideMove s r = 
 /-- Theorem 3 (noFoldedTarget), one read: no move's target is in the read's pile or folded set, or in the
 last fresh pile before or after the read; and no ENGINE move's subject is in any of them. -/
 theorem noFoldedTarget {s : State} {r : Read} {a : Action} (h : a ∈ (step s (.read r)).2) :
-    a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ a.rel.target ∉ s.lastFreshPile ∧
+    a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.rel.target ∉ s.lastFreshPile) ∧
     a.rel.target ∉ (noteRead s r).lastFreshPile ∧
-    (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ a.subject ∉ s.lastFreshPile ∧
+    (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.subject ∉ s.lastFreshPile) ∧
       a.subject ∉ (noteRead s r).lastFreshPile) := by
   obtain ⟨r', he, hd, _⟩ := step_acts h
   cases he
   have ⟨ht, hs⟩ := decide_target hd
-  have f1 := movable_not_folded ht
-  simp only [foldedAll, Read.foldedSet, List.mem_append, not_or] at f1
-  refine ⟨f1.1.1, f1.1.2, f1.2, ?_, fun hu => ?_⟩
-  · intro hm
-    rcases noteRead_pile _ _ _ hm with hm | hm
-    · exact f1.2 hm
-    · simp only [Read.foldedSet, List.mem_append] at hm
+  have fh : ∀ x, x ∉ foldedAll s r → x ∉ r.pile ∧ x ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → x ∉ s.lastFreshPile) ∧
+      x ∉ (noteRead s r).lastFreshPile := by
+    intro x hx
+    rw [mem_foldedAll] at hx
+    simp only [Read.foldedSet, List.mem_append, not_or] at hx
+    refine ⟨hx.1.1, hx.1.2, fun hn m => hx.2 ⟨hn, m⟩, fun hm => ?_⟩
+    by_cases hn : r.usable ∧ r.chevron = .fresh
+    · rw [noteRead_pile_usable s r hn] at hm
+      simp only [Read.foldedSet, List.mem_append] at hm
       grind
-  · have f2 := movable_not_folded (hs hu)
-    simp only [foldedAll, Read.foldedSet, List.mem_append, not_or] at f2
-    refine ⟨f2.1.1, f2.1.2, f2.2, ?_⟩
-    intro hm
-    rcases noteRead_pile _ _ _ hm with hm | hm
-    · exact f2.2 hm
-    · simp only [Read.foldedSet, List.mem_append] at hm
-      grind
+    · rcases noteRead_pile _ _ _ hm with hm | hm
+      · exact hx.2 ⟨hn, hm⟩
+      · simp only [Read.foldedSet, List.mem_append] at hm
+        grind
+  have g1 := fh _ (movable_not_folded ht)
+  refine ⟨g1.1, g1.2.1, g1.2.2.1, g1.2.2.2, fun hu => ?_⟩
+  have g2 := fh _ (movable_not_folded (hs hu))
+  exact g2
 
 /-- Theorem 5 (holdRelease), one step: a set hold stays set unless the event is a user event or the step gains the proof. -/
 theorem holdRelease (s : State) (e : Event) (h1 : s.hold = true) (h2 : (step s e).1.hold = false) :
@@ -681,6 +700,71 @@ theorem owedExpires (rec : List Key) (pre : List Event) (e0 : Event)
   exact ⟨hx.owed, hx.req⟩
 
 
+/-! ### drop_expires: the attempt owed to a drop ends at the pass boundary -/
+
+/-- Expired, and no Re-apply grant: after a pass boundary nothing can label an action as the user's. -/
+structure Calm (s : State) : Prop where
+  ex : Expired s
+  grant : s.stripGrant = false
+
+theorem calm_step {s : State} {g : Bool} (h : Inv s g) (hc : Calm s) {e : Event} (hn : isUserEvent e = false) :
+    Calm (step s e).1 := by
+  refine ⟨expired_step h hc.ex hn, ?_⟩
+  cases e with
+  | read r =>
+    have nf := noteRead_frame s r
+    rw [step_read]
+    cases hd : decideMove s r <;> simp [emit, nf.2.2.2.2.1, hc.grant]
+  | userEdit rec moved =>
+    have hm : moved.isEmpty = true := by simpa [isUserEvent] using hn
+    simp [step, hm, hc.grant]
+  | userRetry => simp [isUserEvent] at hn
+  | retryKey k => simp [isUserEvent] at hn
+  | moveResult k o p =>
+    simp only [step]
+    split
+    · rename_i a ha
+      split
+      · have rs := result_spec s a o p
+        exact rs.2.2.1.trans hc.grant
+      · exact hc.grant
+    · exact hc.grant
+  | passBoundary => simp [step]
+
+theorem calm_actions {s : State} (hc : Calm s) {e : Event} {a : Action} (ha : a ∈ (step s e).2) : a.user = false := by
+  obtain ⟨r, _, hd, _⟩ := step_acts ha
+  rcases (decideMove_spec hd).2 with ⟨k, hk, _⟩ | ⟨_, b, hb, hh⟩
+  · simp [hc.ex.owed, hc.ex.req] at hk
+  · rcases hh with ⟨_, rfl⟩ | ⟨_, hg, _⟩
+    · exact (planOrderMoves_spec hb).1
+    · simp [hc.grant] at hg
+
+theorem calm_run {s : State} {g : Bool} (h : Inv s g) (hc : Calm s) (es : List Event)
+    (hn : ∀ e ∈ es, isUserEvent e = false) :
+    (run s es).1.owedKeys = [] ∧ (run s es).1.foldRequest = none ∧ ∀ a ∈ (run s es).2, a.user = false := by
+  induction es generalizing s g with
+  | nil => simp [run_nil, hc.ex.owed, hc.ex.req]
+  | cons e es ih =>
+    obtain ⟨i1, i2, i3⟩ := ih (inv_step h e) (calm_step h hc (hn e (by simp))) (fun x hx => hn x (by simp [hx]))
+    refine ⟨by simpa [run_cons] using i1, by simpa [run_cons] using i2, ?_⟩
+    intro a ha
+    rw [run_cons] at ha
+    simp only [List.mem_append] at ha
+    rcases ha with ha | ha
+    · exact calm_actions hc ha
+    · exact i3 a ha
+
+/-- **drop_expires.**  At `passBoundary` the attempt owed to a drop (the owed list and the fold request) ends: with no user event
+afterwards nothing is owed or requested again, even if a late `busy` result for a drag dispatched earlier arrives, and no action
+of the run is the user's (an owed drop's attempt, or a Re-apply grant): the dropped key is not dragged again as a drop. -/
+theorem drop_expires (rec : List Key) (pre : List Event) (ys : List Event) (hys : ∀ e ∈ ys, isUserEvent e = false) :
+    (run (step (run (State.init rec) pre).1 .passBoundary).1 ys).1.owedKeys = [] ∧
+    (run (step (run (State.init rec) pre).1 .passBoundary).1 ys).1.foldRequest = none ∧
+    ∀ a ∈ (run (step (run (State.init rec) pre).1 .passBoundary).1 ys).2, a.user = false := by
+  have hi := inv_run (Inv.init rec) pre
+  have hx := expired_after hi (Or.inl rfl : (Event.passBoundary = .passBoundary ∨ Event.passBoundary = .userRetry))
+  exact calm_run (inv_step hi .passBoundary) ⟨hx, by simp [step]⟩ ys hys
+
 /-! ### Theorem 1: the budget (runs with no user event) -/
 
 /-- The state of a run that has seen no user event: nothing is owed, nothing restricted, no strip grant, and any
@@ -969,35 +1053,85 @@ theorem engineActions_bound (rec : List Key) (es : List Event) (hn : ∀ e ∈ e
 
 /-- Before the proof, `noChevronReads` counts exactly the qualifying reads at the end of the reads seen so far (`h`). -/
 def CountInv (s : State) (h : List Read) : Prop :=
-  s.provenNotFull = false → s.noChevronReads < 3 ∧ s.noChevronReads ≤ h.length ∧
+  s.provenNotFull = false → s.noChevronReads ≤ 3 ∧ s.noChevronReads ≤ h.length ∧
     ∀ x ∈ h.reverse.take s.noChevronReads, qualifying x
 
 theorem rev_take_succ (h : List Read) (r : Read) (n : Nat) :
     (h ++ [r]).reverse.take (n + 1) = r :: h.reverse.take n := by simp
 
+theorem noteRead_pnf_nc (s : State) (r : Read) :
+    ((noteRead s r).provenNotFull, (noteRead s r).noChevronReads) =
+    match r.chevron with
+    | .fresh => (false, 0)
+    | .stale => (false, 0)
+    | .absent =>
+        if s.provenNotFull then (s.provenNotFull, s.noChevronReads)
+        else if r.level == .incomplete || !r.observed then (s.provenNotFull, 0)
+        else if r.kind == .pass && !r.settled then (s.provenNotFull, s.noChevronReads)
+        else if (if r.kind == .pass then 3 else 2) <= s.noChevronReads then (true, 0)
+        else (s.provenNotFull, s.noChevronReads + 1) := by
+  unfold noteRead
+  cases r.chevron <;> simp <;> (repeat' split) <;> simp_all
+
 theorem noteRead_count {s : State} {h : List Read} (hc : CountInv s h) (r : Read) :
-    CountInv (noteRead s r) (h ++ [r]) := by
+    CountInv (noteRead s r) (h ++ cnt r) := by
   intro hp
   have key := hc
   unfold CountInv at key
-  unfold noteRead at hp ⊢
+  have f := noteRead_pnf_nc s r
+  have f1 := congrArg Prod.fst f
+  have f2 := congrArg Prod.snd f
+  simp only at f1 f2
+  rw [f1] at hp
   have rt := rev_take_succ h r
   have hl : (h ++ [r]).length = h.length + 1 := by simp
-  cases hch : r.chevron <;> simp only [hch] at hp ⊢ <;> grind [qualifying]
-
-theorem noteRead_gain {s : State} {h : List Read} (hc : CountInv s h) {r : Read}
-    (h1 : s.provenNotFull = false) (h2 : (noteRead s r).provenNotFull = true) :
-    2 ≤ h.length ∧ (∀ x ∈ h.reverse.take 2, qualifying x) ∧ qualifying r := by
-  have key := hc h1
-  unfold noteRead at h2
-  cases hch : r.chevron <;> simp only [hch] at h2 <;> try grind
-  grind [qualifying]
+  by_cases hcn : counted r = true
+  · have e : cnt r = [r] := by simp [cnt, hcn]
+    rw [e, f2]
+    cases hch : r.chevron <;> simp only [hch] at hp ⊢ <;> grind [qualifying, counted]
+  · have e : cnt r = [] := by simp [cnt, hcn]
+    rw [e, f2]
+    simp only [List.append_nil]
+    cases hch : r.chevron <;> simp only [hch] at hp ⊢ <;> grind [qualifying, counted]
 
 theorem noteRead_proven_absent {s : State} {r : Read} (h : (noteRead s r).provenNotFull = true) :
     r.chevron = .absent := by
   unfold noteRead at h
   cases hch : r.chevron <;> simp only [hch] at h <;> grind
 
+
+theorem noteRead_gain {s : State} {h : List Read} (hc : CountInv s h) {r : Read}
+    (h1 : s.provenNotFull = false) (h2 : (noteRead s r).provenNotFull = true) :
+    2 ≤ h.length ∧ (∀ x ∈ h.reverse.take 2, qualifying x) ∧ qualifying r ∧
+      (r.kind = .pass → 3 ≤ h.length ∧ ∀ x ∈ h.reverse.take 3, qualifying x) := by
+  have key := hc h1
+  have hab : r.chevron = .absent := noteRead_proven_absent h2
+  have f := noteRead_pnf_nc s r
+  have f1 := congrArg Prod.fst f
+  simp only [h2, hab, h1] at f1
+  simp at f1
+  obtain ⟨k1, k2, k3⟩ := key
+  have hl : r.level ≠ .incomplete := by
+    intro hi; simp [hi] at f1
+  have hn : (if r.kind = .pass then 3 else 2) ≤ s.noChevronReads := by
+    by_cases hn : (if r.kind = .pass then 3 else 2) ≤ s.noChevronReads
+    · exact hn
+    · by_cases ho : r.observed = false
+      · simp [ho] at f1
+      · by_cases hs : r.kind = .pass ∧ r.settled = false
+        · simp [hl, ho, hs] at f1
+        · simp [hl, ho, hs, hn] at f1
+  have hq : qualifying r := ⟨hab, hl⟩
+  have t2 : h.reverse.take 2 ⊆ h.reverse.take s.noChevronReads := by
+    have : (h.reverse.take s.noChevronReads).take 2 = h.reverse.take 2 := by
+      rw [List.take_take]; congr 1; split at hn <;> omega
+    intro x hx; rw [← this] at hx; exact List.mem_of_mem_take hx
+  refine ⟨?_, fun x hx => k3 x (t2 hx), hq, fun hp => ?_⟩
+  · split at hn <;> omega
+  · simp [hp] at hn
+    refine ⟨by omega, fun x hx => k3 x ?_⟩
+    have : s.noChevronReads = 3 := by omega
+    rw [this]; exact hx
 
 theorem step_read_fields (s : State) (r : Read) :
     (step s (.read r)).1.provenNotFull = (noteRead s r).provenNotFull ∧
@@ -1029,15 +1163,19 @@ theorem readsOf_nonread (e : Event) (hr : ∀ r, e ≠ .read r) : readsOf [e] = 
   | read r => exact absurd rfl (hr r)
   | _ => simp [readsOf]
 
+theorem readsOf_filter_read (r : Read) : (readsOf [Event.read r]).filter counted = cnt r := by
+  simp only [readsOf, cnt, List.filter_cons, List.filter_nil]
+
 theorem countInv_step {s : State} {h : List Read} (hc : CountInv s h) (e : Event) :
-    CountInv (step s e).1 (h ++ readsOf [e]) := by
+    CountInv (step s e).1 (h ++ (readsOf [e]).filter counted) := by
   by_cases hre : ∃ r, e = .read r
   · obtain ⟨r, rfl⟩ := hre
     have := noteRead_count hc r
     have f := step_read_fields s r
+    rw [readsOf_filter_read]
     unfold CountInv at this ⊢
     rw [f.1, f.2]
-    simpa [readsOf] using this
+    exact this
   · have hr : ∀ r, e ≠ .read r := fun r h => hre ⟨r, h⟩
     have f := step_nonread_fields s e hr
     unfold CountInv at hc ⊢
@@ -1049,13 +1187,15 @@ theorem proof_gen : ∀ (es : List Event) (s : State) (h : List Read), CountInv 
     (s.provenNotFull = true ∧ ∀ r ∈ readsOf es, r.chevron = .absent) ∨
     ∃ pre r post, es = pre ++ .read r :: post ∧
       (run s pre).1.provenNotFull = false ∧ (noteRead (run s pre).1 r).provenNotFull = true ∧
-      2 ≤ (h ++ readsOf pre).length ∧ (∀ x ∈ (h ++ readsOf pre).reverse.take 2, qualifying x) ∧ qualifying r ∧
+      2 ≤ (h ++ (readsOf pre).filter counted).length ∧ (∀ x ∈ (h ++ (readsOf pre).filter counted).reverse.take 2, qualifying x) ∧ qualifying r ∧
+      (r.kind = .pass → 3 ≤ (h ++ (readsOf pre).filter counted).length ∧
+        ∀ x ∈ (h ++ (readsOf pre).filter counted).reverse.take 3, qualifying x) ∧
       ∀ r' ∈ readsOf post, r'.chevron = .absent
   | [], s, h, _, hp => by left; simpa [run_nil, readsOf] using hp
   | e :: es, s, h, hc, hp => by
     have hc1 := countInv_step hc e
     have hp1 : (run (step s e).1 es).1.provenNotFull = true := by simpa [run_cons] using hp
-    rcases proof_gen es _ _ hc1 hp1 with ⟨hs1, hall⟩ | ⟨pre, r, post, he, g1, g2, g3, g4, g5, g6⟩
+    rcases proof_gen es _ _ hc1 hp1 with ⟨hs1, hall⟩ | ⟨pre, r, post, he, g1, g2, g3, g4, g5, g6, g7⟩
     · by_cases hre : ∃ r, e = .read r
       · obtain ⟨r, rfl⟩ := hre
         have f := step_read_fields s r
@@ -1071,8 +1211,8 @@ theorem proof_gen : ∀ (es : List Event) (s : State) (h : List Read), CountInv 
           have hs' : s.provenNotFull = false := by simpa using hs
           have gain := noteRead_gain hc hs' hs1
           refine ⟨[], r, es, rfl, by simpa [run_nil] using hs', by simpa [run_nil] using hs1, ?_⟩
-          simp only [readsOf, List.append_nil, run_nil]
-          exact ⟨gain.1, gain.2.1, gain.2.2, fun r' hr' => hall r' hr'⟩
+          simp only [readsOf, List.filter_nil, List.append_nil, run_nil]
+          exact ⟨gain.1, gain.2.1, gain.2.2.1, gain.2.2.2, fun r' hr' => hall r' hr'⟩
       · have hr : ∀ r, e ≠ .read r := fun r h => hre ⟨r, h⟩
         have f := step_nonread_fields s e hr
         rw [f.1] at hs1
@@ -1081,18 +1221,22 @@ theorem proof_gen : ∀ (es : List Event) (s : State) (h : List Read), CountInv 
         simpa using hall
     · right
       refine ⟨e :: pre, r, post, by simp [he], ?_⟩
-      rw [run_cons, readsOf_cons, ← List.append_assoc]
-      exact ⟨g1, g2, g3, g4, g5, g6⟩
+      rw [run_cons, readsOf_cons, List.filter_append, ← List.append_assoc]
+      exact ⟨g1, g2, g3, g4, g5, g6, g7⟩
 
 /-- Theorem 6 (proofNeedsThreeConsecutive): if the bar is proven not full at the end of a run from the initial
-state, then at the step that gained the proof the last three reads (other events may interleave) were
-chevronless at a qualifying level, and every read since had no chevron. -/
+state, then at the step that gained the proof (a read `r`) the last two reads before it (other events may interleave) and `r` itself were
+chevronless at a qualifying level, and when `r` is a pass read (the proof arms on the third read and flips on the next pass read) the last
+THREE reads before it were; every read since had no chevron.  The history is every read EXCEPT the complete, chevronless, observed, unsettled
+pass reads (`counted`), which neither count nor reset (Swift): an unsettled read with a chevron or an `incomplete` one stays in it. -/
 theorem proofNeedsThreeConsecutive (rec : List Key) (es : List Event)
     (h : (run (State.init rec) es).1.provenNotFull = true) :
     ∃ pre r post, es = pre ++ .read r :: post ∧
       (run (State.init rec) pre).1.provenNotFull = false ∧
       (noteRead (run (State.init rec) pre).1 r).provenNotFull = true ∧
-      2 ≤ (readsOf pre).length ∧ (∀ x ∈ (readsOf pre).reverse.take 2, qualifying x) ∧ qualifying r ∧
+      2 ≤ ((readsOf pre).filter counted).length ∧ (∀ x ∈ ((readsOf pre).filter counted).reverse.take 2, qualifying x) ∧ qualifying r ∧
+      (r.kind = .pass → 3 ≤ ((readsOf pre).filter counted).length ∧
+        ∀ x ∈ ((readsOf pre).filter counted).reverse.take 3, qualifying x) ∧
       ∀ r' ∈ readsOf post, r'.chevron = .absent := by
   have hc : CountInv (State.init rec) [] := by
     intro _; simp [State.init]
@@ -1132,9 +1276,9 @@ theorem holdRelease_run : ∀ (es : List Event) (s : State), s.hold = true →
 read `r`, the state before it and the state after reading. -/
 theorem noFoldedTarget_run (s : State) (es : List Event) (a : Action) (h : a ∈ (run s es).2) :
     ∃ pre r post, es = pre ++ .read r :: post ∧
-      a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ a.rel.target ∉ (run s pre).1.lastFreshPile ∧
+      a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.rel.target ∉ (run s pre).1.lastFreshPile) ∧
       a.rel.target ∉ (noteRead (run s pre).1 r).lastFreshPile ∧
-      (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ a.subject ∉ (run s pre).1.lastFreshPile ∧
+      (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.subject ∉ (run s pre).1.lastFreshPile) ∧
         a.subject ∉ (noteRead (run s pre).1 r).lastFreshPile) := by
   obtain ⟨pre, e, post, he, hm⟩ := run_action_split s es a h
   obtain ⟨r, rfl, _⟩ := step_acts hm

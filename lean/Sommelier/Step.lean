@@ -22,22 +22,42 @@ def noteRead (s : State) (r : Read) : State :=
   let s := if r.kind == .pass && r.settled && r.level != .incomplete then { s with lastDrawn := r.drawn } else s
   -- only a settled, readable, strip-closed read with a fresh chevron REPLACES the pile; any other chevron read adds to it
   let union := s.lastFreshPile ++ r.foldedSet.filter (fun k => !s.lastFreshPile.contains k)
-  match r.chevron with
-  | .fresh =>
-      { s with provenNotFull := false, noChevronReads := 0,
-               lastFreshPile := if r.settled && r.level != .incomplete && !r.stripOpen then r.foldedSet else union }
-  | .stale => { s with provenNotFull := false, noChevronReads := 0, lastFreshPile := union }
-  | .absent =>
-      if s.provenNotFull then s
-      else if r.level == .incomplete then { s with noChevronReads := 0 }
-      else if s.noChevronReads + 1 >= 3 then
-        { s with provenNotFull := true, noChevronReads := 0, hold := false, lastFreshPile := [] }
-      else { s with noChevronReads := s.noChevronReads + 1 }
+  let c : State :=
+    match r.chevron with
+    | .fresh =>
+        { s with provenNotFull := false, noChevronReads := 0,
+                 lastFreshPile := if r.settled && r.level != .incomplete && !r.stripOpen then r.foldedSet else union }
+    | .stale => { s with provenNotFull := false, noChevronReads := 0, lastFreshPile := union }
+    | .absent =>
+        if s.provenNotFull then s
+        else if r.level == .incomplete || !r.observed then { s with noChevronReads := 0 }   -- a non-observation is no evidence: it resets the count
+        else if r.kind == .pass && !r.settled then s   -- an unsettled COMPLETE pass read is not evidence either way (Swift: it ends before noteChevronEvidence): no count, no reset
+        -- WHEN THE PROOF TAKES EFFECT (Swift `noteChevronEvidence` :1855-1865, `notePollScan` :1871-1883).  `noChevronReads` counts the
+        -- chevronless complete reads and may REACH 3 without effect: Swift's `notFullProven` is exactly `noChevronReads >= 3` while the bar is
+        -- still full.  A PASS read that reaches 3 only arms the proof; the NEXT settled chevronless pass read flips `fullBarState` (here:
+        -- `provenNotFull`) and clears hold and pile, if nothing reset the count in between (a chevron, an incomplete read).  A quiet POLL that
+        -- reaches 3 flips at once (docs/architecture.md rule 2).  A poll that finds the count already at 3 flips at once too.
+        else if (if r.kind == .pass then 3 else 2) <= s.noChevronReads then
+          { s with provenNotFull := true, noChevronReads := 0, hold := false, lastFreshPile := [] }
+        else { s with noChevronReads := s.noChevronReads + 1 }
+  c
+
+/-- The reading is a usable witness of the bar: a settled pass read of a readable tree that observed a bar, strip closed, and either
+a FRESH chevron (one reading suffices) or NO chevron with the proof that the bar is not full (three complete readings in a row
+without one: D1).  A stale chevron is not usable.  Holds at the levels `complete` and `exceptSelfPositioning`. -/
+def Read.usable (r : Read) : Prop :=
+  r.kind = .pass ∧ r.settled = true ∧ r.level ≠ .incomplete ∧ r.observed = true ∧ r.stripOpen = false ∧
+    (r.chevron = .fresh ∨ (r.chevron = .absent ∧ r.notFullProven = true))
+
+instance (r : Read) : Decidable r.usable := by unfold Read.usable; infer_instance
 
 /-! ### Which keys may move, and does a move need the « strip? -/
 
-/-- Everything that counts as folded for planning: this read's pile and folded keys and the last fresh pile. -/
-def foldedAll (s : State) (r : Read) : List Key := r.foldedSet ++ s.lastFreshPile
+/-- Everything that counts as folded for planning.  A USABLE fresh-chevron read is itself the witness of the pile: what is folded is exactly what
+THIS read lists (`r.foldedSet`), and it supersedes the memory (`noteRead` replaces `lastFreshPile` by it on the same read), so a key the memory
+still holds but this read shows drawn is judged as drawn.  On any other read: this read's pile and folded keys and the last fresh pile. -/
+def foldedAll (s : State) (r : Read) : List Key :=
+  if r.usable ∧ r.chevron = .fresh then r.foldedSet else r.foldedSet ++ s.lastFreshPile
 
 /-- Drawn, trusted, not folded: the only keys a planned move may name, as subject or target. -/
 def movable (s : State) (r : Read) : List Key :=
@@ -86,14 +106,16 @@ ordinary anchor (and may be a target).  Anchors are the movable keys of the reco
 A drawn `k` is RIGHT when exactly the anchors that precede it in the record precede it on the bar.  Otherwise it goes to the
 first gap, in DRAWN order, whose preceding anchors are exactly those: right after the last anchor of that gap, or before the first
 anchor if the gap is empty.  If no gap satisfies the test (anchors out of record order) there is no move; the drag then never changes nothing
-(fuzz-checked: `noop_user`).  A folded `k` is pulled out only if it is the fold request and the chevron is fresh, to just after the
+(fuzz-checked: `noop_user`).  A folded `k` is pulled out only if it is the fold request or owed, the chevron is fresh and THIS read lists `k` as folded, to just after the
 rightmost drawn key that precedes it in the record (unless that changes nothing). -/
 def userMove (s : State) (r : Read) (k : Key) : Option Action :=
   let hv := movable s r
   let before := s.record.takeWhile (fun x => x != k)
   let mk (rel : Rel) : Action := ⟨k, rel, needsStrip s r k rel, true⟩
   if (foldedAll s r).contains k then
-    if s.foldRequest == some k && r.chevron == .fresh then
+    -- a pull-out is licensed by the key being OWED (the user dropped it; `foldRequest` is only the priority hint) and THIS read listing it as folded
+    -- (`r.foldedSet`) with a fresh chevron; the pile memory alone (`lastFreshPile`) never licenses a drag, and a folded key the user did not drop never gets one
+    if (s.foldRequest == some k || s.owedKeys.contains k) && r.chevron == .fresh && r.foldedSet.contains k then
       (((hv.filter (fun x => before.contains x)).getLast?).map (fun p => mk (.after p))).filter
         (fun a => applyMove r.drawn a != r.drawn)
     else none
@@ -114,6 +136,32 @@ def userMove (s : State) (r : Read) (k : Key) : Option Action :=
 /-- A user's move that may open the strip waits once this edit's session is used, and while the strip is open. -/
 def userAllowed (s : State) (r : Read) (a : Action) : Bool := !(a.strip && (s.editSessionUsed || r.stripOpen))
 
+/-! ### The gate on every decision (ejb.3 truth statements, D1 and D2)
+
+Every move, the user's drop included, waits for a USABLE reading of a bar that some honest macOS could have drawn.  The definitions
+are the ones `Truth.lean` states its theorems with. -/
+
+/-- Drawn keys whose position the scanner corroborated (duplicates kept: a read listing a key twice is self-contradictory). -/
+def Read.trustedDrawn (r : Read) : List Key := r.drawn.filter (fun k => r.trusted.contains k)
+
+/-- Keys the reading pins open (usable reads only): trusted drawn keys. -/
+def Read.pinOpen (r : Read) : List Key := if r.usable then r.trustedDrawn else []
+
+/-- Keys the reading pins behind: pile and folded keys of a usable fresh-chevron read. -/
+def Read.pinBehind (r : Read) : List Key := if r.usable ∧ r.chevron = .fresh then r.foldedSet else []
+
+/-- The reading contradicts itself (a pinned key twice, or both open and behind): no bar is honest. -/
+def Read.consistent (r : Read) : Bool := r.pinOpen.Nodup && r.pinOpen.all (fun k => !r.pinBehind.contains k)
+
+/-- The reading as `step` judges it: the proof is the ENGINE'S OWN, `provenNotFull` of the state BEFORE this read (`step` decides on `s`, not on
+`noteRead s r`): a proof gained by this read's `noteRead` takes effect from the next read, and a pass read that only armed the proof
+(`noChevronReads` = 3) flips it on the next pass read, which still decides under the old state.  Equal to `r` when the adapter's field agrees
+(`view_of_agree`). -/
+def State.view (s : State) (r : Read) : Read := { r with notFullProven := s.provenNotFull }
+
+/-- The one gate: usable and consistent (some honest bar exists). -/
+def State.gate (s : State) (r : Read) : Bool := decide (s.view r).usable && (s.view r).consistent
+
 /-- May the ENGINE (not the user) move anything on this read? -/
 def engineAllowed (s : State) (r : Read) : Bool :=
   !s.restricted && !s.hold && r.chevron != .stale && !r.stripOpen && s.moveCount < cap (fullBar s r)
@@ -122,7 +170,7 @@ def engineAllowed (s : State) (r : Read) : Bool :=
 Owed user moves first (the fold request, then the rest), then the engine's; an engine move that needs the
 strip is withheld unless Re-apply granted a session. -/
 def decideMove (s : State) (r : Read) : Option Action :=
-  if r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome then none
+  if r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r then none
   else
     match (s.foldRequest.toList ++ s.owedKeys).findSome? (fun k => (userMove s r k).filter (userAllowed s r)) with
     | some a => some a
@@ -149,31 +197,34 @@ def emit (s : State) (a : Action) : State :=
 
 /-- The result of the in-flight drag `a`.  The budget counts only POSTED engine drags (a count that never
 decreases).  A drag with no mouse event is not an attempt: its key is `skipped` (no engine move of it until a
-user event), the strip session is returned, and a user's interrupted drag (`busy`) is re-armed ONCE. -/
+user event), the strip session is returned, and a user's interrupted drag (`busy`) is re-armed ONCE.
+-/
 def result (s : State) (a : Action) (o : Outcome) (posted : Bool) : State :=
   let s0 := { s with inFlight := none, moveCount := s.moveCount + (if posted && !a.user then 1 else 0) }
-  if posted then
-    match o with
-    | .failed =>
-        -- a failed posted drag on a bar not proven not-full holds the bar and gives the key up
-        if s0.provenNotFull then
-          let n := (s0.strikes.filter (fun x => x == a.subject)).length + 1
-          { s0 with strikes := a.subject :: s0.strikes,
-                    givenUp := if n >= 3 && !s0.givenUp.contains a.subject then a.subject :: s0.givenUp else s0.givenUp }
-        else
-          { s0 with hold := true, holdFolded := s0.lastFreshPile,
-                    givenUp := if s0.givenUp.contains a.subject then s0.givenUp else a.subject :: s0.givenUp }
-    | _ => s0
-  else
-    -- no mouse event (even a "verified" one): not an attempt, never re-planned by the engine until a user event
-    let was := s0.skipped.contains a.subject
-    let s1 := { s0 with editSessionUsed := if a.strip then false else s0.editSessionUsed,
-                        skipped := if was then s0.skipped else a.subject :: s0.skipped }
-    -- a user's interrupted drag is re-armed ONCE, and only if the CURRENT chain owed it (never a granted move)
-    if o == .busy && s0.flightOwed == some s0.gen && !was && s0.record.contains a.subject then
-      { s1 with owedKeys := (a.subject :: s1.owedKeys).eraseDups,
-                foldRequest := if s0.flightReq && s1.foldRequest.isNone then some a.subject else s1.foldRequest }
-    else s1
+  let core : State :=
+    if posted then
+      match o with
+      | .failed =>
+          -- a failed posted drag on a bar not proven not-full holds the bar and gives the key up
+          if s0.provenNotFull then
+            let n := (s0.strikes.filter (fun x => x == a.subject)).length + 1
+            { s0 with strikes := a.subject :: s0.strikes,
+                      givenUp := if n >= 3 && !s0.givenUp.contains a.subject then a.subject :: s0.givenUp else s0.givenUp }
+          else
+            { s0 with hold := true, holdFolded := s0.lastFreshPile,
+                      givenUp := if s0.givenUp.contains a.subject then s0.givenUp else a.subject :: s0.givenUp }
+      | _ => s0
+    else
+      -- no mouse event (even a "verified" one): not an attempt, never re-planned by the engine until a user event
+      let was := s0.skipped.contains a.subject
+      let s1 := { s0 with editSessionUsed := if a.strip then false else s0.editSessionUsed,
+                          skipped := if was then s0.skipped else a.subject :: s0.skipped }
+      -- a user's interrupted drag is re-armed ONCE, and only if the CURRENT chain owed it (never a granted move)
+      if o == .busy && s0.flightOwed == some s0.gen && !was && s0.record.contains a.subject then
+        { s1 with owedKeys := (a.subject :: s1.owedKeys).eraseDups,
+                  foldRequest := if s0.flightReq && s1.foldRequest.isNone then some a.subject else s1.foldRequest }
+      else s1
+  core
 
 def step (s : State) : Event → State × List Action
   | .read r =>
@@ -183,46 +234,53 @@ def step (s : State) : Event → State × List Action
       | some a => (emit s' a, [a])
   | .userEdit rec moved =>
       if moved.isEmpty then
-        ({ s with record := rec, owedKeys := s.owedKeys.filter (fun k => rec.contains k),
-                  foldRequest := s.foldRequest.filter (fun k => rec.contains k),
-                  -- a reorder can invalidate the in-flight pull-out: a busy result must not re-arm it
-                  flightReq := s.flightReq && rec == s.record }, [])
+        ({ s with
+            record := rec, owedKeys := s.owedKeys.filter (fun k => rec.contains k),
+            foldRequest := s.foldRequest.filter (fun k => rec.contains k),
+            -- a reorder can invalidate the in-flight pull-out: a busy result must not re-arm it
+            flightReq := s.flightReq && rec == s.record }, [])
       else
         let owed := (s.owedKeys ++ rec.filter (fun k => moved.contains k)).eraseDups.filter (fun k => rec.contains k)
-        -- a pull-out is asked for only for a key folded NOW with a drawn key before it in the record; first such key only; it REPLACES an earlier request (T3)
+        -- `pull` is a PRIORITY HINT (the fold request is served first): the answer to a drop does not need it, `userMove` licenses a pull-out from the key being
+        -- owed and THIS read listing it folded.  A pull-out hint is asked for only for a key folded NOW with a drawn key before it in the record; first such key only; it REPLACES an earlier request (T3)
         -- a later edit that moves the in-flight key clears `flightReq` (T5: the busy result must not re-arm a stale pull-out)
         let pull := rec.find? (fun k => moved.contains k && s.lastFreshPile.contains k
                                  && (rec.takeWhile (fun x => x != k)).any (fun x => s.lastDrawn.contains x))
         let release := moved.any (fun k => s.holdFolded.contains k || s.lastFreshPile.contains k)
-        ({ s with record := rec, moveCount := 0, restricted := true, editSessionUsed := false,
-                  owedKeys := owed,
-                  foldRequest := match pull with
-                    | some p => some p
-                    | none => s.foldRequest.filter (fun k => !moved.contains k && rec.contains k),
-                  hold := s.hold && !release,
-                  flightReq := s.flightReq && !(s.inFlight.any (fun a => moved.contains a.subject)),
-                  skipped := [],
-                  strikes := s.strikes.filter (fun k => !moved.contains k),
-                  givenUp := s.givenUp.filter (fun k => !moved.contains k) }, [])
+        ({ s with
+            record := rec, moveCount := 0, restricted := true, editSessionUsed := false,
+            owedKeys := owed,
+            foldRequest := match pull with
+            | some p => some p
+            | none => s.foldRequest.filter (fun k => !moved.contains k && rec.contains k),
+            hold := s.hold && !release,
+            flightReq := s.flightReq && !(s.inFlight.any (fun (a : Action) => moved.contains a.subject)),
+            skipped := [],
+            strikes := s.strikes.filter (fun k => !moved.contains k),
+            givenUp := s.givenUp.filter (fun k => !moved.contains k) }, [])
   | .userRetry =>
-      ({ s with moveCount := 0, hold := false, givenUp := [], strikes := [], skipped := [],
-                restricted := false, owedKeys := [], foldRequest := none, stripGrant := true, gen := s.gen + 1,
-                editSessionUsed := false }, [])
+      ({ s with
+            moveCount := 0, hold := false, givenUp := [], strikes := [], skipped := [],
+            restricted := false, owedKeys := [], foldRequest := none, stripGrant := true, gen := s.gen + 1,
+            editSessionUsed := false }, [])
   | .retryKey k =>
+      -- (a priority hint only, as in `userEdit`: not needed for the answer)
       let pull := s.record.contains k && s.lastFreshPile.contains k && (s.record.takeWhile (fun x => x != k)).any (fun x => s.lastDrawn.contains x)
-      ({ s with moveCount := 0, hold := false, givenUp := s.givenUp.erase k,
-                strikes := s.strikes.filter (fun x => x != k), skipped := [], restricted := true,
-                editSessionUsed := false,
-                owedKeys := (k :: s.owedKeys).eraseDups.filter (fun x => s.record.contains x),
-                foldRequest := if pull then some k else s.foldRequest,
-                -- the pull-out is recomputed for k: an in-flight drag of k no longer stands for the request
-                flightReq := s.flightReq && !(s.inFlight.any (fun a => a.subject == k)) }, [])
+      ({ s with
+            moveCount := 0, hold := false, givenUp := s.givenUp.erase k,
+            strikes := s.strikes.filter (fun x => x != k), skipped := [], restricted := true,
+            editSessionUsed := false,
+            owedKeys := (k :: s.owedKeys).eraseDups.filter (fun x => s.record.contains x),
+            foldRequest := if pull then some k else s.foldRequest,
+            -- the pull-out is recomputed for k: an in-flight drag of k no longer stands for the request
+            flightReq := s.flightReq && !(s.inFlight.any (fun (a : Action) => a.subject == k)) }, [])
   | .moveResult k o posted =>
       match s.inFlight with
       | some a => if a.subject == k then (result s a o posted, []) else (s, [])
       | none => (s, [])
   | .passBoundary =>
-      ({ s with restricted := false, owedKeys := [], foldRequest := none, stripGrant := false, gen := s.gen + 1 }, [])
+      ({ s with
+            restricted := false, owedKeys := [], foldRequest := none, stripGrant := false, gen := s.gen + 1 }, [])
 
 /-- Fold `step` over an event list; all actions in order. -/
 def run (s : State) : List Event → State × List Action

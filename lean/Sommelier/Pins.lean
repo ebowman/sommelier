@@ -1,4 +1,7 @@
 import Sommelier.Safety
+import Sommelier.Gates
+import Sommelier.Honesty
+import Sommelier.Truth
 
 /-!
 # Statement pins
@@ -16,15 +19,15 @@ example : ∀ (s : State) (e : Event), s.inFlight.isSome = true → (step s e).2
 
 -- 3. no folded target
 example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 →
-    a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ a.rel.target ∉ s.lastFreshPile ∧
+    a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.rel.target ∉ s.lastFreshPile) ∧
     a.rel.target ∉ (noteRead s r).lastFreshPile ∧
-    (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ a.subject ∉ s.lastFreshPile ∧
+    (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.subject ∉ s.lastFreshPile) ∧
       a.subject ∉ (noteRead s r).lastFreshPile) := @noFoldedTarget
 example : ∀ (s : State) (es : List Event) (a : Action), a ∈ (run s es).2 →
     ∃ pre r post, es = pre ++ .read r :: post ∧
-      a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ a.rel.target ∉ (run s pre).1.lastFreshPile ∧
+      a.rel.target ∉ r.pile ∧ a.rel.target ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.rel.target ∉ (run s pre).1.lastFreshPile) ∧
       a.rel.target ∉ (noteRead (run s pre).1 r).lastFreshPile ∧
-      (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ a.subject ∉ (run s pre).1.lastFreshPile ∧
+      (a.user = false → a.subject ∉ r.pile ∧ a.subject ∉ r.folded ∧ (¬(r.usable ∧ r.chevron = .fresh) → a.subject ∉ (run s pre).1.lastFreshPile) ∧
         a.subject ∉ (noteRead (run s pre).1 r).lastFreshPile) := @noFoldedTarget_run
 
 -- 2. strip only for the user, and honest
@@ -64,7 +67,10 @@ example : ∀ (rec : List Key) (es : List Event), (run (State.init rec) es).1.pr
     ∃ pre r post, es = pre ++ .read r :: post ∧
       (run (State.init rec) pre).1.provenNotFull = false ∧
       (noteRead (run (State.init rec) pre).1 r).provenNotFull = true ∧
-      2 ≤ (readsOf pre).length ∧ (∀ x ∈ (readsOf pre).reverse.take 2, qualifying x) ∧ qualifying r ∧
+      2 ≤ ((readsOf pre).filter counted).length ∧ (∀ x ∈ ((readsOf pre).filter counted).reverse.take 2, qualifying x) ∧
+      qualifying r ∧
+      (r.kind = .pass → 3 ≤ ((readsOf pre).filter counted).length ∧
+        ∀ x ∈ ((readsOf pre).filter counted).reverse.take 3, qualifying x) ∧
       ∀ r' ∈ readsOf post, r'.chevron = .absent := @proofNeedsThreeConsecutive
 
 -- 7. owed expires
@@ -98,5 +104,423 @@ example : ∀ (rec : List Key) (pre : List Event) (ue : Event) (ys : List Event)
       postedEngine (step (run (State.init rec) pre).1 ue).1 ys +
       (run (step (run (State.init rec) pre).1 ue).1 ys).1.skipped.length +
       pendEng (run (step (run (State.init rec) pre).1 ue).1 ys).1 := @engineActions_between_user_events
+
+/-! ## ejb.3: the gates gate, the user is answered, the rows and the status line are honest -/
+
+-- the two definitions of "a user event" agree
+example : ∀ e, userEv e = isUserEvent e := by intro e; cases e <;> rfl
+
+-- 1. each gate stops the engine (every action is the user's)
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → s.hold = true → a.user = true := @eng_no_hold
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → r.stripOpen = true → a.user = true := @eng_no_open
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → r.chevron = .stale → a.user = true := @eng_no_stale
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → s.restricted = true → a.user = true := @eng_no_restricted
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → fullBar s r = true → 3 ≤ s.moveCount →
+    a.user = true := @eng_no_budget_full
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → fullBar s r = false → 20 ≤ s.moveCount →
+    a.user = true := @eng_no_budget_notfull
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → a.user = false →
+    a.subject ∉ s.givenUp := @plan_no_givenUp
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → a.user = false →
+    a.subject ∉ s.skipped := @plan_no_skipped
+-- 2. any chevron means full
+example : ∀ (s : State) (r : Read), r.chevron ≠ .absent → fullBar s r = true := @fullBar_ignores_chevron
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → r.chevron ≠ .absent → a.user = false →
+    s.moveCount < 3 := @chevron_engine_budget
+-- 3. plans only on good reads
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 →
+    r.kind = .pass ∧ r.settled = true ∧ r.level ≠ .incomplete ∧ s.inFlight = none := @plan_on_good_read
+-- 4. the folded memory
+example : ∀ (s : State) (r : Read), r.chevron = .fresh → r.settled = true → r.level ≠ .incomplete → r.stripOpen = false →
+    (noteRead s r).lastFreshPile = r.foldedSet := @pile_replace
+example : ∀ (s : State) (r : Read), r.chevron = .fresh →
+    (r.settled = false ∨ r.level = .incomplete ∨ r.stripOpen = true) → ∀ (k : Key),
+    k ∈ (noteRead s r).lastFreshPile ↔ k ∈ s.lastFreshPile ∨ k ∈ r.foldedSet := @pile_fresh_add
+example : ∀ (s : State) (r : Read), r.chevron = .stale → ∀ (k : Key),
+    k ∈ (noteRead s r).lastFreshPile ↔ k ∈ s.lastFreshPile ∨ k ∈ r.foldedSet := @pile_stale_add
+example : ∀ (s : State) (r : Read), s.provenNotFull = false → (noteRead s r).provenNotFull = true →
+    (noteRead s r).lastFreshPile = [] := @proof_clears_pile
+example : ∀ (s : State) (r : Read), s.provenNotFull = false → (noteRead s r).provenNotFull = true →
+    (noteRead s r).hold = false := @proof_clears_hold
+example : ∀ (s : State) (r : Read), r.chevron = .absent →
+    ¬ (s.provenNotFull = false ∧ (noteRead s r).provenNotFull = true) →
+    (noteRead s r).lastFreshPile = s.lastFreshPile := @pile_absent_keeps
+-- 5. failed drags, user events
+example : ∀ (s : State) (a : Action), s.provenNotFull = false →
+    (result s a .failed true).hold = true ∧ (result s a .failed true).holdFolded = s.lastFreshPile := @res_failed_holds
+example : ∀ (s : State) (a : Action), s.provenNotFull = false → a.subject ∈ (result s a .failed true).givenUp :=
+  @res_failed_gives_up
+example : ∀ (s : State) (a : Action), s.provenNotFull = true → (result s a .failed true).hold = s.hold := @res_proven_no_hold
+example : ∀ (s : State) (a : Action), s.provenNotFull = true →
+    (result s a .failed true).strikes = a.subject :: s.strikes := @res_proven_strike
+example : ∀ (s : State) (a : Action), s.provenNotFull = true →
+    (a.subject ∈ (result s a .failed true).givenUp ↔
+      a.subject ∈ s.givenUp ∨ 2 ≤ (s.strikes.filter (fun x => x == a.subject)).length) := @res_proven_giveup
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] →
+    ((step s (.userEdit rec moved)).1.hold = true ↔
+      s.hold = true ∧ ∀ k ∈ moved, k ∉ s.holdFolded ∧ k ∉ s.lastFreshPile) := @edit_hold
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → (step s (.userEdit rec moved)).1.moveCount = 0 :=
+  @edit_budget_reset
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → (step s (.userEdit rec moved)).1.restricted = true :=
+  @edit_restricts
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] →
+    (step s (.userEdit rec moved)).1.givenUp = s.givenUp.filter (fun k => !moved.contains k) := @edit_givenUp
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] →
+    (step s (.userEdit rec moved)).1.strikes = s.strikes.filter (fun k => !moved.contains k) := @edit_strikes
+example : ∀ (s : State), (step s .userRetry).1.hold = false := @retry_clears_hold
+example : ∀ (s : State), (step s .userRetry).1.givenUp = [] := @retry_clears_givenUp
+example : ∀ (s : State), (step s .userRetry).1.moveCount = 0 := @retry_resets_budget
+example : ∀ (s : State), (step s .userRetry).1.restricted = false := @retry_unrestricts
+example : ∀ (s : State), (step s .userRetry).1.stripGrant = true := @retry_grants
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.hold = false := @rk_clears_hold
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.moveCount = 0 := @rk_resets_budget
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.givenUp = s.givenUp.erase k := @rk_givenUp
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.stripGrant = s.stripGrant := @rk_no_grant
+-- 6. one attempt per drop
+example : ∀ (rec : List Key) (es : List Event), (run (State.init rec) es).1.owedKeys.Nodup := @owed_nodup_init
+example : ∀ {s : State} {r : Read} {a : Action}, s.owedKeys.Nodup → a ∈ (step s (.read r)).2 →
+    a.subject ∉ (step s (.read r)).1.owedKeys ∧ (step s (.read r)).1.foldRequest ≠ some a.subject := @emit_consumes
+example : ∀ (s : State) (a : Action) (o : Outcome) (p : Bool) (j : Key),
+    j ∈ (result s a o p).owedKeys ↔ j ∈ s.owedKeys ∨ (j = a.subject ∧ Rearm s a o p) := @rearm_iff
+example : ∀ (s : State) (a : Action), Rearm s a .busy false ↔
+    (s.flightOwed = some s.gen ∧ a.subject ∉ s.skipped ∧ a.subject ∈ s.record) := by
+  intro s a; simp [Rearm]
+open Classical in
+example : ∀ (s : State) (a : Action) (o : Outcome) (p : Bool), (result s a o p).foldRequest =
+    if Rearm s a o p ∧ s.flightReq = true ∧ s.foldRequest = none then some a.subject else s.foldRequest := @rearm_request
+-- 6b. where the user's key goes
+example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r → userMove s r k =
+      if ((seenOf s r k).all (fun a => (wantOf s r k).contains a) &&
+          (wantOf s r k).all (fun a => (seenOf s r k).contains a)) = true then none
+      else match prefixFor (wantOf s r k) (anchorsOf s r k) with
+        | none => none
+        | some i =>
+          match ((anchorsOf s r k).take i).getLast? with
+          | some p => some ⟨k, .after p, needsStrip s r k (.after p), true⟩
+          | none => (anchorsOf s r k).head?.map (fun t => ⟨k, .before t, needsStrip s r k (.before t), true⟩) :=
+  @userMove_drawn_spec
+example : ∀ {want l : List Key} {i : Nat}, prefixFor want l = some i →
+    i ≤ l.length ∧ SameKeys (l.take i) want ∧ ∀ j, j < i → ¬ SameKeys (l.take j) want := @prefixFor_spec
+example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r →
+    SameKeys (seenOf s r k) (wantOf s r k) → userMove s r k = none := @userMove_right_place
+example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r → ¬ SameKeys (seenOf s r k) (wantOf s r k) →
+    (prefixFor (wantOf s r k) (anchorsOf s r k)).isSome = true → ∃ a, userMove s r k = some a := @userMove_moves
+example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, k ∈ movable s r → userMove s r k = some a →
+    ¬ SameKeys (seenOf s r k) (wantOf s r k) ∧ a.subject = k ∧ a.user = true ∧ a.strip = needsStrip s r k a.rel ∧
+    ∃ i, prefixFor (wantOf s r k) (anchorsOf s r k) = some i ∧
+      ((∃ p, ((anchorsOf s r k).take i).getLast? = some p ∧ a.rel = .after p) ∨
+       (((anchorsOf s r k).take i).getLast? = none ∧ ∃ t, (anchorsOf s r k).head? = some t ∧ a.rel = .before t)) :=
+  @userMove_target
+example : ∀ (l : List Key) (a : Action) (t : Key), a.rel = .before t → a.subject ≠ t → t ∈ l →
+    ∃ pre post, applyMove l a = pre ++ a.subject :: t :: post := @applyMove_before
+example : ∀ (l : List Key) (a : Action) (t : Key), a.rel = .after t → a.subject ≠ t → t ∈ l →
+    ∃ pre post, applyMove l a = pre ++ t :: a.subject :: post := @applyMove_after
+-- 7. pull-out only on request or for an owed (dropped) key
+example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, k ∈ foldedAll s r → userMove s r k = some a →
+    (s.foldRequest = some k ∨ k ∈ s.owedKeys) ∧ r.chevron = .fresh ∧ applyMove r.drawn a ≠ r.drawn ∧
+    ∃ p, a.rel = .after p ∧
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = some p ∧
+      a.subject = k ∧ a.strip = true ∧ a.user = true := @userMove_folded
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → ∀ (p : Key),
+    (step s (.userEdit rec moved)).1.foldRequest = some p →
+    (p ∈ moved ∧ p ∈ rec ∧ p ∈ s.lastFreshPile ∧ ∃ x ∈ rec.takeWhile (fun x => x != p), x ∈ s.lastDrawn) ∨
+    (s.foldRequest = some p ∧ p ∉ moved ∧ p ∈ rec) := @edit_request_origin
+example : ∀ (s : State) (rec moved : List Key) (q : Key), q ∈ rec → q ∈ moved → q ∈ s.lastFreshPile →
+    (∃ x ∈ rec.takeWhile (fun x => x != q), x ∈ s.lastDrawn) →
+    (step s (.userEdit rec moved)).1.foldRequest ≠ none := @edit_requests_pull
+example : ∀ (s : State) (k p : Key), (step s (.retryKey k)).1.foldRequest = some p →
+    (p = k ∧ k ∈ s.record ∧ k ∈ s.lastFreshPile ∧ ∃ x ∈ s.record.takeWhile (fun x => x != k), x ∈ s.lastDrawn) ∨
+    s.foldRequest = some p := @rk_request
+example : ∀ (s : State) (k : Key), k ∈ s.record → k ∈ s.lastFreshPile →
+    (∃ x ∈ s.record.takeWhile (fun x => x != k), x ∈ s.lastDrawn) →
+    (step s (.retryKey k)).1.foldRequest = some k := @rk_requests_pull
+example : ∀ (s : State) (a : Action), (emit s a).flightReq = true ↔ s.foldRequest = some a.subject := @emit_flightReq
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → ∀ (a : Action), s.inFlight = some a →
+    a.subject ∈ moved → (step s (.userEdit rec moved)).1.flightReq = false := @edit_flightReq
+example : ∀ (s : State) (rec : List Key), rec ≠ s.record → (step s (.userEdit rec [])).1.flightReq = false :=
+  @edit_empty_flightReq
+example : ∀ (s : State) (k : Key) (a : Action), s.inFlight = some a → a.subject = k →
+    (step s (.retryKey k)).1.flightReq = false := @rk_flightReq
+-- 9. subjects are in the record
+example : ∀ {s : State} {r : Read} {b : Action}, planOrderMoves s r = some b →
+    b.subject ∈ s.record ∧ b.rel.target ∈ s.record := @plan_spec
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → ∀ (j : Key),
+    j ∈ (step s (.userEdit rec moved)).1.owedKeys ↔ j ∈ rec ∧ (j ∈ s.owedKeys ∨ j ∈ moved) := @edit_owed
+example : ∀ (s : State) (rec : List Key) (j : Key),
+    j ∈ (step s (.userEdit rec [])).1.owedKeys ↔ j ∈ rec ∧ j ∈ s.owedKeys := @edit_empty_owed
+example : ∀ (s : State) (rec moved : List Key) (p : Key), (step s (.userEdit rec moved)).1.foldRequest = some p →
+    p ∈ rec := @edit_request_in_record
+example : ∀ (s : State) (k j : Key), j ∈ (step s (.retryKey k)).1.owedKeys ↔ j ∈ s.record ∧ (j = k ∨ j ∈ s.owedKeys) :=
+  @rk_owed
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → a.user = false →
+    a.subject ∈ s.record ∧ a.rel.target ∈ s.record := @plan_in_record
+example : ∀ (rec : List Key) (es : List Event) (a : Action), a ∈ (run (State.init rec) es).2 →
+    ∃ pre r post, es = pre ++ .read r :: post ∧ a.subject ∈ (run (State.init rec) pre).1.record := @subjects_in_record
+example : ∀ (s : State) (r : Read), r.kind = .pass → r.settled = true → r.level ≠ .incomplete →
+    (noteRead s r).lastDrawn = r.drawn := @lastDrawn_set
+example : ∀ (s : State) (r : Read), (r.kind = .poll ∨ r.settled = false ∨ r.level = .incomplete) →
+    (noteRead s r).lastDrawn = s.lastDrawn := @lastDrawn_kept
+-- posted engine drags decided on a full read: at most 3, no hypothesis about the other reads
+example : ∀ (rec : List Key) (es : List Event), (∀ e ∈ es, userEv e = false) → postedFull (State.init rec) false es ≤ 3 :=
+  @postedFull_init
+-- 1. quiescence
+example : ∀ (s : State) (es : List Event), (∀ e ∈ es, userEv e = false) →
+    (20 ≤ s.moveCount ∨
+      (3 ≤ s.moveCount ∧ ∀ pre r post, es = pre ++ .read r :: post → fullBar (run s pre).1 r = true) ∨
+      (s.hold = true ∧ ∀ pre r post, es = pre ++ .read r :: post → ¬ Gain (run s pre).1 r)) →
+    (∀ a ∈ (run s es).2, a.user = true) ∧ (Idle s → (run s es).2 = []) := @quiescence
+example : ∀ (s : State) (r : Read), Gain s r ↔ (s.provenNotFull = false ∧ (noteRead s r).provenNotFull = true) :=
+  fun _ _ => Iff.rfl
+example : ∀ (s : State), Idle s ↔ (s.inFlight = none ∧ s.owedKeys = [] ∧ s.foldRequest = none) := fun _ => Iff.rfl
+-- 2. the user is always answered (restated: no hypothesis that merely assumes the drop is answerable)
+example : ∀ (s : State) (rec : List Key) (k : Key) (r : Read),
+    s.inFlight = none → (step s (.userEdit rec [k])).1.gate r = true → k ∈ rec →
+    ((step s (.userEdit rec [k])).1.foldRequest.toList ++ (step s (.userEdit rec [k])).1.owedKeys).head? = some k →
+    k ∈ r.drawn → k ∈ r.trusted → k ∉ foldedAll (step s (.userEdit rec [k])).1 r →
+    ¬ SameKeys (seenOf (step s (.userEdit rec [k])).1 r k) (wantOf (step s (.userEdit rec [k])).1 r k) →
+    (prefixFor (wantOf (step s (.userEdit rec [k])).1 r k) (anchorsOf (step s (.userEdit rec [k])).1 r k)).isSome = true →
+    ∃ a, (step (step s (.userEdit rec [k])).1 (.read r)).2 = [a] ∧ a.subject = k ∧ a.user = true ∧
+      userMove (step s (.userEdit rec [k])).1 r k = some a := @userAlwaysAnswered_drawn
+example : ∀ (s : State) (rec : List Key) (k : Key) (r : Read),
+    s.inFlight = none → s.owedKeys = [] → s.foldRequest = none → k ∈ rec →
+    userMove (step s (.userEdit rec [k])).1 r k = none →
+    (step (step s (.userEdit rec [k])).1 (.read r)).2 = [] := @userAlwaysAnswered_none
+example : ∀ (s : State) (rec : List Key) (k : Key) (r : Read),
+    s.inFlight = none → (step s (.userEdit rec [k])).1.gate r = true → k ∈ rec →
+    ((step s (.userEdit rec [k])).1.foldRequest.toList ++ (step s (.userEdit rec [k])).1.owedKeys).head? = some k →
+    r.chevron = .fresh → k ∈ r.foldedSet → k ∉ r.drawn →
+    (∃ x ∈ movable (step s (.userEdit rec [k])).1 r, x ∈ (step s (.userEdit rec [k])).1.record.takeWhile (fun y => y != k)) →
+    ∃ a, (step (step s (.userEdit rec [k])).1 (.read r)).2 = [a] ∧ a.strip = true ∧ a.user = true ∧ a.subject = k ∧
+      userMove (step s (.userEdit rec [k])).1 r k = some a := @userAlwaysAnswered_pull
+-- 2c. the reachable drop, the invariant, the row of an unanswered drop
+example : ∀ (rec : List Key) (es : List Event), (run (State.init rec) es).1.provenNotFull = true →
+    (run (State.init rec) es).1.lastFreshPile = [] := @provenNotFull_pile_empty
+example : ∀ (rec0 : List Key) (es : List Event) (rec : List Key) (k : Key) (r : Read),
+    (run (State.init rec0) es).1.inFlight = none →
+    (step (run (State.init rec0) es).1 (.userEdit rec [k])).1.gate r = true → k ∈ rec →
+    ((step (run (State.init rec0) es).1 (.userEdit rec [k])).1.foldRequest.toList ++
+      (step (run (State.init rec0) es).1 (.userEdit rec [k])).1.owedKeys).head? = some k →
+    k ∈ r.drawn → k ∈ r.trusted → k ∉ r.foldedSet →
+    ¬ SameKeys (seenOf (step (run (State.init rec0) es).1 (.userEdit rec [k])).1 r k)
+      (wantOf (step (run (State.init rec0) es).1 (.userEdit rec [k])).1 r k) →
+    (prefixFor (wantOf (step (run (State.init rec0) es).1 (.userEdit rec [k])).1 r k)
+      (anchorsOf (step (run (State.init rec0) es).1 (.userEdit rec [k])).1 r k)).isSome = true →
+    ∃ a, (step (step (run (State.init rec0) es).1 (.userEdit rec [k])).1 (.read r)).2 = [a] ∧ a.subject = k ∧ a.user = true :=
+  @drop_answered_reachable
+example : ∀ {s : State} {r : Read} {k : Key}, s.inFlight = none → s.gate r = true → r.chevron = .absent → k ∈ r.foldedSet →
+    userMove s r k = none ∧ rowLine s r k = (rowVerdict s.record (s.view r) k).line ∧ rowLine s r k ≠ .behind :=
+  @foldedDrawn_chevronless
+example : ∀ {s : State} {r : Read} {k : Key}, s.gate r = true → k ∈ movable s r → SameKeys (seenOf s r k) (wantOf s r k) →
+    rowVerdict s.record (s.view r) k = .inOrder ∨
+    ∃ x, x ≠ k ∧ x ∈ s.record ∧ x ∈ r.drawn ∧ x ∈ r.trusted ∧ (x ∈ s.owedKeys ∨ x ∈ foldedAll s r) := @in_place_row
+example : ∀ {s : State} {r : Read} {k : Key}, s.inFlight = none → s.gate r = true → k ∈ s.owedKeys →
+    (∀ a ∈ (step s (.read r)).2, a.subject ≠ k) →
+    rowLine s r k = (rowVerdict s.record (s.view r) k).line ∨
+    (rowLine s r k = .waiting ∧ ∃ a, userMove s r k = some a) := @unanswered_row
+-- 2a. only a user's drop crosses the fold
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → a.subject ∈ r.foldedSet →
+    a.user = true ∧ (s.foldRequest = some a.subject ∨ a.subject ∈ s.owedKeys) ∧ r.chevron = .fresh := @fold_crossed_only_by_drop
+-- 2b. an owed key that gets no move has a named reason
+example : ∀ (s : State) (r : Read) (k : Key), s.inFlight = none → s.gate r = true → k ∈ s.owedKeys →
+    (∀ a ∈ (step s (.read r)).2, a.subject ≠ k) →
+    (k ∈ movable s r ∧ SameKeys (seenOf s r k) (wantOf s r k)) ∨
+    (k ∈ movable s r ∧ prefixFor (wantOf s r k) (anchorsOf s r k) = none) ∨
+    (k ∉ foldedAll s r ∧ ¬ (k ∈ r.drawn ∧ k ∈ r.trusted)) ∨
+    (k ∈ foldedAll s r ∧ ¬ (r.chevron = .fresh ∧ k ∈ r.foldedSet)) ∨
+    (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = none) ∨
+    (k ∈ foldedAll s r ∧ r.chevron = .fresh ∧ k ∈ r.foldedSet ∧ ∃ p,
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = some p ∧
+      applyMove r.drawn ⟨k, .after p, needsStrip s r k (.after p), true⟩ = r.drawn) ∨
+    (∃ a, userMove s r k = some a ∧ a.strip = true ∧ s.editSessionUsed = true) ∨
+    (∃ j a, j ∈ s.foldRequest.toList ++ s.owedKeys ∧ j ≠ k ∧ (step s (.read r)).2 = [a] ∧ a.subject = j ∧ a.user = true) :=
+  @owed_unanswered_reason
+example : ∀ (s : State), (step s .userRetry).1.hold = false := @retry_clears_hold
+example : ∀ (s : State), (step s .userRetry).1.givenUp = [] := @retry_clears_givenUp
+example : ∀ (s : State), (step s .userRetry).1.moveCount = 0 := @retry_resets_budget
+example : ∀ (s : State), (step s .userRetry).1.restricted = false := @retry_unrestricts
+example : ∀ (s : State), (step s .userRetry).1.stripGrant = true := @retry_grants
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.hold = false := @rk_clears_hold
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.moveCount = 0 := @rk_resets_budget
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.givenUp = s.givenUp.erase k := @rk_givenUp
+example : ∀ (s : State) (k : Key), (step s (.retryKey k)).1.stripGrant = s.stripGrant := @rk_no_grant
+-- 6. one attempt per drop
+example : ∀ (rec : List Key) (es : List Event), (run (State.init rec) es).1.owedKeys.Nodup := @owed_nodup_init
+example : ∀ {s : State} {r : Read} {a : Action}, s.owedKeys.Nodup → a ∈ (step s (.read r)).2 →
+    a.subject ∉ (step s (.read r)).1.owedKeys ∧ (step s (.read r)).1.foldRequest ≠ some a.subject := @emit_consumes
+example : ∀ (s : State) (a : Action) (o : Outcome) (p : Bool) (j : Key),
+    j ∈ (result s a o p).owedKeys ↔ j ∈ s.owedKeys ∨ (j = a.subject ∧ Rearm s a o p) := @rearm_iff
+example : ∀ (s : State) (a : Action), Rearm s a .busy false ↔
+    (s.flightOwed = some s.gen ∧ a.subject ∉ s.skipped ∧ a.subject ∈ s.record) := by
+  intro s a; simp [Rearm]
+open Classical in
+example : ∀ (s : State) (a : Action) (o : Outcome) (p : Bool), (result s a o p).foldRequest =
+    if Rearm s a o p ∧ s.flightReq = true ∧ s.foldRequest = none then some a.subject else s.foldRequest := @rearm_request
+-- 6b. where the user's key goes
+example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r → userMove s r k =
+      if ((seenOf s r k).all (fun a => (wantOf s r k).contains a) &&
+          (wantOf s r k).all (fun a => (seenOf s r k).contains a)) = true then none
+      else match prefixFor (wantOf s r k) (anchorsOf s r k) with
+        | none => none
+        | some i =>
+          match ((anchorsOf s r k).take i).getLast? with
+          | some p => some ⟨k, .after p, needsStrip s r k (.after p), true⟩
+          | none => (anchorsOf s r k).head?.map (fun t => ⟨k, .before t, needsStrip s r k (.before t), true⟩) :=
+  @userMove_drawn_spec
+example : ∀ {want l : List Key} {i : Nat}, prefixFor want l = some i →
+    i ≤ l.length ∧ SameKeys (l.take i) want ∧ ∀ j, j < i → ¬ SameKeys (l.take j) want := @prefixFor_spec
+example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r →
+    SameKeys (seenOf s r k) (wantOf s r k) → userMove s r k = none := @userMove_right_place
+example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r → ¬ SameKeys (seenOf s r k) (wantOf s r k) →
+    (prefixFor (wantOf s r k) (anchorsOf s r k)).isSome = true → ∃ a, userMove s r k = some a := @userMove_moves
+example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, k ∈ movable s r → userMove s r k = some a →
+    ¬ SameKeys (seenOf s r k) (wantOf s r k) ∧ a.subject = k ∧ a.user = true ∧ a.strip = needsStrip s r k a.rel ∧
+    ∃ i, prefixFor (wantOf s r k) (anchorsOf s r k) = some i ∧
+      ((∃ p, ((anchorsOf s r k).take i).getLast? = some p ∧ a.rel = .after p) ∨
+       (((anchorsOf s r k).take i).getLast? = none ∧ ∃ t, (anchorsOf s r k).head? = some t ∧ a.rel = .before t)) :=
+  @userMove_target
+example : ∀ (l : List Key) (a : Action) (t : Key), a.rel = .before t → a.subject ≠ t → t ∈ l →
+    ∃ pre post, applyMove l a = pre ++ a.subject :: t :: post := @applyMove_before
+example : ∀ (l : List Key) (a : Action) (t : Key), a.rel = .after t → a.subject ≠ t → t ∈ l →
+    ∃ pre post, applyMove l a = pre ++ t :: a.subject :: post := @applyMove_after
+-- 7. pull-out only on request or for an owed (dropped) key
+example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, k ∈ foldedAll s r → userMove s r k = some a →
+    (s.foldRequest = some k ∨ k ∈ s.owedKeys) ∧ r.chevron = .fresh ∧ applyMove r.drawn a ≠ r.drawn ∧
+    ∃ p, a.rel = .after p ∧
+      ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast? = some p ∧
+      a.subject = k ∧ a.strip = true ∧ a.user = true := @userMove_folded
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → ∀ (p : Key),
+    (step s (.userEdit rec moved)).1.foldRequest = some p →
+    (p ∈ moved ∧ p ∈ rec ∧ p ∈ s.lastFreshPile ∧ ∃ x ∈ rec.takeWhile (fun x => x != p), x ∈ s.lastDrawn) ∨
+    (s.foldRequest = some p ∧ p ∉ moved ∧ p ∈ rec) := @edit_request_origin
+example : ∀ (s : State) (rec moved : List Key) (q : Key), q ∈ rec → q ∈ moved → q ∈ s.lastFreshPile →
+    (∃ x ∈ rec.takeWhile (fun x => x != q), x ∈ s.lastDrawn) →
+    (step s (.userEdit rec moved)).1.foldRequest ≠ none := @edit_requests_pull
+example : ∀ (s : State) (k p : Key), (step s (.retryKey k)).1.foldRequest = some p →
+    (p = k ∧ k ∈ s.record ∧ k ∈ s.lastFreshPile ∧ ∃ x ∈ s.record.takeWhile (fun x => x != k), x ∈ s.lastDrawn) ∨
+    s.foldRequest = some p := @rk_request
+example : ∀ (s : State) (k : Key), k ∈ s.record → k ∈ s.lastFreshPile →
+    (∃ x ∈ s.record.takeWhile (fun x => x != k), x ∈ s.lastDrawn) →
+    (step s (.retryKey k)).1.foldRequest = some k := @rk_requests_pull
+example : ∀ (s : State) (a : Action), (emit s a).flightReq = true ↔ s.foldRequest = some a.subject := @emit_flightReq
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → ∀ (a : Action), s.inFlight = some a →
+    a.subject ∈ moved → (step s (.userEdit rec moved)).1.flightReq = false := @edit_flightReq
+example : ∀ (s : State) (rec : List Key), rec ≠ s.record → (step s (.userEdit rec [])).1.flightReq = false :=
+  @edit_empty_flightReq
+example : ∀ (s : State) (k : Key) (a : Action), s.inFlight = some a → a.subject = k →
+    (step s (.retryKey k)).1.flightReq = false := @rk_flightReq
+-- 9. subjects are in the record
+example : ∀ {s : State} {r : Read} {b : Action}, planOrderMoves s r = some b →
+    b.subject ∈ s.record ∧ b.rel.target ∈ s.record := @plan_spec
+example : ∀ (s : State) (rec moved : List Key), moved ≠ [] → ∀ (j : Key),
+    j ∈ (step s (.userEdit rec moved)).1.owedKeys ↔ j ∈ rec ∧ (j ∈ s.owedKeys ∨ j ∈ moved) := @edit_owed
+example : ∀ (s : State) (rec : List Key) (j : Key),
+    j ∈ (step s (.userEdit rec [])).1.owedKeys ↔ j ∈ rec ∧ j ∈ s.owedKeys := @edit_empty_owed
+example : ∀ (s : State) (rec moved : List Key) (p : Key), (step s (.userEdit rec moved)).1.foldRequest = some p →
+    p ∈ rec := @edit_request_in_record
+example : ∀ (s : State) (k j : Key), j ∈ (step s (.retryKey k)).1.owedKeys ↔ j ∈ s.record ∧ (j = k ∨ j ∈ s.owedKeys) :=
+  @rk_owed
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → a.user = false →
+    a.subject ∈ s.record ∧ a.rel.target ∈ s.record := @plan_in_record
+example : ∀ (rec : List Key) (es : List Event) (a : Action), a ∈ (run (State.init rec) es).2 →
+    ∃ pre r post, es = pre ++ .read r :: post ∧ a.subject ∈ (run (State.init rec) pre).1.record := @subjects_in_record
+example : ∀ (s : State) (r : Read), r.kind = .pass → r.settled = true → r.level ≠ .incomplete →
+    (noteRead s r).lastDrawn = r.drawn := @lastDrawn_set
+example : ∀ (s : State) (r : Read), (r.kind = .poll ∨ r.settled = false ∨ r.level = .incomplete) →
+    (noteRead s r).lastDrawn = s.lastDrawn := @lastDrawn_kept
+-- posted engine drags decided on a full read: at most 3, no hypothesis about the other reads
+example : ∀ (rec : List Key) (es : List Event), (∀ e ∈ es, userEv e = false) → postedFull (State.init rec) false es ≤ 3 :=
+  @postedFull_init
+-- 1. quiescence
+example : ∀ (s : State) (es : List Event), (∀ e ∈ es, userEv e = false) →
+    (20 ≤ s.moveCount ∨
+      (3 ≤ s.moveCount ∧ ∀ pre r post, es = pre ++ .read r :: post → fullBar (run s pre).1 r = true) ∨
+      (s.hold = true ∧ ∀ pre r post, es = pre ++ .read r :: post → ¬ Gain (run s pre).1 r)) →
+    (∀ a ∈ (run s es).2, a.user = true) ∧ (Idle s → (run s es).2 = []) := @quiescence
+example : ∀ (s : State) (r : Read), Gain s r ↔ (s.provenNotFull = false ∧ (noteRead s r).provenNotFull = true) :=
+  fun _ _ => Iff.rfl
+example : ∀ (s : State), Idle s ↔ (s.inFlight = none ∧ s.owedKeys = [] ∧ s.foldRequest = none) := fun _ => Iff.rfl
+-- 2. the user is always answered
+example : ∀ (s : State) (rec : List Key) (k : Key) (r : Read),
+    s.inFlight = none → (step s (.userEdit rec [k])).1.gate r = true → k ∈ rec →
+    ((step s (.userEdit rec [k])).1.foldRequest.toList ++ (step s (.userEdit rec [k])).1.owedKeys).head? = some k →
+    ((k ∈ r.drawn → k ∈ r.trusted → k ∉ foldedAll (step s (.userEdit rec [k])).1 r →
+      ¬ SameKeys (seenOf (step s (.userEdit rec [k])).1 r k) (wantOf (step s (.userEdit rec [k])).1 r k) →
+      (prefixFor (wantOf (step s (.userEdit rec [k])).1 r k) (anchorsOf (step s (.userEdit rec [k])).1 r k)).isSome = true →
+      ∃ a, (step (step s (.userEdit rec [k])).1 (.read r)).2 = [a] ∧ a.subject = k ∧ a.user = true) ∧
+    (r.chevron = .fresh → k ∈ r.foldedSet → k ∉ r.drawn →
+      (∃ x ∈ movable (step s (.userEdit rec [k])).1 r, x ∈ (step s (.userEdit rec [k])).1.record.takeWhile (fun y => y != k)) →
+      ∃ a, (step (step s (.userEdit rec [k])).1 (.read r)).2 = [a] ∧ a.subject = k ∧ a.strip = true ∧ a.user = true)) :=
+  @user_drop_answered
+example : ∀ (rec : List Key) (pre : List Event) (ys : List Event), (∀ e ∈ ys, isUserEvent e = false) →
+    (run (step (run (State.init rec) pre).1 .passBoundary).1 ys).1.owedKeys = [] ∧
+    (run (step (run (State.init rec) pre).1 .passBoundary).1 ys).1.foldRequest = none ∧
+    ∀ a ∈ (run (step (run (State.init rec) pre).1 .passBoundary).1 ys).2, a.user = false := @drop_expires
+example : ∀ (s : State),
+    ((step s .userRetry).1.hold = false ∧ (step s .userRetry).1.givenUp = [] ∧ (step s .userRetry).1.moveCount = 0 ∧
+      (step s .userRetry).1.strikes = [] ∧ (step s .userRetry).1.skipped = [] ∧ (step s .userRetry).1.restricted = false) ∧
+    ∀ (rec moved : List Key), (step s (.userEdit rec moved)).1.record = rec ∧ (step s (.userEdit rec moved)).2 = [] ∧
+      (moved.isEmpty = false →
+        (step s (.userEdit rec moved)).1.moveCount = 0 ∧ (step s (.userEdit rec moved)).1.skipped = [] ∧
+        (∀ j ∈ moved, j ∉ (step s (.userEdit rec moved)).1.givenUp ∧ j ∉ (step s (.userEdit rec moved)).1.strikes) ∧
+        (∀ j ∈ moved, j ∈ rec → j ∈ (step s (.userEdit rec moved)).1.owedKeys)) := @user_can_leave
+-- 5. the truth statements of Truth.lean (pass B: T6, T7, T9 proved)
+example : ∀ (s s' : State) (r : Read) (a : Action), s.record.Nodup → step s (.read r) = (s', [a]) → a.user = false →
+    shownVerdict s r = .differs := @no_needless_move_engine
+example : ∀ (s s' : State) (r : Read) (a : Action), s.record.Nodup → step s (.read r) = (s', [a]) → a.user = true →
+    a.subject ∉ foldedAll s r → ∀ b, Possible (s.view r) b → RowMisplaced (s.view r) s.record b a.subject :=
+  @no_needless_move_user
+example : ∀ (s s' : State) (r : Read) (a : Action), step s (.read r) = (s', [a]) →
+    ∀ b, Possible (s.view r) b →
+      a.rel.target ∉ b.behind ∧ (a.subject ∉ foldedAll s r → a.subject ∈ b.open_) ∧
+      (a.subject ∈ foldedAll s r → a.subject ∈ r.foldedSet ∧ a.subject ∈ b.behind) := @no_folded_target_truth
+example : ∀ (s s' : State) (r : Read) (a : Action), step s (.read r) = (s', [a]) → shownVerdict s r ≠ .cannotTell :=
+  @no_move_on_cannotTell
+-- 6. the fold request first
+example : ∀ {s : State} {r : Read} {q : Key} {a : Action}, s.foldRequest = some q → r.kind = .pass → r.settled = true →
+    r.level ≠ .incomplete → s.inFlight = none → s.gate r = true → userMove s r q = some a → userAllowed s r a = true →
+    decideMove s r = some a := @request_first
+-- 7. no needless drag (the planner and the user's own moves change the bar)
+example : ∀ {s : State} {r : Read} {b : Action}, planOrderMoves s r = some b → s.record.Nodup → r.drawn.Nodup →
+    applyMove r.drawn b ≠ r.drawn := @noNeedlessDrag_plan
+example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, userMove s r k = some a → r.drawn.Nodup →
+    applyMove r.drawn a ≠ r.drawn := @noNeedlessDrag_user
+example : ∀ {s : State} {r : Read} {a : Action}, a ∈ (step s (.read r)).2 → s.record.Nodup → r.drawn.Nodup →
+    applyMove r.drawn a ≠ r.drawn := @noNeedlessDrag
+
+-- 6. T1-T5, T8 (pass A)
+example : ∀ (rec : List Key) (r : Read), rec.Nodup →
+    (verdict rec r = .matches ↔ r.usable ∧ (∃ b, Possible r b) ∧ ∀ b, Possible r b → barMatches rec b) := @verdict_matches_iff
+example : ∀ (rec : List Key) (r : Read), rec.Nodup →
+    (verdict rec r = .differs ↔ (∃ b, Possible r b) ∧ ∀ b, Possible r b → ¬ barMatches rec b) := @verdict_differs_iff
+example : ∀ (rec : List Key) (r : Read) (U : List Key), rec.Nodup →
+    (verdict rec r = .matchesExcept U ↔ (∃ b, Possible r b) ∧ ValidU rec r U) := @verdict_except_iff
+example : ∀ (rec : List Key) (r : Read), rec.Nodup →
+    (verdict rec r = .cannotTell ↔ ¬ r.usable ∨ ¬ (∃ b, Possible r b) ∨
+      ((∃ b, Possible r b) ∧ ¬ AllMatch rec r ∧ ¬ AllDiffer rec r ∧ ¬ ∃ U, ValidU rec r U)) := @verdict_cannotTell_iff
+example : ∀ (rec : List Key) (r : Read) (k : Key), rec.Nodup → k ∈ rec →
+    (rowVerdict rec r k = .inOrder ↔ (∃ b, Possible r b) ∧ ∀ b, Possible r b → RowPlaced r rec b k) := @rowVerdict_inOrder_iff
+example : ∀ (rec : List Key) (r : Read) (k : Key), rec.Nodup → k ∈ rec →
+    (rowVerdict rec r k = .outOfPlace ↔ (∃ b, Possible r b) ∧ ∀ b, Possible r b → RowMisplaced r rec b k) :=
+  @rowVerdict_outOfPlace_iff
+example : ∀ (rec : List Key) (r : Read) (k : Key), rec.Nodup → k ∈ rec →
+    (rowVerdict rec r k = .behindChevron ↔
+      (∃ b, Possible r b) ∧ (∀ b, Possible r b → k ∈ b.behind) ∧ ¬ (∀ b, Possible r b → OutOfTurn rec b k)) :=
+  @rowVerdict_behind_iff
+example : ∀ (rec : List Key) (r : Read) (k : Key), rec.Nodup → k ∈ rec →
+    (rowVerdict rec r k = .behindOutOfTurn ↔ (∃ b, Possible r b) ∧ ∀ b, Possible r b → OutOfTurn rec b k) :=
+  @rowVerdict_behindOutOfTurn_iff
+example : ∀ (rec : List Key) (r : Read) (k : Key), rec.Nodup → k ∈ rec →
+    (rowVerdict rec r k = .notOnBar ↔ (∃ b, Possible r b) ∧ ∀ b, Possible r b → k ∉ b.open_ ∧ k ∉ b.behind) :=
+  @rowVerdict_notOnBar_iff
+example : ∀ (rec : List Key) (r : Read), rec.Nodup → verdict rec r = .differs →
+    ∃ k ∈ rec, rowVerdict rec r k = .outOfPlace ∨ rowVerdict rec r k = .behindOutOfTurn := @differs_names_cause
+example : ∀ (rec : List Key) (b b' : Bar), rec.Nodup → b.WF → barMatches rec b → b.IsFold b' → barMatches rec b' :=
+  @macOS_fold_preserves
+example : ∀ (s : State) (r : Read),
+    shownVerdict s r = verdict s.record (s.view r) ∧
+    (r.notFullProven = s.provenNotFull → shownVerdict s r = verdict s.record r) := @status_judges_view
+example : ∀ (s : State) (r : Read) (a : Action), decideMove s r = some a →
+    (s.view r).usable ∧ (s.view r).consistent = true := @decideMove_gated
 
 end Sommelier

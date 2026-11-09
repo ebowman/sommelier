@@ -1,4 +1,5 @@
 import Sommelier.Step
+import Sommelier.Status
 
 /-!
 # Fuzz harness
@@ -128,10 +129,12 @@ def stepChecks (s : State) (e : Event) : List (String × Bool) :=
             ++ acts.flatMap (fun a =>
                 [ ("noFoldedTarget",
                     !r.pile.contains a.rel.target && !r.folded.contains a.rel.target
-                    && !s.lastFreshPile.contains a.rel.target && !s'.lastFreshPile.contains a.rel.target) ]
+                    && ((decide r.usable && r.chevron == .fresh) || !s.lastFreshPile.contains a.rel.target)
+                    && !s'.lastFreshPile.contains a.rel.target) ]
                 ++ (if !a.user then
                     [("noFoldedEngineSubject",
-                      !r.pile.contains a.subject && !r.folded.contains a.subject && !s.lastFreshPile.contains a.subject)] else []))
+                      !r.pile.contains a.subject && !r.folded.contains a.subject
+                      && ((decide r.usable && r.chevron == .fresh) || !s.lastFreshPile.contains a.subject))] else []))
         | _ => [])
   base
 
@@ -144,18 +147,50 @@ def quiescenceCheck (s : State) (evs : List Event) : List (String × Bool) :=
     [("quiescence_true", (run s es).2.all (fun a => a.user))]
   else []
 
-/-- userAlwaysAnswered on a state with nothing owed and nothing in flight. -/
+/-- The anchors, wanted set and seen set of a dropped key, restated here (not imported from `Gates.lean`, so that a broken proof there cannot stop the fuzz
+harness from building): the movable keys of the record that are not `k` and not owed; those that precede `k` in the record; those that precede it on the bar. -/
+def fzAnchors (s : State) (r : Read) (k : Key) : List Key :=
+  (movable s r).filter (fun a => a != k && s.record.contains a && !s.owedKeys.contains a)
+def fzWant (s : State) (r : Read) (k : Key) : List Key :=
+  (s.record.takeWhile (fun x => x != k)).filter (fun a => (fzAnchors s r k).contains a)
+def fzSeen (s : State) (r : Read) (k : Key) : List Key :=
+  ((movable s r).filter (fun a => a == k || (fzAnchors s r k).contains a)).takeWhile (fun x => x != k)
+
+/-- userAlwaysAnswered (drawn and folded cases) from any state with nothing in flight and `k` first in the queue, on a read where the gate is true;
+and the converse: an owed key that gets no move has a named reason. -/
 def answeredCheck (s : State) (r : Read) (rec_ : List Key) (k : Key) : List (String × Bool) :=
-  if s.inFlight.isNone && s.owedKeys.isEmpty && s.foldRequest.isNone && r.kind == .pass && r.settled
-     && r.level != .incomplete && rec_.contains k && (movable s r).contains k then
-    let s1 := (step s (.userEdit rec_ [k])).1
-    match userMove s1 r k with
-    | some a =>
-        if a.strip && r.stripOpen then []
-        else [("userAlwaysAnswered", (step s1 (.read r)).2 == [a] && a.subject == k && a.user)]
-    | none => []
+  let s1 := (step s (.userEdit rec_ [k])).1
+  if s.inFlight.isNone && rec_.contains k && s1.gate r && ((s1.foldRequest.toList ++ s1.owedKeys).head? == some k) then
+    let acts := (step s1 (.read r)).2
+    let same := (fzSeen s1 r k).all (fun a => (fzWant s1 r k).contains a) && (fzWant s1 r k).all (fun a => (fzSeen s1 r k).contains a)
+    (if r.drawn.contains k && r.trusted.contains k && !(foldedAll s1 r).contains k && !same
+        && (prefixFor (fzWant s1 r k) (fzAnchors s1 r k)).isSome then
+      [("userAlwaysAnswered", acts.length == 1 && acts.all (fun a => a.subject == k && a.user))] else [])
+    ++ (if r.chevron == .fresh && r.foldedSet.contains k && !r.drawn.contains k
+        && (movable s1 r).any (fun x => (s1.record.takeWhile (· != k)).contains x) then
+      [("userAlwaysAnswered_pull", acts.length == 1 && acts.all (fun a => a.subject == k && a.user && a.strip))] else [])
   else []
 
+/-- The converse of `userAlwaysAnswered`: on a gate-true read with nothing in flight, an owed key `k` with no move emitted for it has a named reason. -/
+def owedReasonCheck (s : State) (r : Read) : List (String × Bool) :=
+  if s.inFlight.isNone && s.gate r then
+    let acts := (step s (.read r)).2
+    s.owedKeys.flatMap fun k =>
+      if acts.any (fun a => a.subject == k) then [] else
+      let same := (fzSeen s r k).all (fun a => (fzWant s r k).contains a) && (fzWant s r k).all (fun a => (fzSeen s r k).contains a)
+      let lic := r.chevron == .fresh && r.foldedSet.contains k
+      let pred := ((movable s r).filter (fun x => (s.record.takeWhile (fun y => y != k)).contains x)).getLast?
+      let mv := (movable s r).contains k
+      let fa := (foldedAll s r).contains k
+      [("owed_unanswered_reason",
+        (mv && same) || (mv && (prefixFor (fzWant s r k) (fzAnchors s r k)).isNone)
+        || (!fa && !(r.drawn.contains k && r.trusted.contains k))
+        || (fa && !lic)
+        || (fa && lic && pred.isNone)
+        || (fa && lic && (match pred with | some p => applyMove r.drawn ⟨k, .after p, needsStrip s r k (.after p), true⟩ == r.drawn | none => false))
+        || (match userMove s r k with | some a => a.strip && s.editSessionUsed | none => false)
+        || (acts.any (fun a => a.user && (s.foldRequest.toList ++ s.owedKeys).contains a.subject && a.subject != k))) ]
+  else []
 
 def extraStep (s : State) (e : Event) : List (String × Bool) :=
   let (s', acts) := step s e
@@ -185,7 +220,7 @@ def extraStep (s : State) (e : Event) : List (String × Bool) :=
         ++ (if !s.owedKeys.contains a.subject then [("nonowed_notgiven", !s.givenUp.contains a.subject && !s.skipped.contains a.subject), ("nonowed_notrestricted", !s.restricted)] else [])
         ++ (if a.user && !s.owedKeys.contains a.subject then [("grant_needed", s.stripGrant && a.strip && !s'.stripGrant)] else [])
         ++ (if !a.user then [("budget_state", decide (s.moveCount < cap (fullBar s r)) && !s.hold && !a.strip)] else [])
-        ++ (if !r.drawn.contains a.subject then [("pullout_was_request", s.foldRequest == some a.subject)] else []))
+        ++ (if !r.drawn.contains a.subject then [("pullout_was_request", s.foldRequest == some a.subject || s.owedKeys.contains a.subject)] else []))
      | .moveResult k .failed true =>
         (match s.inFlight with
          | some a => if a.subject == k && !s.provenNotFull then [("failed_holds", s'.hold && s'.givenUp.contains k)] else []
@@ -199,9 +234,12 @@ def proofTrace (s0 : State) (evs : List Event) : List (String × Bool) := Id.run
     let (s', _) := step s e
     match e with
     | .read r =>
-      if r.chevron != .absent || r.level == .incomplete then run_ := 0 else run_ := run_ + 1
+      -- the model's count: a chevron, an incomplete read or an unobserved one resets; an unsettled complete PASS read neither counts nor resets
+      if r.chevron != .absent || r.level == .incomplete || !r.observed then run_ := 0
+      else if r.kind == .pass && !r.settled then pure ()
+      else run_ := run_ + 1
       if s'.provenNotFull && !s.provenNotFull then out := out ++ [("proof_three_consecutive", decide (run_ >= 3))]
-      if !s.provenNotFull && !s'.provenNotFull then out := out ++ [("proof_not_early_late", decide (run_ < 3))]
+      if !s.provenNotFull && !s'.provenNotFull then out := out ++ [("proof_not_late", decide (run_ <= 3))]
     | _ => pure ()
     s := s'
   return out
@@ -224,7 +262,7 @@ def stripPerEdit (s0 : State) (evs : List Event) : List (String × Bool) := Id.r
   return out
 def maxBudget (s0 : State) (evs : List Event) : Nat := postedEngine s0 evs
 /-- A real-world-biased no-user trace: long, mostly clean reads with a persistent mismatch: pushes the budget -/
-def goodRead (fresh : Bool) (rec_ : List Key) : G Read := do
+def goodReadG (fresh : Bool) (rec_ : List Key) : G Read := do
   let dr ← shuffle rec_
   pure { kind := .pass, chevron := if fresh then .fresh else .absent, level := .complete, settled := true, stripOpen := false, drawn := dr, pile := [], folded := [], trusted := dr, nearFold := [] }
 def budgetTrace (fresh : Bool) (prove : Bool) (n : Nat) : G (Nat × Nat) := do
@@ -233,11 +271,11 @@ def budgetTrace (fresh : Bool) (prove : Bool) (n : Nat) : G (Nat × Nat) := do
   let mut evs : List Event := []
   if prove then
     for _ in List.range 3 do
-      let r ← goodRead false rec_
+      let r ← goodReadG false rec_
       s := (step s (.read { r with kind := .poll })).1
   let s0 := s
   for _ in List.range n do
-    let r ← goodRead fresh rec_
+    let r ← goodReadG fresh rec_
     let e := Event.read r
     let (s1, acts) := step s e
     evs := evs ++ [e]; s := s1
@@ -253,6 +291,118 @@ def pureChecks (t : Trace) : List (String × Bool) :=
   let acts := (run s0 t.evs).2
   [ ("budget_any", decide (n ≤ capNotFull)), ("stripNone", acts.all (fun a => !a.strip)) ]
   ++ (if fullThroughout s0 t.evs then [("budget_full", decide (n ≤ capFull))] else [])
+
+/-! ### The status and the moves against a random honest bar
+
+At each read a REAL bar `b` is drawn first and the reading is derived from it by the assumptions of `Truth.lean` (A1 trusted drawn keys are
+open in the shown order; A2 pile and folded keys are behind a fresh chevron; A3 no chevron only when nothing is behind; A6 every key on the
+bar is drawn, in the pile, folded or unread; A7 the lists' shape).  The bar may or may not match the record.  Then, for the state before the
+read: "Menu bar matches" implies `barMatches` of that bar, "differs" implies not, "matches except U" implies `barMatchesExcept U`, a
+tick is open, a « is behind, "not on the bar" is neither, an engine move implies the bar differs and the subject of a move that is not a
+pull-out is open. -/
+
+def genBar (rec : List Key) : G Bar := do
+  let aligned ← coin 55
+  let on ← allKeys.filterM (fun _ => coin 85)
+  let ord0 ← if aligned then pure (rec.filter (fun k => on.contains k) ++ on.filter (fun k => !rec.contains k)) else shuffle on
+  let nb ← rnd (ord0.length + 1)
+  let ord1 ← if (← coin 20) && ord0.length ≥ 2 then
+      let i ← rnd (ord0.length - 1)
+      pure (ord0.take i ++ [ord0.getD (i + 1) 0, ord0.getD i 0] ++ ord0.drop (i + 2))
+    else pure ord0
+  pure ⟨ord1.drop nb, ord1.take nb⟩
+
+def genReadOf (b : Bar) : G Read := do
+  let kindPass ← coin 85
+  let settled ← coin 90
+  let lv ← rnd 20
+  let so ← coin 6
+  let obs ← coin 96
+  let c ← rnd 100
+  let chev : ChevronRead :=
+    if b.behind.isEmpty then (if c < 55 then .absent else .fresh) else (if c < 90 then .fresh else .stale)
+  let pile ← if chev == .fresh then subset b.behind 60 else pure []
+  let folded ← if chev == .fresh then subset (b.behind.filter (fun k => !pile.contains k)) 50 else pure []
+  let kept ← b.open_.filterM (fun _ => coin 88)
+  let junkOn ← coin 12
+  let junk := allKeys.filter (fun k => !b.open_.contains k && !b.behind.contains k)
+  let ji ← rnd (kept.length + 1)
+  let jk := junk.getD (← rnd (junk.length + 1)) 0
+  let drawn := if junkOn && junk.contains jk then kept.take ji ++ [jk] ++ kept.drop ji else kept
+  let trusted ← kept.filterM (fun _ => coin 92)
+  let leftover := b.behind.filter (fun k => !pile.contains k && !folded.contains k)
+  let removed := b.open_.filter (fun k => !kept.contains k)
+  let extra ← subset allKeys 8
+  let unread := (leftover ++ removed ++ extra).eraseDups.filter (fun k => !trusted.contains k && !pile.contains k && !folded.contains k)
+  pure { kind := if kindPass then .pass else .poll, chevron := chev,
+         level := if lv < 16 then .complete else if lv < 18 then .exceptSelfPositioning else .incomplete,
+         settled := settled, stripOpen := so, drawn := drawn, pile := pile, folded := folded,
+         trusted := trusted, nearFold := [], observed := obs, unread := unread }
+
+/-- An event, with the real bar behind it when it is a read. -/
+def genHEvent (s : State) : G (Event × Option Bar) := do
+  let p ← rnd 100
+  let ans ← coin 60
+  match s.inFlight with
+  | some a =>
+      if ans then
+        let o ← rnd 4
+        let posted ← coin 75
+        return (.moveResult a.subject (match o with | 0 => .verified | 1 => .failed | 2 => .refused | _ => .busy) posted, none)
+  | none => pure ()
+  if p < 58 then
+    let b ← genBar s.record
+    return (.read (← genReadOf b), some b)
+  else if p < 66 then
+    let o ← rnd 4
+    let posted ← coin 75
+    return (.moveResult (1 + (← rnd 7)) (match o with | 0 => .verified | 1 => .failed | 2 => .refused | _ => .busy) posted, none)
+  else if p < 76 then
+    let rec_ ← shuffle (← subset allKeys 85)
+    let moved ← subset rec_ 30
+    return (.userEdit rec_ moved, none)
+  else if p < 80 then return (.userRetry, none)
+  else if p < 84 then return (.retryKey (1 + (← rnd 7)), none)
+  else return (.passBoundary, none)
+
+def honestChecks (s : State) (e : Event) (ob : Option Bar) : List (String × Bool) :=
+  match e, ob with
+  | .read r, some b =>
+    let poss := decide (Possible (s.view r) b)
+    let m := decide (barMatches s.record b)
+    [("generator_honest", poss), (if m then "bar_matches_seen" else "bar_differs_seen", true)]
+    ++ (if !poss then [] else
+      (match statusLine s r with
+       | .matches => [("claim_matches", m), ("status_matches_seen", true)]
+       | .matchesExcept U => [("claim_except", decide (barMatchesExcept U s.record b)), ("status_except_seen", true)]
+       | .differs _ => [("claim_differs", !m), ("status_differs_seen", true)]
+       | .checking => [("status_checking_seen", true)]
+       | .moving => [("status_moving_seen", true)])
+      ++ s.record.flatMap (fun k =>
+          match rowLine s r k with
+          | .tick => [("row_tick_open", decide (k ∈ b.open_)), ("row_tick_seen", true)]
+          | .behind => [("row_behind_behind", decide (k ∈ b.behind)), ("row_behind_seen", true)]
+          | .notOnBar => [("row_notOnBar_off", decide (k ∉ b.open_ ∧ k ∉ b.behind)), ("row_notOnBar_seen", true)]
+          | .notWherePut => [("row_notWherePut_seen", true)]
+          | _ => [])
+      ++ (step s e).2.flatMap (fun a =>
+          (if !a.user then [("engine_move_bar_differs", !m), ("engine_move_seen", true)] else [("user_move_seen", true)])
+          ++ [("move_target_open", decide (a.rel.target ∈ b.open_)),
+              ("move_subject_open_or_pullout", decide (a.subject ∈ b.open_ ∨ (a.subject ∈ foldedAll s r ∧ a.subject ∈ b.behind))),
+              ("move_not_on_cannotTell", shownVerdict s r != .cannotTell)]))
+  | _, _ => []
+
+def genHTrace (n : Nat) : G (List Key × List (Event × Option Bar) × List State) := do
+  let rec_ ← shuffle (← subset allKeys 90)
+  let mut s := State.init rec_
+  let mut evs : List (Event × Option Bar) := []
+  let mut sts : List State := []
+  for _ in List.range n do
+    let e ← genHEvent s
+    sts := sts ++ [s]
+    evs := evs ++ [e]
+    s := (step s e.1).1
+  pure (rec_, evs, sts)
 
 /-! ### Tally -/
 
@@ -294,14 +444,27 @@ def fuzz (mixed pure_ seed : Nat) : List Tally × Nat × Nat :=
       for _ in List.range 6 do
         let i ← rnd t.states.length
         let s0 := t.states.getD i (State.init [])
-        let s := { s0 with inFlight := none, owedKeys := [], foldRequest := none }
+        let idle ← rnd 2
+        let s := if idle == 0 then { s0 with inFlight := none, owedKeys := [], foldRequest := none } else { s0 with inFlight := none }
         let r0 ← genRead
         let rec_ ← shuffle (← subset allKeys 85)
         let k := 1 + (← rnd 7)
-        -- a plannable read that shows k drawn and trusted
-        let r := { r0 with kind := .pass, settled := true, level := .complete,
-                           drawn := k :: r0.drawn.filter (· != k), trusted := k :: r0.trusted }
+        let folded ← rnd 2
+        -- a plannable read that shows k drawn and trusted, or one that lists k as folded under a fresh chevron
+        let r := if folded == 0 then
+            { r0 with kind := .pass, settled := true, level := .complete,
+                      drawn := k :: r0.drawn.filter (· != k), trusted := k :: r0.trusted }
+          else
+            { r0 with kind := .pass, settled := true, level := .complete, chevron := .fresh, stripOpen := false,
+                      drawn := r0.drawn.filter (· != k), pile := k :: r0.pile.filter (· != k), trusted := r0.trusted.filter (· != k) }
         ts := addAll ts (answeredCheck s r rec_ k) desc
+        ts := addAll ts (owedReasonCheck ((step s (.userEdit rec_ [k])).1) r) desc
+    for _ in List.range mixed do
+      let (rec_, evs, sts) ← genHTrace 30
+      let desc := fun (_ : Unit) => toString (repr (rec_, evs.map (·.1)))
+      for (st, e) in sts.zip evs do
+        ts := addAll ts (honestChecks st e.1 e.2) desc
+        steps := steps + 1
     for _ in List.range pure_ do
       let t ← genTrace 30 false
       ts := addAll ts (pureChecks t) (fun _ => toString (repr (t.record, t.evs)))
@@ -328,4 +491,10 @@ def main (args : List String) : IO UInt32 := do
     IO.println s!"  {t.name}: {t.n} instances, {t.bad} failures"
     bad := bad + t.bad
     if let some c := t.cex then IO.println s!"    first counterexample: {c}"
+  -- both sides of every claim must be exercised
+  for nm in ["claim_matches", "claim_differs", "claim_except", "engine_move_bar_differs", "bar_matches_seen", "bar_differs_seen",
+             "status_checking_seen", "status_moving_seen", "row_tick_open", "row_behind_behind", "row_notOnBar_off", "user_move_seen"] do
+    if !(ts.any (fun t => t.name == nm && t.n > 0)) then
+      IO.println s!"  NOT EXERCISED: {nm}"
+      bad := bad + 1
   return if bad == 0 then 0 else 1
