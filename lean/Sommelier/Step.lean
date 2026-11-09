@@ -164,21 +164,45 @@ def afterCount (s : State) (r : Read) (k : Key) (rel : Rel) : Nat :=
 /-- THE READ VERIFIES THE WHOLE BAR (for the record's keys).  Every record key that the read lists anywhere (drawn, in the pile, folded or unread) is either movable (drawn,
 trusted, not counted as folded: its place in the open order is corroborated) or listed folded under a FRESH chevron (pinned behind the « by A2: it is not open, so it takes no
 part in the order of the open keys and a fallback drag never names it).  A drawn record key that is untrusted, an unread record key, and a pile or folded record key under a chevron that
-is not fresh all FAIL the condition: they could sit anywhere among the open keys, so no drag can be judged against them.  Record keys the read lists nowhere are not on the bar. -/
+is not fresh all FAIL the condition: they could sit anywhere among the open keys, so no drag can be judged against them.  Record keys the read lists nowhere are not on the bar
+and never make the condition false (`wholeBar_unlisted`). -/
 def wholeBar (s : State) (r : Read) : Bool :=
   s.record.all (fun x =>
     !(r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) ||
     (movable s r).contains x || (r.chevron == .fresh && r.foldedSet.contains x))
 
-/-- THE FALLBACK for an OWED movable `k` that is `misplaced`, when the anchor rule gave no move (the other owed keys are not anchors, or the anchors have no gap), and ONLY when
-the read verifies the whole bar (`wholeBar`).  Among ALL single drags of `k` (`fallbackCands`) it takes the one that leaves the fewest inversions among the movable record keys
-(which, under `wholeBar`, are exactly the record keys open on every possible bar), ties to the place nearest `k`'s record
-predecessor (`fallbackRel` is tried first and only a strictly lower count replaces it), and it fires ONLY if that count is STRICTLY lower than the bar's now.  Otherwise
-there is no drag (`NoReducingDrag`, or the bar is not verified). -/
+/-- THE FREE RECORD KEYS: the record keys that could stand ANYWHERE among the open keys of some possible bar.  Each is listed by the read (drawn, in the pile, folded or unread:
+a key listed nowhere is not on the bar), is not movable (so its place is not corroborated), and is not pinned behind a fresh chevron (so it may be open).  `wholeBar` is exactly "there is none"
+(`wholeBar_iff_free`). -/
+def freeKeys (s : State) (r : Read) : List Key :=
+  s.record.filter (fun x =>
+    (r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) &&
+    !(movable s r).contains x && !(r.chevron == .fresh && r.foldedSet.contains x))
+
+/-- The drag of `k` by `rel` moves `k` toward the front of the bar: its target stands before `k` in the order the read draws. -/
+def leftward (r : Read) (k : Key) (rel : Rel) : Bool := decide (r.drawn.idxOf rel.target < r.drawn.idxOf k)
+
+/-- THE WORST CASE THE FREE KEYS CAN ADD.  A free record key `y` may stand between `k` and the place the drag takes it to, on some possible bar, and then the drag crosses it.  Crossing `y` raises the
+inversions by one when the drag moves `k` forward and `y` is before `k` in the record (`k` is put ahead of a key that should be ahead of it), or moves `k` backward and `y` is after `k` in the record; otherwise
+it lowers them by one or leaves them.  `penalty` counts the free keys whose crossing would raise them: the most the free keys can add on any possible bar. -/
+def penalty (s : State) (r : Read) (k : Key) (rel : Rel) : Nat :=
+  ((freeKeys s r).filter (fun y =>
+    if leftward r k rel then decide (s.record.idxOf y < s.record.idxOf k) else decide (s.record.idxOf k < s.record.idxOf y))).length
+
+/-- The most inversions among the open record keys that the drag can leave on a possible bar, in excess of what the corroborated keys show: the inversions of the movable record keys after the drag
+plus the free keys' worst case.  Equal to `afterCount` when the read verifies the whole bar (`penalty_wholeBar`). -/
+def worstCount (s : State) (r : Read) (k : Key) (rel : Rel) : Nat := afterCount s r k rel + penalty s r k rel
+
+/-- THE FALLBACK for an OWED movable `k` that is `misplaced`, when the anchor rule gave no move (the other owed keys are not anchors, or the anchors have no gap).  Among ALL single drags of `k`
+(`fallbackCands`: next to a movable record key, on either side) it takes the one with the lowest `worstCount` (the inversions among the movable record keys after the drag, plus the most the free keys can
+add: `penalty`), ties to the place nearest `k`'s record predecessor (`fallbackRel` is tried first and only a strictly lower count replaces it), and it fires ONLY if that worst case is STRICTLY lower than
+the inversions of the movable record keys now.  Then the drag strictly lowers the record inversions of EVERY possible bar (`fallback_improves_bar`), whether or not the read verifies the whole bar; the rule picks
+the best drag by that worst case, not the drag that is best on some particular bar.  When the read verifies the whole bar (`wholeBar`) there is no free key and this is the rule of ejb.10.  Otherwise there
+is no drag (`NoReducingDrag`, or some drag could improve the bar but not on every possible bar). -/
 def fallbackMove (s : State) (r : Read) (k : Key) : Option Action :=
   let mk (rel : Rel) : Action := ⟨k, rel, needsStrip s r k rel, true⟩
-  if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then
-    ((argmin (afterCount s r k) (fallbackCands s r k)).map mk).filter (fun a => decide (afterCount s r k a.rel < invCount s r r.drawn))
+  if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && misplaced s r k then
+    ((argmin (worstCount s r k) (fallbackCands s r k)).map mk).filter (fun a => decide (worstCount s r k a.rel < invCount s r r.drawn))
   else none
 
 /-- The user's own move of an owed key `k`.  A drawn `k` gets the anchor rule's move, or, when that gives none, the fallback.

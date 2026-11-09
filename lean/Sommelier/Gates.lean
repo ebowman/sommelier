@@ -902,15 +902,17 @@ theorem fallbackMove_none_cases {s : State} {r : Read} {k : Key} (ho : k ∈ s.o
         obtain ⟨q, hq⟩ := misplaced_fallbackRel hm
         have hne : fallbackCands s r k ≠ [] := by
           unfold fallbackCands; simp [hq]
-        obtain ⟨b, hb⟩ := argmin_isSome (f := afterCount s r k) hne
+        obtain ⟨b, hb⟩ := argmin_isSome (f := worstCount s r k) hne
         have hs := argmin_spec hb
         have hle := hs.2 rel (legal_mem_cands h1 h2 h3)
-        have hlt' : afterCount s r k b < invCount s r r.drawn := by
+        have hlt' : worstCount s r k b < invCount s r r.drawn := by
           have : afterCount s r k rel = invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := rfl
+          have hwb : ∀ x, worstCount s r k x = afterCount s r k x := worstCount_wholeBar hw k
+          simp only [hwb] at hle ⊢
           omega
         have : fallbackMove s r k = some ⟨k, b, needsStrip s r k b, true⟩ := by
           simp only [fallbackMove, hb, Option.map, Option.filter]
-          simp [ho, hrk, hmv, hw, hm, hlt']
+          simp [ho, hrk, hmv, hm, hlt']
         rw [this] at h; simp at h
       · right; left; simpa using hw
     · left; exact hrk
@@ -923,15 +925,17 @@ theorem fallbackMove_exists {s : State} {r : Read} {k : Key} (ho : k ∈ s.owedK
     (hlt : invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) < invCount s r r.drawn) : ∃ a, fallbackMove s r k = some a := by
   obtain ⟨q, hq⟩ := misplaced_fallbackRel hm
   have hne : fallbackCands s r k ≠ [] := by unfold fallbackCands; simp [hq]
-  obtain ⟨b, hb⟩ := argmin_isSome (f := afterCount s r k) hne
+  obtain ⟨b, hb⟩ := argmin_isSome (f := worstCount s r k) hne
   have hs := argmin_spec hb
   have hle := hs.2 rel (legal_mem_cands h1 h2 h3)
-  have hlt' : afterCount s r k b < invCount s r r.drawn := by
+  have hlt' : worstCount s r k b < invCount s r r.drawn := by
     have : afterCount s r k rel = invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := rfl
+    have hwb : ∀ x, worstCount s r k x = afterCount s r k x := worstCount_wholeBar hw k
+    simp only [hwb] at hle ⊢
     omega
   exact ⟨⟨k, b, needsStrip s r k b, true⟩, by
     simp only [fallbackMove, hb, Option.map, Option.filter]
-    simp [ho, hrk, hmv, hw, hm, hlt']⟩
+    simp [ho, hrk, hmv, hm, hlt']⟩
 
 /-- A folded key is pulled out only if it is the fold request or owed, and the chevron is fresh; it goes just after the rightmost
 movable key that precedes it in the record, and only if that changes the drawn list. -/

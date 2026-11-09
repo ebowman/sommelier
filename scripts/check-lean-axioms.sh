@@ -38,7 +38,9 @@ provenNotFull_pile_empty drop_answered_reachable foldedDrawn_chevronless in_plac
 gate_facts fresh_drawn_not_folded decide_head mem_foldedAll noteRead_pile_usable
 anchorMove_spec anchorMove_right_place anchorMove_moves anchorMove_target fallbackMove_basic fallbackRel_target misplaced_fallbackRel
 fallbackMove_none_cases fallbackMove_exists legal_mem_cands argmin_spec fallback_reduces_inversions fallback_best right_everywhere_no_move noMoveHelps_true userRetry_answers plain_is_no_move drop_no_gap_note bar_open_record applyMove_filter fallback_improves_bar noMoveHelps_bar cantJudge_iff exists_drag applyMove_split filter_ins wholeBar_cases invCount_ignores_unmovable userPick_exists userPick_none userPick_head1 userMove_phases userMove_none_reason rowNote_true rowNote_reason queue_move_decides try_again_core try_again_answers
-drain_potential potential_le drops_drain drop_mutual_inversion drop_no_gap drop_keys_around_say_so drain_bound_attained"
+drain_potential potential_le drops_drain drop_mutual_inversion drop_no_gap drop_keys_around_say_so drain_bound_attained
+wholeBar_unlisted wholeBar_iff_free penalty_wholeBar worstCount_wholeBar fallback_best_whole cantJudge_iff cantJudge_free move_bound move_cmp_left move_cmp_right
+bar_movable_facts invs_split fallback_improves_bar noMoveHelps_bar"
 ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $HEADLINE; do
   echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty.lean"; exit 1; }

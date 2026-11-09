@@ -759,11 +759,36 @@ example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [4], .userEdit 
 -- the tie-break: 2 after its record predecessor 1 (not before the first key, which leaves the same count)
 example : (run (State.init [1, 2, 3, 4]) [.userEdit [1, 2, 3, 4] [2], .read (mkRead .fresh [3, 2, 1, 4] [9])]).2
     = [⟨2, .after 1, false, true⟩] := by decide
--- reviewer trace 1: record [1..5], read [3,2,4,5,1] with 4 and 5 untrusted, drop 2: the bar is not verified, NO fallback move (it used to emit `2 after 1`, which makes the real bar worse)
+-- reviewer trace 1: record [1..5], read [3,2,4,5,1] with 4 and 5 untrusted, drop 2: the bar is not verified.  `2 after 1` (which makes the real bar worse when 4 or 5 sits between them) is NOT made; `2 before 3` is:
+-- it crosses only 3 and, possibly, the untrusted 4 and 5, which belong after 2, so it lowers the inversions on every possible bar (ejb.11)
 example : (run (State.init [1, 2, 3, 4, 5]) [.userEdit [1, 2, 3, 4, 5] [2], .read { mkRead .fresh [3, 2, 4, 5, 1] [9] with trusted := [3, 2, 1, 9] }]).2
-    = [] := by decide
+    = [⟨2, .before 3, false, true⟩] := by decide
 -- reviewer trace 2: record [1,2,3,4], read [3,2,4,1] with 2 untrusted, drop 3: no `noMoveHelps`, the row says it cannot judge
 example : rowNote (step (State.init [1, 2, 3, 4]) (.userEdit [1, 2, 3, 4] [3])).1 { mkRead .fresh [3, 2, 4, 1] [9] with trusted := [3, 4, 1, 9] } 3
     = some .cantJudge := by decide
+
+
+/-! ## ejb.11: unlisted record keys, and the fallback that holds on every possible bar -/
+
+-- an 18-key record, the read lists 4 of them (drawn 3,2,4,1) and the pile hosts the 9: the other 14 record keys are listed nowhere (apps not running), the bar is still verified, and the drop of 2 gets its fallback move
+-- (`wholeBar_unlisted` is the theorem; this is the witness, and it is what kills a `wholeBar` that counts an unlisted key as unverified)
+def rec18 : List Key := (List.range 18).map (· + 1)
+example : wholeBar (step (State.init rec18) (.userEdit rec18 [2])).1 (mkRead .fresh [3, 2, 4, 1] [9]) = true := by decide
+example : (freeKeys (step (State.init rec18) (.userEdit rec18 [2])).1 (mkRead .fresh [3, 2, 4, 1] [9])).length = 0 := by decide
+example : (run (State.init rec18) [.userEdit rec18 [2], .read (mkRead .fresh [3, 2, 4, 1] [9])]).2
+    = [⟨2, .before 3, false, true⟩] := by decide
+-- the same read with key 5 listed unread: the bar is no longer verified (5 is free), and the fallback still finds a drag that cannot make a possible bar worse
+example : wholeBar (step (State.init rec18) (.userEdit rec18 [2])).1 { mkRead .fresh [3, 2, 4, 1] [9] with unread := [5] } = false := by decide
+example : (freeKeys (step (State.init rec18) (.userEdit rec18 [2])).1 { mkRead .fresh [3, 2, 4, 1] [9] with unread := [5] }) = [5] := by decide
+-- a free key AFTER the item in the record cannot cost a forward drag: key 4 is untrusted in [3,2,4,5,1] and belongs after 2, so `2 before 3` is safe on every possible bar
+example : (run (State.init [1, 2, 3, 4, 5]) [.userEdit [1, 2, 3, 4, 5] [2], .read { mkRead .fresh [3, 2, 4, 5, 1] [9] with trusted := [3, 2, 1, 9] }]).2
+    = [⟨2, .before 3, false, true⟩] := by decide
+-- the penalty: a free key BEFORE the item in the record (key 1, untrusted, last) can sit between the item and the place a drag takes it, so a drag across the movable keys alone is not safe.  Record [1..5],
+-- read [4,3,5,2,1] with 1 untrusted, drop 3: the corroborated keys alone show a drag (3 before 4: 4 inversions become 3) but on a bar with 1 between 4 and 3 it adds an inversion, so there is NO move and the row cannot judge
+example : (run (State.init [1, 2, 3, 4, 5]) [.userEdit [1, 2, 3, 4, 5] [3], .read { mkRead .fresh [4, 3, 5, 2, 1] [9] with trusted := [4, 3, 5, 2, 9] }]).2 = [] := by decide
+example : rowNote (step (State.init [1, 2, 3, 4, 5]) (.userEdit [1, 2, 3, 4, 5] [3])).1 { mkRead .fresh [4, 3, 5, 2, 1] [9] with trusted := [4, 3, 5, 2, 9] } 3
+    = some .cantJudge := by decide
+-- the worst case counts only the keys that can cost: the same read with the free key AFTER the item (record [1..5] with 5 untrusted, drop 3, read [4,3,1,2,5]) is answered
+example : (run (State.init [1, 2, 3, 4, 5]) [.userEdit [1, 2, 3, 4, 5] [3], .read { mkRead .fresh [4, 3, 1, 2, 5] [9] with trusted := [4, 3, 1, 2, 9] }]).2 ≠ [] := by decide
 
 end Sommelier

@@ -250,16 +250,16 @@ M=[
 ('proof_poll_flips_late',"(if r.kind == .pass then 3 else 2) <= s.noChevronReads","3 <= s.noChevronReads"),
 # ejb.10: the fallback for a misplaced owed key, the two phases, the note beside a row
 ('fb_none',"    | none => fallbackMove s r k\n","    | none => none\n"),
-('fb_not_strict',"((argmin (afterCount s r k) (fallbackCands s r k)).map mk).filter (fun a => decide (afterCount s r k a.rel < invCount s r r.drawn))","((argmin (afterCount s r k) (fallbackCands s r k)).map mk)"),
-('fb_nonstrict',"decide (afterCount s r k a.rel < invCount s r r.drawn))","decide (afterCount s r k a.rel ≤ invCount s r r.drawn))"),
-('fb_non_owed',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then","if s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then"),
-('fb_not_misplaced',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then","if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r then"),
-('fb_ignores_whole',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then","if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && misplaced s r k then"),
-('fb_not_in_record',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then","if s.owedKeys.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then"),
-('fb_not_movable',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && wholeBar s r && misplaced s r k then","if s.owedKeys.contains k && s.record.contains k && wholeBar s r && misplaced s r k then"),
+('fb_not_strict',"((argmin (worstCount s r k) (fallbackCands s r k)).map mk).filter (fun a => decide (worstCount s r k a.rel < invCount s r r.drawn))","((argmin (worstCount s r k) (fallbackCands s r k)).map mk)"),
+('fb_nonstrict',"decide (worstCount s r k a.rel < invCount s r r.drawn))","decide (worstCount s r k a.rel ≤ invCount s r r.drawn))"),
+('fb_non_owed',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && misplaced s r k then","if s.record.contains k && (movable s r).contains k && misplaced s r k then"),
+('fb_not_misplaced',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && misplaced s r k then","if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k then"),
+
+('fb_not_in_record',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && misplaced s r k then","if s.owedKeys.contains k && (movable s r).contains k && misplaced s r k then"),
+('fb_not_movable',"if s.owedKeys.contains k && s.record.contains k && (movable s r).contains k && misplaced s r k then","if s.owedKeys.contains k && s.record.contains k && misplaced s r k then"),
 ('whole_ignores_untrusted',"(movable s r).contains x || (r.chevron","r.drawn.contains x || (r.chevron"),
-('whole_folded_any_chevron',"(r.chevron == .fresh && r.foldedSet.contains x))","(r.foldedSet.contains x))"),
-('whole_ignores_unread',"r.folded.contains x || r.unread.contains x)","r.folded.contains x)"),
+('whole_folded_any_chevron',"(movable s r).contains x || (r.chevron == .fresh && r.foldedSet.contains x))","(movable s r).contains x || (r.foldedSet.contains x))"),
+('whole_ignores_unread',"r.folded.contains x || r.unread.contains x) ||\n    (movable s r).contains x","r.folded.contains x) ||\n    (movable s r).contains x"),
 ('whole_never',"def wholeBar (s : State) (r : Read) : Bool :=\n  s.record.all","def wholeBar (s : State) (r : Read) : Bool :=\n  true || s.record.all"),
 ('fb_argmax',"| some b => if f x < f b then some x else acc) none","| some b => if f b < f x then some x else acc) none"),
 ('fb_argmin_first',"| some b => if f x < f b then some x else acc) none","| some b => acc) none"),
@@ -291,10 +291,30 @@ M=[
 ('helps_not_misplaced',"s.record.contains k && wholeBar s r && misplaced s r k\n        && (fallbackMove","s.record.contains k && wholeBar s r\n        && (fallbackMove"),
 ('helps_always',"if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && wholeBar s r && misplaced s r k\n        && (fallbackMove s r k).isNone && (userPick s r).isNone then","if true then"),
 ('helps_not_movable',"if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && wholeBar s r","if s.owedKeys.contains k && s.record.contains k && wholeBar s r"),
+# ejb.11: the whole-bar condition (and the free keys it is "none of"), the worst case of the free keys, the narrowed note
+('own_whole_drawn_only',"    !(r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) ||","    !(r.drawn.contains x) ||"),
+('own_whole_unlisted_fails',"    !(r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) ||","    false ||"),
+('own_whole_unread_fresh',"(movable s r).contains x || (r.chevron == .fresh && r.foldedSet.contains x))","(movable s r).contains x || (r.chevron == .fresh && (r.foldedSet.contains x || r.unread.contains x)))"),
+('own_cant_no_owed',"if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && !wholeBar s r","if (movable s r).contains k && s.record.contains k && !wholeBar s r"),
+('own_cant_userpick',"&& (decideMove s r).isNone then\n      some .cantJudge","&& (userPick s r).isNone then\n      some .cantJudge"),
+('cant_ignores_fallback',"&& (fallbackMove s r k).isNone && (decideMove s r).isNone then\n      some .cantJudge","&& (decideMove s r).isNone then\n      some .cantJudge"),
+('free_ignores_unlisted',"  s.record.filter (fun x =>\n    (r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) &&","  s.record.filter (fun x =>\n    true &&"),
+('free_ignores_unread',"r.folded.contains x || r.unread.contains x) &&\n    !(movable","r.folded.contains x) &&\n    !(movable"),
+('free_ignores_movable',"!(movable s r).contains x && !(r.chevron == .fresh && r.foldedSet.contains x))","!(r.chevron == .fresh && r.foldedSet.contains x))"),
+('free_ignores_fold',"!(movable s r).contains x && !(r.chevron == .fresh && r.foldedSet.contains x))","!(movable s r).contains x)"),
+('free_fold_any_chevron',"!(movable s r).contains x && !(r.chevron == .fresh && r.foldedSet.contains x))","!(movable s r).contains x && !(r.foldedSet.contains x))"),
+('fb_no_penalty',"Nat := afterCount s r k rel + penalty s r k rel","Nat := afterCount s r k rel"),
+('fb_penalty_all_free',"((freeKeys s r).filter (fun y =>\n    if leftward r k rel then decide (s.record.idxOf y < s.record.idxOf k) else decide (s.record.idxOf k < s.record.idxOf y))).length","(freeKeys s r).length"),
+('fb_penalty_dir_flipped',"if leftward r k rel then decide (s.record.idxOf y < s.record.idxOf k) else decide (s.record.idxOf k < s.record.idxOf y)","if leftward r k rel then decide (s.record.idxOf k < s.record.idxOf y) else decide (s.record.idxOf y < s.record.idxOf k)"),
+('fb_penalty_same_side',"if leftward r k rel then decide (s.record.idxOf y < s.record.idxOf k) else decide (s.record.idxOf k < s.record.idxOf y)","decide (s.record.idxOf y < s.record.idxOf k)"),
+('fb_leftward_flipped',"decide (r.drawn.idxOf rel.target < r.drawn.idxOf k)","decide (r.drawn.idxOf k < r.drawn.idxOf rel.target)"),
+('fb_argmin_after_only',"argmin (worstCount s r k) (fallbackCands s r k)","argmin (afterCount s r k) (fallbackCands s r k)"),
+('fb_fires_on_after_only',"decide (worstCount s r k a.rel < invCount s r r.drawn)","decide (afterCount s r k a.rel < invCount s r r.drawn)"),
 ]
 
 
-PROOF_MUST_KILL_ANY = {'engine_grant_bypasses_budget', 'needsStrip_false', 'postedEngine_skips_case', 'F1_label_user',
+PROOF_MUST_KILL_ANY = {'own_whole_drawn_only', 'own_whole_unlisted_fails', 'own_whole_unread_fresh', 'free_ignores_unlisted', 'free_ignores_unread', 'free_ignores_movable', 'free_ignores_fold',
+  'free_fold_any_chevron', 'engine_grant_bypasses_budget', 'needsStrip_false', 'postedEngine_skips_case', 'F1_label_user',
   'proof_counts_unsettled', 'proof_unobserved_counts', 'proof_pass_flips_early', 'proof_poll_flips_late'}  # some theorem or pin (Safety.lean or Gates/Truth/Honesty)
 PROOF_MUST_KILL = {  # a Gates.lean/Truth.lean/Honesty.lean theorem must fail
   # ejb.3: the gates gate, the folded memory, failed drags, user events, one attempt per drop, pull-outs, subjects in the record
@@ -322,8 +342,9 @@ PROOF_MUST_KILL = {  # a Gates.lean/Truth.lean/Honesty.lean theorem must fail
   # ejb.10: the fallback (strict reduction, best drag), the two phases, misplaced
   'fb_none', 'fb_not_strict', 'fb_nonstrict', 'fb_non_owed', 'fb_not_misplaced', 'fb_argmax', 'fb_argmin_first', 'fb_cands_before_only', 'fb_cands_unfiltered',
   'fb_count_all_keys', 'fb_count_flipped', 'fb_user_false', 'misplaced_ignores_record', 'misplaced_equal', 'misplaced_before_only', 'um_pull_user_false',
-  'fb_ignores_whole', 'fb_not_in_record', 'fb_not_movable', 'whole_ignores_untrusted', 'whole_folded_any_chevron', 'whole_ignores_unread', 'whole_never',
-  'phase_fallback_first', 'phase_single', 'phase2_over_anchor', 'queue_head_only', 'queue_reversed'} | {
+  'fb_not_in_record', 'fb_not_movable', 'whole_ignores_untrusted', 'whole_folded_any_chevron', 'whole_ignores_unread', 'whole_never',
+  'phase_fallback_first', 'phase_single', 'phase2_over_anchor', 'queue_head_only', 'queue_reversed',
+  'fb_no_penalty', 'fb_penalty_dir_flipped', 'fb_penalty_same_side', 'fb_leftward_flipped', 'fb_argmin_after_only', 'fb_fires_on_after_only'} | {
   # ejb.3 pass B: the verdict and the rows (a Truth.lean theorem must fail)
   'verdict_A1_untrusted_open', 'verdict_A2_pile_ignored', 'verdict_A2_any_chevron', 'verdict_A3_proof_not_needed',
   'verdict_A6_everything_listed', 'verdict_A6_unread_not_listed', 'verdict_unread_is_pinned_open',
@@ -353,7 +374,7 @@ HONESTY_MUST_KILL = {
   'row_notWherePut_as_tick', 'row_behind_as_tick',
   'waiting_shown_on_good_read', 'waiting_only_when_move', 'waiting_only_when_not_good',
   # ejb.10: the note beside a row
-  'note_never', 'note_without_owed', 'note_on_any_owed', 'note_on_tick', 'helps_ignores_others', 'helps_ignores_fallback', 'helps_not_misplaced', 'helps_always', 'helps_not_movable', 'helps_ignores_whole', 'cant_flipped', 'cant_ignores_decide', 'cant_not_misplaced'}
+  'note_never', 'note_without_owed', 'note_on_any_owed', 'note_on_tick', 'helps_ignores_others', 'helps_ignores_fallback', 'helps_not_misplaced', 'helps_always', 'helps_not_movable', 'helps_ignores_whole', 'cant_flipped', 'cant_ignores_decide', 'cant_not_misplaced', 'own_cant_no_owed', 'own_cant_userpick', 'cant_ignores_fallback'}
 # Redundant guards: `decideMove` returns `none` unless `s.gate r`, and the gate requires `Read.usable` (a settled pass read, level not incomplete, strip
 # closed, chevron fresh or proven absent), so the same conditions repeated in `decideMove`'s own guard and in `engineAllowed` change no decision.  The
 # check is `gate_facts` (Honesty.lean) and the runner below: a mutant listed here must not be noticed by any example or fuzz check; it may still break a

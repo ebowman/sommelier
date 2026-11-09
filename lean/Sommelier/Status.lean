@@ -98,9 +98,11 @@ def rowLine (s : State) (r : Read) (k : Key) : RowLine :=
 
 /-- What a row says BESIDE its mark when the drop it carries gets no move.  Three notes, all beside a row that says "not where you put it" (the mark is untouched):
 * `noMoveHelps` ("No single move of this item would improve the order"): the read verifies the whole bar (`wholeBar`), the key is movable and misplaced, NO single drag of it
-  leaves fewer inversions, and no other queued key has a move on this read.  `noMoveHelps_true` proves it over every possible bar and every place the key could go.
-* `cantJudge` ("Sommelier can't judge this item until it can read the whole bar"): the key is owed, movable and misplaced among the keys the read corroborates, the read does NOT verify the
-  whole bar (a drawn record key is untrusted, or a record key is unread or listed folded without a fresh chevron), and no move is decided on this read (`cantJudge_iff`).
+  leaves fewer inversions, and no other queued key has a move on this read.  `noMoveHelps_true` proves it over every possible bar and every place the key could go.  It is NOT claimed when the read
+  does not verify the whole bar: there a free record key (see `freeKeys`) can stand beside the item on some possible bar, and a drag across it, to a place no key names, can improve that bar.
+* `cantJudge` ("Sommelier can't yet see enough of the bar to place this item"): the key is owed, movable and misplaced among the keys the read corroborates, the read does NOT verify the
+  whole bar (a drawn record key is untrusted, or a record key is unread or listed folded without a fresh chevron), no drag of it improves the order on EVERY possible bar (`fallbackMove` is none), and no move is
+  decided on this read (`cantJudge_iff`).  It claims no more than that the read does not show enough to place the item.
 * `noMoveHere` ("Sommelier has no move for this item right now"): only that no move of this key exists on this read.  `rowNote_reason` classifies it. -/
 inductive RowNote where
   | noMoveHelps
@@ -116,7 +118,7 @@ def rowNote (s : State) (r : Read) (k : Key) : Option RowNote :=
         && (fallbackMove s r k).isNone && (userPick s r).isNone then
       some .noMoveHelps
     else if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && !wholeBar s r && misplaced s r k
-        && (decideMove s r).isNone then
+        && (fallbackMove s r k).isNone && (decideMove s r).isNone then
       some .cantJudge
     else some .noMoveHere
   else none

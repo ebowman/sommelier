@@ -2013,13 +2013,24 @@ theorem drain_bound_attained :
 theorem fallback_reduces_inversions {s : State} {r : Read} {k : Key} {a : Action} (h : fallbackMove s r k = some a) :
     invCount s r (applyMove r.drawn a) < invCount s r r.drawn := (fallbackMove_basic h).2.2.2.2.2.2.2.2.2.2.2.2.1
 
-/-- **fallback_best.**  No other single drag of `k` (to either side of ANY movable record key other than `k`, i.e. to any place `k` may go) leaves fewer inversions than the fallback's. -/
+/-- **fallback_best.**  The fallback's drag has the lowest WORST CASE (`worstCount`: the inversions of the movable record keys after the drag plus the most the free keys can add) of every
+single drag of `k` to either side of a movable record key other than `k`.  This is the rule as stated: it does NOT say the drag is best on every particular bar (a bar with no free key
+between `k` and the place may be helped more by another drag), nor over places no key names. -/
 theorem fallback_best {s : State} {r : Read} {k : Key} {a : Action} (h : fallbackMove s r k = some a) :
+    ∀ rel : Rel, rel.target ∈ movable s r → rel.target ∈ s.record → rel.target ≠ k →
+      worstCount s r k a.rel ≤ worstCount s r k rel := by
+  intro rel h1 h2 h3
+  exact (fallbackMove_basic h).2.2.2.2.2.2.2.2.2.2.2.2.2 rel (legal_mem_cands h1 h2 h3)
+
+/-- **fallback_best_whole.**  On a read that verifies the whole bar there is no free key, and no other single drag of `k` (to either side of ANY movable record key other than `k`, i.e. to any place `k`
+may go) leaves fewer inversions than the fallback's (the ejb.10 statement of `fallback_best`). -/
+theorem fallback_best_whole {s : State} {r : Read} {k : Key} {a : Action} (hw : wholeBar s r = true) (h : fallbackMove s r k = some a) :
     ∀ rel : Rel, rel.target ∈ movable s r → rel.target ∈ s.record → rel.target ≠ k →
       invCount s r (applyMove r.drawn a) ≤ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := by
   intro rel h1 h2 h3
+  have := fallback_best h rel h1 h2 h3
+  rw [worstCount_wholeBar hw, worstCount_wholeBar hw] at this
   have hb := fallbackMove_basic h
-  have := hb.2.2.2.2.2.2.2.2.2.2.2.2.2 rel (legal_mem_cands h1 h2 h3)
   have hs : a.subject = k := hb.2.1
   have hq : a = ⟨k, a.rel, a.strip, a.user⟩ := by cases a; simp_all
   rw [hq]
@@ -2078,11 +2089,13 @@ theorem noMoveHelps_true {s : State} {r : Read} {k : Key} (h : rowNote s r k = s
     · split at h <;> simp at h
   · simp at h
 
-/-- **cantJudge_iff.**  The note `cantJudge` ("Sommelier can't judge this item until it can read the whole bar") is shown IF AND ONLY IF the row says "not where you put it", the key is owed
-(and in the record), movable and misplaced among the keys the read corroborates, the read does NOT verify the whole bar, and no move is decided on this read. -/
+/-- **cantJudge_iff.**  The note `cantJudge` ("Sommelier can't yet see enough of the bar to place this item") is shown IF AND ONLY IF the row says "not where you put it", the key is owed
+(and in the record), movable and misplaced among the keys the read corroborates, the read does NOT verify the whole bar, NO drag of the key improves the order on every possible bar (the fallback
+finds none), and no move is decided on this read. -/
 theorem cantJudge_iff {s : State} {r : Read} {k : Key} :
     rowNote s r k = some .cantJudge ↔
-      (rowLine s r k = .notWherePut ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = false ∧ misplaced s r k = true ∧ decideMove s r = none) := by
+      (rowLine s r k = .notWherePut ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = false ∧ misplaced s r k = true ∧
+        fallbackMove s r k = none ∧ decideMove s r = none) := by
   unfold rowNote
   constructor
   · intro h
@@ -2096,11 +2109,11 @@ theorem cantJudge_iff {s : State} {r : Read} {k : Key} :
       · split at h
         · rename_i hh
           simp only [Bool.and_eq_true, List.contains_iff_mem, Bool.not_eq_true', Option.isNone_iff_eq_none] at hh
-          obtain ⟨⟨⟨⟨⟨hm, ho⟩, hrk⟩, hwb⟩, hmis⟩, hd⟩ := hh
-          exact ⟨hc.1, ho, hrk, hm, hwb, hmis, hd⟩
+          obtain ⟨⟨⟨⟨⟨⟨hm, ho⟩, hrk⟩, hwb⟩, hmis⟩, hfm⟩, hd⟩ := hh
+          exact ⟨hc.1, ho, hrk, hm, hwb, hmis, hfm, hd⟩
         · simp at h
     · simp at h
-  · rintro ⟨hrow, ho, hrk, hm, hwb, hmis, hd⟩
+  · rintro ⟨hrow, ho, hrk, hm, hwb, hmis, hfm, hd⟩
     have hown : owedNow s k = true := by simp [owedNow, ho]
     have hc : (rowLine s r k == RowLine.notWherePut && owedNow s k) = true := by simp [hrow, hown]
     rw [if_pos hc]
@@ -2108,8 +2121,16 @@ theorem cantJudge_iff {s : State} {r : Read} {k : Key} :
         && (fallbackMove s r k).isNone && (userPick s r).isNone) = true := by simp [hwb]
     rw [if_neg h1]
     have h2 : ((movable s r).contains k && s.owedKeys.contains k && s.record.contains k && !wholeBar s r && misplaced s r k
-        && (decideMove s r).isNone) = true := by simp [List.contains_iff_mem, hm, ho, hrk, hwb, hmis, hd]
+        && (fallbackMove s r k).isNone && (decideMove s r).isNone) = true := by simp [List.contains_iff_mem, hm, ho, hrk, hwb, hmis, hfm, hd]
     rw [if_pos h2]
+
+/-- **cantJudge_free.**  Where `cantJudge` is shown the read leaves some record key free (`freeKeys` is not empty): a listed record key that is not movable and not pinned behind a fresh chevron.
+Nothing is claimed about the item beyond that. -/
+theorem cantJudge_free {s : State} {r : Read} {k : Key} (h : rowNote s r k = some .cantJudge) : freeKeys s r ≠ [] := by
+  have := (cantJudge_iff.1 h).2.2.2.2.1
+  intro hf
+  have := (wholeBar_iff_free s r).2 hf
+  simp_all
 
 /-- A pass whose status is "differs" without a reason of the budget or a hold (`plain`) is exactly a pass on which no move is decided and nothing is in flight. -/
 theorem plain_is_no_move {s : State} {r : Read} (h : statusLine s r = .differs .plain) :
@@ -2312,29 +2333,6 @@ theorem bar_open_record {s : State} {r : Read} {b : Bar} (hg : s.gate r = true) 
     simp only [hn, Bool.and_false, Bool.false_and]
 
 
-/-- **fallback_improves_bar.**  A fallback move strictly lowers the record inversions of EVERY possible real bar: for every bar `b` the view of the read could have been taken of, the number of
-inversions against the record among the OPEN keys of `b` (record keys only) is strictly smaller on the bar after the drag (`applyMove b.open_ a`) than on `b`.  Keys behind the « take no part: under `wholeBar`
-a record key listed folded under a fresh chevron is pinned behind (A2), the drag never names it (a target is a movable key, a subject is `k`), and the open order is all the drag changes. -/
-theorem fallback_improves_bar {s : State} {r : Read} {k : Key} {a : Action} (hg : s.gate r = true) (h : fallbackMove s r k = some a) :
-    ∀ b : Bar, Possible (s.view r) b → recInv s.record (applyMove b.open_ a) < recInv s.record b.open_ := by
-  intro b hb
-  obtain ⟨_, hsub, htm, htr, _, _, _, hrk, hmk, hwb, _, _, hlt, _⟩ := fallbackMove_basic h
-  have hQk : ((movable s r).contains a.subject && s.record.contains a.subject) = true := by
-    rw [hsub]; simp [List.contains_iff_mem, hmk, hrk]
-  have hQt : ((movable s r).contains a.rel.target && s.record.contains a.rel.target) = true := by
-    simp [List.contains_iff_mem, htm, htr]
-  have hRk : s.record.contains a.subject = true := by rw [hsub]; exact List.contains_iff_mem.2 hrk
-  have hRt : s.record.contains a.rel.target = true := List.contains_iff_mem.2 htr
-  have eo := bar_open_record hg hwb hb
-  have e1 := applyMove_filter (fun x => s.record.contains x) b.open_ a hRk hRt
-  have e2 := applyMove_filter (fun x => (movable s r).contains x && s.record.contains x) r.drawn a hQk hQt
-  unfold recInv
-  rw [e1, eo]
-  unfold invCount at hlt
-  rw [e2] at hlt
-  exact hlt
-
-
 theorem fm_before (t k : Key) : ∀ l : List Key, (∀ x ∈ l, x ≠ t) →
     l.flatMap (fun x => if (x == t) = true then [k, x] else [x]) = l
   | [], _ => rfl
@@ -2415,6 +2413,372 @@ theorem invs_all_eq (rec : List Key) (k : Key) : ∀ l : List Key, (∀ x ∈ l,
       have := h y (by simp [hy])
       simp [this, hx]
     simp [invs, h0, invs_all_eq rec k xs (fun y hy => h y (by simp [hy]))]
+
+
+/-! ### The fallback against every possible bar (ejb.11) -/
+
+theorem invs_split (rec : List Key) (k : Key) : ∀ (P R : List Key),
+    invs rec (P ++ k :: R) = invs rec (P ++ R) + (P.filter (fun y => decide (rec.idxOf k < rec.idxOf y))).length
+      + (R.filter (fun y => decide (rec.idxOf y < rec.idxOf k))).length
+  | [], R => by simp [invs]; omega
+  | x :: P, R => by
+    have ih := invs_split rec k P R
+    simp only [List.cons_append, invs, List.filter_append, List.length_append, List.filter_cons] at ih ⊢
+    by_cases h : rec.idxOf k < rec.idxOf x
+    · have h2 : ¬ rec.idxOf x < rec.idxOf k := by omega
+      simp [h] at ih ⊢
+      omega
+    · by_cases h3 : rec.idxOf x < rec.idxOf k
+      · simp [h] at ih ⊢
+        omega
+      · simp [h] at ih ⊢
+        omega
+
+
+
+/-- Keys of `l` that should come AFTER `k` in the record. -/
+def ca (rec : List Key) (k : Key) (l : List Key) : Nat := (l.filter (fun y => decide (rec.idxOf k < rec.idxOf y))).length
+/-- Keys of `l` that should come BEFORE `k` in the record. -/
+def cb (rec : List Key) (k : Key) (l : List Key) : Nat := (l.filter (fun y => decide (rec.idxOf y < rec.idxOf k))).length
+
+theorem ca_append (rec k) (A B : List Key) : ca rec k (A ++ B) = ca rec k A + ca rec k B := by
+  simp [ca, List.filter_append]
+theorem cb_append (rec k) (A B : List Key) : cb rec k (A ++ B) = cb rec k A + cb rec k B := by
+  simp [cb, List.filter_append]
+
+theorem len_filter_split (p Q : Key → Bool) : ∀ l : List Key,
+    (l.filter p).length = ((l.filter Q).filter p).length + ((l.filter (fun y => !Q y)).filter p).length
+  | [] => by simp
+  | x :: l => by
+    have ih := len_filter_split p Q l
+    cases hq : Q x <;> cases hp : p x <;> simp [List.filter_cons, hq, hp] at ih ⊢ <;> omega
+
+theorem ca_split (rec k) (Q : Key → Bool) (l : List Key) :
+    ca rec k l = ca rec k (l.filter Q) + ((l.filter (fun y => !Q y)).filter (fun y => decide (rec.idxOf k < rec.idxOf y))).length :=
+  len_filter_split _ Q l
+theorem cb_split (rec k) (Q : Key → Bool) (l : List Key) :
+    cb rec k l = cb rec k (l.filter Q) + ((l.filter (fun y => !Q y)).filter (fun y => decide (rec.idxOf y < rec.idxOf k))).length :=
+  len_filter_split _ Q l
+
+/-- Moving `k` to the right across `S`: the inversions change by `ca S - cb S`. -/
+theorem eq_right (rec : List Key) (k : Key) (P S R : List Key) :
+    invs rec (P ++ S ++ k :: R) + cb rec k S = invs rec (P ++ k :: (S ++ R)) + ca rec k S := by
+  have h1 := invs_split rec k (P ++ S) R
+  have h2 := invs_split rec k P (S ++ R)
+  have e : invs rec (P ++ S ++ R) = invs rec (P ++ (S ++ R)) := by rw [List.append_assoc]
+  have c1 : ca rec k (P ++ S) = ca rec k P + ca rec k S := ca_append _ _ _ _
+  have c2 : cb rec k (S ++ R) = cb rec k S + cb rec k R := cb_append _ _ _ _
+  unfold ca at c1 ⊢
+  unfold cb at c2 ⊢
+  omega
+
+theorem move_cmp_right (rec : List Key) (k : Key) (Q : Key → Bool) (hQ : Q k = true) (P S R : List Key) :
+    invs rec (P ++ S ++ k :: R) + invs rec ((P ++ k :: (S ++ R)).filter Q) ≤
+      invs rec (P ++ k :: (S ++ R)) + invs rec ((P ++ S ++ k :: R).filter Q) +
+        ((S.filter (fun y => !Q y)).filter (fun y => decide (rec.idxOf k < rec.idxOf y))).length := by
+  have e1 := eq_right rec k P S R
+  have e2 := eq_right rec k (P.filter Q) (S.filter Q) (R.filter Q)
+  have f1 : (P ++ k :: (S ++ R)).filter Q = P.filter Q ++ k :: (S.filter Q ++ R.filter Q) := by
+    simp [List.filter_append, List.filter_cons, hQ]
+  have f2 : (P ++ S ++ k :: R).filter Q = P.filter Q ++ S.filter Q ++ k :: R.filter Q := by
+    simp [List.filter_append, List.filter_cons, hQ]
+  rw [f1, f2]
+  have a1 := ca_split rec k Q S
+  have b1 := cb_split rec k Q S
+  omega
+
+theorem move_cmp_left (rec : List Key) (k : Key) (Q : Key → Bool) (hQ : Q k = true) (P S R : List Key) :
+    invs rec (P ++ k :: (S ++ R)) + invs rec ((P ++ S ++ k :: R).filter Q) ≤
+      invs rec (P ++ S ++ k :: R) + invs rec ((P ++ k :: (S ++ R)).filter Q) +
+        ((S.filter (fun y => !Q y)).filter (fun y => decide (rec.idxOf y < rec.idxOf k))).length := by
+  have e1 := eq_right rec k P S R
+  have e2 := eq_right rec k (P.filter Q) (S.filter Q) (R.filter Q)
+  have f1 : (P ++ k :: (S ++ R)).filter Q = P.filter Q ++ k :: (S.filter Q ++ R.filter Q) := by
+    simp [List.filter_append, List.filter_cons, hQ]
+  have f2 : (P ++ S ++ k :: R).filter Q = P.filter Q ++ S.filter Q ++ k :: R.filter Q := by
+    simp [List.filter_append, List.filter_cons, hQ]
+  rw [f1, f2]
+  have a1 := ca_split rec k Q S
+  have b1 := cb_split rec k Q S
+  omega
+
+/-- The free keys of `L` that a forward drag (`b`) or backward drag (`a`) can cost. -/
+def freeB (rec : List Key) (k : Key) (Q : Key → Bool) (L : List Key) : Nat :=
+  ((L.filter (fun y => !Q y)).filter (fun y => decide (rec.idxOf y < rec.idxOf k))).length
+def freeA (rec : List Key) (k : Key) (Q : Key → Bool) (L : List Key) : Nat :=
+  ((L.filter (fun y => !Q y)).filter (fun y => decide (rec.idxOf k < rec.idxOf y))).length
+
+theorem sub_free_le (p : Key → Bool) (Q : Key → Bool) {S L : List Key} (hS : S.Nodup) (hsub : ∀ x ∈ S, x ∈ L) :
+    ((S.filter (fun y => !Q y)).filter p).length ≤ ((L.filter (fun y => !Q y)).filter p).length := by
+  apply List.Nodup.length_le_of_subset
+  · have h1 : (S.filter (fun y => !Q y)).Nodup := hS.sublist List.filter_sublist
+    exact h1.sublist List.filter_sublist
+  · intro x hx
+    simp only [List.mem_filter] at hx ⊢
+    exact ⟨⟨hsub x hx.1.1, hx.1.2⟩, hx.2⟩
+
+theorem filter_ne_split (k : Key) (X Y : List Key) (hX : k ∉ X) (hY : k ∉ Y) :
+    (X ++ k :: Y).filter (fun x => x != k) = X ++ Y := by
+  rw [List.filter_append, List.filter_cons]
+  have h1 : X.filter (fun x => x != k) = X := List.filter_eq_self.2 (fun x hx => by
+    have : x ≠ k := fun e => hX (e ▸ hx)
+    simpa using this)
+  have h2 : Y.filter (fun x => x != k) = Y := List.filter_eq_self.2 (fun x hx => by
+    have : x ≠ k := fun e => hY (e ▸ hx)
+    simpa using this)
+  simp [h1, h2]
+
+theorem idx_before (X Y : List Key) (k t : Key) (hX : k ∉ X) (ht : t ∈ X) : (X ++ k :: Y).idxOf t < (X ++ k :: Y).idxOf k := by
+  rw [List.idxOf_append, List.idxOf_append, if_pos ht, if_neg hX]
+  have := idx_lt_len ht
+  simp [idx_cons]
+  omega
+
+theorem idx_after (X Y : List Key) (k t : Key) (hX : k ∉ X) (hY : k ∉ Y) (ht : t ∈ Y) (htX : t ∉ X) :
+    (X ++ k :: Y).idxOf k < (X ++ k :: Y).idxOf t := by
+  rw [List.idxOf_append, List.idxOf_append, if_neg hX, if_neg htX]
+  simp [idx_cons]
+  have : t ≠ k := fun e => hY (e ▸ ht)
+  simp [Ne.symm this]
+
+theorem move_bound (rec : List Key) (k t : Key) (Q : Key → Bool) (hQk : Q k = true) (L : List Key) (hnd : L.Nodup)
+    (hk : k ∈ L) (ht : t ∈ L) (hne : t ≠ k) (a : Action) (hs : a.subject = k) (hr : a.rel.target = t) :
+    invs rec (applyMove L a) + invs rec (L.filter Q) ≤
+      invs rec L + invs rec ((applyMove L a).filter Q) + (if L.idxOf t < L.idxOf k then freeB rec k Q L else freeA rec k Q L) := by
+  obtain ⟨X, Y, rfl⟩ := List.append_of_mem hk
+  have hnd' := List.nodup_append.1 hnd
+  have hkX : k ∉ X := fun h => hnd'.2.2 k h k (by simp) rfl
+  have hkY : k ∉ Y := (List.nodup_cons.1 hnd'.2.1).1
+  have hXY : (X ++ Y).Nodup := hnd.sublist (List.Sublist.append_left (List.sublist_cons_self k Y) X)
+  have hf := filter_ne_split k X Y hkX hkY
+  have hdisj : ∀ x ∈ X, x ∉ Y := fun x hx hy => hnd'.2.2 x hx x (List.mem_cons_of_mem _ hy) rfl
+  obtain ⟨sub, rel, sa, su⟩ := a
+  simp only at hs hr
+  subst hs
+  have htXY : t ∈ X ∨ t ∈ Y := by
+    have := List.mem_append.1 ht
+    rcases this with h | h
+    · exact Or.inl h
+    · rcases List.mem_cons.1 h with h | h
+      · exact absurd h hne
+      · exact Or.inr h
+  rcases htXY with htX | htY
+  · -- t before k
+    rw [if_pos (idx_before X Y sub t hkX htX)]
+    obtain ⟨X1, X2, rfl⟩ := List.append_of_mem htX
+    have hl : (X1 ++ t :: X2 ++ sub :: Y).filter (fun x => x != sub) = X1 ++ t :: (X2 ++ Y) := by
+      rw [hf]; simp
+    have hn : (X1 ++ t :: (X2 ++ Y)).Nodup := by simpa using hXY
+    obtain ⟨hbef, haft⟩ := applyMove_split (X1 ++ t :: X2 ++ sub :: Y) X1 (X2 ++ Y) t sub hl hn sa su
+    have hS1 : (t :: X2).Nodup := (List.nodup_append.1 hnd'.1).2.1
+    cases rel with
+    | before t' =>
+      simp only [Rel.target] at hr
+      obtain rfl : t = t' := hr.symm
+      rw [hbef]
+      have key := move_cmp_left rec sub Q hQk X1 (t :: X2) Y
+      have hp := sub_free_le (fun y => decide (rec.idxOf y < rec.idxOf sub)) Q hS1 (L := X1 ++ t :: X2 ++ sub :: Y) (fun x hx => by simp only [List.mem_append, List.mem_cons] at hx ⊢; grind)
+      exact Nat.le_trans key (Nat.add_le_add_left hp _)
+    | after t' =>
+      simp only [Rel.target] at hr
+      obtain rfl : t = t' := hr.symm
+      rw [haft]
+      have key := move_cmp_left rec sub Q hQk (X1 ++ [t]) X2 Y
+      have hp := sub_free_le (fun y => decide (rec.idxOf y < rec.idxOf sub)) Q (List.nodup_cons.1 hS1).2 (L := X1 ++ t :: X2 ++ sub :: Y) (fun x hx => by simp only [List.mem_append, List.mem_cons] at hx ⊢; grind)
+      simp only [List.append_assoc, List.cons_append, List.nil_append] at key hp ⊢
+      exact Nat.le_trans key (Nat.add_le_add_left hp _)
+  · -- t after k
+    have htX : t ∉ X := fun h => hdisj t h htY
+    rw [if_neg (by have := idx_after X Y sub t hkX hkY htY htX; omega)]
+    obtain ⟨Y1, Y2, rfl⟩ := List.append_of_mem htY
+    have hl : (X ++ sub :: (Y1 ++ t :: Y2)).filter (fun x => x != sub) = (X ++ Y1) ++ t :: Y2 := by
+      rw [hf]; simp
+    have hn : ((X ++ Y1) ++ t :: Y2).Nodup := by simpa using hXY
+    obtain ⟨hbef, haft⟩ := applyMove_split (X ++ sub :: (Y1 ++ t :: Y2)) (X ++ Y1) Y2 t sub hl hn sa su
+    have hY : (Y1 ++ t :: Y2).Nodup := (List.nodup_cons.1 hnd'.2.1).2
+    cases rel with
+    | before t' =>
+      simp only [Rel.target] at hr
+      obtain rfl : t = t' := hr.symm
+      rw [hbef]
+      have key := move_cmp_right rec sub Q hQk X Y1 (t :: Y2)
+      have hp := sub_free_le (fun y => decide (rec.idxOf sub < rec.idxOf y)) Q ((List.nodup_append.1 hY).1) (L := X ++ sub :: (Y1 ++ t :: Y2)) (fun x hx => by simp only [List.mem_append, List.mem_cons] at hx ⊢; grind)
+      simp only [List.append_assoc, List.cons_append, List.nil_append] at key hp ⊢
+      exact Nat.le_trans key (Nat.add_le_add_left hp _)
+    | after t' =>
+      simp only [Rel.target] at hr
+      obtain rfl : t = t' := hr.symm
+      rw [haft]
+      have key := move_cmp_right rec sub Q hQk X (Y1 ++ [t]) Y2
+      have hS : (Y1 ++ [t]).Nodup := hY.sublist (List.Sublist.append_left (by simp) Y1)
+      have hp := sub_free_le (fun y => decide (rec.idxOf sub < rec.idxOf y)) Q hS (L := X ++ sub :: (Y1 ++ t :: Y2)) (fun x hx => by simp only [List.mem_append, List.mem_cons, List.mem_singleton] at hx ⊢; grind)
+      simp only [List.append_assoc, List.cons_append, List.nil_append] at key hp ⊢
+      exact Nat.le_trans key (Nat.add_le_add_left hp _)
+
+/-- On a good read, whatever the read verifies of the bar: the movable keys are open on every possible bar and stand there in the order the read draws them; and a record key open on a possible bar
+that is not movable is free. -/
+theorem bar_movable_facts {s : State} {r : Read} {b : Bar} (hg : s.gate r = true) (hb : Possible (s.view r) b) :
+    b.open_.filter (fun x => (movable s r).contains x) = r.drawn.filter (fun x => (movable s r).contains x) ∧
+    (∀ x ∈ b.open_, x ∈ s.record → x ∉ movable s r → x ∈ freeKeys s r) := by
+  have hg' := hg
+  unfold State.gate at hg'
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hg'
+  have hu : (s.view r).usable := hg'.1
+  have hcm := consistent_iff.1 hg'.2
+  have hpo : (s.view r).pinOpen = r.drawn.filter (fun k => r.trusted.contains k) := view_usable_pin hu
+  have hf := ((poss_iff hu (b)).mp hb).2.1
+  have hwf := poss_wf hb
+  have hvr : (s.view r).chevron = r.chevron := rfl
+  have hmem : ∀ x, x ∈ (s.view r).pinOpen ↔ x ∈ r.drawn ∧ x ∈ r.trusted := by
+    intro x; rw [hpo]; simp [List.mem_filter]
+  constructor
+  · have e1 : b.open_.filter (fun x => (movable s r).contains x) =
+        (b.open_.filter (fun k => decide (k ∈ (s.view r).pinOpen))).filter (fun x => (movable s r).contains x) := by
+      rw [List.filter_filter]
+      apply List.filter_congr
+      intro x hx
+      by_cases hxm : (movable s r).contains x = true
+      · have := (mem_movable_iff s r x).1 (List.contains_iff_mem.1 hxm)
+        have hd : decide (x ∈ (s.view r).pinOpen) = true := by simpa using (hmem x).2 ⟨this.1, this.2.1⟩
+        simp only [hxm, hd, Bool.and_self]
+      · have hn : (movable s r).contains x = false := Bool.eq_false_iff.2 hxm
+        simp only [hn]; rfl
+    rw [e1, hf, hpo, List.filter_filter]
+    apply List.filter_congr
+    intro x hx
+    by_cases hxm : (movable s r).contains x = true
+    · have := (mem_movable_iff s r x).1 (List.contains_iff_mem.1 hxm)
+      have ht : r.trusted.contains x = true := List.contains_iff_mem.2 this.2.1
+      simp only [hxm, ht, Bool.and_self]
+    · have hn : (movable s r).contains x = false := Bool.eq_false_iff.2 hxm
+      simp only [hn]; rfl
+  · intro x hx hxr hxm
+    have hl := poss_open_listed hu hb hx
+    have hl' : (r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) = true := by
+      have : r.listed x := by simpa [Read.listed, State.view] using hl
+      simp only [Bool.or_eq_true, List.contains_iff_mem]
+      rcases this with h | h | h | h
+      · exact Or.inl (Or.inl (Or.inl h))
+      · exact Or.inl (Or.inl (Or.inr h))
+      · exact Or.inl (Or.inr h)
+      · exact Or.inr h
+    have hnf : (r.chevron == .fresh && r.foldedSet.contains x) = false := by
+      refine Classical.byContradiction fun hc => ?_
+      have hc : (r.chevron == .fresh && r.foldedSet.contains x) = true := by simpa using hc
+      simp only [Bool.and_eq_true, beq_iff_eq, List.contains_iff_mem] at hc
+      have hbeh : x ∈ (s.view r).pinBehind := by
+        rw [pinBehind_fresh hu (by rw [hvr]; exact hc.1)]; exact hc.2
+      exact hwf.2.2 x hx (poss_pin_behind hu hb hbeh)
+    unfold freeKeys
+    rw [List.mem_filter]
+    refine ⟨hxr, ?_⟩
+    have hm : (movable s r).contains x = false := by
+      cases h : (movable s r).contains x
+      · rfl
+      · exact absurd (List.contains_iff_mem.1 h) hxm
+    rw [hl', hm, hnf]; rfl
+
+theorem filter_comm' (p q : Key → Bool) (l : List Key) : (l.filter p).filter q = (l.filter q).filter p := by
+  rw [List.filter_filter, List.filter_filter]
+  exact List.filter_congr (fun x _ => Bool.and_comm _ _)
+
+/-- **fallback_improves_bar.**  A fallback move strictly lowers the record inversions of EVERY possible real bar, with or without the whole-bar condition: for every bar `b` the view of the read could have been taken
+of, the number of inversions against the record among the OPEN keys of `b` (record keys only) is strictly smaller on the bar after the drag (`applyMove b.open_ a`) than on `b`.  Why: the movable keys are open on every
+possible bar in the order the read draws them, so the drag changes the inversions among them exactly as `afterCount` says; the only other keys the drag can cross on a possible bar are free record keys (listed,
+not movable, not pinned behind a fresh chevron), and each such crossing adds at most one inversion, and only when it is one `penalty` counts.  The fallback fires only when `afterCount + penalty` is below the
+inversions now.  Keys behind the « take no part: the drag never names one (a target is a movable key, a subject is `k`) and the open order is all the drag changes. -/
+theorem fallback_improves_bar {s : State} {r : Read} {k : Key} {a : Action} (hg : s.gate r = true) (h : fallbackMove s r k = some a) :
+    ∀ b : Bar, Possible (s.view r) b → recInv s.record (applyMove b.open_ a) < recInv s.record b.open_ := by
+  intro b hb
+  obtain ⟨_, hsub, htm, htr, htk, _, _, hrk, hmk, hwc, _, _, _, _⟩ := fallbackMove_basic h
+  obtain ⟨sub, rel, sa, su⟩ := a
+  simp only at hsub htm htr htk hwc ⊢
+  subst sub
+  obtain ⟨hmeq, hfree⟩ := bar_movable_facts hg hb
+  have hwf := poss_wf hb
+  -- the data
+  obtain ⟨t, ht⟩ : ∃ t, t = rel.target := ⟨_, rfl⟩
+  obtain ⟨Q, hQ⟩ : ∃ Q : Key → Bool, Q = fun x => (movable s r).contains x := ⟨_, rfl⟩
+  have hQk : Q k = true := by rw [hQ]; simpa [List.contains_iff_mem] using hmk
+  have hQt : Q t = true := by rw [hQ, ht]; simpa [List.contains_iff_mem] using htm
+  have hRk : s.record.contains k = true := List.contains_iff_mem.2 hrk
+  have hRt : s.record.contains t = true := by rw [ht]; exact List.contains_iff_mem.2 htr
+  have hdk : k ∈ r.drawn := ((mem_movable_iff s r k).1 hmk).1
+  have hdt : t ∈ r.drawn := by rw [ht]; exact ((mem_movable_iff s r _).1 htm).1
+  -- open
+  have hok : k ∈ b.open_ := by
+    have : k ∈ r.drawn.filter Q := List.mem_filter.2 ⟨hdk, hQk⟩
+    rw [hQ, ← hmeq] at this
+    exact (List.mem_filter.1 this).1
+  have hot : t ∈ b.open_ := by
+    have : t ∈ r.drawn.filter Q := List.mem_filter.2 ⟨hdt, hQt⟩
+    rw [hQ, ← hmeq] at this
+    exact (List.mem_filter.1 this).1
+  obtain ⟨L, hL⟩ : ∃ L, L = b.open_.filter (fun x => s.record.contains x) := ⟨_, rfl⟩
+  have hLnd : L.Nodup := by rw [hL]; exact nodup_filter' _ hwf.1
+  have hkL : k ∈ L := by rw [hL]; exact List.mem_filter.2 ⟨hok, hRk⟩
+  have htL : t ∈ L := by rw [hL]; exact List.mem_filter.2 ⟨hot, hRt⟩
+  have htk' : t ≠ k := by rw [ht]; exact htk
+  have hmb := move_bound s.record k t Q hQk L hLnd hkL htL htk' ⟨k, rel, sa, su⟩ rfl ht.symm
+  -- the filtered lists
+  obtain ⟨D, hD⟩ : ∃ D, D = r.drawn.filter (fun x => (movable s r).contains x && s.record.contains x) := ⟨_, rfl⟩
+  have hmeq' : b.open_.filter Q = r.drawn.filter Q := by rw [hQ]; exact hmeq
+  have hLQ : L.filter Q = D := by
+    have e7 : (r.drawn.filter Q).filter (fun x => s.record.contains x) = D := by
+      rw [hD, List.filter_filter, hQ]
+      exact List.filter_congr (fun x _ => Bool.and_comm _ _)
+    rw [hL, filter_comm', hmeq', e7]
+  have hAQ : (applyMove L ⟨k, rel, sa, su⟩).filter Q = applyMove D ⟨k, rel, sa, su⟩ := by
+    rw [applyMove_filter Q L ⟨k, rel, sa, su⟩ hQk (by rw [← ht]; exact hQt), hLQ]
+  have hAL : applyMove L ⟨k, rel, sa, su⟩ = (applyMove b.open_ ⟨k, rel, sa, su⟩).filter (fun x => s.record.contains x) := by
+    rw [hL, applyMove_filter (fun x => s.record.contains x) b.open_ ⟨k, rel, sa, su⟩ hRk (by rw [← ht]; exact hRt)]
+  -- the corroborated inversions
+  have hQD : ∀ (a' : Action), a'.subject = k → a'.rel.target = t → (applyMove r.drawn a').filter (fun x => (movable s r).contains x && s.record.contains x) = applyMove D a' := by
+    intro a' h1 h2
+    rw [hD]
+    exact applyMove_filter _ r.drawn a' (by rw [h1]; simp [List.contains_iff_mem, hmk, hrk]) (by rw [h2]; rw [ht] at *; simp [List.contains_iff_mem, htm, htr])
+  have hcnt : invCount s r r.drawn = invs s.record D := by unfold invCount; rw [hD]
+  have haft : afterCount s r k rel = invs s.record (applyMove D ⟨k, rel, sa, su⟩) := by
+    unfold afterCount invCount
+    rw [hQD ⟨k, rel, false, true⟩ rfl ht.symm]
+    exact congrArg _ (applyMove_flags D k rel false true sa su)
+  -- direction
+  have hdir : L.idxOf t < L.idxOf k ↔ r.drawn.idxOf t < r.drawn.idxOf k := by
+    rw [hL, idx_filter_iff _ b.open_ t k hot hok hRt hRk, ← idx_filter_iff Q b.open_ t k hot hok hQt hQk, hmeq',
+      idx_filter_iff Q r.drawn t k hdt hdk hQt hQk]
+  -- the penalty bounds the free keys on the bar
+  have hfreeb : ∀ p : Key → Bool, ((L.filter (fun y => !Q y)).filter p).length ≤ ((freeKeys s r).filter p).length := by
+    intro p
+    apply List.Nodup.length_le_of_subset
+    · have h1 : (L.filter (fun y => !Q y)).Nodup := hLnd.sublist List.filter_sublist
+      exact h1.sublist List.filter_sublist
+    · intro y hy
+      simp only [List.mem_filter, hL] at hy ⊢
+      obtain ⟨⟨⟨hyo, hyr⟩, hyq⟩, hyp⟩ := hy
+      refine ⟨hfree y hyo (List.contains_iff_mem.1 hyr) ?_, hyp⟩
+      intro hym
+      have : Q y = true := by rw [hQ]; simpa [List.contains_iff_mem] using hym
+      rw [this] at hyq; simp at hyq
+  have hpen : (if L.idxOf t < L.idxOf k then freeB s.record k Q L else freeA s.record k Q L) ≤ penalty s r k rel := by
+    unfold penalty leftward
+    rw [← ht]
+    by_cases hlt : L.idxOf t < L.idxOf k
+    · have hd := hdir.1 hlt
+      simp only [hlt, hd, if_true, decide_true]
+      exact hfreeb _
+    · have hd : ¬ r.drawn.idxOf t < r.drawn.idxOf k := fun hh => hlt (hdir.2 hh)
+      simp only [hlt, hd, if_false, decide_false]
+      exact hfreeb _
+  have hrecA : recInv s.record (applyMove b.open_ ⟨k, rel, sa, su⟩) = invs s.record (applyMove L ⟨k, rel, sa, su⟩) := by
+    unfold recInv; rw [hAL]
+  have hrecB : recInv s.record b.open_ = invs s.record L := by unfold recInv; rw [hL]
+  rw [hrecA, hrecB]
+  rw [hAQ, hLQ] at hmb
+  unfold worstCount at hwc
+  rw [haft] at hwc
+  rw [hcnt] at hwc
+  omega
+
 
 
 /-- **noMoveHelps_bar.**  Where `noMoveHelps` is shown, on EVERY possible bar `b` of the view and EVERY place in its open keys (an insertion position `i` of `k` into the other open keys of `b`,

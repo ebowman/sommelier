@@ -184,19 +184,19 @@ theorem fallbackCands_target {s : State} {r : Read} {k : Key} {rel : Rel} (h : r
 theorem applyMove_flags (l : List Key) (k : Key) (rel : Rel) (s1 u1 s2 u2 : Bool) :
     applyMove l ⟨k, rel, s1, u1⟩ = applyMove l ⟨k, rel, s2, u2⟩ := rfl
 
-/-- The fallback's move: the user's own move of the owed, misplaced `k`, to a movable record key other than `k`, leaving STRICTLY fewer inversions than the bar has now,
-and no other single drag of `k` (from the candidates) leaves fewer. -/
+/-- The fallback's move: the user's own move of the owed, misplaced `k`, to a movable record key other than `k`, whose WORST CASE (`worstCount`: the inversions of the movable record keys after the drag
+plus the free keys' `penalty`) is STRICTLY lower than the inversions of the movable record keys now, and no other single drag of `k` (from the candidates) has a lower worst case.  The tenth component is the firing test. -/
 theorem fallbackMove_basic {s : State} {r : Read} {k : Key} {a : Action} (h : fallbackMove s r k = some a) :
     a.user = true ∧ a.subject = k ∧ a.rel.target ∈ movable s r ∧ a.rel.target ∈ s.record ∧ a.rel.target ≠ k ∧
-    a.strip = needsStrip s r a.subject a.rel ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = true ∧ misplaced s r k = true ∧ applyMove r.drawn a ≠ r.drawn ∧
+    a.strip = needsStrip s r a.subject a.rel ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ worstCount s r k a.rel < invCount s r r.drawn ∧ misplaced s r k = true ∧ applyMove r.drawn a ≠ r.drawn ∧
     invCount s r (applyMove r.drawn a) < invCount s r r.drawn ∧
-    ∀ rel ∈ fallbackCands s r k, invCount s r (applyMove r.drawn ⟨k, a.rel, false, true⟩) ≤ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := by
+    ∀ rel ∈ fallbackCands s r k, worstCount s r k a.rel ≤ worstCount s r k rel := by
   simp only [fallbackMove] at h
   split at h
   · rename_i hc
     simp only [Bool.and_eq_true, List.contains_iff_mem] at hc
-    obtain ⟨⟨⟨⟨hco, hrk⟩, hmv⟩, hwb⟩, hcm⟩ := hc
-    cases hb : argmin (afterCount s r k) (fallbackCands s r k) with
+    obtain ⟨⟨⟨hco, hrk⟩, hmv⟩, hcm⟩ := hc
+    cases hb : argmin (worstCount s r k) (fallbackCands s r k) with
     | none => simp [hb] at h
     | some rel =>
       simp only [hb, Option.map, Option.filter] at h
@@ -206,14 +206,16 @@ theorem fallbackMove_basic {s : State} {r : Read} {k : Key} {a : Action} (h : fa
         simp only [decide_eq_true_eq] at hlt
         have hs := argmin_spec hb
         have ht := fallbackCands_target hs.1
-        refine ⟨rfl, rfl, ht.1, ht.2.1, ht.2.2, rfl, hco, hrk, hmv, hwb, hcm, ?_, ?_, fun c hc => hs.2 c hc⟩
+        have hlt2 : afterCount s r k rel < invCount s r r.drawn := by
+          unfold worstCount at hlt; omega
+        refine ⟨rfl, rfl, ht.1, ht.2.1, ht.2.2, rfl, hco, hrk, hmv, hlt, hcm, ?_, ?_, fun c hc => hs.2 c hc⟩
         · intro heq
-          unfold afterCount at hlt
-          simp only [applyMove_flags r.drawn k rel false true (needsStrip s r k rel) true] at hlt
-          simp only [heq] at hlt
-          exact Nat.lt_irrefl _ hlt
-        · unfold afterCount at hlt
-          simpa [applyMove_flags r.drawn k rel false true (needsStrip s r k rel) true] using hlt
+          unfold afterCount at hlt2
+          simp only [applyMove_flags r.drawn k rel false true (needsStrip s r k rel) true] at hlt2
+          simp only [heq] at hlt2
+          exact Nat.lt_irrefl _ hlt2
+        · unfold afterCount at hlt2
+          simpa [applyMove_flags r.drawn k rel false true (needsStrip s r k rel) true] using hlt2
       · simp at h
   · simp at h
 
@@ -293,5 +295,39 @@ theorem userPick_head1 {s : State} {r : Read} {k : Key} {a : Action} (hfirst : (
   unfold userPick
   rw [htl]
   simp [List.findSome?, hum, Option.filter, hal]
+
+/-- `wholeBar` is exactly "no free record key". -/
+theorem wholeBar_iff_free (s : State) (r : Read) : wholeBar s r = true ↔ freeKeys s r = [] := by
+  unfold wholeBar freeKeys
+  rw [List.filter_eq_nil_iff, List.all_eq_true]
+  apply forall_congr'; intro x
+  apply forall_congr'; intro _
+  generalize (r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) = L
+  generalize (movable s r).contains x = m
+  generalize (r.chevron == .fresh && r.foldedSet.contains x) = f
+  cases L <;> cases m <;> cases f <;> simp
+
+/-- **wholeBar_unlisted.**  Record keys that the read lists NOWHERE (not drawn, not in the pile, not folded, not unread: an app that is not running) never make `wholeBar` false:
+appending any number of such keys to the record leaves `wholeBar` unchanged.  (`movable` does not depend on the record.) -/
+theorem wholeBar_unlisted (s : State) (r : Read) (u : List Key)
+    (hu : ∀ x ∈ u, r.drawn.contains x = false ∧ r.pile.contains x = false ∧ r.folded.contains x = false ∧ r.unread.contains x = false) :
+    wholeBar { s with record := s.record ++ u } r = wholeBar s r := by
+  unfold wholeBar
+  have hm : movable { s with record := s.record ++ u } r = movable s r := rfl
+  simp only [hm, List.all_append]
+  have : u.all (fun x => !(r.drawn.contains x || r.pile.contains x || r.folded.contains x || r.unread.contains x) ||
+      (movable s r).contains x || (r.chevron == .fresh && r.foldedSet.contains x)) = true := by
+    rw [List.all_eq_true]; intro x hx
+    obtain ⟨h1, h2, h3, h4⟩ := hu x hx
+    rw [h1, h2, h3, h4]; rfl
+  rw [this, Bool.and_true]
+
+/-- With no free key the penalty is nil: `worstCount` is `afterCount`. -/
+theorem penalty_wholeBar {s : State} {r : Read} (h : wholeBar s r = true) (k : Key) (rel : Rel) : penalty s r k rel = 0 := by
+  have := (wholeBar_iff_free s r).1 h
+  unfold penalty; rw [this]; rfl
+
+theorem worstCount_wholeBar {s : State} {r : Read} (h : wholeBar s r = true) (k : Key) (rel : Rel) : worstCount s r k rel = afterCount s r k rel := by
+  unfold worstCount; rw [penalty_wholeBar h]; rfl
 
 end Sommelier

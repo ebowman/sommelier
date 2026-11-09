@@ -384,7 +384,8 @@ def wholeOracle (n : Nat) : T Unit := do
             let ps := bs.filter (fun b => decide (Possible rv b))
             for a in fb do
               chk "W_fallback_tested" true w
-              chk "W_fallback_whole" (wholeBar s0 r) w
+              -- ejb.11: the fallback no longer needs a verified bar; `wholeBar` false is the case it was widened for
+              if !wholeBar s0 r then chk "info_W_fallback_on_unverified_bar" true
               for b in ps do
                 chk "W_fallback_bar_improves" (invOpen U (applyMove b.open_ a) < invOpen U b.open_) (fun _ => s!"b={repr b} a={repr a} {w ()}")
             if helps then
@@ -396,6 +397,153 @@ def wholeOracle (n : Nat) : T Unit := do
           -- the can't-judge note is shown only when the bar is not verified
           if rowNote s0 r k == some .cantJudge then chk "W_cant_unverified" (!wholeBar s0 r) w
 
+-- ejb.11: the status oracle.  Every status of every key (0 trusted drawn, 1 untrusted drawn, 2 in the pile or folded, 3 unread, 4 listed nowhere), every order of the drawn keys, a fresh chevron or none
+-- (with the proof that the bar is not full), every dropped subset; the semantic ground truth is the enumerated honest bars over the keys and the pile key 9.  Independent of the proofs: the
+-- inversions are counted pair by pair (`fullInv`, which also counts a folded key that stands before an open key it should follow).
+def posOf (rec_ : List Key) (x : Key) : Nat := rec_.idxOf x
+def fullInv (rec_ : List Key) (b : Bar) : Nat := Id.run do
+  let o := b.open_.filter rec_.contains
+  let mut n := 0
+  for i in [0:o.length] do
+    for j in [i+1:o.length] do
+      if posOf rec_ o[j]! < posOf rec_ o[i]! then n := n + 1
+  for x in b.behind.filter rec_.contains do
+    for y in o do
+      if posOf rec_ y < posOf rec_ x then n := n + 1
+  return n
+def statusRead (fresh : Bool) (st : Key → Nat) (U : List Key) (openOrder : List Key) : Read :=
+  let drawn := openOrder.filter (fun k => !U.contains k || st k == 0 || st k == 1)
+  let p2 := U.filter (fun k => st k == 2)
+  { kind := .pass, chevron := if fresh then .fresh else .absent, level := .complete, settled := true, stripOpen := false,
+    drawn := drawn, pile := if fresh then 9 :: p2 else [], folded := if fresh then [] else p2,
+    trusted := (drawn.filter (fun k => !U.contains k || st k == 0)) ++ (if fresh then [9] else []), nearFold := [],
+    unread := U.filter (fun k => st k == 3), notFullProven := !fresh }
+def isFb (s : State) (r : Read) (a : Action) : Bool := a.user && (anchorMove s r a.subject).isNone && !(foldedAll s r).contains a.subject
+def oldQueue (s : State) (r : Read) : Option Action :=
+  (s.foldRequest.toList ++ s.owedKeys).findSome? (fun k => (userMove1 s r k).filter (userAllowed s r))
+def statusActs (rec_ o : List Key) (s : State) (r : Read) (PB : List Bar) (tag w : String) : T Unit := do
+  for a in (step s (.read r)).2 do
+    if !a.user then continue
+    let fb := isFb s r a
+    chk "S_only_dropped" (tag != "" || o.contains a.subject) (fun _ => s!"{w} {repr a}")
+    if fb then
+      chk "S_fallback_seen" true
+      for b in PB do
+        let b' : Bar := ⟨applyMove b.open_ a, b.behind.filter (· != a.subject)⟩
+        chk "S_fallback_not_needless" (b'.open_ != b.open_) (fun _ => s!"{tag}{w} {repr a} b={repr b}")
+        chk "S_fallback_not_worse" (fullInv rec_ b' ≤ fullInv rec_ b) (fun _ => s!"{tag}{w} {repr a} b={repr b}")
+        chk "S_fallback_strict" (fullInv rec_ b' < fullInv rec_ b) (fun _ => s!"{tag}{w} {repr a} b={repr b}")
+    else
+      -- the anchor rule is pre-existing (ejb.3): counted as information, not checked
+      for b in PB do
+        let b' : Bar := ⟨applyMove b.open_ a, b.behind.filter (· != a.subject)⟩
+        if fullInv rec_ b' > fullInv rec_ b then chk "info_anchor_worse_on_a_possible_bar" true
+        if b'.open_ == b.open_ then chk "info_anchor_noop_on_a_possible_bar" true
+def statusNotes (n : Nat) (rec_ : List Key) (s : State) (r : Read) (PB : List Bar) (w : String) : T Unit := do
+  let dm := decideMove s r
+  for k in rec_ do
+    match rowNote s r k with
+    | some .noMoveHelps =>
+      chk "S_helps_seen" true
+      chk "S_helps_not_vacuous" (!PB.isEmpty) (fun _ => w)
+      for b in PB do
+        chk "S_helps_k_open" (b.open_.contains k) (fun _ => s!"k={k} {w} b={repr b}")
+        let rest := b.open_.filter (· != k)
+        let now := fullInv rec_ b
+        chk "S_helps_true_on_every_bar" (!(List.range (rest.length+1)).any (fun i => fullInv rec_ ⟨insertAt k rest i, b.behind⟩ < now)) (fun _ => s!"k={k} {w} b={repr b}")
+    | some .cantJudge =>
+      chk s!"info_cantJudge_shown_{n}keys" true
+      chk "S_cant_not_decided" dm.isNone (fun _ => s!"k={k} {w}")
+      chk "S_cant_unverified" (!wholeBar s r) (fun _ => s!"k={k} {w}")
+      chk "S_cant_no_fallback" (fallbackMove s r k).isNone (fun _ => s!"k={k} {w}")
+      -- the aim of ejb.11: no drag next to a movable record key lowers the inversions on EVERY possible bar while the row cannot judge
+      let ts := (movable s r).filter (fun t => t != k && rec_.contains t)
+      let rels := ts.flatMap (fun t => [Rel.before t, Rel.after t])
+      let safe := rels.any fun rel => !PB.isEmpty && PB.all fun b =>
+        fullInv rec_ ⟨applyMove b.open_ ⟨k, rel, false, true⟩, b.behind⟩ < fullInv rec_ b
+      chk s!"S_cant_hides_safe_drag_{n}keys" (!safe) (fun _ => s!"k={k} {w}")
+      -- information: some drag, to any place in some possible bar, would improve it (so "no single move would help" is NOT claimed here)
+      let anyImprove := PB.any fun b =>
+        let rest := b.open_.filter (· != k)
+        (List.range (rest.length+1)).any (fun i => fullInv rec_ ⟨insertAt k rest i, b.behind⟩ < fullInv rec_ b)
+      if anyImprove then chk s!"info_cantJudge_some_drag_improves_some_bar_{n}keys" true else chk s!"info_cantJudge_no_drag_improves_any_bar_{n}keys" true
+    | some .noMoveHere =>
+      chk "info_note_here" true
+      chk "S_here_no_usermove" (userMove s r k).isNone (fun _ => s!"k={k} {w}")
+      chk "S_here_not_cant" (!((movable s r).contains k && s.owedKeys.contains k && !wholeBar s r && misplaced s r k && dm.isNone && (fallbackMove s r k).isNone))
+        (fun _ => s!"k={k} {w} dm={repr dm}")
+    | none =>
+      chk "S_no_silent_row" (!(rowLine s r k == .notWherePut && owedNow s k)) (fun _ => s!"k={k} {w}")
+def statusDrain (rec_ o : List Key) (s0 : State) (b0 : List Key) (mk : List Key → Read) : T Unit := do
+  let mut s := s0; let mut b := b0; let mut seen := [b0]; let mut osc := false; let mut subj : List Key := []; let mut n := 0
+  let mut fbn := 0
+  for _ in [0:4*rec_.length+2] do
+    let (s1, as) := step s (.read (mk b))
+    match as with
+    | [] => break
+    | a :: _ =>
+      n := n + 1; subj := subj ++ [a.subject]
+      if isFb s (mk b) a then
+        fbn := fbn + 1
+        chk "S_drain_fb_step_reduces" (invs rec_ ((applyMove b a).filter rec_.contains) < invs rec_ (b.filter rec_.contains)) (fun _ => s!"b={b} a={repr a}")
+      s := s1; b := applyMove b a
+      if seen.contains b then osc := true
+      seen := seen ++ [b]
+      s := (step s (.moveResult a.subject .verified true)).1
+  chk "S_drain_no_oscillation" (!osc) (fun _ => s!"o={o} b0={b0}")
+  chk "S_drain_within_2n" (n ≤ 2 * o.length) (fun _ => s!"o={o} b0={b0} subj={subj}")
+  chk "S_drain_only_dropped" (subj.all o.contains) (fun _ => s!"o={o} b0={b0} subj={subj}")
+  if fbn > 0 then chk "info_drain_with_fallback" true
+def statusOracle (n sample dropSample : Nat) : T Unit := do
+  let U : List Key := (List.range n).map (· + 1)
+  let allBars := barsOf (U ++ [9])
+  let mut idx := 0
+  let sts : List (List Nat) := U.foldl (fun acc _ => acc.flatMap fun l => [0,1,2,3,4].map (l ++ [·])) [[]]
+  for stl in sts do
+    let st : Key → Nat := fun k => if k ≥ 1 && k ≤ n then stl[k-1]! else 0
+    let D := U.filter (fun k => st k ≤ 1)
+    for d in perms D do
+      for fresh in [true, false] do
+        idx := idx + 1
+        if sample > 1 && idx % sample != 0 then continue
+        let r := statusRead fresh st U d
+        let PB := allBars.filter fun b => decide (Possible ({ r with notFullProven := !fresh }) b)
+        chk "info_reads" true
+        let mut didx := 0
+        for o in subsets U do
+          if o.isEmpty then continue
+          didx := didx + 1
+          if dropSample > 1 && (didx + idx) % dropSample != 0 then continue
+          let s := { (step (State.init U) (.userEdit U o)).1 with provenNotFull := !fresh }
+          if !(s.gate r) then continue
+          let w := s!"st={stl} d={d} fresh={fresh} o={o}"
+          chk s!"info_cases_{n}keys" true
+          if wholeBar s r then chk "info_wholeBar_true" true else chk "info_wholeBar_false" true
+          statusActs U o s r PB "" w
+          -- against the pre-ejb.11 queue: the first answer is never lost or changed
+          let acts := (step s (.read r)).2
+          match oldQueue s r with
+          | some a0 =>
+            chk "S_queue_head_kept" (acts.head? == some a0) (fun _ => s!"{w} head={repr a0} now={repr acts}")
+          | none => pure ()
+          statusNotes n U s r PB w
+          let s2 := (step s .userRetry).1
+          statusActs U U s2 r PB "reapply_" w
+          let as2 := (step s2 (.read r)).2
+          if shownVerdict s2 r == .differs && as2.isEmpty then
+            chk "S_reapply_not_silent" (match statusLine s2 r with | .differs _ => true | _ => false) (fun _ => w)
+          statusNotes n U s2 r PB (w ++ " afterReapply")
+          for k in U do
+            if rowLine s r k == .notWherePut then
+              let s1 := (step s (.retryKey k)).1
+              statusActs U U s1 r PB "try_" w
+              let as1 := (step s1 (.read r)).2
+              chk "S_try_again_not_silent" (as1.any (·.user) || (rowNote s1 r k).isSome) (fun _ => s!"k={k} {w}")
+          -- the drain on the bar the read was generated from
+          let b0 : Bar := ⟨d, if fresh then 9 :: U.filter (fun k => st k == 2) else []⟩
+          if decide (Possible (s.view r) b0) then
+            statusDrain U o s d (fun l => statusRead fresh (fun k => if l.contains k && st k ≥ 2 then 0 else st k) U l)
+
 def main (args : List String) : IO UInt32 := do
   let n := (args.head? >>= String.toNat?).getD 1500
   let (_, c) ← (do
@@ -404,6 +552,8 @@ def main (args : List String) : IO UInt32 := do
       dropOracle
       wholeOracle 4
       wholeOracle 5
+      statusOracle 4 1 1
+      statusOracle 5 64 5
       -- pure sweep with arbitrary field
       for _ in [0:n] do
         let (r, g1) := genRead.run g

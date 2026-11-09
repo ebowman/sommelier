@@ -184,7 +184,7 @@ def owedReasonCheck (s : State) (r : Read) : List (String × Bool) :=
       let fa := (foldedAll s r).contains k
       [("owed_unanswered_reason",
         (mv && !misplaced s r k)
-        || (mv && misplaced s r k && (!s.record.contains k || !wholeBar s r || ((fallbackCands s r k).all fun rel => decide (invCount s r r.drawn ≤ afterCount s r k rel))))
+        || (mv && misplaced s r k && (!s.record.contains k || ((fallbackCands s r k).all fun rel => decide (invCount s r r.drawn ≤ worstCount s r k rel))))
         || (!fa && !(r.drawn.contains k && r.trusted.contains k))
         || (fa && !lic)
         || (fa && lic && pred.isNone)
@@ -285,7 +285,7 @@ def noteCheck (s : State) (r : Read) : List (String × Bool) :=
                  [Rel.before t, Rel.after t].all fun rel => decide (invCount s r r.drawn ≤ afterCount s r k rel))),
          ("note_seen", true)]
     | some .cantJudge =>
-        [("note_cant_true", rowLine s r k == .notWherePut && (movable s r).contains k && s.owedKeys.contains k && misplaced s r k && !wholeBar s r && (decideMove s r).isNone),
+        [("note_cant_true", rowLine s r k == .notWherePut && (movable s r).contains k && s.owedKeys.contains k && misplaced s r k && !wholeBar s r && (fallbackMove s r k).isNone && (decideMove s r).isNone),
          ("note_cant_seen", true)]
     | some .noMoveHere => [("note_here_true", rowLine s r k == .notWherePut && owedNow s k && (userMove s r k).isNone), ("note_here_seen", true)]
     | none => [("note_absent_ok", !(rowLine s r k == .notWherePut && owedNow s k))]

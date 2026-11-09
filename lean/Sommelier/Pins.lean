@@ -369,24 +369,33 @@ example : ∀ (s : State), s.inFlight = none → s.stripGrant = false → ∀ (e
 -- 2d. the fallback for a misplaced owed key (ejb.10)
 example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, fallbackMove s r k = some a →
     a.user = true ∧ a.subject = k ∧ a.rel.target ∈ movable s r ∧ a.rel.target ∈ s.record ∧ a.rel.target ≠ k ∧
-    a.strip = needsStrip s r a.subject a.rel ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = true ∧
+    a.strip = needsStrip s r a.subject a.rel ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ worstCount s r k a.rel < invCount s r r.drawn ∧
     misplaced s r k = true ∧ applyMove r.drawn a ≠ r.drawn ∧
     invCount s r (applyMove r.drawn a) < invCount s r r.drawn ∧
-    ∀ rel ∈ fallbackCands s r k, invCount s r (applyMove r.drawn ⟨k, a.rel, false, true⟩) ≤ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) :=
+    ∀ rel ∈ fallbackCands s r k, worstCount s r k a.rel ≤ worstCount s r k rel :=
   @fallbackMove_basic
 example : ∀ {s : State} {r : Read} {k : Key}, misplaced s r k = true → ∃ rel, fallbackRel s r k = some rel := @misplaced_fallbackRel
 example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, fallbackMove s r k = some a →
     invCount s r (applyMove r.drawn a) < invCount s r r.drawn := @fallback_reduces_inversions
 example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, fallbackMove s r k = some a →
     ∀ rel : Rel, rel.target ∈ movable s r → rel.target ∈ s.record → rel.target ≠ k →
-      invCount s r (applyMove r.drawn a) ≤ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := @fallback_best
+      worstCount s r k a.rel ≤ worstCount s r k rel := @fallback_best
+example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, wholeBar s r = true → fallbackMove s r k = some a →
+    ∀ rel : Rel, rel.target ∈ movable s r → rel.target ∈ s.record → rel.target ≠ k →
+      invCount s r (applyMove r.drawn a) ≤ invCount s r (applyMove r.drawn ⟨k, rel, false, true⟩) := @fallback_best_whole
+-- the free keys and the whole-bar condition (ejb.11)
+example : ∀ (s : State) (r : Read), wholeBar s r = true ↔ freeKeys s r = [] := wholeBar_iff_free
+example : ∀ (s : State) (r : Read) (u : List Key),
+    (∀ x ∈ u, r.drawn.contains x = false ∧ r.pile.contains x = false ∧ r.folded.contains x = false ∧ r.unread.contains x = false) →
+    wholeBar { s with record := s.record ++ u } r = wholeBar s r := wholeBar_unlisted
+example : ∀ {s : State} {r : Read} {k : Key}, rowNote s r k = some .cantJudge → freeKeys s r ≠ [] := @cantJudge_free
 example : ∀ {s : State} {r : Read} {k : Key}, k ∈ movable s r → misplaced s r k = false → userMove s r k = none := @right_everywhere_no_move
 example : ∀ {s : State} {r : Read} {k : Key}, rowNote s r k = some .noMoveHelps →
     s.gate r = true ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = true ∧ misplaced s r k = true ∧ NoReducingDrag s r k ∧
     userPick s r = none ∧ userMove s r k = none ∧ rowLine s r k = .notWherePut := @noMoveHelps_true
 example : ∀ {s : State} {r : Read} {k : Key}, rowNote s r k = some .cantJudge ↔
     (rowLine s r k = .notWherePut ∧ k ∈ s.owedKeys ∧ k ∈ s.record ∧ k ∈ movable s r ∧ wholeBar s r = false ∧ misplaced s r k = true ∧
-      decideMove s r = none) := @cantJudge_iff
+      fallbackMove s r k = none ∧ decideMove s r = none) := @cantJudge_iff
 example : ∀ {s : State} {r : Read} {k : Key} {a : Action}, s.gate r = true → fallbackMove s r k = some a →
     ∀ b : Bar, Possible (s.view r) b → recInv s.record (applyMove b.open_ a) < recInv s.record b.open_ := @fallback_improves_bar
 example : ∀ {s : State} {r : Read} {k : Key}, rowNote s r k = some .noMoveHelps →
