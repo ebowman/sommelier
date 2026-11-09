@@ -3,8 +3,8 @@
 # propext, Classical.choice and Quot.sound, and lean/Sommelier/Pins.lean (the full statements) builds: no sorryAx, no native_decide (Lean.ofReduceBool), no new axioms.
 set -eu
 cd "$(dirname "$0")/../lean"
-lake build Sommelier.Safety Sommelier.Gates Sommelier.Truth Sommelier.Honesty Sommelier.Pins >/dev/null || { echo "FAIL: Safety.lean, Gates.lean, Truth.lean, Honesty.lean or Pins.lean does not build (a weakened statement breaks a pin)"; exit 1; }
-FILES="Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Status.lean Sommelier/Step.lean Sommelier/Pins.lean Sommelier/Examples.lean Sommelier/Fuzz.lean Sommelier.lean"
+lake build Sommelier.Safety Sommelier.Gates Sommelier.Truth Sommelier.Honesty Sommelier.Pins Sommelier.Ffi >/dev/null || { echo "FAIL: Safety.lean, Gates.lean, Truth.lean, Honesty.lean, Pins.lean or Ffi.lean does not build (a weakened statement breaks a pin)"; exit 1; }
+FILES="Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Status.lean Sommelier/Step.lean Sommelier/Pins.lean Sommelier/Examples.lean Sommelier/Fuzz.lean Sommelier/Ffi.lean Sommelier.lean"
 for f in $FILES; do
   for bad in sorry native_decide 'axiom '; do
     if grep -n "^[^-]*\b$bad" $f | grep -v '^[0-9]*:\s*--' >/dev/null 2>&1; then
@@ -45,12 +45,21 @@ ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommeli
 for h in $HEADLINE; do
   echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty.lean"; exit 1; }
 done
+# The C boundary (Ffi.lean, namespace Sommelier.Ffi): every round-trip and wrapper theorem must exist, and they join the axiom check below.
+FFI_HEADLINE="ub_b ok_ne_err decList_enc decList_enc' decKeys_enc decKey_enc decKey_nil decKey_two decOutcome_enc decRead_enc decEvent_enc decEvent_malformed
+decActions_enc decWhy_enc decStatus_enc decVerdict_enc decRowLine_enc decRowVerdict_enc decAns_ok decAns_err
+initTok_enc stepTok_enc stepTok_bad statusTok_enc statusTok_bad shownTok_enc shownTok_bad rowLineTok_enc rowLineTok_bad_read rowLineTok_bad_key
+rowVerdictTok_enc rowVerdictTok_bad_read rowVerdictTok_bad_key"
+FFI_ALL=$(grep -E '^theorem [^ ]+' Sommelier/Ffi.lean | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
+for h in $FFI_HEADLINE; do
+  echo "$FFI_ALL" | grep -qx "$h" || { echo "FAIL: boundary theorem $h is missing from Ffi.lean"; exit 1; }
+done
 TMP=$(mktemp "${TMPDIR:-/tmp}/axioms.XXXXXX")
 mv "$TMP" "$TMP.lean"; TMP="$TMP.lean"
 trap 'rm -f "$TMP"' EXIT
-{ echo "import Sommelier.Pins"; for t in $ALL; do echo "#print axioms Sommelier.$t"; done; } > "$TMP"
+{ echo "import Sommelier.Pins"; echo "import Sommelier.Ffi"; for t in $ALL; do echo "#print axioms Sommelier.$t"; done; for t in $FFI_ALL; do echo "#print axioms Sommelier.Ffi.$t"; done; } > "$TMP"
 OUT=$(lake env lean "$TMP" 2>&1) || { echo "$OUT"; echo "FAIL: lean error"; exit 1; }
-N=$(echo "$ALL" | wc -l | tr -d ' ')
+N=$( (echo "$ALL"; echo "$FFI_ALL") | wc -l | tr -d ' ')
 CNT=$(echo "$OUT" | grep -c "depends on axioms\|does not depend on any axioms" || true)
 [ "$CNT" = "$N" ] || { echo "$OUT" | head -20; echo "FAIL: expected $N axiom reports, got $CNT"; exit 1; }
 BAD=$(echo "$OUT" | grep "depends on axioms" | sed -E 's/.*\[(.*)\]/\1/' | tr ',' '\n' | sed 's/^ *//' | grep -v -x -e propext -e Classical.choice -e Quot.sound || true)

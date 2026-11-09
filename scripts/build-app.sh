@@ -50,6 +50,9 @@ if [ -z "${CODESIGN_IDENTITY}" ]; then
     fi
 fi
 
+echo "==> LeanCore (the proved decision core)"
+"${SCRIPT_DIR}/build-lean-core.sh"
+
 echo "==> swift build -c release"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/${APP_NAME}"

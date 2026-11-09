@@ -1,14 +1,22 @@
-.PHONY: build test app run app-run probe dummy dummy-stop clean release notarize publish check-scripts
+.PHONY: lean-core build test app run app-run probe dummy dummy-stop clean release notarize publish check-scripts
 
 APP := build/Sommelier.app
 DUMMY := build/MBDummy.app
 
 # build also re-signs mbprobe ad-hoc with the app-group entitlement (live hide/show); `swift run` would re-link it unsigned.
-build:
+# The proved Lean decision core (static library + xcframework in build/LeanCore, gitignored); a no-op when lean/ is unchanged.
+lean-core:
+	scripts/build-lean-core.sh
+
+# SwiftPM caches the evaluated Package.swift by its text and environment, not by whether build/LeanCore exists; the stamp in the environment
+# makes it re-evaluate whenever the core changes. (After deleting build/LeanCore, a plain `swift build` can still see the old answer: `swift package purge-cache`.)
+export SOMMELIER_LEANCORE_STAMP = $(shell cat build/LeanCore/stamp 2>/dev/null || echo none)
+
+build: lean-core
 	swift build
 	codesign --force --sign - --entitlements Resources/Sommelier.entitlements "$$(swift build --show-bin-path)/mbprobe"
 
-test:
+test: lean-core
 	swift test
 
 app: build

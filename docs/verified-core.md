@@ -338,3 +338,77 @@ counterexample against the random honest bar), and the 93 others die only to a b
 `usable`: each Honest conjunct's use, each `usable` clause (stale, unsettled, proof, strip, poll, incomplete, unobserved), the pile, `unread`, a padded `U`, a global row check, `behindOutOfTurn`; the status and rows:
 matches on "except" and on "cannot tell", Moving with nothing pending, `stopped` without a spent budget; the gate removed from `decideMove`; the pull-out from memory; the proof counting unsettled reads) are all
 in the must-kill sets: 32 die to a `Truth.lean` declaration alone, 19 (the status and rows) to an `Honesty.lean` declaration with `Gates.lean` and `Truth.lean` intact, 6 to `Truth.lean` and also `Safety.lean` or `Gates.lean`.
+
+## How the app runs the proved code (ejb.5)
+
+The app does not port the Lean model to Swift. The Swift module `DecisionCore` (`Sources/DecisionCore/`) links the C that Lean itself generates from the proved
+definitions and calls it. `SommelierCore` does not use it yet (wiring is ejb.7).
+
+### The boundary
+
+```
+Swift value types (Key, Read, Event, Action, Rel, Status, Row, RowVerdict, Verdict)
+   | Codec.swift: flat UInt32 words (length-prefixed key lists)
+   v
+lean/shim/sommelier_lean.c      C: UInt32 words <-> Lean Array Nat, runtime and thread init, refcounts, malloc'd answer
+   v
+lean/Sommelier/Ffi.lean         @[export]: decode, call the PROVED function, encode
+   v
+step, statusLine, rowLine, shownVerdict, rowVerdict   (Step.lean, Truth.lean, Status.lean: unchanged)
+```
+
+Exports (`sommelier_init/step/status/shown_verdict/row_line/row_verdict/describe_event`) are thin: each is `decode; call; encode` and nothing else (`…Tok` functions in `Ffi.lean`).
+An answer is `0 :: payload`, or the single word `[1]` when the INPUT does not decode (`step` then also returns the state unchanged). There is no default value for
+a malformed event, read or key: Swift throws `DecisionError.malformedInput`. `ok_ne_err` proves the two answers cannot be confused.
+
+States are immutable and persistent: `DecisionCore.step` returns a NEW `DecisionState` and leaves its input usable. The C handle is released in `deinit`.
+
+### Round-trip theorems (`Ffi.lean`, in `scripts/check-lean-axioms.sh`, standard axioms only)
+
+Inputs, `dec (enc x) = some x`: `decEvent_enc` (every `Event`), `decRead_enc` (every `Read`: kind, chevron, level, the four Bools, six key lists), `decOutcome_enc`,
+`decList_enc`/`decList_enc'` (length-prefixed key lists: the record and `moved` of `userEdit`, the read's sets), `decKeys_enc` (the `init` record), `decKey_enc` (the row key), `ub_b` (Bool).
+Outputs: `decActions_enc` (every `List Action`, so every `Rel`), `decStatus_enc` (with `decWhy_enc`), `decVerdict_enc`, `decRowLine_enc`, `decRowVerdict_enc`.
+Wrappers: `stepTok_enc`, `statusTok_enc`, `shownTok_enc`, `rowLineTok_enc`, `rowVerdictTok_enc`, `initTok_enc` (encoded input gives exactly the encoding of the proved function's value), and
+`stepTok_bad`, `statusTok_bad`, `shownTok_bad`, `rowLineTok_bad_read`, `rowLineTok_bad_key`, `rowVerdictTok_bad_read`, `rowVerdictTok_bad_key` (an input that does not decode gives `[1]`).
+`decEvent_malformed` pins nine concrete malformed events (bad tag, trailing word, list longer than the words left, a non-Bool, an unknown outcome).
+What the round trips buy is Lean-side only: Lean's decode of a word list is the value that was encoded, and Lean's encoding of an answer decodes back to it. The Swift `Codec` is a separate piece of code and is not proved. `DifferentialTests` establish, by comparison and not by proof:
+(1) the Swift encoder emits exactly Lean's words for the 60000 events of the fuzz traces and the named traces; (2) for every `Event`/`Read` case (kind, chevron, level and Bool combinations, empty and non-empty lists) and for the events of the named and 200 fuzz traces, Lean's own reading of the Swift-encoded words (the `sommelier_describe_event` export, rendered by name) equals the Swift-side name of the event Swift meant;
+(3) the answers of the linked code, rendered by Swift name tables (`Names.swift`, which do not use `Codec`), equal the names Lean printed for the same inputs (`lake exe fixture`, 37 named traces and 2000 fuzz traces). A planted swap of two codes in `Codec` (Status 0/1, RowVerdict 0/1) or in the enum order of `Types.swift` (read kind, chevron, outcome) makes these tests fail; the enum-order faults are caught by `sommelier_describe_event`.
+The name tables in `Ffi.lean` and `Names.swift` are hand-written twins and are not themselves proved.
+
+### Trusted base the proofs do not cover
+
+1. The Lean compiler (C emission) and runtime (`libleanrt`, `libInit`, gmp, libuv), at the pinned toolchain.
+2. `leanc` / clang, which compile the generated C (`-O3`).
+3. The C shim (`lean/shim/sommelier_lean.c`): array building, reference counting, thread init, the answer buffer.
+4. The Swift wrappers (`Sources/DecisionCore/`): the `Codec` and the handle ownership.
+5. The adapter's obligations A1 - A7 (see "Truth statements"), which no proof checks, and the engine wiring (ejb.7): that `LayoutEngine` feeds the real events, runs the actions it is given, and delivers `moveResult` and `passBoundary`.
+6. Decoding does not check `Nodup` of a record (A7 says the adapter supplies a record without duplicates).
+Guards: `Tests/DecisionCoreTests` (the fixture comes from `lake exe fixture`, computed by Lean) run on every `swift test`, so a toolchain, compiler flag or shim change that alters any answer fails them. They are drift guards, not proofs.
+
+### Toolchain pin and upgrade
+
+`lean/lean-toolchain` pins `leanprover/lean4:v4.35.0`. `scripts/build-lean-core.sh` uses exactly that toolchain from elan and stops with an instruction if elan or the toolchain is missing; it never installs one.
+It runs `lake build SommelierFfi`, compiles the IR C of the modules `Sommelier.Ffi` imports with the toolchain's `leanc`, compiles the shim with the system clang, merges the objects with `libInit`, `libleanrt`, gmp and uv into
+`build/LeanCore/libLeanCore.a`, wraps it in `LeanCore.xcframework`, and writes the test fixture. It skips all of that when the stamp (hash of `lean/**/*.lean`, lakefile, manifest, toolchain, shim, this script) is unchanged. `build/` is gitignored; `make build`, `make test` and `scripts/build-app.sh` run it first.
+`Package.swift` adds `LeanCore`, `DecisionCore` and `DecisionCoreTests` only when `build/LeanCore/LeanCore.xcframework` exists, so a plain `swift build` / `swift test` on a fresh clone works without Lean and skips them; `make test` builds the core first and so always runs them. This becomes mandatory at ejb.7.
+
+To upgrade Lean: change `lean/lean-toolchain`, `elan toolchain install` it, then `cd lean && lake build`; fix whatever breaks and re-run `scripts/check-lean-axioms.sh`, `lake exe fuzz`, `lake exe oracle`; re-run `scripts/build-lean-core.sh` and `swift test`
+(the differential tests must pass unchanged); check the static library still links in release (`swift build -c release`) and `scripts/build-app.sh` still signs. Do not upgrade in a bead that changes the model.
+
+### Threading rules
+
+* The Lean runtime is initialised exactly once per process (`pthread_once` in the shim), by whichever call comes first. Nothing to call.
+* Every other thread that calls in is initialised on its first call (`lean_initialize_thread`) and finalised at thread exit (a pthread key destructor). Callers do nothing; this works from GCD, `Thread` and the Swift concurrency pool (tested).
+* Every state is marked multithreaded (`lean_mark_mt`) at creation, so reference counts are atomic: one `DecisionState` may be read, stepped and released from any threads at once (tested: four readers and two steppers on one state, release on another thread).
+* `step` never mutates its input. Two threads stepping the same state each get their own result; keeping ONE ordered "current" state is the caller's job (ejb.7: a single serial owner).
+* No locks and no globals in `DecisionCore`; it does no I/O, clock, AX or logging (a test greps the sources).
+
+### Cost
+
+Measured at 36 record keys and 36 drawn keys (native Lean, `IO.monoNanosNow`): `step` averages 16 us. The worst case is 22 to 45 ms, always a read that gives an owed, misplaced, drawn key its FALLBACK move.
+Cause: `fallbackMove` takes `argmin (worstCount s r k)` over the `2n - 1` candidate drags (71 at 36 keys). `argmin` recomputes `f` at each step (once for the candidate, once for the current best), so `worstCount` runs about twice per candidate. One `worstCount` (it applies the move to the drawn list and counts inversions) measured 153 us at 36 keys: 71 x 153 us = 10.9 ms for one pass, and the whole call measured 21.9 ms.
+`rowLine` (average 456 us over random probes, 26 ms worst) runs the same code: `waitingKey` calls `userMove`, and `userPick` calls `fallbackMove` (380 us of the average); `rowVerdict` adds about 100 us at 36 keys.
+It was measured only at 36 keys. Not changed: it is a proved definition. A proved-equal fast version is proposed as a follow-up: `fallbackMove'` that evaluates `worstCount` once per candidate and computes the change in inversions
+of a single-key move in O(n) from the crossed keys, with `fallbackMove' = fallbackMove` proved, then swap the export to it.
+Size: the app does not depend on `DecisionCore` until ejb.7, so the shipped binary is unchanged today. With a temporary link (a throwaway reference from `Sommelier`, reverted) the release binary grew by 2.44 MB (7,188,168 to 9,751,864 bytes); the static library is 17 MB before dead-stripping.

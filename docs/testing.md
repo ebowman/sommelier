@@ -1,5 +1,7 @@
 # Manual testing
 
+`make test` builds the proved Lean core first and runs the DecisionCore tests; plain `swift test` skips them when `build/LeanCore` was never built (it becomes mandatory at ejb.7). After deleting `build/LeanCore`, run `make clean` or `swift package purge-cache` first: SwiftPM caches the manifest.
+
 ## QA run (ordered)
 Run the sections below in this order for a full pass; each links to its checklist.
 1. First launch: [Developer launch trick](#developer-launch-trick)

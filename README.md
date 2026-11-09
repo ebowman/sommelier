@@ -146,8 +146,8 @@ Alpha software (0.1.x). Please expect rough edges.
 
 ## Building from source
 
-    make build     # swift build
-    make test      # swift test
+    make build     # swift build (first runs scripts/build-lean-core.sh)
+    make test      # swift test (same)
     make app       # assemble and ad-hoc sign build/Sommelier.app
     make app-run   # run the bundle binary directly so it inherits the terminal's Accessibility trust
     make release VERSION=x.y.z   # Developer ID signed + DMG in dist/ (see CONTRIBUTING.md)
@@ -155,6 +155,9 @@ Alpha software (0.1.x). Please expect rough edges.
     make dummy [ARGS="--count 3 --removal-allowed"]   # test status items
     make dummy-stop
     make clean
+
+The decision core is Lean code, proved and compiled to a static library by `scripts/build-lean-core.sh` (needs [elan](https://github.com/leanprover/elan) and the toolchain pinned in `lean/lean-toolchain`: `elan toolchain install $(cat lean/lean-toolchain)`).
+`make test` runs the DecisionCore tests; plain `swift test` skips them when the core was never built (after deleting `build/LeanCore`, run `make clean` or `swift package purge-cache`) (it becomes mandatory at ejb.7). `make build`, `make test` and `scripts/build-app.sh` run the script first (see `docs/verified-core.md`).
 
 ## Developing
 

@@ -621,7 +621,7 @@ def fuzz (mixed pure_ seed : Nat) : List Tally × Nat × Nat :=
 end Sommelier.Fuzz
 
 open Sommelier.Fuzz in
-def main (args : List String) : IO UInt32 := do
+def fuzzMain (args : List String) : IO UInt32 := do
   let mixed := (args.getD 0 "20000").toNat!
   let pure_ := (args.getD 1 "5000").toNat!
   let seed := (args.getD 2 "1").toNat!
