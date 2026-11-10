@@ -31,6 +31,28 @@ final class StatusItemController: NSObject {
             b.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         observeReveal()
+        observeObserveOnly()
+        applyObserveOnlyTitle()
+    }
+
+    /// ejb.30: while observing the status item itself says so: a small "Observe" title next to the glass (the icon variants stay for reveal).
+    private func applyObserveOnlyTitle() {
+        let on = model.observeOnly
+        statusItem.button?.title = on ? " Observe" : ""
+        statusItem.button?.imagePosition = on ? .imageLeading : .imageOnly
+        statusItem.button?.toolTip = on ? ObserveOnly.banner : nil
+    }
+
+    private func observeObserveOnly() {
+        withObservationTracking {
+            _ = model.observeOnly
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.applyObserveOnlyTitle()
+                self.observeObserveOnly()
+            }
+        }
     }
 
     @objc private func clicked(_ sender: Any?) {
@@ -120,6 +142,10 @@ final class StatusItemController: NSObject {
         m.addItem(show)
         m.addItem(item(model.state.userPaused ? "Resume Sommelier" : "Pause Sommelier", #selector(togglePause)))
         m.addItem(item("Arrange…", #selector(openArrange)))
+        let observe = item("\(ObserveOnly.settingTitle)\(model.observeGate.forcedByEnv ? " \u{2014} \(ObserveOnly.forcedNote)" : "")", #selector(toggleObserveOnly))
+        observe.state = model.observeOnly ? .on : .off
+        observe.isEnabled = !model.observeGate.forcedByEnv
+        m.addItem(observe)
         m.addItem(item("Settings…", #selector(openSettings), key: ","))
         let login = item("Start at login", #selector(toggleLogin))
         login.state = LoginItem.isEnabled ? .on : .off
@@ -142,6 +168,9 @@ final class StatusItemController: NSObject {
 
     @objc private func toggleHidden() { model.setShowHidden(!model.state.showHiddenSection) }
     @objc private func togglePause() { model.setUserPaused(!model.state.userPaused) }
+    @objc private func toggleObserveOnly() {
+        if model.observeOnly { model.armWithConfirmation() } else { model.setObserveOnly(true) }   // ON needs no confirmation
+    }
     @objc private func openArrange() { onArrange() }
     @objc private func openSettings() { onSettings() }
     @objc private func toggleLogin() { LoginItem.set(!LoginItem.isEnabled) }

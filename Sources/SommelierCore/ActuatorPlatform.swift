@@ -134,12 +134,21 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     private let work = DispatchQueue(label: "sommelier.liveplatform", qos: .userInitiated)
 
     private let trackedSource: @Sendable () -> TrackedEntryResolver?
+    /// ejb.30: observe-only. Every method of this platform that posts input, writes a preference or restarts the agent refuses (and says so in
+    /// `AppLog`); reads are untouched. A backstop under `ObserveOnlyActuator`: nothing above can bypass it.
+    public let observeGate: ObserveOnlyGate
+    public var observeOnly: Bool { observeGate.isOn }
+    private func refuseIfObserveOnly(_ what: String) throws {
+        if observeGate.isOn { AppLog.log(.engine, "observe-only: would \(what)"); throw ObserveOnlyRefusal(what) }
+    }
     private let snapshotLock = NSLock()
     private var trackedSnapshot: TrackedEntryResolver??   // .some(x) = read at batch start (x may be nil = unreadable)
 
     public init(scanner: MenuBarScanner = MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL),
                 resolver: IdentityResolver = IdentityResolver(),
-                trackedSource: @escaping @Sendable () -> TrackedEntryResolver? = { TrackedEntryResolver.current() }) {
+                trackedSource: @escaping @Sendable () -> TrackedEntryResolver? = { TrackedEntryResolver.current() },
+                observeGate: ObserveOnlyGate = ObserveOnlyGate(fixed: false)) {
+        self.observeGate = observeGate
         self.scanner = scanner
         self.resolver = resolver
         self.trackedSource = trackedSource
@@ -208,6 +217,7 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     }
 
     public func drag(itemFrame: CGRect, toX: CGFloat, steps: Int) async throws -> Date {
+        try refuseIfObserveOnly("drag an item to x=\(Int(toX))")
         let result: Result<Date, DragError> = await onWork {
             let mover = DragMover(steps: steps)
             let result: Result<Date, DragError>
@@ -247,11 +257,12 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
         return MenuProbe(hasMenu: hasMenu, windowCount: count)
     }
 
-    public func pressEscape() { DragMover.postEscape() }
+    public func pressEscape() { if observeGate.isOn { AppLog.log(.engine, "observe-only: would press Escape"); return }; DragMover.postEscape() }
 
     public func readOrderStore() throws -> [String: Double] { try MenuBarOrderStore().readPositions() }
 
     public func writeOrderStore(_ updates: [String: Double], allowModules: Bool) throws {
+        try refuseIfObserveOnly("write the order store")
         var s = MenuBarOrderStore()
         try s.setPositions(updates, allowModules: allowModules)
     }
@@ -269,6 +280,7 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     }
 
     public func writeAllowed(_ changes: [String: Bool]) throws {
+        try refuseIfObserveOnly("write Control Center isAllowed")
         var s = ControlCenterTrackedAppsStore()
         try s.setAllowedBatch(changes)
     }
@@ -276,6 +288,7 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     public var liveHideShowAvailable: Bool { AppGroupEntitlement.hasControlCenterGroup() }
 
     public func setAllowedLive(_ changes: [String: Bool]) throws {
+        try refuseIfObserveOnly("write Control Center isAllowed live")
         guard liveHideShowAvailable else { throw PreferenceWriterError.writeFailed("no app-group entitlement for live writes") }
         var s = ControlCenterTrackedAppsStore()
         try s.setAllowedBatchLive(changes)
@@ -294,6 +307,7 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
     }
 
     public func restartAgent(timeout: TimeInterval, expectedChange: Int) async -> AgentRestartOutcome {
+        if observeGate.isOn { AppLog.log(.engine, "observe-only: would restart the menu bar agent"); return AgentRestartOutcome(recovered: false, elapsedMS: 0) }
         own.begin()
         let out = await onWork {
             let r = MenuBarAgentControl.restart(timeout: timeout, expectedChange: expectedChange)
@@ -368,7 +382,10 @@ public final class LivePlatform: ActuatorPlatform, @unchecked Sendable {
         return live.hostedGroupCount(agentPID: agent.processIdentifier)
     }
 
-    public func clickChevron(at point: CGPoint) -> Bool { SyntheticClick.post(at: point, button: .left) }
+    public func clickChevron(at point: CGPoint) -> Bool {
+        if observeGate.isOn { AppLog.log(.engine, "observe-only: would click the « chevron"); return false }
+        return SyntheticClick.post(at: point, button: .left)
+    }
     public func interactionBlockingReason() -> String? { LiveInteractionSource().blockingReason() }
     public func menuOpenByAnotherApp() -> Bool {
         let agents = Set(NSRunningApplication.runningApplications(withBundleIdentifier: menuBarAgentBundleID).map { Int($0.processIdentifier) })

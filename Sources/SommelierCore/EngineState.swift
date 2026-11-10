@@ -129,6 +129,11 @@ public final class EngineState {
     public var pollSuppression: PollSuppression?
     /// 9o9.4: the user chose "Pause Sommelier": observation continues, no actuator call is made. Never persisted.
     public var userPaused: Bool = false
+    /// ejb.30: observe-only is on (the setting, or `SOMMELIER_OBSERVE_ONLY=1`): the app changes nothing; the status says so.
+    public var observeOnly: Bool = false
+    /// ejb.30: while observing, how many hides and shows the plan WOULD make (a membership difference is not an order difference: "Menu bar matches" must not hide it).
+    public var observeWouldHide = 0
+    public var observeWouldShow = 0
     /// 9o9.4: why the last pass ended without actuating (a menu open, the mouse down, a modifier held, an Arrange drag, a locked screen);
     /// nil once a pass is allowed to actuate again.
     public var pauseReason: String?

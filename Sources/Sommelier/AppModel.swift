@@ -18,13 +18,24 @@ final class AppModel {
     @ObservationIgnored private var conflictTask: Task<Void, Never>?
     @ObservationIgnored private var errorTask: Task<Void, Never>?
     @ObservationIgnored private var tokens: [any NSObjectProtocol] = []
-    @ObservationIgnored private let platform = LivePlatform()
+    /// ejb.30: the observe-only gate (the user's setting, default ON; `SOMMELIER_OBSERVE_ONLY=1` forces it on). Every guard reads it live.
+    @ObservationIgnored let observeGate: ObserveOnlyGate
+    /// Mirror of the gate for SwiftUI / the status item (observed); `setObserveOnly` keeps it, `state.observeOnly` and the gate in step.
+    private(set) var observeOnly: Bool
+    @ObservationIgnored private let platform: LivePlatform
     /// `SOMMELIER_LAYOUT_FILE=<path>` keeps dev runs away from ~/Library/Application Support/Sommelier/layout.json.
     @ObservationIgnored private let store: FileLayoutStore
 
-    init(permissions: PermissionsModel, state: EngineState = EngineState()) {
+    init(permissions: PermissionsModel, state: EngineState = EngineState(), observeGate: ObserveOnlyGate = .production()) {
         self.permissions = permissions
         self.state = state
+        self.observeGate = observeGate
+        observeOnly = observeGate.isOn
+        LoginItem.observeGate = observeGate
+        // The scan cache file (Application Support/Sommelier/scan-cache.json) is read but not written while observing.
+        platform = LivePlatform(scanner: MenuBarScanner(cacheURL: MenuBarScanner.defaultCacheURL, cacheWriteAllowed: { !observeGate.isOn }), observeGate: observeGate)
+        state.observeOnly = observeGate.isOn
+        AppLog.log(.app, observeGate.logLine + (observeGate.isOn ? "; nothing on the menu bar, in Control Center or on disk will be changed" : ""))
         if let p = ProcessInfo.processInfo.environment["SOMMELIER_LAYOUT_FILE"], !p.isEmpty {
             store = FileLayoutStore(url: URL(fileURLWithPath: (p as NSString).expandingTildeInPath))
         } else {
@@ -71,7 +82,9 @@ final class AppModel {
             // The engine's own platform: one scanner and one ScanState, so assumed-hidden records are shared and never overwritten.
             let live = LiveActivationPlatform(platform: platform, closeMonitor: NSEventCloseMonitor(),
                                               filter: { EngineFactory.dropSelf($0, bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") })
-            activator = ItemActivator(platform: live, hold: engine, log: AppLog.logger(.activator, prefix: "activator: "))
+            var ac = ItemActivator.Config()
+            ac.observeGate = observeGate
+            activator = ItemActivator(platform: live, hold: engine, config: ac, log: AppLog.logger(.activator, prefix: "activator: "))
         }
         guard let activator else { return .failed(.unavailable("no activator")) }
         let r = await activator.activate(key: key, button: button)
@@ -96,6 +109,41 @@ final class AppModel {
 
     var trusted: Bool { permissions.isReady }
 
+    /// ejb.30: the user's switch. ON needs no confirmation and takes effect at once; OFF is refused while `SOMMELIER_OBSERVE_ONLY=1` forces it on.
+    /// Writes the app's own `observeOnly` preference (the only write observe-only itself makes). Returns whether the gate now has the requested value.
+    @discardableResult
+    func setObserveOnly(_ on: Bool) -> Bool {
+        if on { observeGate.turnOn() } else if !observeGate.turnOff() {
+            AppLog.log(.app, "observe-only: cannot be turned off, \(ObserveOnly.forcedNote)")
+            return false
+        }
+        observeOnly = observeGate.isOn
+        state.observeOnly = observeGate.isOn
+        AppLog.log(.app, observeGate.logLine)
+        if let engine { Task { await engine.observeGateChanged() } }
+        return observeGate.isOn == on
+    }
+
+    /// Turning observe-only OFF asks once: the confirmation names what will happen. Returns whether it was turned off.
+    @discardableResult
+    func armWithConfirmation() -> Bool {
+        guard observeOnly, !observeGate.forcedByEnv else { return false }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Start arranging?"
+        alert.informativeText = ObserveOnly.confirmMessage
+        let start = alert.addButton(withTitle: ObserveOnly.confirmStart)
+        let stay = alert.addButton(withTitle: ObserveOnly.confirmStay)
+        start.keyEquivalent = ""        // Return means the safe answer
+        stay.keyEquivalent = "\r"
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            AppLog.log(.app, "observe-only: staying on (arming declined)")
+            return false
+        }
+        return setObserveOnly(false)
+    }
+
     var statusText: String {
         StatusLine.text(state: state, trusted: trusted, conflicting: conflictingManager)
     }
@@ -103,6 +151,7 @@ final class AppModel {
     var newItemPolicy: NewItemPolicy {
         get { state.layout.newItemPolicy }
         set {
+            if observeGate.isOn { AppLog.log(.app, "observe-only: would set the new-item policy to \(newValue)"); return }   // ejb.30: nothing is saved
             var l = state.layout
             l.newItemPolicy = newValue
             guard let engine else { return }
@@ -136,8 +185,10 @@ final class AppModel {
         engine?.setConflict(nil)
         conflictTask?.cancel(); conflictTask = nil
         if engine == nil {
+            var engineConfig = LayoutEngine.Config()
+            engineConfig.observeGate = observeGate
             let e = EngineFactory.makeLive(platform: platform, store: store, state: state,
-                                           log: AppLog.logger(.engine, prefix: "engine: "),
+                                           log: AppLog.logger(.engine, prefix: "engine: "), config: engineConfig,
                                            allowAgentRestart: { UserDefaults.standard.object(forKey: "allowAgentRestart") as? Bool })
             engine = e
             triggers = EngineTriggers(engine: e, state: state, scanner: platform, resolve: { [platform] in EngineFactory.dropSelf(platform.resolve($0), bundleID: "ie.boboco.sommelier", moduleName: "Sommelier") },

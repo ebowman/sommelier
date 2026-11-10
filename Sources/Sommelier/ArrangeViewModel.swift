@@ -427,6 +427,7 @@ final class ArrangeViewModel {
     /// `basedOn`: the layout revision `l` was composed on (gdu.52); the engine re-adds items it appended after it. A drop composes
     /// and submits in the same main-actor turn, so it passes the current revision; a confirm dialog passes the revision from when it opened.
     private func apply(_ l: ArrangeLayout, tracking: [ItemKey] = [], basedOn base: Int, moved: Set<ItemKey> = [], dropID: Int? = nil, intent: DropIntent? = nil) {
+        if blockedByObserveOnly("save the layout") { return }
         guard let engine = model.engine else { message = "The layout engine is not running."; return }
         let ticket = editTracker { $0.record(tracking, passesStarted: state.passesStarted, now: Date(), awaitingStamp: true, dropID: dropID, intent: intent) }
         pending.submit(l)
@@ -445,7 +446,21 @@ final class ArrangeViewModel {
 
     // MARK: toolbar and menu actions
 
+    /// ejb.30: the banner and its button (same confirmation as the menu and Settings).
+    var observeOnly: Bool { model.observeOnly }
+    var observeForced: Bool { model.observeGate.forcedByEnv }
+    func startArranging() { model.armWithConfirmation() }
+
+    /// ejb.30: under observe-only a gesture that would change the layout or the bar does nothing but say so. Nothing is fed to the core (nothing is saved).
+    private func blockedByObserveOnly(_ what: String) -> Bool {
+        guard model.observeGate.isOn else { return false }
+        message = ObserveOnly.nothingChanged
+        AppLog.log(.arrange, "observe-only: would \(what); nothing was changed")
+        return true
+    }
+
     func reapply() {
+        if blockedByObserveOnly("re-apply") { return }
         guard let engine = model.engine else { return }
         editTracker { $0.retry(passesStarted: state.passesStarted, now: Date()) }
         Task { await engine.userRetry(); await engine.requestReconcile() }   // gdu.144 D4: the user's Retry (gives the budget and the hold back)
@@ -453,6 +468,7 @@ final class ArrangeViewModel {
 
     /// "Try again" on one row: clears the engine's give-up / failure history of `key` and plans it again (`LayoutEngine.retry(key:)`).
     func retry(_ key: ItemKey) {
+        if blockedByObserveOnly("retry \(key)") { return }
         guard let engine = model.engine else { return }
         editTracker { $0.retry(passesStarted: state.passesStarted, now: Date()) }
         Task { await engine.retry(key: key) }
@@ -517,6 +533,7 @@ final class ArrangeViewModel {
     /// "Reveal in menu bar" is the section-wide hidden toggle (not per item): a transient per-item layout would be
     /// persisted by `setLayout` and could outlive the app. It re-hides after `autoRehideSeconds`.
     func reveal() {
+        if blockedByObserveOnly("reveal the hidden items") { return }
         guard let engine = model.engine else { return }
         revealTask?.cancel()
         let secs = UserDefaults.standard.object(forKey: "autoRehideSeconds") as? Int ?? 10

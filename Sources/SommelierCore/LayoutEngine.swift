@@ -86,6 +86,11 @@ public actor LayoutEngine {
         var coreSeedReadsForTests: [Read] = []
         /// ejb.15: record the audit trace of the core-driven order path (events, emitted actions, their results). TESTS ONLY.
         public var recordCoreTrace = false
+        /// ejb.30: observe-only. While `observeGate.isOn` the engine scans, decides and publishes as usual but performs NO change: the actuator and
+        /// the layout store are ALWAYS wrapped (`ObserveOnlyActuator`, `ObserveOnlyStore`, both consulting this gate at each call), the core's order
+        /// Action is answered busy/not posted and logged "would move", membership changes are logged "would hide/show", the migration only logs
+        /// "would drop". The gate is read live; turning it OFF arms the engine at the next pass start (`syncObserveGate`). Default: a gate that is off.
+        public var observeGate = ObserveOnlyGate(fixed: false)
         /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
         public var layoutCoalesceMax: Duration = .seconds(1)
         /// The Control Center tracked entries as stored now (nil = unreadable or not wired: owner-key hide units). Read at the start of
@@ -458,7 +463,10 @@ public actor LayoutEngine {
         self.agentPID = agentPID; self.isOwnAgentPID = isOwnAgentPID
         self.showHidden = showHiddenSection
         self.showAlways = showAlwaysHidden
-        self.observer = observer; self.actuator = actuator; self.store = store; self.capabilities = capabilities
+        self.actuator = ObserveOnlyActuator(inner: actuator, gate: config.observeGate, log: log)   // always installed; the gate decides, live
+        self.store = ObserveOnlyStore(inner: store, gate: config.observeGate, log: log)
+        self.wasObserving = config.observeGate.isOn
+        self.observer = observer; self.capabilities = capabilities
         self.state = state; self.busy = busy; self.interaction = interaction; self.resolveSnapshot = resolveSnapshot; self.sleep = sleep
         self.log = log; self.config = config
         if config.recordCoreTrace { core.trace = [] }
@@ -671,14 +679,58 @@ public actor LayoutEngine {
         } catch {
             loaded = false
             stopped = true
-            await publish { $0.lastError = .observe("cannot load layout: \(error)") }
+            let oo = config.observeGate.isOn
+            await publish { $0.observeOnly = oo; $0.lastError = .observe("cannot load layout: \(error)") }
             return
         }
-        let l = layout, sh = showHidden, mv = movedAtLoad
-        await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.lastNormalization = mv; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
+        let l = layout, sh = showHidden, mv = movedAtLoad, oo = config.observeGate.isOn
+        await publish { $0.observeOnly = oo; $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.lastNormalization = mv; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
     }
 
     /// gdu.145: gate for heuristic new items (step 2), the held keys already logged, and the one-time alias migration (step 4).
+    /// ejb.30: the last observe-only "would ..." lines, so a pending move or batch is logged once per change, not once per poll.
+    private var lastObserveOnlyMove: String?
+    private var lastObserveOnlyMembership: String?
+    private var loggedWouldDrop = false
+    /// The gate's value at the previous pass start: a change to OFF arms the engine (`syncObserveGate`).
+    private var wasObserving: Bool
+    /// TESTS: the actuator the engine holds (the wrapper), so a test can call it directly, past the engine's own guards.
+    var actuatorForTests: any MenuBarActuator { actuator }
+    /// TESTS: runs the arming/disarming step alone, and shows the memory it resets (the pile of the last complete read, the churn reads, the last bar read).
+    func syncObserveGateForTests() async { await syncObserveGate() }
+    var readMemoryForTests: (pile: Set<ItemKey>?, churnReads: Int, hasBarRead: Bool) { (core.lastCompletePile, recentReads.count, lastBarObs != nil) }
+
+    /// ejb.30: called at every pass start. ON -> OFF ("arming") makes the engine start CLEANLY: nothing decided or answered while observing is carried over.
+    /// The core is told `userRetry` (clears skipped, givenUp, strikes, hold, moveCount: everything the observe-only busy answers accumulated) and at once
+    /// `passBoundary` (revokes the strip grant `userRetry` gives and ends the chain: arming grants nothing). Both are events of the alphabet the proofs
+    /// quantify over, in an order the engine already produces (Re-apply, then a regular pass start). The pile and churn memory is dropped (two fresh agreeing
+    /// complete reads are needed, as after a wake), the last bar observation is forgotten (the one-time migration waits for a post-arming scan), and the
+    /// engine-side failures are cleared. OFF -> ON needs nothing: every guard reads the gate, an in-flight drag finishes and is answered.
+    private func syncObserveGate() async {
+        let now = config.observeGate.isOn
+        guard now != wasObserving else { return }
+        wasObserving = now
+        let on = now
+        await publish { $0.observeOnly = on }
+        if now { log("observe-only: ON (switched on); nothing new will be changed"); return }
+        log("observe-only: OFF (armed by user)")
+        await clearFailures()
+        coreStep(.userRetry, "userRetry", site: "arming (observe-only off): clears what observing accumulated")
+        coreStep(.passBoundary, "passBoundary", site: "arming (observe-only off): no strip grant, no owed chain")
+        core.lastCompletePile = nil
+        recentReads = []
+        lastBarObs = nil
+        lastObserveOnlyMove = nil; lastObserveOnlyMembership = nil
+        userEditPassOwed = false; userEditChain = false
+        heldPasses = 0
+    }
+
+    /// The app calls this after changing the gate: publishes the flag for the UI and asks for a pass (which arms or disarms). Writes nothing.
+    public func observeGateChanged() async {
+        let on = config.observeGate.isOn
+        await publish { $0.observeOnly = on }
+        requestReconcile(reason: "observe-only switch")
+    }
     private var heuristicGate = HeuristicNewItemGate()
     private var heldNewItemLogged = Set<ItemKey>()
     /// Keys the one-time migration dropped in this process: a stale Arrange composition must not write them back (`setLayout`).
@@ -701,6 +753,10 @@ public actor LayoutEngine {
         guard loaded, !layout.migrations.contains(Self.migrationMarker), observedCompleteness == .complete, !layout.pendingAdoption, handAdopt == nil,
               let bar = lastBarObs, bar.settled, bar.completeness == .complete else { return }
         var (migrated, dropped) = HeuristicKeyRule.migrate(layout, observed: Set(bar.items.map(\.key)), unreadOwners: unreadOwnerSet(bar), complete: true)
+        if config.observeGate.isOn {   // ejb.30: nothing is written, not even the marker; it runs on the first complete settled scan after arming
+            if !loggedWouldDrop { loggedWouldDrop = true; for k in dropped.sorted(by: { $0.description < $1.description }) { log("observe-only: would drop \(k.description)") } }
+            return
+        }
         if !dropped.isEmpty {
             do {
                 let backup = try store.backupBeforeMigration()
@@ -2329,6 +2385,8 @@ public actor LayoutEngine {
         inPass = true
         defer { inPass = false }
         heldByAdapter = false   // ejb.27: a pass that makes no observation must not reuse the previous pass's value
+        await syncObserveGate()
+        let observing = config.observeGate.isOn   // this pass's view: what it decides while observing is never performed, even if the gate flips mid-pass
         let generation = layoutGeneration
         lastStart = config.instant()
         var actionCount = 0
@@ -2516,7 +2574,7 @@ public actor LayoutEngine {
                 return await endPausedForInteraction(why, report(.paused))
             }
         }
-        let coreVeto = plan.phase == .membership || layout.pendingAdoption || handAdopt != nil || !transientReveals.isEmpty || showHidden || showAlways
+        let coreVeto = (plan.phase == .membership && !observing) || layout.pendingAdoption || handAdopt != nil || !transientReveals.isEmpty || showHidden || showAlways
         var coreAction: Action?
         if let b = lastBarObs { coreAction = coreRead(obs, bar: b, kind: .pass, vetoed: coreVeto, site: "runPassBody (c) pass read").first }
         // ejb.19: the adapter held a scanner-settled read (no earlier complete pile to agree with, or the pile moved): the core made no move on it, so
@@ -2541,8 +2599,21 @@ public actor LayoutEngine {
 
         // (f2) gdu.80: on a full bar (a chevron) the order phase needs a settled overflow set; a reveal never orders.
 
-        // (g) membership phase
-        if plan.phase == .membership {
+        // (g) membership phase. ejb.30: observe-only logs what it would write and goes on to the order phase (the core was not vetoed by it).
+        if plan.phase == .membership, observing {
+            let lines = plan.actions.compactMap { a -> String? in
+                switch a { case .hide(let k): return "observe-only: would hide \(k)"; case .show(let k): return "observe-only: would show \(k)"; case .move: return nil }
+            }
+            let sig = lines.joined(separator: "\n")
+            if sig != lastObserveOnlyMembership { lastObserveOnlyMembership = sig; for l in lines { log(l) } }
+            let hides = plan.actions.filter { if case .hide = $0 { return true }; return false }.count
+            let shows = plan.actions.filter { if case .show = $0 { return true }; return false }.count
+            await publish { $0.observeWouldHide = hides; $0.observeWouldShow = shows }
+        } else if observing {
+            await publish { $0.observeWouldHide = 0; $0.observeWouldShow = 0 }
+        }
+        if plan.phase == .membership, !observing {
+            if config.observeGate.isOn { return await abort(.incomplete) }   // switched on after this pass began: nothing new starts
             let caps = effectiveCaps()
             var batch: [ItemKey: Bool] = [:]
             var order: [ItemKey] = []
@@ -2741,6 +2812,22 @@ public actor LayoutEngine {
             coreResult(ca, .busy, posted: false, site: "order phase: maxActionsPerPass (veto)")
             log("maxActionsPerPass reached")
             return await rescheduleIncomplete(report(.incomplete), converged: false)
+        }
+        if observing || config.observeGate.isOn {   // ejb.30: the core's Action is answered exactly once (busy, not posted); nothing is dragged, no strip is opened
+            let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
+            func name(_ k: ItemKey) -> String { itemInfo[k] != nil ? namer.name(k) : k.description }
+            let rel2: String
+            switch rel {
+            case .before(let t): rel2 = "before \(name(t))"
+            case .after(let t): rel2 = "after \(name(t))"
+            case .leftmost: rel2 = "leftmost"
+            case .rightmost: rel2 = "rightmost"
+            }
+            let line = "observe-only: would move \(name(key)) \(rel2) (\(ca.user ? "user" : "engine"), strip: \(ca.strip))"
+            if line != lastObserveOnlyMove { lastObserveOnlyMove = line; log(line) }
+            coreResult(ca, .busy, posted: false, site: "order phase: observe-only")
+            await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+            return await abort(.incomplete)
         }
         switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
         case .clear: flightBox.begin()   // 9o9.7: at once, so a mouse-down after the gate check is never read as a hand drag

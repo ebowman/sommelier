@@ -93,7 +93,12 @@ Alpha software (0.1.x). Please expect rough edges.
 
 - **Left-click** the Sommelier menu bar item to open the overflow panel. Click an entry to open that item's menu. The item is hidden again after the menu closes.
 - **Right-click** for a menu that includes Show hidden items, Pause Sommelier (it reads Resume Sommelier while paused), Arrange...,
-  Settings..., Start at login, Permissions..., Open Log Folder and Quit.
+  Observe only (make no changes), Settings..., Start at login, Permissions..., Open Log Folder and Quit.
+- **Observe only (make no changes).** A toggle in the right-click menu and in Settings > General. It is ON the first time this build
+  starts and stays as you leave it. While it is on, Sommelier reads and decides but changes nothing (no drags, no hide or show, no
+  layout file writes); the status item shows "Observe", the status line starts with "Observe only:", and the Arrange window shows a
+  banner with "Start arranging...". Turning it off asks once; turning it on does not. Starting Sommelier with
+  `SOMMELIER_OBSERVE_ONLY=1` forces it on and disables the toggle; nothing can force it off.
 - **Arrange window.** Three sections: Visible, Hidden and Always hidden. Drag an item anywhere in Visible and the bar follows. Drag it
   across sections to hide or show it. Items in Always hidden stay hidden even when Hidden is revealed. Hover a badge for the reason.
   - check: the bar matches your list for this item;

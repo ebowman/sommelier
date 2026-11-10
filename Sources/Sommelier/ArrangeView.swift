@@ -70,6 +70,18 @@ struct ArrangeView: View {
             if vm.isPaused {
                 banner("Bartender is running; Sommelier is paused and will not touch the menu bar.")
             }
+            if vm.observeOnly {   // ejb.30: cannot be missed
+                HStack {
+                    Text(ObserveOnly.banner).font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    if vm.observeForced {
+                        Text(ObserveOnly.forcedNote).font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else {
+                        Button(ObserveOnly.armButton) { vm.startArranging() }
+                    }
+                }
+                .padding(8).background(Color.blue.opacity(0.18))
+            }
             if vm.controlCenterDataDenied {
                 HStack {
                     Text("macOS denies Sommelier access to Control Center's hidden-item list; it cannot tell hidden items from visible ones and will not act.")

@@ -41,13 +41,19 @@ public struct CoreStatusContext: Equatable, Sendable {
     public var pinnedDown = 0
     public var pollPaused: String?
     public var unsettledNotice: String?
+    /// ejb.30: observe-only. Not a leader in the D7 sense (it does not block "Menu bar matches"): it prefixes the whole line.
+    public var observeOnly = false
+    /// ejb.30: while observing, the hides and shows the plan would make. Nonzero is a D7 leader (the order may match while the membership differs).
+    public var wouldHide = 0
+    public var wouldShow = 0
     public init() {}
 
     /// Whether anything leads the status (D7 leaders): while true, "Menu bar matches" is never said.
     public var hasLeader: Bool {
         lastError != nil || userPaused || pauseReason != nil || adoptionPending || handDragNotice != nil || systemSettingsNotice != nil
-            || failedMembership > 0 || !trusted || conflicting != nil
+            || failedMembership > 0 || !trusted || conflicting != nil || observeMembershipPending
     }
+    var observeMembershipPending: Bool { observeOnly && (wouldHide > 0 || wouldShow > 0) }
 }
 
 /// The ONE renderer of the bottom line (D10): the Arrange window and the menu both call it.
@@ -56,9 +62,17 @@ public enum CoreStatusText {
     public static let noMoveToMake = "Sommelier has no move to make right now"   // Lean: differs(plain) "carries the reason" (Honesty.userRetry_answers)
 
     public static func render(_ status: Status?, _ c: CoreStatusContext) -> String {
+        let body = renderBody(status, c)
+        return c.observeOnly ? ObserveOnly.leader + body : body   // ejb.30: every text, whatever the status, starts with the leader
+    }
+
+    private static func renderBody(_ status: Status?, _ c: CoreStatusContext) -> String {
         if !c.trusted { return "Accessibility required" }
         if c.conflicting != nil { return "Bartender is running — paused" }
         var parts: [String] = c.notices
+        if c.observeMembershipPending {   // ejb.30 D7 leader: "Observe only: would hide 2, show 1 · …"
+            parts.insert("would " + [c.wouldHide > 0 ? "hide \(c.wouldHide)" : nil, c.wouldShow > 0 ? "show \(c.wouldShow)" : nil].compactMap { $0 }.joined(separator: ", "), at: 0)
+        }
         if let e = c.lastError { parts.append(StatusLine.errorText(e)) }
         if c.userPaused { parts.append("Paused by you") }
         if let why = c.pauseReason { parts.append("Paused: \(why)") }
@@ -106,6 +120,8 @@ public enum CoreStatusText {
         c.pinnedDown = state.perItem.values.filter { if case .unsupported(let r) = $0 { return r.hasPrefix(ArrangeSections.positionTimeoutPrefix) }; return false }.count
         c.pollPaused = ArrangeSections.pollPausedNames(suppression: state.pollSuppression, items: state.items, now: now).map { ArrangeSections.pollPausedText($0) }
         c.unsettledNotice = state.unsettledNotice
+        c.observeOnly = state.observeOnly
+        c.wouldHide = state.observeWouldHide; c.wouldShow = state.observeWouldShow
         return c
     }
 

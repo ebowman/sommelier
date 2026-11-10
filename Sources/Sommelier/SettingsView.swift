@@ -20,7 +20,7 @@ struct SettingsView: View {
     private static let width: CGFloat = 540
     private var height: CGFloat {
         switch tab {
-        case .general: return 366
+        case .general: return 400
         case .permissions: return 384
         case .spacing: return 278
         }
@@ -30,6 +30,16 @@ struct SettingsView: View {
         TabView(selection: $tab) {
             Form {
                 Section {
+                    // ejb.30: the switch itself is the one thing observe-only writes (the app's own preference). The other @AppStorage controls below
+                    // only change the app's own preferences too, which observe-only does not forbid; what it forbids is changing the bar, Control
+                    // Center, system preferences, the login item and Sommelier's layout files.
+                    Toggle(ObserveOnly.settingTitle, isOn: Binding(get: { model.observeOnly }, set: { on in
+                        if on { model.setObserveOnly(true) } else { model.armWithConfirmation() }
+                    }))
+                    .disabled(model.observeGate.forcedByEnv)
+                    if model.observeGate.forcedByEnv {
+                        Text(ObserveOnly.forcedNote).font(.caption).foregroundStyle(.secondary)
+                    }
                     Toggle("Start at login", isOn: Binding(get: { login }, set: { LoginItem.set($0); login = LoginItem.isEnabled }))
                     Picker("New items", selection: $model.newItemPolicy) {
                         Text("Visible at end").tag(NewItemPolicy.visibleAtEnd)
@@ -59,7 +69,7 @@ struct SettingsView: View {
                 .tag(Tab.permissions)
                 .tabItem { Text("Permissions") }
 
-            SpacingTab()
+            SpacingTab(observeGate: model.observeGate)
                 .tag(Tab.spacing)
                 .tabItem { Text("Spacing") }
         }
@@ -72,6 +82,8 @@ struct SettingsView: View {
 struct SpacingTab: View {
     static let statusText = "Each app picks up a change when it relaunches; running apps keep their old spacing. Nothing restarts the menu bar."
     private let settings = SpacingSettings()
+    /// ejb.30: observe-only writes no global spacing preference (read live).
+    let observeGate: ObserveOnlyGate
     @State private var spacing: Int?
     @State private var padding: Int?
 
@@ -82,9 +94,11 @@ struct SpacingTab: View {
             Form {
                 Section {
                     SpacingRow(title: "Item spacing", caption: "Gap between items", value: $spacing, fallback: Self.fallback) {
+                        if blockedByObserveOnly("spacing \($0)") { return }
                         settings.set(spacing: $0); reload()
                     }
                     SpacingRow(title: "Selection padding", caption: "Highlight padding around a clicked item", value: $padding, fallback: Self.fallback) {
+                        if blockedByObserveOnly("padding \($0)") { return }
                         settings.set(padding: $0); reload()
                     }
                 } footer: {
@@ -94,13 +108,20 @@ struct SpacingTab: View {
             .formStyle(.grouped)
             HStack {
                 Spacer()
-                Button("Reset to system default") { settings.reset(); reload() }
+                Button("Reset to system default") { if blockedByObserveOnly("reset spacing") { return }; settings.reset(); reload() }
                     .disabled(spacing == nil && padding == nil)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 16)
         }
         .onAppear { reload() }
+    }
+
+    private func blockedByObserveOnly(_ what: String) -> Bool {
+        guard observeGate.isOn else { return false }
+        AppLog.log(.app, "observe-only: would set \(what)")
+        reload()
+        return true
     }
 
     private func reload() {

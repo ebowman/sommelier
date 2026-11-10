@@ -6,9 +6,12 @@ public protocol LayoutStore: Sendable {
     /// gdu.145: copies the current stored layout aside BEFORE a migration changes it. Returns the backup's name (nil: nothing to copy).
     /// Never overwrites an existing backup. Throws when the copy cannot be made (the migration must then not run).
     func backupBeforeMigration() throws -> String?
+    /// ejb.30: `load()` without any write (a corrupt file is NOT copied to `.bak`). Used while observe-only is on.
+    func loadReadOnly() throws -> Layout
 }
 
 public extension LayoutStore {
+    func loadReadOnly() throws -> Layout { try load() }
     func backupBeforeMigration() throws -> String? { nil }
 }
 
@@ -25,7 +28,12 @@ public struct FileLayoutStore: LayoutStore {
     public func load() throws -> Layout { try loadWithWarnings().0 }
 
     /// Missing file -> `Layout.empty`. Corrupt content -> backed up to `<file>.bak` and `.corrupt` thrown.
-    public func loadWithWarnings() throws -> (Layout, [String]) {
+    public func loadWithWarnings() throws -> (Layout, [String]) { try loadWithWarnings(writeBackup: true) }
+
+    /// ejb.30: the same read, writing nothing at all.
+    public func loadReadOnly() throws -> Layout { try loadWithWarnings(writeBackup: false).0 }
+
+    func loadWithWarnings(writeBackup: Bool) throws -> (Layout, [String]) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { return (.empty, []) }
         let data = try Data(contentsOf: url)
@@ -34,8 +42,7 @@ public struct FileLayoutStore: LayoutStore {
             decoded = try Layout.decode(data)
         } catch {
             let bak = url.appendingPathExtension("bak")
-            try? fm.removeItem(at: bak)
-            try? data.write(to: bak)
+            if writeBackup { try? fm.removeItem(at: bak); try? data.write(to: bak) }
             throw LayoutError.corrupt(underlying: error, backup: bak)
         }
         return (try Layout.migrate(decoded.layout), decoded.warnings)

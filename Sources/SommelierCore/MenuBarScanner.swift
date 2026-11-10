@@ -44,6 +44,7 @@ public struct MenuBarScanner {
                 extrasBudget: TimeInterval = 1.5,
                 emptyTTL: TimeInterval = 20,
                 cacheURL: URL? = nil,
+                cacheWriteAllowed: @escaping @Sendable () -> Bool = { true },
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.retryTimeout = retryTimeout
         self.extrasBudget = extrasBudget
@@ -53,6 +54,7 @@ public struct MenuBarScanner {
         self.includeSelf = includeSelf
         self.fallbackStrip = fallbackStrip
         self.state = ScanState(url: cacheURL)
+        self.state.writeAllowed = cacheWriteAllowed
         if source is LiveAccessibilitySource { trackedEntries = { ControlCenterTrackedAppsStore.readLive() } }   // hermetic otherwise (tests)
     }
 

@@ -6,7 +6,11 @@ import SommelierCore
 enum LoginItem {
     static var isEnabled: Bool { SMAppService.mainApp.status == .enabled }
 
+    /// ejb.30: set by `AppModel` at launch; read live (observe-only registers no login item).
+    static var observeGate = ObserveOnlyGate(fixed: false)
+
     static func set(_ on: Bool) {
+        if observeGate.isOn { AppLog.log(.app, "observe-only: would set login item \(on)"); return }   // ejb.30
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {

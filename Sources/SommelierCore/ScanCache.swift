@@ -102,6 +102,8 @@ final class ScanState: @unchecked Sendable {
     var loggedNoise: Set<String> = []
     private var loaded = false
     let url: URL?
+    /// ejb.30: consulted before every cache write; false while observe-only is on (reading the cache stays allowed).
+    var writeAllowed: @Sendable () -> Bool = { true }
 
     init(url: URL?) { self.url = url }
 
@@ -139,7 +141,7 @@ final class ScanState: @unchecked Sendable {
     }
 
     func save() {
-        guard let url else { return }
+        guard let url, writeAllowed() else { return }
         let sp = selfPositioningGroups.keys.sorted().map { FileSP(pid: $0, bundleID: selfPositioningBundles[$0], groups: selfPositioningGroups[$0] ?? [], refreshed: selfPositioningRefreshed[$0]) }
         let f = File(spGroups: sp, apps: perApp.values.filter { !$0.infos.isEmpty }.sorted { $0.app.pid < $1.app.pid }.map {
             FileApp(pid: $0.app.pid, bundleID: $0.app.bundleID, name: $0.app.name, infos: $0.infos.map(FileInfo.init))

@@ -221,6 +221,8 @@ public actor ItemActivator {
         /// expanded strip; and how long to wait for the strip to close again after the closing click.
         public var overflowExpandTimeout: TimeInterval = 1.0
         public var overflowCollapseTimeout: TimeInterval = 1.0
+        /// ejb.30: observe-only. `activate` clicks, reveals (a Control Center write) and presses: it does none of them and answers `unavailable`.
+        public var observeGate = ObserveOnlyGate(fixed: false)
         public init() {}
     }
 
@@ -243,6 +245,10 @@ public actor ItemActivator {
     /// `progress` receives a line at each milestone (reveal, click, menu, close, re-hide).
     public func activate(key: ItemKey, button: ClickButton, forceAXPress: Bool = false,
                          progress: Progress? = nil) async -> ActivationResult {
+        if config.observeGate.isOn {
+            log("observe-only: would activate \(key) (\(button))")
+            return .failed(.unavailable(ObserveOnly.nothingChanged))
+        }
         guard !inFlight else { return .failed(.engineBusy) }
         inFlight = true
         defer { inFlight = false }
@@ -623,7 +629,7 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
     public func setAllowedLive(_ changes: [String: Bool]) throws { try platform.setAllowedLive(changes) }
     public func sleep(_ seconds: TimeInterval) async { try? await Task.sleep(for: .seconds(seconds)) }
     public func now() -> Date { Date() }
-    public func postEscape() { DragMover.postEscape() }
+    public func postEscape() { if platform.observeOnly { return }; DragMover.postEscape() }
 
     public func locate(_ key: ItemKey) async -> ActivationLocate {
         let snap = await platform.scan()
@@ -745,10 +751,14 @@ public final class LiveActivationPlatform: ActivationPlatform, @unchecked Sendab
         return CGRect(origin: pt, size: sz)
     }
 
-    public func click(at point: CGPoint, button: ClickButton) -> Bool { SyntheticClick.post(at: point, button: button) }
+    public func click(at point: CGPoint, button: ClickButton) -> Bool {
+        if platform.observeOnly { AppLog.log(.activator, "observe-only: would click"); return false }
+        return SyntheticClick.post(at: point, button: button)
+    }
 
     public func axPress(_ t: ActivationTarget) -> Int32 {
         guard let el = t.element else { return AXError.invalidUIElement.rawValue }
+        if platform.observeOnly { AppLog.log(.activator, "observe-only: would AXPress"); return AXError.cannotComplete.rawValue }
         AXUIElementSetMessagingTimeout(el, 2.0)
         return AXUIElementPerformAction(el, kAXPressAction as CFString).rawValue
     }

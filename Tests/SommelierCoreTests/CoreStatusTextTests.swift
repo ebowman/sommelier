@@ -21,6 +21,8 @@ private func allContexts() -> [CoreStatusContext] {
         var c = CoreStatusContext()
         c.lastError = e; c.userPaused = paused; c.pauseReason = reason; c.adoptionPending = adopt; c.handDragNotice = hand
         c.systemSettingsNotice = ss; c.failedMembership = failed; c.trusted = trusted; c.conflicting = conflict; c.notices = notice
+        c.observeOnly = out.count % 2 == 1   // ejb.30: half of the contexts are observe-only
+        c.wouldHide = out.count % 3 == 0 ? 2 : 0; c.wouldShow = out.count % 5 == 0 ? 1 : 0   // ejb.30: pending membership changes (a leader while observing)
         c.pinnedDown = pinned; c.pollPaused = poll; c.unsettledNotice = pinned == 1 ? "Unsettled" : nil; c.pileCount = 3; c.movingName = "Foo"; c.reapplyName = "Bar"
         out.append(c)
     } } } } } } } } } } } }
@@ -35,6 +37,8 @@ private func allContexts() -> [CoreStatusContext] {
             let isMatch: Bool = { if case .matches? = s { return true }; if case .matchesExcept? = s { return true }; return false }()
             let blocked = c.lastError != nil || c.hasLeader
             let says = t.contains("Menu bar matches")
+            #expect(t.hasPrefix(ObserveOnly.leader) == c.observeOnly, Comment(rawValue: t))   // ejb.30: the leader is on every text of an observe-only context, and only there
+            if c.observeOnly && (c.wouldHide > 0 || c.wouldShow > 0) { #expect(!says && (!c.trusted || c.conflicting != nil || t.hasPrefix("Observe only: would ")), Comment(rawValue: t)) }   // ejb.30: membership differs: never "matches"
             #expect(says == (isMatch && !blocked && c.trusted && c.conflicting == nil), "status \(String(describing: s)) ctx \(c) -> \(t)")
             if says { shown += 1 }
             if case .decision? = c.lastError { #expect(!says) }
