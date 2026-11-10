@@ -47,6 +47,14 @@ struct CoreDriver {
     var lastCompletePile: Set<ItemKey>?
     /// The last `Read` fed, for the next row/status computation (Wiring 4) and the timing test.
     private(set) var lastRead: Read?
+    /// ejb.16: the last PASS read, and what the core says of it. Changed only by a pass read, or by a non-read event judged against the last pass
+    /// read; a poll read is fed to the core but never touches either (no flicker between matches and matches-except).
+    private(set) var lastPassRead: Read?
+    private(set) var display: CoreDisplay?
+    /// Set when the status/rows query itself failed (the step did not): the display is then nil and the engine shows `lastError`.
+    private(set) var displayError: DecisionError?
+    /// A non-read event changed the state after the last pass read: the display is stale until `settleDisplay()` (computed only where it can be published).
+    private var displayDirtyState: DecisionState?
 
     var isDown: Bool { down != nil }
 
@@ -77,6 +85,12 @@ struct CoreDriver {
             state = n
             down = nil
             if case .read(let r) = e { lastRead = r }
+            switch e {
+            case .read(let r): if r.kind == .pass { lastPassRead = r; displayDirtyState = nil; refreshDisplay(s, r) }   // the pair the step judged: (state before, read)
+            default:
+                if case .userEdit(let rec, _) = e { record = rec }   // the rows of THIS event cover the new record, not the previous one
+                if lastPassRead != nil { displayDirtyState = n }   // not computed here: only a pass read and `settleDisplay()` (end of pass) compute
+            }
             if case .moveResult(let k, let o, let posted) = e {
                 // the one answer to the awaiting action, counted only once the core has it (a failed step leaves the action awaiting,
                 // so the end-of-pass safety net or the next attempt still answers it, exactly once overall)
@@ -104,6 +118,32 @@ struct CoreDriver {
             down = error
             note(.error("\(error)"))
             return .failure(error)
+        }
+    }
+
+    /// Computes the display a non-read event left stale (once, however many events changed it). Call only where the result can be published.
+    mutating func settleDisplay() {
+        guard let n = displayDirtyState, let r = lastPassRead else { return }
+        displayDirtyState = nil
+        refreshDisplay(n, r)
+    }
+
+    /// The core's status and rows for (state, read). A failure leaves no display and records the error; never a default.
+    private mutating func refreshDisplay(_ s: DecisionState, _ r: Read) {
+        do throws(DecisionError) {
+            let status = try DecisionCore.status(s, r)
+            var rows: [ItemKey: Row] = [:], notes: [ItemKey: RowNote] = [:]
+            for id in record {
+                guard let k = keys.key(for: id) else { continue }
+                rows[k] = try DecisionCore.row(s, r, id)
+                if let n = try DecisionCore.rowNote(s, r, id) { notes[k] = n }
+            }
+            display = CoreDisplay(status: status, rows: rows, notes: notes, pileCount: r.pile.count)
+            displayError = nil
+        } catch {
+            display = nil
+            displayError = error
+            note(.error("display: \(error)"))
         }
     }
 

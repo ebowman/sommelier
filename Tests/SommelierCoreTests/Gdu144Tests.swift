@@ -330,7 +330,8 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         _ = await e.reconcileOnce()
         // the user's pull-out was withheld (carried scan): the drawn keys are in order, so ONLY the gate flag says the bar still differs from the record
         #expect(st.lastPlan.stoppedWhileDiffering && !st.lastPlan.orderDiffers && !st.lastPlan.checkingBar)
-        #expect(!st.isConverged && StatusLine.text(state: st, trusted: true, conflicting: nil) == ArrangeBarState.stoppedWhileDifferingText)
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core has not proven the bar not full, so it says "checking"; it never says matches.
+        #expect(!st.isConverged && StatusLine.text(state: st, trusted: true, conflicting: nil) == ArrangeSections.checkingMenuBar)
         for _ in 0..<2 { _ = await e.reconcileOnce() }
         // ejb.15 (Wiring 3), CHANGED because the core decides: the user's chain ends here (production: `passBoundary` at the end of the drained chain; reconcileOnce
         // never ends it), which is what makes the request "end with the user's pass": the key is no longer owed, so a later fresh scan does not pull it out.

@@ -136,10 +136,8 @@ private func rvInfo(_ key: ItemKey) -> ItemInfo { ItemInfo(key: key, title: "\(k
 private let rvP = ["P1", "P2", "P3"], rvD: [String] = ["D1", "D2", "D3", "D4", "D5", "D6"]
 
 @MainActor private func rvMenu(_ st: EngineState) -> String { StatusLine.text(state: st, trusted: true, conflicting: nil) }
-@MainActor private func rvArrangeLine(_ st: EngineState) -> String {
-    var x = ArrangeSections.StatusContext(); x.stripHoldFolded = st.lastPlan.stripHoldFolded; x.stoppedWhileDiffering = st.lastPlan.stoppedWhileDiffering; x.checkingBar = st.lastPlan.checkingBar
-    return ArrangeSections.statusLine(perItem: st.perItem, lastError: st.lastError, isConverged: st.isConverged, inFlight: false, content: rvRowsOf(st), context: x)
-}
+/// ejb.16 CHANGED (display source): the Arrange line is `CoreStatusText` (the same renderer the menu uses, D10); it was `ArrangeSections.statusLine` over the old plan.
+@MainActor private func rvArrangeLine(_ st: EngineState) -> String { CoreStatusText.text(state: st, trusted: true, conflicting: nil) }
 private let rvScrambled = ["D6", "D5", "D4", "D3", "D2", "D1"]
 /// ejb.15: a scramble away from the churn zone (the first drawn key): one swap, so the core's first move (`D4 before D5`) needs no strip session.
 private let rvSwapped = ["D1", "D2", "D3", "D5", "D4", "D6"]
@@ -199,7 +197,8 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let (e, st, c) = await rvRig(w, record: rec)
         for _ in 0..<200 { w.drawn = w.drawn.shuffled(using: &w.rng); _ = await e.reconcileOnce(); c.adv(120); await e.clearFailures() }
         #expect(w.drags.count <= 20 && w.clicks == 0, "physical=\(w.drags.count)")
-        #expect(!st.isConverged && rvMenu(st).hasPrefix(ArrangeBarState.stoppedWhileDifferingText))
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core's `differs plain`.
+        #expect(!st.isConverged && rvMenu(st) == CoreStatusText.noMoveToMake)
     }
     // a not-full bar with more than 3 moves converges (the proving reads cost three passes)
     @Test func aNotFullBarConvergesAndOnlyThenSaysConverged() async {
@@ -208,9 +207,9 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let (e, st, c) = await rvRig(w, record: rec)
         for i in 0..<30 {
             _ = await e.reconcileOnce(); c.adv(120)
-            if w.drawn != rec { #expect(!st.isConverged && rvMenu(st) != "Converged", "pass \(i)") }
+            if w.drawn != rec { #expect(!st.isConverged && rvMenu(st) != ArrangeSections.menuBarMatches, "pass \(i)") }
         }
-        #expect(w.drawn == rec && st.isConverged && rvMenu(st) == "Converged")
+        #expect(w.drawn == rec && st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches)
         #expect(w.drags.count <= 20 && w.clicks == 0)
     }
     // more than 20 needed: exactly 20, stopped, the SAME honest text in Arrange and in the menu, no false check anywhere
@@ -244,7 +243,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         for _ in 0..<8 { w.drawn = bar; _ = await e.reconcileOnce(); c.adv(120) }
         #expect(rvFalseChecks(rvRowsOf(st).visible.rows, record: rvP + rvD, bar: bar).isEmpty)
         #expect(rvRowsOf(st).visible.rows.filter { $0.barState == .matches }.isEmpty)
-        #expect(!st.isConverged && rvMenu(st) != "Converged")
+        #expect(!st.isConverged && rvMenu(st) != ArrangeSections.menuBarMatches)
     }
     // the 10:29 Time Machine drop through the REAL actuator: the DROP (not the engine) opens the strip: open, one drag of TM, close
     @Test func timeMachineReplayIsOneUserSessionAndOneDrag() async {
@@ -256,7 +255,8 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         await e.setLayout(Layout.placedAll(visible: (["TM"] + pile + ["Jump", "Sig", "CPU", "Weather", "CC", "Gate"]).map(k)), moved: [k("TM"), k("TMsibling")])
         for _ in 0..<10 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags == ["TM"] && w.events == ["open", "drag:TM", "close"], "events=\(w.events)")
-        #expect(st.isConverged && rvMenu(st) == "Converged")
+// ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core says `differs plain` (the record puts TM left of the folded keys, which macOS cannot do): never matches.
+        #expect(st.isConverged && rvMenu(st) == CoreStatusText.noMoveToMake)
     }
     // D7: a drawn key dropped (beside the fold AND mid-bar) whose drag does not land is ONE physical drag
     @Test func aFailingDrawnDropIsOnePhysicalDrag() async {
@@ -281,7 +281,8 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         #expect(w.events.filter { $0 == "open" }.count == 1 && w.drags == ["P2"], "events=\(w.events)")
         let row = rvRowsOf(st).visible.rows.first { $0.key == k("P2") }
         #expect(row?.barState == .cannotPlace(ArrangeBarState.putBackText))
-        #expect(rvMenu(st) == rvArrangeLine(st) && rvMenu(st) == ArrangeSections.barFullText(3))   // the hold leads in BOTH; "Working…" never stays
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The failed row leads ("1 failed"), then the core's bar-full text.
+        #expect(rvMenu(st) == rvArrangeLine(st) && rvMenu(st) == "1 failed · " + ArrangeSections.barFullText(3))   // the hold leads in BOTH; "Working…" never stays
     }
 }
 
@@ -378,21 +379,21 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let w = RvWorld(pile: [], drawn: rvScrambled); w.mode = .absent; w.staleKeys = ["D1"]
         let (e, st, c) = await rvRig(w, record: rvD)
         for _ in 0..<6 { _ = await e.reconcileOnce(); c.adv(120) }
-        #expect(!st.isConverged && rvMenu(st) != "Converged")
+        #expect(!st.isConverged && rvMenu(st) != ArrangeSections.menuBarMatches)
         #expect(rvRowsOf(st).visible.rows.filter { $0.barState == .matches }.isEmpty)
     }
     @Test func aFreshChevronWithAStaleKeyAndAReversedBarIsNotConverged() async {
         let w = RvWorld(pile: rvP, drawn: rvScrambled); w.mode = .fresh; w.staleKeys = ["D1"]
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for _ in 0..<6 { _ = await e.reconcileOnce(); c.adv(120) }
-        #expect(!st.isConverged && rvMenu(st) != "Converged")
+        #expect(!st.isConverged && rvMenu(st) != ArrangeSections.menuBarMatches)
         #expect(rvRowsOf(st).visible.rows.filter { $0.barState == .matches }.isEmpty)
     }
     @Test func aFreshChevronWithoutAStaleKeyAndAReversedBarIsNotConverged() async {
         let w = RvWorld(pile: rvP, drawn: rvScrambled); w.mode = .fresh
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for _ in 0..<6 { _ = await e.reconcileOnce(); c.adv(120) }
-        #expect(!st.isConverged && rvMenu(st) != "Converged")
+        #expect(!st.isConverged && rvMenu(st) != ArrangeSections.menuBarMatches)
     }
     // a stale key is why the order cannot be judged: the menu says so rather than Converged
     @Test func aStaleKeyThatMakesTheOrderUnjudgeableIsNamedNotConverged() async {
@@ -402,14 +403,16 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(!st.isConverged)
         #expect(st.lastPlan.unreadDrawn == 1 && st.lastPlan.orderDiffers)
-        #expect(rvMenu(st) == ArrangeSections.waitingToReadText(1) && rvArrangeLine(st) == ArrangeSections.waitingToReadText(1), "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core says checking (unread key, no proof); menu and Arrange agree.
+        #expect(rvMenu(st) == ArrangeSections.checkingMenuBar && rvArrangeLine(st) == ArrangeSections.checkingMenuBar, "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")
     }
     // ...but a stale key that SITS where the record says does not keep the bar from converging (iStat's stale items are ordinary)
     @Test func aStaleKeyInItsPlaceDoesNotKeepTheBarFromConverging() async {
         let w = RvWorld(pile: [], drawn: rvD); w.mode = .absent; w.staleKeys = ["D6"]
         let (e, st, c) = await rvRig(w, record: rvD)
         for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
-        #expect(st.isConverged && rvMenu(st) == "Converged", "menu=\(rvMenu(st))")
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core has not proven the bar not full after 4 passes: checking, never matches.
+        #expect(st.isConverged && rvMenu(st) == ArrangeSections.checkingMenuBar, "menu=\(rvMenu(st))")
     }
     // launch replay of live-136 on the real actuator: failing and landing drags with alternating incomplete reads and stale iStat items
     @Test func theLaunchReplayNeverClicksAndNeverExceedsThreePhysicalDrags() async {
@@ -462,7 +465,8 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
     @Test func whileHeldTheMenuMatchesArrangeAndUserActionsStillWork() async {
         var (w, e, st, c) = await held(["D1", "D2", "D4", "D3", "D5", "D6"])
         #expect(w.drags.count >= 1 && w.drags.count <= 3 && st.lastPlan.stripHoldFolded != nil)
-        #expect(rvMenu(st) == rvArrangeLine(st) && rvMenu(st).hasPrefix(ArrangeBarState.stoppedWhileDifferingText) && rvMenu(st).contains(" · "))
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core's bar-full text (no separate hold text).
+        #expect(rvMenu(st) == rvArrangeLine(st) && rvMenu(st) == ArrangeSections.barFullText(3))
         // a drawn drop while held: its own single drag
         w.drags = []; w.events = []; w.applyProb = 1
         await e.setLayout(Layout.placedAll(visible: (rvP + ["D1", "D2", "D4", "D3", "D6", "D5"]).map(k)), moved: [k("D6")])
@@ -489,11 +493,12 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for _ in 0..<8 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags.isEmpty && w.clicks == 0)   // beside the fold: the engine never opens the strip by itself
-        #expect(!st.isConverged && rvMenu(st) == ArrangeBarState.stoppedWhileDifferingText)
+        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core's `differs plain`.
+        #expect(!st.isConverged && rvMenu(st) == CoreStatusText.noMoveToMake)
         await e.userRetry()
         for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.events.filter { $0 == "open" }.count == 1 && w.drags.count == 1, "events=\(w.events)")
-        #expect(w.drawn == rvD && st.isConverged && rvMenu(st) == "Converged")
+        #expect(w.drawn == rvD && st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches)
         // the grant is gone: a second mismatch beside the fold is NOT fixed without another press
         w.sync { w.drawn = ["D2", "D1", "D3", "D4", "D5", "D6"] }; w.events = []; w.drags = []
         for _ in 0..<6 { _ = await e.reconcileOnce(); c.adv(120) }
@@ -629,7 +634,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         #expect(!st.isConverged)
         w.sync { w.applyProb = 1 }
         await e.userRetry(); for _ in 0..<4 { _ = await e.regularPassForTests(); c.adv(120) }
-        #expect(w.drawn == names && st.isConverged && rvMenu(st) == "Converged", "bar=\(w.drawn) menu=\(rvMenu(st))")
+        #expect(w.drawn == names && st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches, "bar=\(w.drawn) menu=\(rvMenu(st))")
     }
     // item 6: while the strip is open (held by the user) the engine moves nothing: the PLANNER withholds (no dispatch-gate log), and the DISPATCH gate alone also holds
     @Test func whileTheStripIsOpenTheEngineMovesNothing() async {
@@ -696,7 +701,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         for _ in 0..<6 { _ = await e.reconcileOnce() }
         #expect(!st.lastPlan.orderDiffers)   // A and B (movable) are in order: the two immovable keys swapped against the record are not progress
         #expect(rvMenu(st) != "Working…" && rvArrangeLine(st) != "Working…", "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")
-        #expect((rvMenu(st) == "Converged") == (rvArrangeLine(st) == ArrangeSections.menuBarMatches), "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")   // the same verdict in both
+        #expect((rvMenu(st) == ArrangeSections.menuBarMatches) == (rvArrangeLine(st) == ArrangeSections.menuBarMatches), "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")   // the same verdict in both
     }
 }
 private struct RvImmovable: CapabilityProvider {
@@ -835,7 +840,7 @@ private struct RvFakeObserver: MenuBarObserver {
         var polls = 0
         while !st.isConverged, polls < 6 { polls += 1; c.adv(10); await t.poll(); await rvSettle(e, ms: 100) }
         #expect(polls <= 3, "polls=\(polls)")
-        #expect(st.isConverged && rvMenu(st) == "Converged")
+        #expect(st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches)
         #expect(rvRowsOf(st).visible.rows.filter { $0.barState == .matches }.count == (rvP + rvD).count, "\(rowsDump(st))")
         #expect(w.drags.isEmpty && w.clicks == 0)
     }
@@ -853,7 +858,7 @@ private struct RvFakeObserver: MenuBarObserver {
         await rvSettle(e, ms: 100)
         #expect(!st.isConverged && rvMenu(st) == ArrangeSections.checkingMenuBar, "proven too early: menu=\(rvMenu(st))")
         await t.poll(); await t.poll(); await rvSettle(e, ms: 100)   // 3
-        #expect(st.isConverged && rvMenu(st) == "Converged")
+        #expect(st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches)
     }
     // item 3: reaching the proof (by polls alone) releases the hold, and the status stops saying the bar is full
     @Test func theProofFromPollsAloneReleasesTheHold() async {
@@ -867,7 +872,7 @@ private struct RvFakeObserver: MenuBarObserver {
         while await e.stripOpenHold != nil, polls < 6 { polls += 1; c.adv(10); await t.poll(); await rvSettle(e, ms: 100) }
         #expect(polls <= 3, "polls=\(polls)")
         #expect(await e.stripOpenHold == nil)
-        #expect(st.isConverged && rvMenu(st) == "Converged", "menu=\(rvMenu(st))")
+        #expect(st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches, "menu=\(rvMenu(st))")
     }
     // the zero-folded hold text never says "folds 0 items" and names the way out
     @Test func theHoldTextWithNoFoldedItemsNamesReApply() {

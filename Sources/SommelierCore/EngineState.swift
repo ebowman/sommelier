@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import DecisionCore
 
 /// What `LayoutEngine.setLayout` returns: the revision the call produced and `passesStarted` when it was published.
 public struct LayoutRevision: Equatable, Sendable {
@@ -108,6 +109,12 @@ public final class EngineState {
     public var inFlight: PlannedAction?
     /// 9o9.5: the partition of the engine's last plan; replaced by every pass that planned.
     public var lastPlan: PlanSummary = PlanSummary()
+    /// ejb.16: what the proved core says, published after each PASS read (poll reads never change it): the bottom line's status, one row
+    /// per record key and the notes beside them. nil until the first pass read.
+    public var coreDisplay: CoreDisplay?
+    public var coreStatus: Status? { coreDisplay?.status }
+    public var coreRows: [ItemKey: Row] { coreDisplay?.rows ?? [:] }
+    public var coreNotes: [ItemKey: RowNote] { coreDisplay?.notes ?? [:] }
     public var perItem: [ItemKey: ItemStatus]
     /// Keys that are `.inPlace` because a live hide/show was APPLIED per the Control Center store, but no usable complete read
     /// has confirmed it yet (`ActuationMechanism.liveUnverified`, gdu.55). Cleared by a later settled complete read.

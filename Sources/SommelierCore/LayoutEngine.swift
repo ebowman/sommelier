@@ -556,6 +556,12 @@ public actor LayoutEngine {
     private var core = CoreDriver()
     private var coreSeeded = false
     private var coreErrorShown = false
+    private var publishedDisplay: CoreDisplay?
+    /// A display computed by `coreStep` and not yet on `EngineState` (`.some(nil)` = publish "no display"). Carried by the next `publish` or `flushCoreDisplay`.
+    private var pendingDisplay: CoreDisplay??
+    /// A `lastError` change for the core's own errors, stashed by `coreStep` (which never suspends) and carried by the next `publish`. `.set(m)`: show the decision error; `.clear`: remove it.
+    private enum PendingCoreError { case set(String), clear }
+    private var pendingCoreError: PendingCoreError?
     /// The last `BarObservation` `observeOnce` produced (the adapter's input besides the `ObservedOrder`).
     private var lastBarObs: BarObservation?
 
@@ -564,6 +570,7 @@ public actor LayoutEngine {
         (core.emitted, core.resolved, core.violations, core.awaiting != nil, core.trace ?? [])
     }
     func coreLastRead() -> Read? { core.lastRead }
+    func coreDisplayForTests() -> CoreDisplay? { core.display }
     /// TESTS ONLY: makes every core step fail with `e` (nil: normal), to exercise the `DecisionError` path.
     func injectCoreFailureForTests(_ e: DecisionError?, onMoveResultOnly: Bool = false) { core.injectedFailure = e; core.injectOnMoveResultOnly = onMoveResultOnly }
     /// Timing of the `.read` steps so far: (count, total ns, worst ns).
@@ -575,7 +582,7 @@ public actor LayoutEngine {
     /// THE call into `DecisionCore.step`. Returns the emitted actions (at most one). A `DecisionError` is logged, shown as `lastError`, and
     /// stops order actuation (no action is returned) until the next successful step; it never defaults to anything.
     @discardableResult
-    private func coreStep(_ e: Event, _ name: String, site: String) async -> [Action] {
+    private func coreStep(_ e: Event, _ name: String, site: String) -> [Action] {
         if !coreSeeded {
             coreSeeded = true
             // TESTS ONLY (`assumeFullBarAtLaunch == false`, "known not full"): three quiet polls of a chevronless complete bar prove it, as 3 real reads would.
@@ -584,19 +591,36 @@ public actor LayoutEngine {
                 for _ in 0..<3 { _ = core.step(.read(quiet), name: "read", site: "test seed (assumeFullBarAtLaunch == false)") }
             }
         }
+        // No suspension in here (callers rely on it): errors and displays are stashed and carried by the next `publish` / `flushCoreDisplay`.
         switch core.step(e, name: name, site: site) {
         case .success(let actions):
-            if coreErrorShown {
-                coreErrorShown = false
-                await publish { if case .decision? = $0.lastError { $0.lastError = nil } }
-            }
+            if coreErrorShown, !core.isDown, core.displayError == nil { coreErrorShown = false; pendingCoreError = .clear }
             return actions
         case .failure(let err):
             log("engine: decision core error at \(site) (\(name)): \(err); order actuation stopped until the next successful step")
             coreErrorShown = true
-            let m = "\(err)"
-            await publish { $0.lastError = .decision(m) }
+            pendingCoreError = .set("\(err)")
             return []
+        }
+    }
+
+    /// Computes the display (a pass read computes its own; a non-read event left it stale) and stashes what changed for the next publish.
+    /// Called ONLY where it can be published: after a pass read, and by `flushCoreDisplay` (end of a pass, end of a user event). Never suspends.
+    private func settleCoreDisplay(site: String) {
+        core.settleDisplay()
+        if let de = core.displayError {   // the status/rows query failed: nothing is shown as matching, the error leads
+            if !coreErrorShown || publishedDisplay != nil { log("engine: decision core display error at \(site): \(de)") }
+            coreErrorShown = true
+            publishedDisplay = nil
+            pendingDisplay = .some(nil)
+            pendingCoreError = .set("\(de)")
+            return
+        }
+        if coreErrorShown, !core.isDown { coreErrorShown = false; pendingCoreError = .clear }
+        if core.display != publishedDisplay {   // only a pass read (or a non-read event) changes it; a poll read never does
+            let d = core.display
+            publishedDisplay = d
+            pendingDisplay = .some(d)
         }
     }
 
@@ -611,31 +635,31 @@ public actor LayoutEngine {
     }
 
     /// An ENGINE-made change of the record (new items, adoption, hand-drag adoption, System Settings hides): `userEdit(rec, [])`.
-    private func coreSyncRecord(site: String) async {
+    private func coreSyncRecord(site: String) {
         let rec = coreRecordIDs()
         guard rec != core.record else { return }
-        await coreStep(.userEdit(record: rec, moved: []), "userEdit", site: site)
+        coreStep(.userEdit(record: rec, moved: []), "userEdit", site: site)
         if !core.isDown { core.record = rec }
     }
 
     /// The USER's edit (`setLayout` with moved keys placed by the user): `userEdit(rec, moved)`.
-    private func coreUserEdit(moved: Set<ItemKey>, site: String) async {
+    private func coreUserEdit(moved: Set<ItemKey>, site: String) {
         let rec = coreRecordIDs()
         let ids = moved.sorted { $0.description < $1.description }.compactMap { k in core.keys.isChevron(k) ? nil : try? core.keys.intern(k) }
-        await coreStep(.userEdit(record: rec, moved: ids), "userEdit", site: site)
+        coreStep(.userEdit(record: rec, moved: ids), "userEdit", site: site)
         if !core.isDown { core.record = rec }
     }
 
     /// The one answer to an emitted action. Exactly one per `Action`: vetoes after the step send `busy` with `posted: false`.
-    private func coreResult(_ a: Action, _ outcome: Outcome, posted: Bool, site: String) async {
-        await coreStep(.moveResult(a.subject, outcome, posted: posted), "moveResult", site: site)
+    private func coreResult(_ a: Action, _ outcome: Outcome, posted: Bool, site: String) {
+        coreStep(.moveResult(a.subject, outcome, posted: posted), "moveResult", site: site)
     }
 
     /// Safety net: no emitted action may stay unanswered when a pass ends, whatever path ended it.
-    private func coreSettleStraggler(site: String) async {
+    private func coreSettleStraggler(site: String) {
         guard let w = core.awaiting else { return }
         log("engine: BUG? an emitted order move of \(w.subject) was not answered; answering busy (not posted) at \(site)")
-        await coreResult(w.action, .busy, posted: false, site: site)
+        coreResult(w.action, .busy, posted: false, site: site)
     }
 
     /// Control Center entries that belong together (an app and its helpers): the adapter's `ownerFamilies`.
@@ -648,7 +672,7 @@ public actor LayoutEngine {
     /// hand-drag adoption, transient reveal, reveal pass, post-move evidence): the read is downgraded to `settled: false`, which is the ONLY
     /// edit a veto may make. A vetoed read is still fed, and never decides anything. Returns the emitted actions of a pass read.
     @discardableResult
-    private func coreRead(_ o: ObservedOrder, bar: BarObservation, kind: ReadKind, vetoed: Bool, site: String) async -> [Action] {
+    private func coreRead(_ o: ObservedOrder, bar: BarObservation, kind: ReadKind, vetoed: Bool, site: String) -> [Action] {
         let caps = activeCapabilities ?? capabilities
         let immovable = Set((layout.visible + o.onBar + o.parked).filter { !caps.capability(for: $0).canMove })
         var ctx = ReadContext(observation: bar, kind: kind, previousCompletePile: core.lastCompletePile, handDragUnverified: handDragUnverified,
@@ -672,22 +696,29 @@ public actor LayoutEngine {
             core.lastCompletePile = Set(o.onBar.filter { !suspects.contains($0) && !core.keys.isChevron($0) && o.systemOverflow.contains($0) })
         }
         if adapted.record != core.record {   // engine-made record changes reach the core before the read that judges them
-            await coreStep(.userEdit(record: adapted.record, moved: []), "userEdit", site: site + " (record sync)")
+            coreStep(.userEdit(record: adapted.record, moved: []), "userEdit", site: site + " (record sync)")
             if !core.isDown { core.record = adapted.record }
         }
-        let actions = await coreStep(.read(adapted.read), "read", site: site)
+        let actions = coreStep(.read(adapted.read), "read", site: site)
+        if kind == .pass {
+            settleCoreDisplay(site: site)   // a pass read is where the display is published
+            if core.displayError != nil, let a = actions.first {   // the status/rows query failed: no order move is performed (lastError leads)
+                coreResult(a, .busy, posted: false, site: site + " (display error)")
+                return []
+            }
+        }
         if kind != .pass || vetoed, let a = actions.first {   // cannot happen (only a settled pass read decides); answered, never performed
             log("engine: BUG? the core emitted a move on a \(kind == .poll ? "poll" : "vetoed") read; not performed")
-            await coreResult(a, .busy, posted: false, site: site + " (unexpected action)")
+            coreResult(a, .busy, posted: false, site: site + " (unexpected action)")
             return []
         }
         return actions
     }
 
     /// A read the pass cannot act on (an early exit of the pass): still fed, as evidence only.
-    private func coreFeedVetoed(_ o: ObservedOrder, site: String) async {
+    private func coreFeedVetoed(_ o: ObservedOrder, site: String) {
         guard let b = lastBarObs else { return }
-        await coreRead(o, bar: b, kind: .pass, vetoed: true, site: site)
+        coreRead(o, bar: b, kind: .pass, vetoed: true, site: site)
     }
 
     // MARK: Public control
@@ -861,8 +892,9 @@ public actor LayoutEngine {
         await clearFailures(keepingStripHold: keepHold)
         // ejb.15 event userEdit (wiring plan section 1): the USER's placement (moved keys) is `userEdit(rec, moved)`; any other change of the record
         // (a scan-built layout, a pending-adoption drop with nothing moved) is the engine's: `userEdit(rec, [])`.
-        if userPlacement, !movedKeys.isEmpty { await coreUserEdit(moved: movedKeys, site: "setLayout (user placement)") }
-        else { await coreSyncRecord(site: "setLayout (no user move)") }
+        if userPlacement, !movedKeys.isEmpty { coreUserEdit(moved: movedKeys, site: "setLayout (user placement)") }
+        else { coreSyncRecord(site: "setLayout (no user move)") }
+        await flushCoreDisplay()
         if config.layoutCoalesce > .zero {
             // The pass for this layout starts after the window; a further setLayout inside it replaces this one (same reason
             // key), so a quick change of mind plans only the final layout. The drop's revision stamp is unaffected: the first
@@ -1027,7 +1059,7 @@ public actor LayoutEngine {
         clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
         lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
         _ = await publishLayout(l)
-        await coreSyncRecord(site: "adoptLateHandDrags (hand-drag adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
+        coreSyncRecord(site: "adoptLateHandDrags (hand-drag adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
         await publishUnverified()
         await announceHandDrag()
     }
@@ -1292,7 +1324,7 @@ public actor LayoutEngine {
         clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
         lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
         _ = await publishLayout(l)
-        await coreSyncRecord(site: "adoptHandDrag (hand-drag adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
+        coreSyncRecord(site: "adoptHandDrag (hand-drag adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
         await publishUnverified()
         await announceHandDrag()
     }
@@ -1313,7 +1345,7 @@ public actor LayoutEngine {
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         log("layout: adopted bar order on upgrade (\(n.count) keys)")
         _ = await publishLayout(l)
-        await coreSyncRecord(site: "adoptBarOrder (upgrade adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
+        coreSyncRecord(site: "adoptBarOrder (upgrade adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
     }
 
     /// Pure (9o9.3): `adopted` (the record adopted from the bar) with the user's drop applied. `requested` is the Visible order the
@@ -1420,7 +1452,8 @@ public actor LayoutEngine {
         userEditMoved = nil; userEditRestricting = false
         retryStripGrant = true; retryGrantPass = passSerial   // gdu.144 D5: ONE user-authorised strip session for the next single move, never past the next pass
         await clearFailures(keepingStripHold: false)
-        await coreStep(.userRetry, "userRetry", site: "userRetry() (Re-apply layout)")   // ejb.15 event userRetry
+        coreStep(.userRetry, "userRetry", site: "userRetry() (Re-apply layout)")   // ejb.15 event userRetry
+        await flushCoreDisplay()
     }
 
     private func clearFailures(keepingStripHold: Bool) async {
@@ -1461,7 +1494,7 @@ public actor LayoutEngine {
         }
         if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
         resetStripHold()
-        if !core.keys.isChevron(key), let id = try? core.keys.intern(key) { await coreStep(.retryKey(id), "retryKey", site: "retry(key:) (Try again)") }   // ejb.15 event retryKey
+        if !core.keys.isChevron(key), let id = try? core.keys.intern(key) { coreStep(.retryKey(id), "retryKey", site: "retry(key:) (Try again)"); await flushCoreDisplay() }   // ejb.15 event retryKey
         await publish { s in
             if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
         }
@@ -1753,7 +1786,25 @@ public actor LayoutEngine {
 
     private func publish(_ body: @MainActor @Sendable (EngineState) -> Void) async {
         let s = state
-        await MainActor.run { body(s) }
+        let pd = pendingDisplay   // taken before the suspension, so a later step's display is never overwritten by this one
+        let pe = pendingCoreError
+        pendingDisplay = nil; pendingCoreError = nil
+        await MainActor.run {
+            if let pd { s.coreDisplay = pd }
+            switch pe {
+            case .set(let m)?: s.lastError = .decision(m)
+            case .clear?: if case .decision? = s.lastError { s.lastError = nil }
+            case nil: break
+            }
+            body(s)
+        }
+    }
+
+    /// Puts a display computed by `coreStep` on `EngineState` (a suspension point: call it only where the caller may suspend).
+    func flushCoreDisplay() async {
+        settleCoreDisplay(site: "flush")
+        guard pendingDisplay != nil || pendingCoreError != nil else { return }
+        await publish { _ in }
     }
 
     private func effectiveCaps() -> @Sendable (ItemKey) -> Capability {
@@ -1825,7 +1876,7 @@ public actor LayoutEngine {
         userPlacedVisible.subtract(moved)
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         _ = await publishLayout(l)
-        await coreSyncRecord(site: "adoptSystemSettingsHides (System Settings hides)")   // ejb.15: engine-made record change = userEdit(rec, [])
+        coreSyncRecord(site: "adoptSystemSettingsHides (System Settings hides)")   // ejb.15: engine-made record change = userEdit(rec, [])
         let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
         let names = moved.map { itemInfo[$0] != nil ? namer.name($0) : $0.description }
         systemNoticeSerial += 1
@@ -2035,7 +2086,7 @@ public actor LayoutEngine {
         // ejb.15 event read, kind poll (wiring plan section 1; EngineTriggers `scanSignature`): a quiet poll's scan is evidence only. One scan is not an
         // agreeing pair, so it is `settled: false`; a poll never decides (the core refuses a move on any read that is not a settled pass read).
         // An empty bar is a non-observation, still told to the core (`observed: false`).
-        await coreRead(o, bar: BarObservation(items: items, settled: false, completeness: completeness, unreadOwners: unreadOwners,
+        coreRead(o, bar: BarObservation(items: items, settled: false, completeness: completeness, unreadOwners: unreadOwners,
                                               cachedOwners: cachedOwners, ownerEvidence: ownerEvidence),
                        kind: .poll, vetoed: false, site: "notePollScan (quiet poll)")
         guard !o.onBar.isEmpty else { return }
@@ -2435,8 +2486,8 @@ public actor LayoutEngine {
             // before `noteChevronEvidence` runs, so without this the count would survive it.
             if r.completeness != .complete, r.completeness != .completeExceptSelfPositioning { noChevronReads = 0; notFullProven = false }
             // ejb.15 wiring plan section 1 (read, `observed`): an empty bar is a non-observation, still a read the core is told about (evidence only).
-            if o.onBar.isEmpty { await coreRead(o, bar: r, kind: .pass, vetoed: true, site: "observeOnce: empty bar"); return .failure(.empty) }
-            if !r.settled, !allowUnsettled { await coreRead(o, bar: r, kind: .pass, vetoed: true, site: "observeOnce: scans disagree"); return .failure(.noAgreement(scans: r.scans)) }
+            if o.onBar.isEmpty { coreRead(o, bar: r, kind: .pass, vetoed: true, site: "observeOnce: empty bar"); return .failure(.empty) }
+            if !r.settled, !allowUnsettled { coreRead(o, bar: r, kind: .pass, vetoed: true, site: "observeOnce: scans disagree"); return .failure(.noAgreement(scans: r.scans)) }
             observedCompleteness = r.completeness
             lastObserveScans = r.scans
             let serialBefore = pollSignatureSerial
@@ -2497,7 +2548,7 @@ public actor LayoutEngine {
             noteAnyRead(o)
             if !o.onBar.isEmpty {
                 // wiring plan section 1: the actuator's post-move snapshot is a pass read with settled:false, evidence only
-                await coreRead(o, bar: BarObservation(items: resolved, settled: false, completeness: snap.completeness, unreadOwners: snap.unreadOwners,
+                coreRead(o, bar: BarObservation(items: resolved, settled: false, completeness: snap.completeness, unreadOwners: snap.unreadOwners,
                                                       cachedOwners: snap.cachedOwners, ownerEvidence: snap.ownerEvidence),
                                kind: .pass, vetoed: true, site: "adopt: post-move snapshot")
                 itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved), retaining: ItemInfo.staleOnlyKeys(from: resolved))
@@ -2510,7 +2561,7 @@ public actor LayoutEngine {
         }
         switch await observeOnce() {
         case .success(let (o, _)):
-            if let b = lastBarObs { await coreRead(o, bar: b, kind: .pass, vetoed: true, site: "adopt: post-move scan") }   // evidence only (section 1)
+            if let b = lastBarObs { coreRead(o, bar: b, kind: .pass, vetoed: true, site: "adopt: post-move scan") }   // evidence only (section 1)
             obs = o; return true
         case .failure(let e):
             if e == .permissionDenied { stopped = true; await publish { $0.lastError = .permissionDenied } }
@@ -2549,7 +2600,7 @@ public actor LayoutEngine {
                 return .settled(o)
             }
             hasObservation = true
-            await coreFeedVetoed(o, site: "observeForPass: unsettled read (evidence only)")   // wiring plan section 1: an unsettled pass read is still a read
+            coreFeedVetoed(o, site: "observeForPass: unsettled read (evidence only)")   // wiring plan section 1: an unsettled pass read is still a read
             let info = itemInfo
             log("observation unsettled; not actuating (\(took) ms)")
             let hu = rule
@@ -2604,11 +2655,11 @@ public actor LayoutEngine {
         passAgent = agentPID()
         foreignRestartInPass = false
         let r = await runPassBody(scheduled: scheduled)
-        await coreSettleStraggler(site: "runPass (end of pass)")   // ejb.15: exactly one moveResult per emitted action, whatever path ended the pass
+        coreSettleStraggler(site: "runPass (end of pass)")   // ejb.15: exactly one moveResult per emitted action, whatever path ended the pass
         // gdu.144: when the user's chain ends, however it ends (spent, paused, failed, converged), no attempt is owed any more: nothing the user asked
         // for can fire later. (Only the drain chains: `pending` is set by a chained pass, and a request that arrived meanwhile is a regular pass.)
         if userEditRestricting, draining, !pending {
-            await coreStep(.passBoundary, "passBoundary", site: "runPass (a user chain ends)")   // ejb.15 event passBoundary: the user's chain is over
+            coreStep(.passBoundary, "passBoundary", site: "runPass (a user chain ends)")   // ejb.15 event passBoundary: the user's chain is over
             userDropPending = []; foldDropRequest = []; foldRequestPlanned = []; foldRequestCreated = [:]
             // What the chain did not finish is the engine's business: ONE regular pass (budget, gates and hold apply) makes it, so the status never
             // sticks at "Working…" / "Moving" with nobody left to move anything. A regular pass is never restricted, so this cannot repeat.
@@ -2616,6 +2667,7 @@ public actor LayoutEngine {
                 scheduleReconcile(after: config.userEditFollowUp, reason: Self.userEditFollowUpReason)
             }
         }
+        await flushCoreDisplay()   // ejb.16: the last display changes of the pass (after the straggler answer and the user chain's boundary) are published
         if retryStripGrant, passSerial > retryGrantPass { retryStripGrant = false; grantedAction = nil }   // gdu.144 D5: never survives past the next pass
         // gdu.144 B3: a fold request a pass planned (dispatched or not) is over with that pass.
         if !foldRequestPlanned.isEmpty {
@@ -2680,7 +2732,7 @@ public actor LayoutEngine {
         } else { userEditRestricting = false }
         // ejb.15 event passBoundary: the start of a REGULAR pass (a request that is not the user's edit pass). Never at the start of the Re-apply pass
         // (`userRetry()` marks it `userEditPassOwed`, so it is an `editPass`), and not for a pass chained from a user's edit (no request of its own).
-        if hadRequest, !editPass { await coreStep(.passBoundary, "passBoundary", site: "runPassBody (regular pass start)") }
+        if hadRequest, !editPass { coreStep(.passBoundary, "passBoundary", site: "runPassBody (regular pass start)") }
         // gdu.144 blocker: a move is the USER's only inside the user's pass and the pass chained from it. The first regular pass ends every owed attempt
         // (the dropped keys' exemption and the fold request), dispatched or not: nothing the user asked for can fire later, after quiet polls.
         if !userEditRestricting { userDropPending = []; foldDropRequest = [] }
@@ -2709,7 +2761,7 @@ public actor LayoutEngine {
             if busy() {
                 if scheduled, !busyRetried { busyRetried = true; pending = true }
                 log("user is busy; pass skipped")
-                await coreFeedVetoed(obs, site: "runPassBody (b) user busy (veto)")
+                coreFeedVetoed(obs, site: "runPassBody (b) user busy (veto)")
                 await publish { $0.passSequence += 1 }
                 return PassReport(outcome: .skippedBusy)
             }
@@ -2721,7 +2773,7 @@ public actor LayoutEngine {
         busyRetried = false
 
         if await foreignAgentChange() {
-            await coreFeedVetoed(obs, site: "runPassBody foreign agent restart (veto)")
+            coreFeedVetoed(obs, site: "runPassBody foreign agent restart (veto)")
             let r = PassReport(outcome: .agentRestarted)
             _ = await finish(r, converged: false)
             return r
@@ -2731,14 +2783,14 @@ public actor LayoutEngine {
         // agreed read can lack items). Nothing is planned or done from such an observation; the delayed reconcile follows.
         if sleeping {
             log("system is going to sleep; pass skipped")
-            await coreFeedVetoed(obs, site: "runPassBody (b2) sleeping (veto)")
+            coreFeedVetoed(obs, site: "runPassBody (b2) sleeping (veto)")
             let r = PassReport(outcome: .incomplete)
             _ = await finish(r, converged: false)
             return r
         }
         if conflicted {
             log(conflictBox.value != nil ? "conflicting manager running; pass skipped" : "engine: paused: Sommelier paused by you; pass skipped")
-            await coreFeedVetoed(obs, site: "runPassBody (b2) conflict/pause (veto)")
+            coreFeedVetoed(obs, site: "runPassBody (b2) conflict/pause (veto)")
             let r = PassReport(outcome: .paused)
             _ = await finish(r, converged: false)
             return r
@@ -2746,7 +2798,7 @@ public actor LayoutEngine {
         if let until = notReadyUntil {
             if config.instant() < until {
                 log("agent restarted moments ago; not acting on this observation")
-                await coreFeedVetoed(obs, site: "runPassBody (b2) not ready (veto)")
+                coreFeedVetoed(obs, site: "runPassBody (b2) not ready (veto)")
                 let r = PassReport(outcome: .unsettled)
                 _ = await finish(r, converged: false)
                 return r
@@ -2755,7 +2807,7 @@ public actor LayoutEngine {
         }
 
         if generation != layoutGeneration {   // the layout changed during observation
-            await coreFeedVetoed(obs, site: "runPassBody superseded during observation (veto)")
+            coreFeedVetoed(obs, site: "runPassBody superseded during observation (veto)")
             return await endSuperseded(PassReport(outcome: .superseded))
         }
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
@@ -2819,7 +2871,7 @@ public actor LayoutEngine {
             await noteNewItems(plan.newItems)
             do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
             let stamp = await publishLayout(layout)   // a new revision: the engine itself changed the layout (gdu.48)
-            await coreSyncRecord(site: "runPassBody (d) new items")   // ejb.15: engine-made record change = userEdit(rec, [])
+            coreSyncRecord(site: "runPassBody (d) new items")   // ejb.15: engine-made record change = userEdit(rec, [])
             for n in plan.newItems {
                 guard let sec = layout.section(of: n.key), let i = layout.keys(in: sec).firstIndex(of: n.key) else { continue }
                 engineAdditions.append((stamp.revision, n.key, sec, i))
@@ -2841,7 +2893,7 @@ public actor LayoutEngine {
         var consecutiveFailures = 0
         func report(_ o: PassReport.Outcome) -> PassReport { PassReport(outcome: o, phase: phaseReached, actionCount: actionCount) }
 
-        func isConverged() -> Bool { failures.isEmpty && !core.isDown }   // a core that cannot be called never shows "converged" (plan section 5)
+        func isConverged() -> Bool { failures.isEmpty && !core.isDown && core.displayError == nil }   // a core that cannot be called never shows "converged" (plan section 5)
 
         // ejb.15 event read (wiring plan section 1): this pass's settled read goes to the core. The Swift-only vetoes known BEFORE the step may only
         // downgrade it to settled:false (evidence); they never decide and never skip feeding the read: pending adoption, hand-drag adoption, a
@@ -2854,20 +2906,20 @@ public actor LayoutEngine {
             switch await awaitQuiet() {
             case .clear: break
             case .waitedThenClear:
-                await coreFeedVetoed(obs, site: "runPassBody (c) user interaction, waited (veto)")
+                coreFeedVetoed(obs, site: "runPassBody (c) user interaction, waited (veto)")
                 if draining { pending = true }   // the observation is old after the wait: a fresh pass re-observes
                 await publish { $0.inFlight = nil }
                 let r = report(.incomplete)
                 return await finish(r, converged: false)
             case .blocked(let why):
-                await coreFeedVetoed(obs, site: "runPassBody (c) user interaction (veto)")
+                coreFeedVetoed(obs, site: "runPassBody (c) user interaction (veto)")
                 await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
                 return await endPausedForInteraction(why, report(.paused))
             }
         }
         let coreVeto = plan.phase == .membership || layout.pendingAdoption || handAdopt != nil || !transientReveals.isEmpty || showHidden || showAlways
         var coreAction: Action?
-        if let b = lastBarObs { coreAction = await coreRead(obs, bar: b, kind: .pass, vetoed: coreVeto, site: "runPassBody (c) pass read").first }
+        if let b = lastBarObs { coreAction = coreRead(obs, bar: b, kind: .pass, vetoed: coreVeto, site: "runPassBody (c) pass read").first }
 
         // The core made no move although the OLD planner still has order moves (a bar not yet proven not full, a move that needs the strip, a spent budget, an
         // untrusted key...): those moves are WITHHELD, exactly as `gateEngineMoves` withheld them. Without this the planned-but-never-made moves would show as a stuck
@@ -3077,46 +3129,46 @@ public actor LayoutEngine {
         guard let (key, rel) = core.relation(ca) else {
             // the core named a key this engine never interned: nothing to drag, answered at once (no mouse event: not an attempt)
             log("engine: the core's move names an unknown key; not performed")
-            await coreResult(ca, .failed, posted: false, site: "order phase: unknown key")
+            coreResult(ca, .failed, posted: false, site: "order phase: unknown key")
             return await abort(.incomplete)
         }
         let action: PlannedAction = .move(key, rel)
         // Swift-only vetoes known only AFTER the step: each answers the emitted action with `busy, posted: false` (the core re-arms nothing it did not owe).
         if generation != layoutGeneration {
-            await coreResult(ca, .busy, posted: false, site: "order phase: superseded (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: superseded (veto)")
             log("layout changed before the order move; dropping it")
             return await endSuperseded(report(.superseded))
         }
         if conflicted {
-            await coreResult(ca, .busy, posted: false, site: "order phase: conflict/pause (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: conflict/pause (veto)")
             return await pausedMidPass(report(.paused))
         }
         if sleeping {
-            await coreResult(ca, .busy, posted: false, site: "order phase: sleeping (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: sleeping (veto)")
             log("system is going to sleep; pass ends before the move")
             await publish { $0.inFlight = nil }
             return await abort(.incomplete)
         }
         guard actionCount < config.maxActionsPerPass else {
-            await coreResult(ca, .busy, posted: false, site: "order phase: maxActionsPerPass (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: maxActionsPerPass (veto)")
             log("maxActionsPerPass reached")
             return await rescheduleIncomplete(report(.incomplete), converged: false)
         }
         switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
         case .clear: flightBox.begin()   // 9o9.7: at once, so a mouse-down after the gate check is never read as a hand drag
         case .waitedThenClear:
-            await coreResult(ca, .busy, posted: false, site: "order phase: awaitQuiet waited (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: awaitQuiet waited (veto)")
             if draining { pending = true }
             await publish { $0.inFlight = nil }
             return await abort(.incomplete)
         case .blocked(let why):
-            await coreResult(ca, .busy, posted: false, site: "order phase: awaitQuiet blocked (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: awaitQuiet blocked (veto)")
             await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
             return await endPausedForInteraction(why, report(.paused))
         }
         if generation != layoutGeneration {   // the layout changed while we waited for the user to be quiet
             flightBox.end()
-            await coreResult(ca, .busy, posted: false, site: "order phase: superseded while waiting (veto)")
+            coreResult(ca, .busy, posted: false, site: "order phase: superseded while waiting (veto)")
             return await endSuperseded(report(.superseded))
         }
         do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
@@ -3154,7 +3206,7 @@ public actor LayoutEngine {
         actionCount += 1
         let touchedMouse = await actuator.lastMoveTouchedMouse
         let (outcome, posted) = OutcomeMapper.map(result, touchedMouse: touchedMouse)
-        await coreResult(ca, outcome, posted: posted, site: "order phase: the actuator's answer")   // the one moveResult of this action
+        coreResult(ca, outcome, posted: posted, site: "order phase: the actuator's answer")   // the one moveResult of this action
         switch result {
         case .verified(let snap):
             consecutiveFailures = 0; allFailedStreak = 0
@@ -3227,7 +3279,7 @@ public actor LayoutEngine {
         case .end(let r): return r
         }
         plan = makePlan(obs)
-        if let b = lastBarObs { coreAction = await coreRead(obs, bar: b, kind: .pass, vetoed: false, site: "runPassBody (h) next read of a multi-move pass").first } else { coreAction = nil }
+        if let b = lastBarObs { coreAction = coreRead(obs, bar: b, kind: .pass, vetoed: false, site: "runPassBody (h) next read of a multi-move pass").first } else { coreAction = nil }
         }
         await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
         // The old planner's verdict on the adopted bar is DISPLAY (Wiring 4 replaces it): when it sees nothing left the pass ends converged; the core

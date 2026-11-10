@@ -82,11 +82,15 @@ private actor AdvChaos: MenuBarActuator {
 private let advP = ["P1", "P2", "P3"]
 private let advD = ["D1", "D2", "D3", "D4", "D5", "D6"]
 
+/// A delayed request that never fires (it returns only when its task is cancelled).
+@Sendable private func advNeverFires(_ d: Duration) async { while !Task.isCancelled { try? await Task.sleep(for: .seconds(60)) } }
+
 @MainActor
-private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool = true, now: (@Sendable () -> Date)? = nil, skipPlanningGate: Bool = false) async -> (LayoutEngine, AdvChaos, EngineState) {
+private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool = true, now: (@Sendable () -> Date)? = nil, skipPlanningGate: Bool = false, timers: (@Sendable (Duration) async -> Void)? = nil) async -> (LayoutEngine, AdvChaos, EngineState) {
     let a = AdvChaos(w: w, seed: seed, mix: mix); let st = EngineState()
     var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max
     c.skipPlanningGateForTests = skipPlanningGate
+    c.delaySleep = timers ?? advNeverFires   // hermetic: the wall-clock timers (setLayout's 300 ms window, the user-edit follow-up) do not fire in the middle of a test
     if let now { c.now = now }
     let e = LayoutEngine(observer: AdvObs(w: w), actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: record.map(k))), capabilities: AdvCaps(), state: st,
                          resolveSnapshot: advRes, sleep: { _ in }, log: { _ in }, config: c)
@@ -266,14 +270,15 @@ private final class AdvClock: @unchecked Sendable {
                 for key in advP.map(k) { #expect(st.perItem[key] != .inPlace) }   // a pile key is never in place
                 let differs = ArrangeBarState.stoppedWhileDifferingText
                 if !st.isConverged || line.contains(differs) {
-                    #expect(!st.isConverged && line.contains(differs) && menu == differs, "name=\(name) spent=\(spent) line=\(line) menu=\(menu) converged=\(st.isConverged)")
+                    #expect(!st.isConverged && line.contains(differs) && !menu.contains(ArrangeSections.menuBarMatches), "name=\(name) spent=\(spent) line=\(line) menu=\(menu) converged=\(st.isConverged)")
                 }
                 let observedDrawn = st.observed.onBar.filter { advD.map(k).contains($0) }
                 #expect(observedDrawn == advD.map(k) || menu != "Converged", "Converged while the drawn order differs: \(observedDrawn)")
                 // ejb.15 (Wiring 3), CHANGED because the core decides: `<= 3`, no longer `== 3`. The core withholds every engine move that needs the strip (a key in the
                 // churn zone, here the first drawn key of the scrambled bar), so on these bars it may make fewer than the 3 budgeted drags (even none). The bound that
                 // guards safety, never more than the budget, is unchanged; the honest status is asserted as before.
-                if spent { #expect(await a.count() <= 3); #expect(!st.isConverged && menu == differs, "spent: menu=\(menu)") }
+                // ejb.16 CHANGED (display source): the menu is the core's text (`differs stopped` or `differs plain` once the budget is spent, by scenario), never matches.
+                if spent { #expect(await a.count() <= 3); #expect(!st.isConverged && (menu == CoreStatusText.noMoveToMake || menu == differs), "spent: menu=\(menu)") }
             }
         }
     }
@@ -330,6 +335,59 @@ private final class AdvClock: @unchecked Sendable {
         for _ in 0..<6 { _ = await e.reconcileOnce() }
         let keys = await a.keys()
         #expect(keys == ["D4"], "moved \(keys)")
+    }
+
+    // The timers of the drop (the setLayout window and the user-edit follow-up) are the ONLY way a REGULAR pass runs after the user's pass; the former
+    // intermittent extra drag (moved ["D4","D1"], ejb.16) was that regular pass firing in the middle of the test when the actor was slow, not a
+    // wrong decision (it also happens at the base commit). Forced here with timers that fire at once: the user's pass makes the user's drag
+    // (the only one not flagged engine-initiated), and anything after it is a separate engine-initiated regular pass within the budget.
+    @Test func timersFiringAtOnceAddOnlyEngineInitiatedRegularPassMovesAfterTheUsersDrag() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, timers: { _ in })
+        _ = await e.reconcileOnce()
+        await e.setLayout(Layout.placedAll(visible: (["D4"] + advP + ["D1", "D2", "D3", "D5", "D6"]).map(k)), moved: [k("D4")])
+        for _ in 0..<6 { _ = await e.reconcileOnce() }
+        let keys = await a.keys()
+        #expect(keys.first == "D4", "moved \(keys)")
+        #expect(await a.notEngineInitiated() == 1, "only the user's drop is the user's drag; moved \(keys)")
+        #expect(keys.count <= 4, "moved \(keys)")
+        let audit = await e.coreAudit()
+        #expect(audit.emitted == audit.resolved && audit.violations == 0)
+    }
+
+    // ejb.16: whatever ends a pass (the straggler answer, the user chain's passBoundary), the display of the core's LAST state is what EngineState shows
+    @Test func theLastDisplayChangesOfAPassArePublished() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, st) = await advRig(w: w, record: advP + advD, mix: false)
+        _ = await e.reconcileOnce()
+        await e.setLayout(Layout.placedAll(visible: (["D4"] + advP + ["D1", "D2", "D3", "D5", "D6"]).map(k)), moved: [k("D4")])
+        #expect(st.coreDisplay == (await e.coreDisplayForTests()), "after the user's edit")
+        for i in 0..<5 {
+            _ = await e.reconcileOnce()
+            #expect(st.coreDisplay == (await e.coreDisplayForTests()), "after pass \(i)")
+            #expect(st.coreDisplay != nil)
+        }
+        #expect(await a.keys().first == "D4")
+        await e.userRetry()
+        #expect(st.coreDisplay == (await e.coreDisplayForTests()), "after Re-apply")
+    }
+
+    // ... and for the drain's own chain, which ends with a passBoundary AFTER the pass's last publish (timers fire at once, nobody calls reconcileOnce)
+    @Test func theDisplayAfterAUserChainsFinalBoundaryIsPublished() async {
+        let w = AdvWorld(pile: advP, drawn: advD)
+        let (e, a, st) = await advRig(w: w, record: advP + advD, mix: false, timers: { _ in })
+        _ = await e.reconcileOnce()
+        await e.setLayout(Layout.placedAll(visible: (["D4"] + advP + ["D1", "D2", "D3", "D5", "D6"]).map(k)), moved: [k("D4")])
+        var quiet = 0, lastCount = -1
+        for _ in 0..<400 where quiet < 15 {
+            try? await Task.sleep(for: .milliseconds(10))
+            let c = st.passesStarted
+            quiet = c == lastCount ? quiet + 1 : 0; lastCount = c
+        }
+        #expect(await a.keys().first == "D4")
+        let shown = st.coreDisplay
+        #expect(shown != nil)
+        #expect(shown == (await e.coreDisplayForTests()), "the last display change of the chain was not published")
     }
 
     // D6: a FOLDED key dropped left of the fold: no drag at all, nothing pending
@@ -466,7 +524,8 @@ private final class FoldWorld144: MenuBarObserver, @unchecked Sendable {
     @Test func theMenuSaysWhatArrangeSaysForAFailedRowWithoutAHold() {
         let st = EngineState()
         st.perItem[k("D1")] = .failed(.timeout)
-        #expect(StatusLine.text(state: st, trusted: true, conflicting: nil) == ArrangeSections.cannotPlaceText(1))
+        // ejb.16 CHANGED (display source): a failed membership item leads the core's text (no per-row "can't be placed" count from the old plan).
+        #expect(StatusLine.text(state: st, trusted: true, conflicting: nil) == "1 failed · " + ArrangeSections.checkingMenuBar)
     }
 }
 

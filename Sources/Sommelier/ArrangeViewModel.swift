@@ -165,40 +165,17 @@ final class ArrangeViewModel {
                              awaiting: tracker.awaiting, timedOut: tracker.timedOut,
                              suppressedStatus: tracker.suppressed(passSequence: state.passSequence, observationSettled: state.observationSettled,
                                                   planPass: state.lastPlan.passStarted),
-                             pendingConfirmation: state.pendingConfirmation, unverifiedAfterHandDrag: state.unverifiedAfterHandDrag, lastPlan: state.lastPlan,
+                             pendingConfirmation: state.pendingConfirmation, unverifiedAfterHandDrag: state.unverifiedAfterHandDrag,
+                             coreRows: state.coreRows, coreNotes: state.coreNotes,
                              observationProblem: observationProblem, filter: filter, units: units,
                              unitAppName: { [self] in self.unitAppName($0) }, moveReasons: state.inFlight != nil ? state.orderMoveReasons : [:])
     }
 
     var isFiltering: Bool { !filter.trimmingCharacters(in: .whitespaces).isEmpty }
     var hasNotFitting: Bool { !state.observed.systemOverflow.isEmpty || !state.observed.foldedParked.isEmpty }
+    /// ejb.16 (D10): the same text the menu shows, from the core's status through the one renderer.
     var statusText: String {
-        let notice = state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state) ?? state.unsettledNotice ?? state.orderNotAppliedNotice
-            ?? (state.inFlight != nil ? state.orderMoveNotice : nil) ?? state.newItemNotice
-        let c = content
-        var ctx = ArrangeSections.StatusContext(userPaused: state.userPaused, pauseReason: state.pauseReason,
-                                                orderCapActive: state.orderCapUntil.map { $0 > Date() } ?? false,
-                                                adoptionPending: state.layout.pendingAdoption, handDragNotice: state.handDragNotice, systemSettingsNotice: state.systemSettingsNotice)
-        ctx.stripHoldFolded = state.lastPlan.stripHoldFolded
-        ctx.stripHoldUnplaceable = state.lastPlan.stripHoldUnplaceable
-        ctx.stripHoldDidNotHold = state.lastPlan.stripHoldDidNotHold
-        ctx.stoppedWhileDiffering = state.lastPlan.stoppedWhileDiffering
-        ctx.checkingBar = state.lastPlan.checkingBar
-        // gdu.136: "Done: X. Next: Y" once the edit's own move is no longer pending or in flight.
-        let editDone = state.lastPlan.userEditMoved.allSatisfy { k in
-            switch state.perItem[k] { case .pending?, .moving?: return false; default: return true }
-        }
-        if !state.lastPlan.deferredAfterUserEdit.isEmpty, editDone {
-            let rows = c.visible.rows + c.hidden.rows + c.alwaysHidden.rows
-            func title(_ k: ItemKey) -> String { rows.first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
-            ctx.userEditDone = state.lastPlan.userEditMoved.map(title)
-            ctx.userEditNext = state.lastPlan.deferredAfterUserEdit.map(title)
-        }
-        if let k = state.inFlight.flatMap(Self.subject(of:)) { ctx.movingName = (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
-        return ArrangeSections.statusLine(perItem: state.perItem, lastError: state.lastError, isConverged: state.isConverged,
-                                          inFlight: state.inFlight != nil, pendingAwaiting: tracker.entries.count,
-                                          observationSettled: state.observationSettled, notice: notice,
-                                          pollPausedNames: pollPausedNames, content: c, context: ctx)
+        CoreStatusText.text(state: state, trusted: model.trusted, conflicting: model.conflictingManager)
     }
     private static func subject(of a: PlannedAction) -> ItemKey {
         switch a { case .move(let k, _), .hide(let k), .show(let k): return k }

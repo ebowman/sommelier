@@ -1,4 +1,5 @@
 import Foundation
+import DecisionCore
 
 // Pure model behind the Arrange window (gdu.19). No AppKit, no engine calls: everything here maps values to values so
 // the truthfulness rules are unit-testable. The app target (ArrangeViewModel) only feeds it state and submits the result.
@@ -335,9 +336,13 @@ public enum ArrangeSections {
     public static func make(observed: ObservedOrder, layout: Layout, items: [ItemKey: ItemInfo], perItem: [ItemKey: ItemStatus],
                             capabilities: (ItemKey) -> Capability, showHiddenSection: Bool = false,
                             awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
-                            pendingConfirmation: Set<ItemKey> = [], unverifiedAfterHandDrag: Set<ItemKey> = [], lastPlan: PlanSummary = PlanSummary(),
+                            pendingConfirmation: Set<ItemKey> = [], unverifiedAfterHandDrag: Set<ItemKey> = [], lastPlan lastPlanArg: PlanSummary = PlanSummary(),
+                            coreRows: [ItemKey: Row]? = nil, coreNotes: [ItemKey: RowNote] = [:],
                             observationProblem: String? = nil, filter: String = "", units: HideUnitRule = .ownerKeys,
                             unitAppName: (String) -> String? = { _ in nil }, moveReasons: [ItemKey: String] = [:]) -> ArrangeContent {
+        // ejb.16: with the core's rows the OLD plan feeds nothing displayed (rows come from the Lean row, D9); `lastPlanArg` is honoured only
+        // when no core rows are given (legacy callers/tests, until the old planner is deleted in Wiring 5).
+        let lastPlan = coreRows == nil ? lastPlanArg : PlanSummary()
         // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
@@ -485,6 +490,17 @@ public enum ArrangeSections {
             } else {
                 state = .notConfirmed
                 if !drawnAllInOrder, onBar.contains(k), !pile.contains(k) { note = ArrangeBarState.differsFromYourOrderText }
+            }
+            if let coreRows {   // D9: the Lean row first; Swift refines only within the same ok-class; a D5 timeout may only downgrade
+                let core = coreRows[k]
+                var positionTimedOut = false   // the position timeout (9o9.29) is a Swift timeout too: it may only downgrade
+                if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix), !reason.hasSuffix(Reconciler.noSafeMoveSkipReason) { positionTimedOut = true }
+                let reconciled = CoreRowRule.reconcile(core: core, swift: state, timedOut: timedOut.contains(k) || positionTimedOut)
+                if reconciled != state {
+                    state = reconciled; note = nil; why = nil; waitName = nil; pinTimedOut = false
+                    if core == .waiting { why = "Waiting for the bar to settle"; waitName = "the bar" }
+                }
+                if let n = coreNotes[k], core == .notWherePut || core == .cannotTell { note = CoreRowRule.text(n) }
             }
             r.barState = state
             r.stateNote = note
