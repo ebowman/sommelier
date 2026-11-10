@@ -7,7 +7,7 @@ import DecisionCore
 
 private func key(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosaveName: n) }
 
-private let allStatuses: [Status?] = [nil, .moving, .matches, .matchesExcept([]), .matchesExcept([1, 2]), .differs(.stopped), .differs(.barFull), .differs(.plain), .checking]
+private let allStatuses: [Status?] = [nil, .moving, .matches, .matchesExcept([]), .matchesExcept([1, 2]), .differs(.stopped), .differs(.barFull), .differs(.needsReapply(3)), .differs(.plain), .checking]
 private let allErrors: [EngineError?] = [nil, .permissionDenied, .conflictingManager("x"), .observe("o"), .stoppedAfterFailures(3),
                                          .batchDrift(expected: "e", observed: "o"), .batchFailed("b"), .decision("malformedInput")]
 
@@ -21,7 +21,7 @@ private func allContexts() -> [CoreStatusContext] {
         var c = CoreStatusContext()
         c.lastError = e; c.userPaused = paused; c.pauseReason = reason; c.adoptionPending = adopt; c.handDragNotice = hand
         c.systemSettingsNotice = ss; c.failedMembership = failed; c.trusted = trusted; c.conflicting = conflict; c.notices = notice
-        c.pinnedDown = pinned; c.pollPaused = poll; c.unsettledNotice = pinned == 1 ? "Unsettled" : nil; c.pileCount = 3; c.movingName = "Foo"
+        c.pinnedDown = pinned; c.pollPaused = poll; c.unsettledNotice = pinned == 1 ? "Unsettled" : nil; c.pileCount = 3; c.movingName = "Foo"; c.reapplyName = "Bar"
         out.append(c)
     } } } } } } } } } } } }
     return out
@@ -52,6 +52,11 @@ private func allContexts() -> [CoreStatusContext] {
         #expect(CoreStatusText.render(.differs(.stopped), c) == ArrangeBarState.stoppedWhileDifferingText)
         #expect(CoreStatusText.render(.differs(.barFull), m) == ArrangeSections.barFullText(4))
         #expect(CoreStatusText.render(.differs(.plain), c) == "Sommelier has no move to make right now")
+        var ra = c; ra.reapplyName = "Foo"
+        #expect(CoreStatusText.render(.differs(.needsReapply(3)), ra) == "Re-apply to move Foo: the move needs the « strip")
+        #expect(!CoreStatusText.render(.differs(.needsReapply(3)), ra).contains("sits near the fold"))   // the item may be fine; its target may be the one near the fold
+        ra.userPaused = true   // a leader precedes it, and it is never "Menu bar matches"
+        #expect(CoreStatusText.render(.differs(.needsReapply(3)), ra) == "Paused by you · Re-apply to move Foo: the move needs the « strip")
         #expect(CoreStatusText.render(.checking, c) == ArrangeSections.checkingMenuBar)
         #expect(CoreStatusText.render(nil, c) == ArrangeSections.checkingMenuBar)
         var t = c; t.pinnedDown = 2; t.pollPaused = "P"; t.unsettledNotice = "U"
@@ -64,6 +69,9 @@ private func allContexts() -> [CoreStatusContext] {
         #expect(CoreRowRule.text(.noMoveHelps) == "No single move of this item would improve the order")
         #expect(CoreRowRule.text(.cantJudge) == "Sommelier can't yet see enough of the bar to place this item")
         #expect(CoreRowRule.text(.noMoveHere) == "Sommelier has no move for this item right now")
+        #expect(CoreRowRule.text(.needsReapply) == "Re-apply to move this item: the move needs the « strip")
+        // a needs-Re-apply row is never ok: the note shows only beside a not-ok mark (Lean `rowReapply_true`)
+        #expect(!CoreRowRule.isOK(.notWherePut))
     }
 
     /// The menu (`StatusLine.text(state:)`) and the Arrange window (`ArrangeViewModel.statusText`) both return `CoreStatusText.text(state:)`: equal for every status.

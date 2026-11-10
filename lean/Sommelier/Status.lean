@@ -18,11 +18,28 @@ def pending (s : State) (r : Read) : Bool := s.inFlight.isSome || (decideMove s 
 /-- The engine will not move again on its own: the budget is spent. -/
 def budgetSpent (s : State) (r : Read) : Bool := cap (fullBar s r) ≤ s.moveCount
 
+/-- THE ENGINE'S PLANNED MOVE, if one is planned on this read (ejb.20): a settled pass read of a good gate with nothing in flight, no queued user move, the engine allowed
+(no restriction, hold or spent budget) and the planner has a move.  It is the move `decideMove` emits if it needs no strip, or if Re-apply granted one.  Everything is on the
+state as `decideMove` judges it (`judge`). -/
+def enginePlan (s : State) (r : Read) : Option Action :=
+  let j := judge s r
+  if r.kind != .pass || !r.settled || r.level == .incomplete || j.inFlight.isSome || !j.gate r then none
+  else match userPick j r with
+    | some _ => none
+    | none => if !engineAllowed j r then none else planOrderMoves j r
+
+/-- The subject of the engine move that is WITHHELD for lack of a strip grant (ejb.20): the engine plans a move that needs the strip (it is near the fold or crosses the chevron's
+strip) and no Re-apply has granted one.  `decideMove` decides nothing then, and nothing else would. -/
+def withheldStrip (s : State) (r : Read) : Option Key :=
+  match enginePlan s r with
+  | some a => if a.strip && !s.stripGrant then some a.subject else none
+  | none => none
+
 /-- Why the bar differs and nothing is happening: `stopped` (the budget is spent), `barFull` (a hold: macOS folded items the engine
-cannot unfold), or `plain` (no reason of the budget or a hold; the text is "Sommelier has no move to make right now": `plain_is_no_move` proves that nothing is in flight
+cannot unfold), `needsReapply k` (the engine's planned move of `k` needs the strip and waits for Re-apply), or `plain` (no reason of the budget or a hold; the text is "Sommelier has no move to make right now": `plain_is_no_move` proves that nothing is in flight
 and no move is decided on that read, and nothing more: the planner is not optimal, so it does NOT claim that no move would help). -/
 inductive Why where
-  | stopped | barFull | plain
+  | stopped | barFull | needsReapply (k : Key) | plain
   deriving DecidableEq, Repr
 
 /-- The bottom line of the Arrange window. -/
@@ -39,6 +56,13 @@ inductive Status where
   | checking
   deriving DecidableEq, Repr
 
+/-- The reason a differing, idle bar gives: stopped > barFull > needsReapply > plain. -/
+def whyDiffers (s : State) (r : Read) : Why :=
+  if budgetSpent s r then .stopped else if s.hold then .barFull
+  else match withheldStrip s r with
+    | some k => .needsReapply k
+    | none => .plain
+
 /-- THE STATUS.  `moving` leads exactly when something is pending; otherwise the verdict of the read is shown, and a `differs`
 carries its reason: a spent budget (`stopped`), else a hold (`barFull`), else none. -/
 def statusLine (s : State) (r : Read) : Status :=
@@ -46,7 +70,7 @@ def statusLine (s : State) (r : Read) : Status :=
   else match shownVerdict s r with
     | .matches => .matches
     | .matchesExcept U => .matchesExcept U
-    | .differs => .differs (if budgetSpent s r then .stopped else if s.hold then .barFull else .plain)
+    | .differs => .differs (whyDiffers s r)
     | .cannotTell => .checking
 
 /-- The key is the subject of the drag in flight or of the drag this read decides. -/
@@ -122,5 +146,10 @@ def rowNote (s : State) (r : Read) (k : Key) : Option RowNote :=
       some .cantJudge
     else some .noMoveHere
   else none
+
+/-- ejb.20.  The row of `k` says "needs Re-apply" beside its mark: the status says the engine's planned move of `k` waits for Re-apply AND the row's mark is "not where you put it"
+(never a tick: `rowReapply_not_ok`).  Swift derives it from the status key and the row in the same way (`CoreRowRule`). -/
+def rowReapply (s : State) (r : Read) (k : Key) : Bool :=
+  decide (statusLine s r = .differs (.needsReapply k)) && rowLine s r k == .notWherePut
 
 end Sommelier

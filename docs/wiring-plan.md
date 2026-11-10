@@ -83,6 +83,7 @@ New pure files in SommelierCore: `CoreKeys` (ItemKey ↔ UInt32, interned, never
   - `matchesExcept` → "Menu bar matches except N unread"
   - `differs(.stopped)` → `stoppedText`
   - `differs(.barFull)` → `barFullText` with the pile count
+  - `differs(.needsReapply(k))` → "Re-apply to move <name of k>: the move needs the « strip" (ejb.20; the row of k carries the same signal as a note)
   - `differs(.plain)` → "No move to make right now"
   - `checking` → `checkingMenuBar`
 - **D7 leaders:** lastError, permission, conflict, paused, pause reason, adoption pending, hand-drag and System Settings notices, failed membership.

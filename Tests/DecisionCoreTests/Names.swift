@@ -8,7 +8,7 @@ enum Names {
         switch r { case .before(let t): return "before \(t)"; case .after(let t): return "after \(t)" }
     }
     static func actions(_ a: [Action]) -> String { a.map { "\($0.subject) \(rel($0.rel)) strip=\($0.strip) user=\($0.user)" }.joined(separator: " | ") }
-    static func why(_ w: Why) -> String { switch w { case .stopped: return "stopped"; case .barFull: return "barFull"; case .plain: return "plain" } }
+    static func why(_ w: Why) -> String { switch w { case .stopped: return "stopped"; case .barFull: return "barFull"; case .plain: return "plain"; case .needsReapply(let k): return "needsReapply \(k)" } }
     static func status(_ s: Status) -> String {
         switch s {
         case .moving: return "moving"
@@ -34,7 +34,7 @@ enum Names {
     }
     static func note(_ n: RowNote?) -> String {
         switch n {
-        case nil: return "none"; case .noMoveHelps?: return "noMoveHelps"; case .cantJudge?: return "cantJudge"; case .noMoveHere?: return "noMoveHere"
+        case nil: return "none"; case .noMoveHelps?: return "noMoveHelps"; case .cantJudge?: return "cantJudge"; case .noMoveHere?: return "noMoveHere"; case .needsReapply?: return "needsReapply"
         }
     }
     static func rowVerdict(_ v: RowVerdict) -> String {

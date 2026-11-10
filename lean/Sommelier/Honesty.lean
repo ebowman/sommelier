@@ -963,7 +963,7 @@ theorem status_except_conv {U : List Key} (hp : pending s r = false) (hv : shown
   simp [statusLine, hp, hv]
 
 theorem status_differs_conv (hp : pending s r = false) (hv : shownVerdict s r = .differs) :
-    statusLine s r = .differs (if budgetSpent s r then .stopped else if s.hold then .barFull else .plain) := by
+    statusLine s r = .differs (whyDiffers s r) := by
   simp [statusLine, hp, hv]
 
 theorem status_checking_conv (hp : pending s r = false) (hv : shownVerdict s r = .cannotTell) : statusLine s r = .checking := by
@@ -1003,13 +1003,65 @@ theorem status_checking_true (hn : s.record.Nodup) (h : statusLine s r = .checki
     · exact Or.inr (Or.inl he)
   · exact Or.inl hu
 
-/-- The status is `plain` only with no spent budget and no hold. -/
-theorem status_plain_iff (h : statusLine s r = .differs .plain) : budgetSpent s r = false ∧ s.hold = false := by
+/-- The shape of a differing status: nothing pending, the verdict differs, and the reason is `whyDiffers`. -/
+theorem status_differs_shape {w : Why} (h : statusLine s r = .differs w) :
+    pending s r = false ∧ shownVerdict s r = .differs ∧ w = whyDiffers s r := by
   unfold statusLine at h
   cases hp : pending s r <;> simp only [hp] at h
   · cases hv : shownVerdict s r <;> simp [hv] at h
-    by_cases h1 : budgetSpent s r = true <;> by_cases h2 : s.hold = true <;> simp_all
+    exact ⟨rfl, rfl, h.symm⟩
   · simp at h
+
+theorem whyDiffers_stopped (h : whyDiffers s r = .stopped) : budgetSpent s r = true := by
+  unfold whyDiffers at h
+  by_cases h1 : budgetSpent s r = true
+  · exact h1
+  · by_cases h2 : s.hold = true <;> simp [h1, h2] at h
+    split at h <;> simp at h
+
+theorem whyDiffers_barFull (h : whyDiffers s r = .barFull) : budgetSpent s r = false ∧ s.hold = true := by
+  unfold whyDiffers at h
+  by_cases h1 : budgetSpent s r = true
+  · simp [h1] at h
+  · by_cases h2 : s.hold = true
+    · simp_all
+    · simp [h1, h2] at h
+      split at h <;> simp at h
+
+theorem whyDiffers_plain (h : whyDiffers s r = .plain) : budgetSpent s r = false ∧ s.hold = false ∧ withheldStrip s r = none := by
+  unfold whyDiffers at h
+  by_cases h1 : budgetSpent s r = true
+  · simp [h1] at h
+  · by_cases h2 : s.hold = true
+    · simp [h1, h2] at h
+    · simp only [h1, h2, Bool.not_eq_true] at h
+      simp only [Bool.not_eq_true] at h1 h2
+      refine ⟨by simpa using h1, by simpa using h2, ?_⟩
+      cases hw : withheldStrip s r <;> simp [hw] at h ⊢
+
+theorem whyDiffers_needsReapply {k : Key} (h : whyDiffers s r = .needsReapply k) :
+    budgetSpent s r = false ∧ s.hold = false ∧ withheldStrip s r = some k := by
+  unfold whyDiffers at h
+  by_cases h1 : budgetSpent s r = true
+  · simp [h1] at h
+  · by_cases h2 : s.hold = true
+    · simp [h1, h2] at h
+    · simp only [h1, h2, Bool.not_eq_true] at h
+      simp only [Bool.not_eq_true] at h1 h2
+      refine ⟨by simpa using h1, by simpa using h2, ?_⟩
+      cases hw : withheldStrip s r <;> simp [hw] at h ⊢
+      exact h
+
+/-- A granted strip is never withheld. -/
+theorem withheldStrip_grant (h : s.stripGrant = true) : withheldStrip s r = none := by
+  unfold withheldStrip
+  cases enginePlan s r <;> simp [h]
+
+/-- The status is `plain` only with no spent budget, no hold and no withheld move. -/
+theorem status_plain_iff (h : statusLine s r = .differs .plain) : budgetSpent s r = false ∧ s.hold = false := by
+  obtain ⟨_, _, hw⟩ := status_differs_shape h
+  have := whyDiffers_plain hw.symm
+  exact ⟨this.1, this.2.1⟩
 
 /-- **stopped_true.**  "Stopped" is shown only when the bar differs, nothing is pending, and the budget is spent; and then (the
 quiescence theorem) no engine move follows on any further events without a user event, as long as the bar stays full at every
@@ -1024,13 +1076,7 @@ theorem stopped_true (h : statusLine s r = .differs .stopped) :
     cases hp : pending s r
     · rfl
     · exact absurd (statusLine_moving_iff.mpr hp) (by rw [h]; simp)
-  have hb : budgetSpent s r = true := by
-    unfold statusLine at h
-    simp only [hp] at h
-    cases hv' : shownVerdict s r <;> simp [hv'] at h
-    by_cases h1 : budgetSpent s r = true
-    · exact h1
-    · by_cases h2 : s.hold = true <;> simp_all
+  have hb : budgetSpent s r = true := whyDiffers_stopped (status_differs_shape h).2.2.symm
   have hcap : cap (fullBar s r) ≤ s.moveCount := by simpa [budgetSpent] using hb
   refine ⟨hv, hp, hcap, fun es hn hc => ?_⟩
   have hcap3 : 3 ≤ cap (fullBar s r) := by
@@ -1052,11 +1098,7 @@ theorem barFull_true (h : statusLine s r = .differs .barFull) :
     cases hp : pending s r
     · rfl
     · exact absurd (statusLine_moving_iff.mpr hp) (by rw [h]; simp)
-  have hh : s.hold = true := by
-    unfold statusLine at h
-    simp only [hp] at h
-    cases hv' : shownVerdict s r <;> simp [hv'] at h
-    by_cases h1 : budgetSpent s r = true <;> by_cases h2 : s.hold = true <;> simp_all
+  have hh : s.hold = true := (whyDiffers_barFull (status_differs_shape h).2.2.symm).2
   refine ⟨hv, hp, hh, fun es hn hg => ?_⟩
   exact (quiescence s es hn (Or.inr (Or.inr ⟨hh, hg⟩))).1
 
@@ -2186,10 +2228,136 @@ theorem userRetry_answers (s : State) (r : Read) (hi : s.inFlight = none) (hg : 
       have : S.moveCount = 0 := by rw [← hS]; simp [step]
       simp [budgetSpent, this, cap]; split <;> simp [capFull, capNotFull]
     have hhold : S.hold = false := by rw [← hS]; simp [step]
+    have hgr : S.stripGrant = true := by rw [← hS]; simp [step]
     unfold statusLine
     have : pending S r = false := by simp [pending, hinf, hdm]
     rw [this]
-    simp [hd, hbud, hhold]
+    simp [hd, whyDiffers, hbud, hhold, withheldStrip_grant hgr]
+
+/-! ### ejb.20: "needs Re-apply" (an engine move withheld for the strip)
+
+`decideMove` withholds an engine move that needs the strip unless Re-apply granted a session, and the planner only ever proposes its first inversion, so on a full bar whose first
+inversion touches the churn zone no engine drag happens.  The status says so instead of the generic `plain`.  `enginePlan` is the planned engine move (the one `decideMove` emits
+if it needs no strip or a grant is there); `withheldStrip` is its subject when it needs the strip and no grant exists. -/
+
+theorem enginePlan_spec {s : State} {r : Read} {a : Action} (h : enginePlan s r = some a) :
+    r.kind = .pass ∧ s.inFlight = none ∧ s.gate r = true ∧ userPick s r = none ∧ engineAllowed s r = true ∧ planOrderMoves (judge s r) r = some a := by
+  unfold enginePlan at h
+  simp only [judge_inFlight, judge_gate] at h
+  by_cases hc : (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true
+  · simp [hc] at h
+  · rw [if_neg hc] at h
+    rw [judge_userPick] at h
+    cases hu : userPick s r with
+    | some u => simp [hu] at h
+    | none =>
+      simp only [hu] at h
+      by_cases he : (!engineAllowed (judge s r) r) = true
+      · simp [he] at h
+      · rw [if_neg he] at h
+        have hcc : (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = false := by simpa using hc
+        simp only [Bool.or_eq_false_iff, bne_eq_false_iff_eq, Bool.not_eq_false'] at hcc
+        have hae : engineAllowed (judge s r) r = true := by simpa using he
+        refine ⟨hcc.1.1.1.1, ?_, ?_, rfl, judge_engineAllowed hae, h⟩
+        · cases hi : s.inFlight with
+          | none => rfl
+          | some x => simp [hi] at hcc
+        · simpa using hcc.2
+
+/-- **enginePlan_decides.**  A planned engine move leaves (`decideMove`) unless it needs the strip: then it leaves as a granted user move if Re-apply granted a session, and is
+WITHHELD (nothing is decided) if not. -/
+theorem enginePlan_decides {s : State} {r : Read} {a : Action} (h : enginePlan s r = some a) :
+    (a.strip = false → decideMove s r = some a) ∧
+    (a.strip = true → s.stripGrant = true → decideMove s r = some { a with user := true }) ∧
+    (a.strip = true → s.stripGrant = false → decideMove s r = none) := by
+  obtain ⟨hk, hi, hg, hu, he, hp⟩ := enginePlan_spec h
+  have hpre : (r.kind != .pass || !r.settled || r.level == .incomplete || (judge s r).inFlight.isSome || !(judge s r).gate r) = false := by
+    unfold enginePlan at h
+    simp only [judge_inFlight, judge_gate] at h ⊢
+    by_cases hc : (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true
+    · simp [hc] at h
+    · simpa using hc
+  have hd : decideMove s r = (if a.strip then (if s.stripGrant then some { a with user := true } else none) else some a) := by
+    unfold decideMove decideMove0
+    rw [hpre, if_neg (by simp), judge_userPick, hu]
+    have hae : engineAllowed (judge s r) r = true := by
+      unfold enginePlan at h
+      simp only [judge_inFlight, judge_gate, judge_userPick] at h
+      cases hu' : userPick s r <;> simp_all
+    simp only [hae, Bool.not_true, Bool.false_eq_true, ↓reduceIte, hp]
+    simp
+  refine ⟨fun hs => ?_, fun hs hg' => ?_, fun hs hg' => ?_⟩ <;> simp [hd, *]
+
+/-- **withheld_iff.**  The engine's move of `k` is withheld for the strip exactly when the engine plans a move of `k` that needs the strip and no Re-apply granted a session. -/
+theorem withheld_iff {s : State} {r : Read} {k : Key} :
+    withheldStrip s r = some k ↔ ∃ a, enginePlan s r = some a ∧ a.strip = true ∧ s.stripGrant = false ∧ a.subject = k := by
+  unfold withheldStrip
+  cases hp : enginePlan s r with
+  | none => simp
+  | some a => 
+    by_cases hs : a.strip = true <;> by_cases hg : s.stripGrant = true <;> simp [hs, hg]
+    all_goals (try (intro h; simp_all))
+    all_goals (try (constructor <;> intro h <;> simp_all))
+
+/-- A withheld move is the whole reason nothing is decided: nothing is in flight, no move is decided, the hold is off, the budget is not spent. -/
+theorem withheld_true {s : State} {r : Read} {k : Key} (h : withheldStrip s r = some k) :
+    s.inFlight = none ∧ decideMove s r = none ∧ s.hold = false ∧ budgetSpent s r = false ∧ userPick s r = none ∧ engineAllowed s r = true ∧
+    ∃ a, planOrderMoves (judge s r) r = some a ∧ a.strip = true ∧ a.subject = k ∧ s.stripGrant = false := by
+  obtain ⟨a, hp, hs, hg, hk⟩ := withheld_iff.1 h
+  obtain ⟨_, hi, _, hu, he, hpl⟩ := enginePlan_spec hp
+  refine ⟨hi, (enginePlan_decides hp).2.2 hs hg, ?_, ?_, hu, he, a, hpl, hs, hk, hg⟩
+  · simp only [engineAllowed, Bool.and_eq_true, Bool.not_eq_true'] at he; exact he.1.1.1.2
+  · simp only [engineAllowed, Bool.and_eq_true, Bool.not_eq_true'] at he
+    simp only [budgetSpent, decide_eq_false_iff_not]
+    have := he.2; simp only [decide_eq_true_eq] at this; omega
+
+/-- **needsReapply_true.**  "Re-apply to move K" is shown only when the bar differs, nothing is pending, and the engine's planned move of `K` needs the strip and is withheld for lack of a grant (so no hold or spent budget stands beside it). -/
+theorem needsReapply_true {s : State} {r : Read} {k : Key} (h : statusLine s r = .differs (.needsReapply k)) :
+    shownVerdict s r = .differs ∧ pending s r = false ∧ decideMove s r = none ∧ s.hold = false ∧ budgetSpent s r = false ∧ withheldStrip s r = some k := by
+  obtain ⟨hp, hv, hw⟩ := status_differs_shape h
+  have := whyDiffers_needsReapply hw.symm
+  exact ⟨hv, hp, (withheld_true this.2.2).2.1, this.2.1, this.1, this.2.2⟩
+
+/-- **needsReapply_iff.**  Both directions: the status says "needs Re-apply" of `k` IFF the verdict is "differs" and the engine's planned move (subject `k`) needs the strip and no Re-apply granted a session. -/
+theorem needsReapply_iff {s : State} {r : Read} {k : Key} :
+    statusLine s r = .differs (.needsReapply k) ↔
+      shownVerdict s r = .differs ∧ ∃ a, enginePlan s r = some a ∧ a.strip = true ∧ s.stripGrant = false ∧ a.subject = k := by
+  constructor
+  · intro h
+    exact ⟨(needsReapply_true h).1, withheld_iff.1 (needsReapply_true h).2.2.2.2.2⟩
+  · rintro ⟨hv, hw⟩
+    have hw' := withheld_iff.2 hw
+    obtain ⟨hi, hd, hh, hb, -⟩ := withheld_true hw'
+    have hp : pending s r = false := by simp [pending, hi, hd]
+    simp [statusLine, hp, hv, whyDiffers, hb, hh, hw']
+
+/-- **needsReapply_row.**  The row of `k` says "needs Re-apply" only beside the mark "not where you put it" (never a tick, never ok), and only where the status says it. -/
+theorem rowReapply_true {s : State} {r : Read} {k : Key} (h : rowReapply s r k = true) :
+    rowLine s r k = .notWherePut ∧ statusLine s r = .differs (.needsReapply k) := by
+  unfold rowReapply at h
+  simp only [Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at h
+  exact ⟨h.2, h.1⟩
+
+theorem rowReapply_not_tick {s : State} {r : Read} {k : Key} (h : rowReapply s r k = true) : rowLine s r k ≠ .tick := by
+  rw [(rowReapply_true h).1]; decide
+
+/-- **reapply_grants.**  After Re-apply (`userRetry`) a strip grant stands, so the status is never "needs Re-apply"; and if the planner still has a move on the same read, it leaves,
+as a granted user move when it needs the strip. -/
+theorem needsReapply_after_retry (s : State) (r : Read) (k : Key) : statusLine (step s .userRetry).1 r ≠ .differs (.needsReapply k) := by
+  intro h
+  have := (needsReapply_true h).2.2.2.2.2
+  rw [withheldStrip_grant (by simp [step])] at this
+  cases this
+
+theorem reapply_decides {s : State} {r : Read} {k : Key} (hw : withheldStrip s r = some k) {a : Action}
+    (hp : enginePlan (step s .userRetry).1 r = some a) :
+    decideMove (step s .userRetry).1 r = some (if a.strip then { a with user := true } else a) := by
+  have hgr : (step s .userRetry).1.stripGrant = true := by simp [step]
+  have := enginePlan_decides hp
+  by_cases hs : a.strip = true
+  · simp [hs, this.2.1 hs hgr]
+  · have hs' : a.strip = false := by simpa using hs
+    simp [hs', this.1 hs']
 
 
 /-- **The count looks at movable record keys only.**  Dropping a key the engine may not name (not movable, or not in the record) from the bar changes no inversion count. -/

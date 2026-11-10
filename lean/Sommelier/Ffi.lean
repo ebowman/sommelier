@@ -177,19 +177,21 @@ theorem decActions_enc (as : List Action) : decActions (encActions as) = some as
     obtain ⟨s, rel, st, u⟩ := a
     cases rel <;> simp [encActions, encAction, encRel, decActions, ub_b, ih]
 
-def encWhy : Why → Nat | .stopped => 0 | .barFull => 1 | .plain => 2
-def decWhy : Nat → Option Why | 0 => some .stopped | 1 => some .barFull | 2 => some .plain | _ => none
+/-- A reason is `[0]` stopped, `[1]` barFull, `[2]` plain, `[3, k]` needsReapply k (ejb.20). -/
+def encWhy : Why → List Nat | .stopped => [0] | .barFull => [1] | .plain => [2] | .needsReapply k => [3, k]
+def decWhy : List Nat → Option Why
+  | [0] => some .stopped | [1] => some .barFull | [2] => some .plain | [3, k] => some (.needsReapply k) | _ => none
 theorem decWhy_enc (w : Why) : decWhy (encWhy w) = some w := by cases w <;> rfl
 
 def encStatus : Status → List Nat
   | .moving => [0] | .matches => [1] | .matchesExcept u => 2 :: u
-  | .differs w => [3, encWhy w] | .checking => [4]
+  | .differs w => 3 :: encWhy w | .checking => [4]
 
 def decStatus : List Nat → Option Status
   | [0] => some .moving
   | [1] => some .matches
   | 2 :: u => some (.matchesExcept u)
-  | [3, w] => (decWhy w).map .differs
+  | 3 :: w => (decWhy w).map .differs
   | [4] => some .checking
   | _ => none
 
@@ -405,7 +407,7 @@ def nameList (l : List Nat) : String := "[" ++ ",".intercalate (l.map toString) 
 def nameRel : Rel → String | .before t => s!"before {t}" | .after t => s!"after {t}"
 def nameAction (a : Action) : String := s!"{a.subject} {nameRel a.rel} strip={a.strip} user={a.user}"
 def nameActions (as : List Action) : String := " | ".intercalate (as.map nameAction)
-def nameWhy : Why → String | .stopped => "stopped" | .barFull => "barFull" | .plain => "plain"
+def nameWhy : Why → String | .stopped => "stopped" | .barFull => "barFull" | .plain => "plain" | .needsReapply k => s!"needsReapply {k}"
 def nameStatus : Status → String
   | .moving => "moving" | .matches => "matches" | .matchesExcept u => s!"matchesExcept{nameList u}"
   | .differs w => s!"differs({nameWhy w})" | .checking => "checking"

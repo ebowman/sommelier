@@ -314,6 +314,32 @@ def singleDropTable (n : Nat) : (Nat × Nat × Nat) × (Nat × Nat × Nat) × Na
       | _ => none_ := none_ + 1
   return (fb, an, none_)
 
+/-- ejb.20.  Every drawn permutation of `n` keys, every one key near the fold, on a fresh chevron with key 9 behind it, nothing owed, no grant: the status "needs Re-apply" appears
+exactly when the engine's first planned move needs the strip.  Returns (cases, shown, violations): a violation is a case where the status disagrees with an independent reading
+(the planner's move, `needsStrip`), where nothing is withheld yet no move leaves, or where Re-apply does not release the move (a granted user move of the same subject). -/
+def reapplyTable (n : Nat) : Nat × Nat × Nat := Id.run do
+  let U := (List.range n).map (· + 1)
+  let mut cases := 0
+  let mut shown := 0
+  let mut bad := 0
+  for d in permsK U do
+    for nf in U do
+      let r : Read := { dropRd d with nearFold := [nf] }
+      let s := State.init U
+      cases := cases + 1
+      let plan := planOrderMoves s r
+      let acts := (step s (.read r)).2
+      let st := statusLine s r
+      match plan with
+      | some a =>
+        if a.strip then
+          shown := shown + 1
+          let rel := (step (step s .userRetry).1 (.read r)).2
+          if !(st == .differs (.needsReapply a.subject) && acts.isEmpty && rel == [{ a with user := true }]) then bad := bad + 1
+        else if !(acts == [a] && st == .moving) then bad := bad + 1
+      | none => if !(acts.isEmpty && st != .differs (.needsReapply 0)) then bad := bad + 1
+  return (cases, shown, bad)
+
 /-- Multi-drop: every drawn permutation of `n` keys and every nonempty dropped subset, drained with verified drags: the number of cases that END with MORE inversions than they began with. -/
 def multiDropWorse (n : Nat) : Nat × Nat := Id.run do
   let U := (List.range n).map (· + 1)
@@ -583,6 +609,12 @@ def honestChecks (s : State) (e : Event) (ob : Option Bar) : List (String × Boo
       (match statusLine s r with
        | .matches => [("claim_matches", m), ("status_matches_seen", true)]
        | .matchesExcept U => [("claim_except", decide (barMatchesExcept U s.record b)), ("status_except_seen", true)]
+       | .differs (.needsReapply k) =>
+           -- ejb.20: independent of `enginePlan`: nothing leaves, no hold, no grant, and the planner's move of `k` needs the strip; Re-apply never leaves the same text
+           [("claim_differs", !m), ("status_differs_seen", true), ("reapply_seen", true),
+            ("reapply_withheld", (decideMove s r).isNone && s.inFlight.isNone && !s.hold && !s.stripGrant && !(cap (fullBar s r) ≤ s.moveCount)
+                                 && (planOrderMoves (judge s r) r).any (fun a => a.strip && a.subject == k)),
+            ("reapply_clears", statusLine (step s .userRetry).1 r != .differs (.needsReapply k))]
        | .differs _ => [("claim_differs", !m), ("status_differs_seen", true)]
        | .checking => [("status_checking_seen", true)]
        | .moving => [("status_moving_seen", true)])
@@ -721,6 +753,11 @@ def fuzzMain (args : List String) : IO UInt32 := do
   let (w4, t4) := multiDropWorse 4
   let (w5, t5) := multiDropWorse 5
   IO.println s!"multi-drop ends worse (inversions): {w4} of {t4} (4 keys), {w5} of {t5} (5 keys); the anchor rule is old behaviour"
+  let (rc, rs, rb) := reapplyTable 5
+  IO.println s!"needs Re-apply table, 5 keys (cases, shown, violations): {rc}, {rs}, {rb}"
+  if rs == 0 || rb != 0 then
+    IO.println "  NEEDS-REAPPLY TABLE FAILED"
+    bad := bad + 1
   for t in ts do
     IO.println s!"  {t.name}: {t.n} instances, {t.bad} failures"
     bad := bad + t.bad

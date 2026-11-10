@@ -835,4 +835,42 @@ example : rowNote (step (State.init [1, 2, 3, 4, 5]) (.userEdit [1, 2, 3, 4, 5] 
 -- the worst case counts only the keys that can cost: the same read with the free key AFTER the item (record [1..5] with 5 untrusted, drop 3, read [4,3,1,2,5]) is answered
 example : (run (State.init [1, 2, 3, 4, 5]) [.userEdit [1, 2, 3, 4, 5] [3], .read { mkRead .fresh [4, 3, 1, 2, 5] [9] with trusted := [4, 3, 1, 2, 9] }]).2 ≠ [] := by decide
 
+/-! ejb.20.  A full bar whose first inversion touches the churn zone: the engine move needs the strip, so it is withheld, and the status says "Re-apply to move 1".
+Key 1 is near the fold; the record is 1 2 3 4 5; the bar draws 2 1 3 4 with 5 folded. -/
+def nfRead : Read := { mkRead .fresh [2, 1, 3, 4] [5] with nearFold := [1] }
+def nfS : State := State.init [1, 2, 3, 4, 5]
+example : decideMove nfS nfRead = none := by decide
+example : statusLine nfS nfRead = .differs (.needsReapply 1) := by decide
+example : (step nfS (.read nfRead)).2 = [] := by decide
+-- the row of key 1 says so (not ok); other keys' rows do not
+example : rowReapply nfS nfRead 1 = true := by decide
+example : rowReapply nfS nfRead 2 = false := by decide
+example : rowLine nfS nfRead 1 = .notWherePut := by decide
+-- Re-apply grants the strip: the move leaves as a granted user move, and the status is "Moving"
+example : (step (step nfS .userRetry).1 (.read nfRead)).2 = [⟨1, .before 2, true, true⟩] := by decide
+example : statusLine (step nfS .userRetry).1 nfRead = .moving := by decide
+-- only the TARGET near the fold (key 2, not the moved key 1): the move still needs the strip, so the status still names key 1
+example : statusLine nfS { nfRead with nearFold := [2] } = .differs (.needsReapply 1) := by decide
+example : withheldStrip nfS { nfRead with nearFold := [2] } = some 1 := by decide
+example : rowReapply nfS { nfRead with nearFold := [2] } 1 = true := by decide
+example : rowReapply nfS { nfRead with nearFold := [2] } 2 = false := by decide
+-- the same bar with nothing near the fold: the move leaves, no Re-apply needed
+example : statusLine nfS { nfRead with nearFold := [] } = .moving := by decide
+-- a hold, a spent budget and a restriction each outrank or exclude it
+example : statusLine { nfS with hold := true } nfRead = .differs .barFull := by decide
+example : statusLine { nfS with moveCount := 20 } nfRead = .differs .stopped := by decide
+example : statusLine { nfS with restricted := true } nfRead = .differs .plain := by decide
+example : withheldStrip { nfS with restricted := true } nfRead = none := by decide
+example : withheldStrip { nfS with hold := true } nfRead = none := by decide
+-- a granted strip is not withheld
+example : withheldStrip { nfS with stripGrant := true } nfRead = none := by decide
+-- nothing near the fold: the move is not withheld, so nothing is withheld
+example : withheldStrip nfS { nfRead with nearFold := [] } = none := by decide
+-- a contradictory read (a key drawn twice) is not a good gate: nothing is planned, nothing withheld
+example : withheldStrip nfS { nfRead with drawn := [2, 1, 1, 3, 4], trusted := [2, 1, 1, 3, 4, 5] } = none := by decide
+-- a stale chevron: nothing is decided and nothing is withheld
+example : withheldStrip nfS { nfRead with chevron := .stale } = none := by decide
+-- a poll read never withholds
+example : withheldStrip nfS { nfRead with kind := .poll } = none := by decide
+
 end Sommelier

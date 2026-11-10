@@ -519,17 +519,51 @@ def pendingF (s : State) (r : Read) : Bool := s.inFlight.isSome || (decideMoveF 
 theorem pendingF_eq (s : State) (r : Read) : pendingF s r = pending s r := by
   unfold pendingF pending; rw [decideMoveF_eq]
 
+/-- `enginePlan` with the fast gate, `judge` and queue pick. -/
+def enginePlanF (s : State) (r : Read) : Option Action :=
+  let j := judgeF s r
+  if r.kind != .pass || !r.settled || r.level == .incomplete || j.inFlight.isSome || !j.gateF r then none
+  else match userPickF j r with
+    | some _ => none
+    | none => if !engineAllowed j r then none else planOrderMoves j r
+
+theorem enginePlanF_eq (s : State) (r : Read) : enginePlanF s r = enginePlan s r := by
+  unfold enginePlanF enginePlan
+  simp only [judgeF_eq, gateF_eq, userPickF_eq]
+  rfl
+
+def withheldStripF (s : State) (r : Read) : Option Key :=
+  match enginePlanF s r with
+  | some a => if a.strip && !s.stripGrant then some a.subject else none
+  | none => none
+
+theorem withheldStripF_eq (s : State) (r : Read) : withheldStripF s r = withheldStrip s r := by
+  unfold withheldStripF withheldStrip
+  rw [enginePlanF_eq]
+  rfl
+
+def whyDiffersF (s : State) (r : Read) : Why :=
+  if budgetSpent s r then .stopped else if s.hold then .barFull
+  else match withheldStripF s r with
+    | some k => .needsReapply k
+    | none => .plain
+
+theorem whyDiffersF_eq (s : State) (r : Read) : whyDiffersF s r = whyDiffers s r := by
+  unfold whyDiffersF whyDiffers
+  rw [withheldStripF_eq]
+  rfl
+
 def statusLineF (s : State) (r : Read) : Status :=
   if pendingF s r then .moving
   else match shownVerdictF s r with
     | .matches => .matches
     | .matchesExcept U => .matchesExcept U
-    | .differs => .differs (if budgetSpent s r then .stopped else if s.hold then .barFull else .plain)
+    | .differs => .differs (whyDiffersF s r)
     | .cannotTell => .checking
 
 theorem statusLineF_eq (s : State) (r : Read) : statusLineF s r = statusLine s r := by
   unfold statusLineF statusLine
-  rw [pendingF_eq, shownVerdictF_eq]
+  rw [pendingF_eq, shownVerdictF_eq, whyDiffersF_eq]
   rfl
 
 def movingKeyF (s : State) (r : Read) (k : Key) : Bool :=
@@ -567,5 +601,13 @@ def rowNoteF (s : State) (r : Read) (k : Key) : Option RowNote :=
 theorem rowNoteF_eq (s : State) (r : Read) (k : Key) : rowNoteF s r k = rowNote s r k := by
   unfold rowNoteF rowNote
   rw [rowLineF_eq, fallbackMoveF_eq, userPickF_eq, decideMoveF_eq]
+
+/-- The fast row signal "needs Re-apply" (no hypotheses). -/
+def rowReapplyF (s : State) (r : Read) (k : Key) : Bool :=
+  decide (statusLineF s r = .differs (.needsReapply k)) && rowLineF s r k == .notWherePut
+
+theorem rowReapplyF_eq (s : State) (r : Read) (k : Key) : rowReapplyF s r k = rowReapply s r k := by
+  unfold rowReapplyF rowReapply
+  rw [statusLineF_eq, rowLineF_eq]
 
 end Sommelier

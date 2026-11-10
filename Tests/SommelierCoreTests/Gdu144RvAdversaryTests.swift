@@ -494,13 +494,30 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
     }
     // (D6, the busy re-arm, is pinned in Gdu144AdversarialTests.AdversarialBusyTests)
     // D5: a mismatch BESIDE the fold (the first drawn keys swapped) is never fixed by the engine itself; Re-apply grants ONE strip session for it
+    // ejb.20 (review): only the move's TARGET is in the churn zone (D1 is drawn well away from the fold, D2 sits beside it): the status still says Re-apply, and
+    // must not claim that the named item itself sits near the fold
+    @Test func reApplyWordingIsTrueWhenOnlyTheTargetIsNearTheFold() async {
+        let w = RvWorld(pile: rvP, drawn: ["D2", "D3", "D4", "D5", "D1", "D6"])
+        let (e, st, c) = await rvRig(w, record: rvP + rvD)
+        for _ in 0..<8 { _ = await e.reconcileOnce(); c.adv(120) }
+        #expect(w.drags.isEmpty && w.clicks == 0)
+        let name = RowNameRule.Namer(layout: st.layout, items: st.items).name(k("D1"))
+        #expect(rvMenu(st) == CoreStatusText.reapplyText(name) && rvMenu(st) == "Re-apply to move \(name): the move needs the « strip", "menu=\(rvMenu(st))")
+        #expect(!rvMenu(st).contains("near the fold") && !rvMenu(st).contains("sits"))
+        #expect(st.coreNotes[k("D1")] == .needsReapply)
+    }
+
     @Test func reApplyFixesAMismatchBesideTheFoldWithExactlyOneSessionAndOneDrag() async {
         let w = RvWorld(pile: rvP, drawn: ["D2", "D1", "D3", "D4", "D5", "D6"])
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for _ in 0..<8 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags.isEmpty && w.clicks == 0)   // beside the fold: the engine never opens the strip by itself
-        // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core's `differs plain`.
-        #expect(!st.isConverged && rvMenu(st) == CoreStatusText.noMoveToMake)
+        // ejb.20 CHANGED: no longer the generic `differs plain` ("no move to make"): the engine's planned move (D1 before D2) needs the strip and is withheld, so the status and
+        // the D1 row say "Re-apply to move D1: the move needs the « strip" (core `differs (needsReapply D1)`); no drag, no click
+        let name = RowNameRule.Namer(layout: st.layout, items: st.items).name(k("D1"))
+        #expect(!st.isConverged && rvMenu(st) == CoreStatusText.reapplyText(name) && rvArrangeLine(st) == rvMenu(st), "menu=\(rvMenu(st))")
+        #expect(rvMenu(st).hasPrefix("Re-apply to move ") && rvMenu(st).hasSuffix(": the move needs the « strip") && !rvMenu(st).contains("Menu bar matches"))
+        #expect(st.coreNotes[k("D1")] == .needsReapply && st.coreRows[k("D1")] == .notWherePut)
         await e.userRetry()
         for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.events.filter { $0 == "open" }.count == 1 && w.drags.count == 1, "events=\(w.events)")

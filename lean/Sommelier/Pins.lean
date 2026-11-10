@@ -639,4 +639,18 @@ example : ∀ (s : State) (r r' : Read) (k y : Key) (rel : Rel), y ≠ k → y �
 example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → revertedFromAnchor s r k s.verRel = false →
     (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp := @judge_landed_no_strike
 
+/-! ejb.20: "needs Re-apply" (an engine move withheld for the strip) -/
+example : ∀ {s : State} {r : Read} {k : Key}, statusLine s r = .differs (.needsReapply k) ↔
+    shownVerdict s r = .differs ∧ ∃ a, enginePlan s r = some a ∧ a.strip = true ∧ s.stripGrant = false ∧ a.subject = k := @needsReapply_iff
+example : ∀ {s : State} {r : Read} {k : Key}, statusLine s r = .differs (.needsReapply k) →
+    shownVerdict s r = .differs ∧ pending s r = false ∧ decideMove s r = none ∧ s.hold = false ∧ budgetSpent s r = false ∧
+    withheldStrip s r = some k := @needsReapply_true
+example : ∀ {s : State} {r : Read} {k : Key}, rowReapply s r k = true →
+    rowLine s r k = .notWherePut ∧ statusLine s r = .differs (.needsReapply k) := @rowReapply_true
+example : ∀ (s : State) (r : Read) (k : Key), statusLine (step s .userRetry).1 r ≠ .differs (.needsReapply k) := needsReapply_after_retry
+example : ∀ {s : State} {r : Read} {a : Action}, enginePlan s r = some a →
+    (a.strip = false → decideMove s r = some a) ∧
+    (a.strip = true → s.stripGrant = true → decideMove s r = some { a with user := true }) ∧
+    (a.strip = true → s.stripGrant = false → decideMove s r = none) := @enginePlan_decides
+
 end Sommelier

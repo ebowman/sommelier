@@ -306,8 +306,9 @@ private final class AdvClock: @unchecked Sendable {
                 // ejb.15 (Wiring 3), CHANGED because the core decides: `<= 3`, no longer `== 3`. The core withholds every engine move that needs the strip (a key in the
                 // churn zone, here the first drawn key of the scrambled bar), so on these bars it may make fewer than the 3 budgeted drags (even none). The bound that
                 // guards safety, never more than the budget, is unchanged; the honest status is asserted as before.
+                // ejb.20: or `differs needsReapply` (the first drawn key sits in the churn zone: the move waits for Re-apply).
                 // ejb.16 CHANGED (display source): the menu is the core's text (`differs stopped` or `differs plain` once the budget is spent, by scenario), never matches.
-                if spent { #expect(await a.count() <= 3); #expect(!st.isConverged && (menu == CoreStatusText.noMoveToMake || menu == differs), "spent: menu=\(menu)") }
+                if spent { #expect(await a.count() <= 3); #expect(!st.isConverged && (name == "twoBlockSwap" ? (menu == CoreStatusText.reapplyText("fake") && menu == "Re-apply to move fake: the move needs the « strip") : (menu == CoreStatusText.noMoveToMake || menu == differs)), "spent: name=\(name) menu=\(menu)") }
             }
         }
     }

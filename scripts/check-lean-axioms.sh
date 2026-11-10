@@ -44,6 +44,8 @@ bar_movable_facts invs_split fallback_improves_bar noMoveHelps_bar
 invs_eq_invN costScan_get argminV_eq argmin_congr' afterCount_eq penalty_eq fallbackMoveF_eq nodupB_eq consistentF_eq gateF_eq rowVerdictF_eq
 verdictF_eq shownVerdictF_eq freeKeysF_eq userMoveF_eq userMove2F_eq userPickF_eq decideMoveF_eq stepF_eq pendingF_eq statusLineF_eq
 movingKeyF_eq waitingKeyF_eq rowLineF_eq rowNoteF_eq
+enginePlanF_eq withheldStripF_eq whyDiffersF_eq rowReapplyF_eq
+enginePlan_spec enginePlan_decides withheld_iff withheld_true needsReapply_true needsReapply_iff rowReapply_true rowReapply_not_tick needsReapply_after_retry reapply_decides
 verified_revert_bounded verified_revert_bounded_from res_verified_marks res_unverified_no_mark judge_contradicted_strikes judge_contradicted_giveup
 judge_confirmed_clears judge_unusable_keeps edit_clears_verified retry_clears_verified rk_clears_verified vinv_step verDrags_le_pot edit_read_no_strike verified_drag_edit_read_no_strike crossing_keeps_verdict crossing_move_keeps_verdict judge_landed_no_strike"
 ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Verified.lean Sommelier/Fast.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)

@@ -8,8 +8,10 @@ public struct CoreDisplay: Equatable, Sendable {
     public var rows: [ItemKey: Row]
     public var notes: [ItemKey: RowNote]
     public var pileCount: Int
-    public init(status: Status, rows: [ItemKey: Row] = [:], notes: [ItemKey: RowNote] = [:], pileCount: Int = 0) {
-        self.status = status; self.rows = rows; self.notes = notes; self.pileCount = pileCount
+    /// ejb.20: the key whose engine move waits for Re-apply (the core status is `differs(needsReapply)`), mapped to the engine's key.
+    public var reapplyKey: ItemKey?
+    public init(status: Status, rows: [ItemKey: Row] = [:], notes: [ItemKey: RowNote] = [:], pileCount: Int = 0, reapplyKey: ItemKey? = nil) {
+        self.status = status; self.rows = rows; self.notes = notes; self.pileCount = pileCount; self.reapplyKey = reapplyKey
     }
 }
 
@@ -30,6 +32,8 @@ public struct CoreStatusContext: Equatable, Sendable {
     public var notices: [String] = []
     public var movingName: String?
     public var pileCount = 0
+    /// The display name of the item whose move waits for Re-apply (`differs(needsReapply)`).
+    public var reapplyName: String?
     // D7 trailers
     public var pinnedDown = 0
     public var pollPaused: String?
@@ -67,6 +71,7 @@ public enum CoreStatusText {
         case .matchesExcept(let ks)?: if !leader { parts.append("\(matches) except \(ks.count) unread") }
         case .differs(.stopped)?: parts.append(ArrangeBarState.stoppedWhileDifferingText)
         case .differs(.barFull)?: parts.append(ArrangeSections.barFullText(c.pileCount))
+        case .differs(.needsReapply)?: parts.append(reapplyText(c.reapplyName))
         case .differs(.plain)?: parts.append(noMoveToMake)
         }
         if c.pinnedDown > 0 { parts.append(ArrangeSections.cannotPinDownText(c.pinnedDown)) }
@@ -74,6 +79,9 @@ public enum CoreStatusText {
         if let u = c.unsettledNotice { parts.append(u) }
         return parts.joined(separator: " · ")
     }
+
+    /// ejb.20: the engine's next move needs the strip (it or its target is near the fold) and waits for Re-apply (Lean `differs (needsReapply k)`).
+    public static func reapplyText(_ name: String?) -> String { "Re-apply to move \(name ?? "an item"): the move needs the « strip" }
 
     /// The context from the engine's published state: what Arrange AND the menu both render, so they cannot differ.
     @MainActor
@@ -91,6 +99,7 @@ public enum CoreStatusText {
             c.movingName = RowNameRule.Namer(layout: state.layout, items: state.items).name(k)
         }
         c.pileCount = state.coreDisplay?.pileCount ?? 0
+        if let k = state.coreDisplay?.reapplyKey { c.reapplyName = RowNameRule.Namer(layout: state.layout, items: state.items).name(k) }
         c.pinnedDown = state.perItem.values.filter { if case .unsupported(let r) = $0 { return r.hasPrefix(ArrangeSections.positionTimeoutPrefix) }; return false }.count
         c.pollPaused = ArrangeSections.pollPausedNames(suppression: state.pollSuppression, items: state.items, now: now).map { ArrangeSections.pollPausedText($0) }
         c.unsettledNotice = state.unsettledNotice
@@ -136,6 +145,7 @@ public enum CoreRowRule {
         case .noMoveHelps: return "No single move of this item would improve the order"
         case .cantJudge: return "Sommelier can't yet see enough of the bar to place this item"
         case .noMoveHere: return "Sommelier has no move for this item right now"
+        case .needsReapply: return "Re-apply to move this item: the move needs the « strip"
         }
     }
 }

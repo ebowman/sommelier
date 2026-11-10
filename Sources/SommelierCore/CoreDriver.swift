@@ -138,7 +138,13 @@ struct CoreDriver {
                 rows[k] = try DecisionCore.row(s, r, id)
                 if let n = try DecisionCore.rowNote(s, r, id) { notes[k] = n }
             }
-            display = CoreDisplay(status: status, rows: rows, notes: notes, pileCount: r.pile.count)
+            // ejb.20 (Lean `rowReapply`): the status says the engine's planned move of one key waits for Re-apply; that key's row says so beside its mark when the mark is "not where you put it"
+            var reapplyKey: ItemKey?
+            if case .differs(.needsReapply(let id)) = status, let k = keys.key(for: id) {
+                reapplyKey = k
+                if rows[k] == .notWherePut { notes[k] = .needsReapply }
+            }
+            display = CoreDisplay(status: status, rows: rows, notes: notes, pileCount: r.pile.count, reapplyKey: reapplyKey)
             displayError = nil
         } catch {
             display = nil

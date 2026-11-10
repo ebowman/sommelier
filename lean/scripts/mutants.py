@@ -218,14 +218,14 @@ M=[
 # -- the status line
 ('status_matches_on_except',"    | .matchesExcept U => .matchesExcept U","    | .matchesExcept _ => .matches"),
 ('status_matches_on_cannotTell',"    | .cannotTell => .checking","    | .cannotTell => .matches"),
-('status_checking_on_differs',"    | .differs => .differs (if budgetSpent s r then .stopped else if s.hold then .barFull else .plain)","    | .differs => .checking"),
+('status_checking_on_differs',"    | .differs => .differs (whyDiffers s r)","    | .differs => .checking"),
 ('status_moving_nothing_pending',"  if pending s r then .moving","  if pending s r || s.hold then .moving"),
 ('status_moving_never',"  if pending s r then .moving","  if false then .moving"),
 ('status_pending_ignores_flight',"def pending (s : State) (r : Read) : Bool := s.inFlight.isSome || (decideMove s r).isSome","def pending (s : State) (r : Read) : Bool := (decideMove s r).isSome"),
 ('status_pending_ignores_decide',"def pending (s : State) (r : Read) : Bool := s.inFlight.isSome || (decideMove s r).isSome","def pending (s : State) (r : Read) : Bool := s.inFlight.isSome"),
-('status_stopped_without_budget',"if budgetSpent s r then .stopped else if s.hold then .barFull else .plain","if true then .stopped else if s.hold then .barFull else .plain"),
-('status_barFull_without_hold',"else if s.hold then .barFull else .plain","else if true then .barFull else .plain"),
-('status_stopped_ignores_budget',"if budgetSpent s r then .stopped else","if false then .stopped else"),
+('status_stopped_without_budget',"  if budgetSpent s r then .stopped else if s.hold then .barFull\n","  if true then .stopped else if s.hold then .barFull\n"),
+('status_barFull_without_hold',"else if s.hold then .barFull\n","else if true then .barFull\n"),
+('status_stopped_ignores_budget',"  if budgetSpent s r then .stopped else if s.hold","  if false then .stopped else if s.hold"),
 ('budgetSpent_off_by_one',"def budgetSpent (s : State) (r : Read) : Bool := cap (fullBar s r) ≤ s.moveCount","def budgetSpent (s : State) (r : Read) : Bool := cap (fullBar s r) ≤ s.moveCount + 1"),
 ('row_moving_never',"  if movingKey s r k then .moving\n","  if false then .moving\n"),
 ('row_waiting_never',"  else if waitingKey s r k then .waiting\n","  else if false then .waiting\n"),
@@ -352,6 +352,17 @@ M=[
 ('ver_anchor_side_swapped',"| .before t => two == [t, k]\n  | .after t => two == [k, t]","| .before t => two == [k, t]\n  | .after t => two == [t, k]"),
 ('ver_rel_not_recorded',"verRel := a.rel }","verRel := .before 0 }"),
 ('ver_rk_keeps_mark',"            verified := s.verified.filter (fun x => x != k),\n",""),
+# -- ejb.20: "needs Re-apply" (an engine move withheld for the strip)
+('reapply_never',"    | some k => .needsReapply k\n    | none => .plain","    | some _ => .plain\n    | none => .plain"),
+('reapply_ignores_grant',"  | some a => if a.strip && !s.stripGrant then some a.subject else none","  | some a => if a.strip then some a.subject else none"),
+('reapply_ignores_strip',"  | some a => if a.strip && !s.stripGrant then some a.subject else none","  | some a => if !s.stripGrant then some a.subject else none"),
+('reapply_wrong_subject',"  | some a => if a.strip && !s.stripGrant then some a.subject else none","  | some a => if a.strip && !s.stripGrant then some a.rel.target else none"),
+('reapply_ignores_allowed',"    | none => if !engineAllowed j r then none else planOrderMoves j r","    | none => planOrderMoves j r"),
+('reapply_ignores_queue',"    | some _ => none\n    | none => if !engineAllowed j r","    | some _ => planOrderMoves j r\n    | none => if !engineAllowed j r"),
+('reapply_ignores_gate',"|| j.inFlight.isSome || !j.gate r then none\n  else match userPick j r with","|| j.inFlight.isSome then none\n  else match userPick j r with"),
+('reapply_before_hold',"  if budgetSpent s r then .stopped else if s.hold then .barFull\n  else match withheldStrip s r with\n    | some k => .needsReapply k\n    | none => .plain","  match withheldStrip s r with\n    | some k => .needsReapply k\n    | none => if budgetSpent s r then .stopped else if s.hold then .barFull else .plain"),
+('rowReapply_any_row',"decide (statusLine s r = .differs (.needsReapply k)) && rowLine s r k == .notWherePut","decide (statusLine s r = .differs (.needsReapply k))"),
+('rowReapply_any_key',"decide (statusLine s r = .differs (.needsReapply k)) && rowLine s r k == .notWherePut","(match statusLine s r with | .differs (.needsReapply _) => true | _ => false) && rowLine s r k == .notWherePut"),
 ]
 
 
@@ -417,6 +428,8 @@ HONESTY_MUST_KILL = {
   'row_waiting_always', 'row_moving_inflight_only', 'row_moving_decide_only', 'row_waiting_ignores_request',
   'row_notWherePut_as_tick', 'row_behind_as_tick',
   'waiting_shown_on_good_read', 'waiting_only_when_move', 'waiting_only_when_not_good',
+  # ejb.20: needs Re-apply
+  'reapply_never', 'reapply_ignores_grant', 'reapply_ignores_strip', 'reapply_wrong_subject', 'reapply_ignores_allowed', 'reapply_ignores_queue', 'reapply_ignores_gate', 'reapply_before_hold', 'rowReapply_any_row', 'rowReapply_any_key', 
   # ejb.10: the note beside a row
   'note_never', 'note_without_owed', 'note_on_any_owed', 'note_on_tick', 'helps_ignores_others', 'helps_ignores_fallback', 'helps_not_misplaced', 'helps_always', 'helps_not_movable', 'helps_ignores_whole', 'cant_flipped', 'cant_ignores_decide', 'cant_not_misplaced', 'own_cant_no_owed', 'own_cant_userpick', 'cant_ignores_fallback'}
 # ejb.12: a mutant of a fast definition must make an equality theorem of Fast.lean fail (the fast version is PROVED equal to the specification).

@@ -197,7 +197,10 @@ def stepChecks (s : State) (r : Read) : T Unit := do
       chk "st_d" (match st with
         | .differs .stopped => cap (fullBar s r) ≤ s.moveCount
         | .differs .barFull => s.hold && !(cap (fullBar s r) ≤ s.moveCount)
-        | .differs .plain => !s.hold && !(cap (fullBar s r) ≤ s.moveCount)
+        | .differs .plain => !s.hold && !(cap (fullBar s r) ≤ s.moveCount) && (withheldStrip s r).isNone
+        | .differs (.needsReapply k) =>
+            !s.hold && !(cap (fullBar s r) ≤ s.moveCount) && !s.stripGrant && (decideMove s r).isNone
+              && (planOrderMoves (judge s r) r).any (fun a => a.strip && a.subject == k)
         | _ => false) w
   for k in s.record do
     let l := rowLine s r k

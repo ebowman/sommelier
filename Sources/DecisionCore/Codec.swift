@@ -42,8 +42,16 @@ enum Codec {
         return out
     }
 
-    static func why(_ w: UInt32) -> Why? {
-        switch w { case 0: return .stopped; case 1: return .barFull; case 2: return .plain; default: return nil }
+    /// `[0]` stopped, `[1]` barFull, `[2]` plain, `[3, k]` needsReapply k.
+    static func why(_ w: ArraySlice<UInt32>) -> Why? {
+        guard let h = w.first else { return nil }
+        switch (h, w.count) {
+        case (0, 1): return .stopped
+        case (1, 1): return .barFull
+        case (2, 1): return .plain
+        case (3, 2): return .needsReapply(w[w.startIndex + 1])
+        default: return nil
+        }
     }
 
     static func status(_ w: [UInt32]) -> Status? {
@@ -52,7 +60,7 @@ enum Codec {
         case (0, 1): return .moving
         case (1, 1): return .matches
         case (2, _): return .matchesExcept(Array(w.dropFirst()))
-        case (3, 2): return why(w[1]).map(Status.differs)
+        case (3, _): return why(w.dropFirst()).map(Status.differs)
         case (4, 1): return .checking
         default: return nil
         }

@@ -66,7 +66,8 @@ public struct Action: Equatable, Sendable {
     }
 }
 
-public enum Why: Equatable, Sendable { case stopped, barFull, plain }
+/// Why the bar differs and nothing is happening (Lean `Why`). `needsReapply(k)`: the engine's planned move of `k` needs the strip (it or its target is near the fold) and waits for Re-apply (ejb.20).
+public enum Why: Equatable, Sendable { case stopped, barFull, needsReapply(Key), plain }
 
 /// The bottom line of the Arrange window (Lean `Status`).
 public enum Status: Equatable, Sendable {
@@ -89,7 +90,10 @@ public enum Verdict: Equatable, Sendable {
 public enum Row: Equatable, Sendable { case moving, waiting, tick, behind, notWherePut, notOnBar, cannotTell }
 
 /// The note beside a row that says "not where you put it" (Lean `RowNote`). A row with no note is `nil` in `DecisionCore.rowNote`.
-public enum RowNote: Equatable, Sendable { case noMoveHelps, cantJudge, noMoveHere }
+///
+/// `needsReapply` is NOT a Lean `rowNote` code (the codec never decodes it): it is the row signal Lean defines as `rowReapply` (ejb.20), derived by the driver from the core status
+/// `differs(needsReapply k)` and the row of `k` being `notWherePut`.
+public enum RowNote: Equatable, Sendable { case noMoveHelps, cantJudge, noMoveHere, needsReapply }
 
 /// The verdict on one key (Lean `RowVerdict`).
 public enum RowVerdict: Equatable, Sendable { case inOrder, behindChevron, behindOutOfTurn, notOnBar, outOfPlace, cannotTell }
