@@ -80,9 +80,10 @@ public actor LayoutEngine {
         /// gdu.136: after a user edit whose other pending order moves were deferred, the regular pass that performs them runs this long
         /// after the pass that announced them (the status line says "Done: X. Next: Y" meanwhile).
         public var userEditFollowUp: Duration = .seconds(3)
-        /// gdu.144 D1: the bar counts as full from launch until three consecutive complete reads show no chevron. Production keeps this `true`; tests
-        /// written for plain (chevron-less) bars start from "known not full" to keep their many-move scenarios.
-        public var assumeFullBarAtLaunch = true
+        /// gdu.144 D1: the bar counts as full from launch until three consecutive complete reads show no chevron. ejb.18: production feeds the core
+        /// only real reads. TEST SEAM (internal; empty in production): reads the test rig supplies, stepped into the core once before its first event,
+        /// e.g. three chevronless complete reads to start from "known not full". Production code never constructs a read.
+        var coreSeedReadsForTests: [Read] = []
         /// ejb.15: record the audit trace of the core-driven order path (events, emitted actions, their results). TESTS ONLY.
         public var recordCoreTrace = false
         /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
@@ -504,11 +505,8 @@ public actor LayoutEngine {
     private func coreStep(_ e: Event, _ name: String, site: String) -> [Action] {
         if !coreSeeded {
             coreSeeded = true
-            // TESTS ONLY (`assumeFullBarAtLaunch == false`, "known not full"): three quiet polls of a chevronless complete bar prove it, as 3 real reads would.
-            if !config.assumeFullBarAtLaunch {
-                let quiet = Read(kind: .poll, chevron: .absent, level: .complete, settled: true, stripOpen: false, drawn: [], pile: [], folded: [], trusted: [], nearFold: [])
-                for _ in 0..<3 { _ = core.step(.read(quiet), name: "read", site: "test seed (assumeFullBarAtLaunch == false)") }
-            }
+            // Test seam only: reads supplied by the test rig (empty in production, where nothing is fabricated).
+            for r in config.coreSeedReadsForTests { _ = core.step(.read(r), name: "read", site: "test seed (coreSeedReadsForTests)") }
         }
         // No suspension in here (callers rely on it): errors and displays are stashed and carried by the next `publish` / `flushCoreDisplay`.
         switch core.step(e, name: name, site: site) {

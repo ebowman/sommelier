@@ -40,11 +40,11 @@ private struct World {
 }
 
 @MainActor
-private func world(order: [String], record: [String], configure: (inout LayoutEngine.Config) -> Void = { _ in },
+private func world(order: [String], record: [String], production: Bool = false, configure: (inout LayoutEngine.Config) -> Void = { _ in },
                    interaction: (any InteractionSource)? = nil, failOn: [(Int, ActuationError)] = []) async -> World {
     let act = FakeActuator(order: order.map(k), hidden: [], capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     for (n, e) in failOn { await act.failOnCall(n, e) }
-    var c = LayoutEngine.Config.plain()
+    var c = production ? LayoutEngine.Config() : LayoutEngine.Config.plain()   // ejb.18: production = assume-full-at-launch, no seed reads
     c.recordCoreTrace = true; c.minPassInterval = .zero; c.layoutCoalesce = .zero; c.interactionRetry = .seconds(3600)
     configure(&c)
     let sink = Sink(), state = EngineState()
@@ -91,9 +91,11 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
     static let record = ["A", "B", "C", "D"]
     static let reversed = ["D", "C", "B", "A"]
 
-    @Test func verifiedMovesGetOneResultEach() async {
-        let w = await world(order: Self.reversed, record: Self.record, configure: { $0.maxOrderMovesPerPass = .max })
+    @Test(arguments: [false, true]) func verifiedMovesGetOneResultEach(production: Bool) async {
+        let w = await world(order: Self.reversed, record: Self.record, production: production, configure: { $0.maxOrderMovesPerPass = .max })
         _ = await w.engine.reconcileOnce()
+        // ejb.18: under the production config the first chevronless read cannot prove the bar not full, so pass until three real reads have (the property is not vacuous)
+        if production { for _ in 0..<4 { _ = await w.engine.reconcileOnce() } }
         #expect(await w.actuator.order == Self.record.map(k))
         await expectOneResultPerAction(w, "verified", minEmitted: 3)
         #expect(results(await w.engine.coreAudit().trace).allSatisfy { $0 == (.verified, true) })
@@ -185,9 +187,9 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
     }
 
     // The core is asked again after a veto: the vetoed key is `skipped` (an unposted drag is not an attempt) until a user event; nothing is left awaiting.
-    @Test func nothingStaysAwaitingAcrossManyMixedPasses() async {
+    @Test(arguments: [false, true]) func nothingStaysAwaitingAcrossManyMixedPasses(production: Bool) async {
         let msg = "D \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
-        let w = await world(order: Self.reversed, record: Self.record, configure: { $0.maxOrderMovesPerPass = .max },
+        let w = await world(order: Self.reversed, record: Self.record, production: production, configure: { $0.maxOrderMovesPerPass = .max },
                             failOn: [(1, .mechanismFailed("boom")), (2, .userBusy), (3, .mechanismFailed(msg))])
         for i in 0..<12 {
             if i % 3 == 0 { await w.actuator.displace(k("A"), toIndex: 3) }
@@ -205,12 +207,14 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
     }
 
     // The actuator spy: the moves it saw are EXACTLY the moves the core emitted, in order, with the strip flag the core gave and single-drag on.
-    @Test func everyActuatorMoveIsACoreActionOverRandomWorlds() async {
+    @Test(arguments: [false, true]) func everyActuatorMoveIsACoreActionOverRandomWorlds(production: Bool) async {
         var g = SystemRandomNumberGenerator()
+        var withMoves = 0
+        defer { print("EJB18 share of random worlds with >=1 engine move, \(production ? "production" : "plain"): \(withMoves)/12") }
         for seed in 0..<12 {
             var rng = SplitMix64(seed: UInt64(seed) &+ 11)
             let names = (0..<7).map { "K\($0)" }
-            let w = await world(order: names.shuffled(using: &rng), record: names.shuffled(using: &rng), configure: { $0.maxOrderMovesPerPass = Int.random(in: 1...3, using: &g) })
+            let w = await world(order: names.shuffled(using: &rng), record: names.shuffled(using: &rng), production: production, configure: { $0.maxOrderMovesPerPass = Int.random(in: 1...3, using: &g) })
             for i in 0..<25 {
                 if i % 4 == 0 { await w.actuator.displace(k(names.randomElement(using: &rng)!), toIndex: Int.random(in: 0..<7, using: &rng)) }
                 if i == 9 { await w.engine.userRetry() }
@@ -224,6 +228,7 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
             let a = await w.engine.coreAudit()
             let emitted: [(ItemKey, Relation, Bool)] = a.trace.compactMap { if case .emitted(let s, let r, let strip, _) = $0 { return (s, r, strip) } else { return nil } }
             let seen = moves(await w.actuator.calls)
+            if !seen.isEmpty { withMoves += 1 }
             // an emitted action is vetoed after the step only by the vetoes of the engine (none in this world), so the lists are equal one to one
             #expect(seen.count == emitted.count, "seed \(seed): actuator saw \(seen.count) moves, the core emitted \(emitted.count)")
             for (x, y) in zip(seen, emitted) { #expect(x.0 == y.0 && x.1 == y.1, "seed \(seed): \(x) is not the core's \(y)") }
@@ -232,6 +237,7 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
             #expect(await w.actuator.moveSingleDrag.allSatisfy(\.1), "seed \(seed): every move is a single drag")
             #expect(a.violations == 0 && !a.awaiting && a.emitted == a.resolved)
         }
+        #expect(withMoves >= 6, "the property is vacuous: only \(withMoves)/12 worlds produced a move (production \(production))")
     }
 
     // A world where the OLD planner has an order move and the core has none (the subject is UNREAD, its frame being ambiguous): the actuator sees nothing.
@@ -258,8 +264,8 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
 
 @MainActor
 @Suite struct CorePollPathTests {
-    @Test func aQuietPollFeedsTheStepAsAPollReadAndNeverMoves() async {
-        let w = await world(order: ["D", "C", "B", "A"], record: ["A", "B", "C", "D"])
+    @Test(arguments: [false, true]) func aQuietPollFeedsTheStepAsAPollReadAndNeverMoves(production: Bool) async {
+        let w = await world(order: ["D", "C", "B", "A"], record: ["A", "B", "C", "D"], production: production)
         let items = FakeMenuBar.resolve(FakeMenuBar.snapshot(order: ["D", "C", "B", "A"].map(k), hidden: []))
         await w.engine.notePollScan(items, completeness: .complete)
         let a = await w.engine.coreAudit()
@@ -272,14 +278,14 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
         for _ in 0..<5 { await w.engine.notePollScan(items, completeness: .complete) }
         let calls2 = await w.actuator.calls, emitted2 = await w.engine.coreAudit().emitted
         #expect(calls2.isEmpty && emitted2 == 0)
-        // and the next PASS read, from the same state, does decide
+        // and the next PASS read, from the same state, does decide (production: the 7 chevronless reads so far prove the bar not full; plain: known not full)
         _ = await w.engine.regularPassForTests()
         let emitted3 = await w.engine.coreAudit().emitted
         #expect(emitted3 == 1)
     }
 
-    @Test func aPollWhileAPassIsRequestedIsNotFed() async {
-        let w = await world(order: ["D", "C", "B", "A"], record: ["A", "B", "C", "D"])
+    @Test(arguments: [false, true]) func aPollWhileAPassIsRequestedIsNotFed(production: Bool) async {
+        let w = await world(order: ["D", "C", "B", "A"], record: ["A", "B", "C", "D"], production: production)
         await w.engine.requestReconcile(reason: "test")   // a pass is requested: the poll leaves the evidence to it (unchanged rule)
         let items = FakeMenuBar.resolve(FakeMenuBar.snapshot(order: ["D", "C", "B", "A"].map(k), hidden: []))
         await w.engine.notePollScan(items, completeness: .complete)
@@ -290,9 +296,9 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
 
 @MainActor
 @Suite struct CoreDecisionErrorTests {
-    @Test func aFailingStepStopsActuationShowsLastErrorAndNeverConverges() async {
-        let w = await world(order: ["A", "B", "C", "D"], record: ["A", "B", "C", "D"])
-        _ = await w.engine.reconcileOnce()                       // a clean pass first (the core is created and seeded)
+    @Test(arguments: [false, true]) func aFailingStepStopsActuationShowsLastErrorAndNeverConverges(production: Bool) async {
+        let w = await world(order: ["A", "B", "C", "D"], record: ["A", "B", "C", "D"], production: production)
+        for _ in 0..<(production ? 4 : 1) { _ = await w.engine.reconcileOnce() }   // clean passes first (the core is created; production needs 3 chevronless reads to know the bar is not full)
         await w.actuator.displace(k("A"), toIndex: 3)
         await w.engine.injectCoreFailureForTests(.undecodableOutput)
         let rep = await w.engine.reconcileOnce()
