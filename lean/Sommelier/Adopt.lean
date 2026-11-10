@@ -310,6 +310,70 @@ theorem adoptProposal_spec {s : State} {r : Read} {L : List Key} (hnd : s.record
   exact ⟨hd, hu, hc, adoptRecord_perm hc hnd, adoptRecord_nodup hc hnd, adoptRecord_verdict_ne_differs hu hc hnd,
     adoptRecord_matches_pinned hu hc hnd⟩
 
+/-- a forced mismatch needs a pinned OPEN key in the record (without one both comparisons are empty) -/
+theorem forcedBad_open {rec : List Key} {r : Read} (h : forcedBad rec r = true) : ∃ y ∈ rec, r.pinOpen.contains y = true := by
+  refine Classical.byContradiction fun hno => ?_
+  have hn : ∀ y ∈ rec, r.pinOpen.contains y = false := fun y hy => by
+    cases hc : r.pinOpen.contains y
+    · rfl
+    · exact absurd ⟨y, hy, hc⟩ hno
+  have h1 : rec.filter (fun k => r.pinOpen.contains k) = [] := by
+    rw [List.filter_eq_nil_iff]; intro k hk hh; rw [hn k hk] at hh; exact absurd hh (by decide)
+  have h2 : r.pinOpen.filter (fun k => rec.contains k) = [] := by
+    rw [List.filter_eq_nil_iff]; intro k hk hck
+    have hk' : k ∈ rec := List.contains_iff_mem.mp hck
+    have := hn k hk'
+    simp [List.contains_iff_mem, hk] at this
+  have h3 : rec.any (fun x => r.pinBehind.contains x && rec.any (fun y => r.pinOpen.contains y && rec.idxOf y < rec.idxOf x)) = false := by
+    rw [List.any_eq_false]; intro x hx hh
+    rw [Bool.and_eq_true] at hh
+    have h4 := hh.2
+    rw [List.any_eq_true] at h4
+    obtain ⟨y, hy, hy2⟩ := h4
+    rw [Bool.and_eq_true, hn y hy] at hy2
+    exact absurd hy2.1 (by decide)
+  unfold forcedBad at h
+  rw [h1, h2, h3] at h
+  simp at h
+
+/-- THE HONEST ANSWER (no "can't tell"). Whenever the button offers a proposal, the verdict of the adopted record against the same view is
+`matches` or `matchesExcept U`: never `differs` and never `cannotTell`.  (A `differs` needs a pinned open key in the record, which makes every
+free listed key a possible clash, so no two keys are left that clash only with each other.) -/
+theorem adoptProposal_no_cannotTell {s : State} {r : Read} {L : List Key} (hnd : s.record.Nodup) (h : adoptProposal s r = some L) :
+    verdict L (s.view r) = .matches ∨ ∃ U, verdict L (s.view r) = .matchesExcept U := by
+  obtain ⟨hd, hL⟩ := adoptProposal_some h
+  have hv : verdict s.record (s.view r) = .differs := hd
+  obtain ⟨hu, hc⟩ := differs_usable hv
+  have hfb : forcedBad s.record (s.view r) = true := by
+    refine Classical.byContradiction fun hf => ?_
+    have hf' : forcedBad s.record (s.view r) = false := by simpa using hf
+    rw [verdict_else _ hu hc hf'] at hv
+    split at hv <;> (try split at hv) <;> simp at hv
+  obtain ⟨y, hy, hyo⟩ := forcedBad_open hfb
+  subst hL
+  have hym : y ∈ adoptRecord s.record (s.view r) := (adoptRecord_mem hc hnd).mpr hy
+  have hR : Rcomp (adoptRecord s.record (s.view r)) (s.view r) = [] := by
+    unfold Rcomp
+    rw [List.filter_eq_nil_iff]
+    intro k hk
+    have hk' := List.mem_filter.mp hk
+    have hb := hk'.2
+    have hpart : (Ucomp (adoptRecord s.record (s.view r)) (s.view r)).contains k = true := by
+      rw [List.contains_iff_mem]
+      unfold Ucomp
+      rw [List.mem_filter]
+      refine ⟨hk'.1, ?_⟩
+      have hf := hk'.2
+      simp only [Bool.and_eq_true] at hf
+      simp only [party, Bool.and_eq_true, List.any_eq_true]
+      exact ⟨hf, y, hym, by rw [hyo]; rfl⟩
+    rw [hpart]; decide
+  rw [adoptRecord_verdict hu hc hnd, hR]
+  simp only [List.length_nil]
+  by_cases hU : (Ucomp (adoptRecord s.record (s.view r)) (s.view r)).isEmpty = true
+  · left; simp [hU]
+  · right; exact ⟨Ucomp (adoptRecord s.record (s.view r)) (s.view r), by simp [hU]⟩
+
 end
 
 /-! ### Examples -/

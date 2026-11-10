@@ -232,3 +232,22 @@ private func realRead(_ bar: RealBar, _ scan: RealBar.Scan) throws -> (AdaptedRe
     let ad = try ReadAdapter.adapt(order, context: ReadContext(kind: .pass, settled: true, level: level, observed: true, previousCompletePile: order.systemOverflow, immovable: immovable, ownerEvidence: ev, itemInfo: info, ownerFamilies: bar.families), record: record, keys: &keys)
     return (ad, keys)
 }
+
+/// ejb.29: Save re-checks the proposal against the bar as it is NOW.
+@Suite struct CoreAdoptionConfirmTests {
+    private func preview(_ order: [Int]) throws -> CoreAdoption.Preview {
+        let layout = Layout(visible: [1, 2, 3].map { ItemKey.module(name: "k\($0)") })
+        return try #require(CoreAdoption.preview(proposal: order.map { ItemKey.module(name: "k\($0)") }, layout: layout))
+    }
+    @Test func theSameProposalSaves() throws {
+        let p = try preview([3, 1, 2])
+        #expect(CoreAdoption.confirm(shown: p, current: try preview([3, 1, 2])) == .save)
+    }
+    @Test func aDifferentProposalRefreshesTheSheetAndSavesNothing() throws {
+        let shown = try preview([3, 1, 2]), now = try preview([2, 1, 3])
+        #expect(CoreAdoption.confirm(shown: shown, current: now) == .refresh(now))
+    }
+    @Test func noProposalAnyMoreCancelsWithTheOneLineMessage() throws {
+        #expect(CoreAdoption.confirm(shown: try preview([3, 1, 2]), current: nil) == .cancel("The menu bar changed; review the new order."))
+    }
+}

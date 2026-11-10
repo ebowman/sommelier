@@ -865,32 +865,6 @@ public enum ArrangeDrop {
         let moved = l.hideNotFitting(ok, units: units)
         return (l, moved, blocked)
     }
-
-    /// "Adopt current order": Visible = the observed bar verbatim (modules included, as `LayoutBuilder` does), Hidden = the
-    /// parked items, except that keys the current layout keeps in Always hidden stay there. Layout keys that are not
-    /// observed (apps not running) keep their section, appended at the end. The new item policy is preserved.
-    public static func adopt(observed: ObservedOrder, current: Layout, units: HideUnitRule = .ownerKeys) -> Layout {
-        var l = Layout(newItemPolicy: current.newItemPolicy)
-        var seen = Set<ItemKey>()
-        for k in observed.onBar where !k.isOverflowChevron && k != observed.overflowChevron && seen.insert(k).inserted { l.visible.append(k) }
-        let always = Set(current.alwaysHidden)
-        for k in observed.parked where !k.isOverflowChevron && seen.insert(k).inserted {
-            if always.contains(k) { l.alwaysHidden.append(k) } else { l.hidden.append(k) }
-        }
-        for s in LayoutSection.allCases {
-            for k in current.keys(in: s) where !k.isOverflowChevron && seen.insert(k).inserted {
-                switch s {
-                case .visible:
-                    var at = l.visible.count   // before the trailing system block: right of it is unreachable
-                    while at > 0, case .module = l.visible[at - 1] { at -= 1 }
-                    l.visible.insert(k, at: at)
-                case .hidden: l.hidden.append(k)
-                case .alwaysHidden: l.alwaysHidden.append(k)
-                }
-            }
-        }
-        return l.normalizedHideUnits(units: units).layout
-    }
 }
 
 // MARK: - Drop tracking (the waiting state machine)

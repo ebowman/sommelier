@@ -50,11 +50,6 @@ struct OrderObligationPlannerTests {
 }
 
 struct LayoutRecordModelTests {
-    @Test func adoptKeepsTheObservedOrderAsTheRecord() {
-        let current = Layout(visible: [k("a"), k("b")])
-        let adopted = ArrangeDrop.adopt(observed: obs(["b", "a"]), current: current)
-        #expect(adopted.visible == [k("b"), k("a")])
-    }
 
     @Test func leavingVisibleOrTheLayoutKeepsTheLayoutValid() {
         var l = Layout(visible: [k("a"), k("b")], hidden: [k("c")])

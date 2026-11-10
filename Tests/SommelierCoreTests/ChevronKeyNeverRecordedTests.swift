@@ -30,13 +30,6 @@ import Testing
         #expect(!LayoutEngine.handDragAdopted(obs, record: [k("a"), chev, k("b"), k("c")]).visible.contains(chev))
     }
 
-    @Test func arrangeAdoptDropsTheChevronFromObservationAndCurrent() {
-        let current = Layout(visible: [k("a"), chev], hidden: [chev, k("h")], alwaysHidden: [chev])
-        let obs = ObservedOrder(onBar: [k("a"), chev, k("b"), clock], parked: [chev, k("h")], overflowChevron: chev)
-        let l = ArrangeDrop.adopt(observed: obs, current: current)
-        #expect(l.visible == [k("a"), k("b"), clock] && l.hidden == [k("h")] && l.alwaysHidden.isEmpty)
-        for s in LayoutSection.allCases { #expect(!l.keys(in: s).contains(chev)) }
-    }
 
     @Test func arrangeStillRendersTheFoldLineFromTheObservation() {
         let items = Dictionary(uniqueKeysWithValues: [k("a"), k("b")].map { ($0, ItemInfo(key: $0, title: "", axDescription: "\($0)", ownerPID: 1, ownerBundleID: "com.x", ownerName: "O", width: 30, isOnBar: true, systemOverflow: false)) })

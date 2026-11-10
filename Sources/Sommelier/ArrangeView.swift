@@ -111,8 +111,6 @@ struct ArrangeView: View {
         HStack(spacing: 8) {
             Button("Re-apply layout") { vm.reapply() }
                 .help("Run one reconcile pass now (also retries failed items)")
-            Button("Adopt current order…") { vm.askAdopt() }
-                .help("Rebuild the layout from the menu bar as it is now")
             Button("Use the bar's current order…") { vm.askUseBarOrder() }
                 .disabled(vm.barOrderPreview == nil)
                 .help(vm.barOrderPreview == nil ? "Available when the bar is read and differs from your order" : "Save the order the menu bar has now as your order, without moving anything")
@@ -131,15 +129,13 @@ struct ArrangeView: View {
     }
 
     private var confirmTitle: String {
-        switch vm.confirm { case .adopt?: "Adopt the current menu bar order?"; case .hideNotFitting?: "Hide what does not fit?"; case nil: "" }
+        switch vm.confirm { case .hideNotFitting?: "Hide what does not fit?"; case nil: "" }
     }
     private func confirmButton(_ c: ArrangeViewModel.Confirm) -> String {
-        switch c { case .adopt: "Adopt"; case .hideNotFitting: "Hide" }
+        switch c { case .hideNotFitting: "Hide" }
     }
     private func confirmText(_ c: ArrangeViewModel.Confirm) -> String {
         switch c {
-        case .adopt:
-            return "Visible becomes exactly the bar as drawn now and Hidden the items currently off the bar (Always hidden is kept). Your current order is replaced."
         case .hideNotFitting(_, let titles, let blocked, _):
             var t = titles.isEmpty ? "Nothing can be hidden." : "These will move to Hidden (an app's items hide together): " + titles.joined(separator: ", ") + "."
             if !blocked.isEmpty { t += " Cannot be hidden and stay: " + blocked.joined(separator: ", ") + "." }

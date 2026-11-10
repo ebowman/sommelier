@@ -32,11 +32,9 @@ struct ArrangePayload: Transferable, Equatable {
 final class ArrangeViewModel {
     enum Confirm: Identifiable {
         /// `base`: the engine layout revision the dialog's layout was composed on (when it opened), passed as `setLayout(basedOn:)`.
-        case adopt(ArrangeLayout, base: Int)
         case hideNotFitting(ArrangeLayout, titles: [String], blocked: [String], base: Int)
         var id: String {
             switch self {
-            case .adopt: return "adopt"
             case .hideNotFitting: return "hide"
             }
         }
@@ -460,21 +458,38 @@ final class ArrangeViewModel {
         Task { await engine.retry(key: key) }
     }
 
-    func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout, units: units), base: state.layoutRevision) }
-
     /// ejb.9: what "Use the bar's current order" would save, or nil (the button is off). Lean decides (`adoptProposal`); the proposal rides on the core's display.
     var barOrderPreview: CoreAdoption.Preview? { CoreAdoption.preview(proposal: state.coreDisplay?.adoption, layout: layout) }
 
     func askUseBarOrder() {
         guard let pv = barOrderPreview else { return }
+        barOrderSheet = makeBarOrderSheet(pv)
+    }
+
+    private func makeBarOrderSheet(_ pv: CoreAdoption.Preview) -> BarOrderSheet {
         let c = content
         func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows + c.visible.notRunning + c.hidden.notRunning + c.alwaysHidden.notRunning).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
-        barOrderSheet = BarOrderSheet(preview: pv, base: state.layoutRevision,
-                                      lines: pv.changes.map { "\(t($0.key)): \($0.from) \u{2192} \($0.to)" })
+        return BarOrderSheet(preview: pv, base: state.layoutRevision,
+                             lines: pv.changes.map { "\(t($0.key)): \($0.from) \u{2192} \($0.to)" })
     }
 
     /// Save: the normal record-saving path (`setLayout`), a user edit that names no moved key, so no drag is owed: the record becomes the bar's own order.
     func saveBarOrder(_ s: BarOrderSheet) {
+        // ejb.29: the bar may have changed while the sheet was open; Save only what the CURRENT proposal says, else refresh or close.
+        switch CoreAdoption.confirm(shown: s.preview, current: barOrderPreview) {
+        case .save:
+            break
+        case .refresh(let fresh):
+            AppLog.log(.arrange, "arrange: use the bar's current order; the bar changed while the sheet was open, showing the new order")
+            barOrderSheet = makeBarOrderSheet(fresh)
+            message = CoreAdoption.changedMessage
+            return
+        case .cancel(let why):
+            AppLog.log(.arrange, "arrange: use the bar's current order; \(why)")
+            barOrderSheet = nil
+            message = why
+            return
+        }
         barOrderSheet = nil
         AppLog.log(.arrange, "arrange: use the bar's current order; \(s.preview.changes.count) item(s) change place")
         editTracker { $0.removeAll() }
@@ -491,10 +506,6 @@ final class ArrangeViewModel {
     func confirmed(_ c: Confirm) {
         confirm = nil
         switch c {
-        case .adopt(let l, let base):
-            AppLog.log(.arrange, "arrange: adopt current order")
-            editTracker { $0.removeAll() }
-            apply(l, basedOn: base)
         case .hideNotFitting(let l, let titles, _, let base):
             AppLog.log(.arrange, "arrange: hide what does not fit: \(titles.joined(separator: ", "))")
             let old = layout

@@ -404,14 +404,6 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
     #expect(none.layout == layout && none.moved.isEmpty)
 }
 
-@Test func adoptRebuildsFromTheObservedBarKeepingAlwaysHiddenAndNotRunning() {
-    let current = Layout(visible: [k("b"), k("a"), k("gone"), clock], hidden: [k("h")], alwaysHidden: [k("ah"), k("goneH")], newItemPolicy: .hidden)
-    let obs = ObservedOrder(onBar: [k("a"), k("b"), cc, clock], parked: [k("h"), k("ah"), k("new")])
-    let l = ArrangeDrop.adopt(observed: obs, current: current)
-    #expect(l.visible == [k("a"), k("b"), k("gone"), cc, clock])     // observed verbatim; not-running key before the trailing block
-    #expect(l.hidden == [k("h"), k("new")] && l.alwaysHidden == [k("ah"), k("goneH")])
-    #expect(l.newItemPolicy == .hidden && l.isValid)
-}
 
 @Test func anObservationWithoutAnErrorRendersTheCapsulesNotThePlaceholder() {
     // (the status-line half of the former `unsettledObservationIsShownAsObservedButUnsettled` went with `ArrangeSections.statusLine`, sommelier-ejb.7)

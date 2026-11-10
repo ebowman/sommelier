@@ -59,4 +59,22 @@ public enum CoreAdoption {
         for (i, k) in a.enumerated() where b[i] != k { changes.append(Change(key: k, from: (b.firstIndex(of: k) ?? i) + 1, to: i + 1)) }
         return Preview(layout: l, before: b, after: a, changes: changes)
     }
+
+    /// What Save does with the sheet's preview once the bar's CURRENT proposal is known.
+    public enum Decision: Equatable, Sendable {
+        /// The proposal is still the one shown: save it.
+        case save
+        /// The bar changed to another proposal: show this one instead, save nothing yet.
+        case refresh(Preview)
+        /// There is no proposal any more: close the sheet and say why (the text is the one line shown).
+        case cancel(String)
+    }
+
+    public static let changedMessage = "The menu bar changed; review the new order."
+
+    /// ejb.29: Save saves exactly what was shown or nothing. Same preview -> save; a different one -> refresh the sheet; none -> cancel with a message.
+    public static func confirm(shown: Preview, current: Preview?) -> Decision {
+        guard let current else { return .cancel(changedMessage) }
+        return current == shown ? .save : .refresh(current)
+    }
 }
