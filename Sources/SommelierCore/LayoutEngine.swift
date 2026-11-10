@@ -1,4 +1,5 @@
 import Foundation
+import DecisionCore
 
 public struct PassReport: Equatable, Sendable {
     public enum Outcome: Equatable, Sendable {
@@ -95,6 +96,8 @@ public actor LayoutEngine {
         public var assumeFullBarAtLaunch = true
         /// TESTS ONLY (never set in production): skips the planner-side gate so a test can drive the dispatch-point gate alone.
         public var skipPlanningGateForTests = false
+        /// ejb.15: record the audit trace of the core-driven order path (events, emitted actions, their results). TESTS ONLY.
+        public var recordCoreTrace = false
         /// A burst of `setLayout` calls cannot postpone its pass past this long after the burst's first call.
         public var layoutCoalesceMax: Duration = .seconds(1)
         /// The Control Center tracked entries as stored now (nil = unreadable or not wired: owner-key hide units). Read at the start of
@@ -428,6 +431,9 @@ public actor LayoutEngine {
     /// 9o9.11: subjects of CROSS-FOLD moves (pull-out / push-in) the actuator refused in this pass. Kept apart from `overflowRefused` so the
     /// gdu.69 skip does not swallow an intended crossing, yet a refusing actuator cannot spin the pass. Cleared with `overflowRefused`.
     private var foldRefused: [ItemKey: String] = [:]
+    /// ejb.15 (DISPLAY only, deleted with the old planner in Wiring 5): subjects of the CORE's moves the actuator refused. The core `skips` such a key until
+    /// a user event, so the row keeps saying why (the per-pass `overflowRefused` is cleared every pass). Cleared by `clearFailures` and `retry(key:)`.
+    private var coreRefused: [ItemKey: String] = [:]
     /// gdu.80: the last two COMPLETE reads' churn data (pile + first-drawn neighbourhood). The churn zone is their union; the
     /// overflow set is settled when both agree. A pass that changed membership on a full bar never orders; the order phase waits
     /// for two agreeing complete reads.
@@ -538,6 +544,150 @@ public actor LayoutEngine {
         self.observer = observer; self.actuator = actuator; self.store = store; self.capabilities = capabilities
         self.state = state; self.busy = busy; self.interaction = interaction; self.resolveSnapshot = resolveSnapshot; self.sleep = sleep
         self.log = log; self.config = config; self.fullBarState = config.assumeFullBarAtLaunch
+        if config.recordCoreTrace { core.trace = [] }
+    }
+
+    // MARK: Verified decision core (ejb.15; docs/wiring-plan.md sections 1, 2, 5)
+    //
+    // This actor is the single serial owner of ONE `DecisionState` and ONE `CoreKeys` (inside `core`). Every core call below runs on the actor,
+    // never in a `publish` closure on the main actor. ORDER moves are decided ONLY by `DecisionCore.step`; the old order planner
+    // (`makePlan`, `Reconciler`'s order phase, the gates) still runs for DISPLAY until Wiring 4/5 but its actions never reach the actuator.
+
+    private var core = CoreDriver()
+    private var coreSeeded = false
+    private var coreErrorShown = false
+    /// The last `BarObservation` `observeOnce` produced (the adapter's input besides the `ObservedOrder`).
+    private var lastBarObs: BarObservation?
+
+    /// Test support: the audit of the core-driven order path.
+    func coreAudit() -> (emitted: Int, resolved: Int, violations: Int, awaiting: Bool, trace: [CoreTraceEntry]) {
+        (core.emitted, core.resolved, core.violations, core.awaiting != nil, core.trace ?? [])
+    }
+    func coreLastRead() -> Read? { core.lastRead }
+    /// TESTS ONLY: makes every core step fail with `e` (nil: normal), to exercise the `DecisionError` path.
+    func injectCoreFailureForTests(_ e: DecisionError?, onMoveResultOnly: Bool = false) { core.injectedFailure = e; core.injectOnMoveResultOnly = onMoveResultOnly }
+    /// Timing of the `.read` steps so far: (count, total ns, worst ns).
+    func coreReadStepTiming() -> (count: Int, totalNanos: Int64, worstNanos: Int64) { (core.readSteps, core.readStepNanos, core.readStepWorstNanos) }
+    func coreAdaptTiming() -> (count: Int, totalNanos: Int64, worstNanos: Int64) { (core.adaptCount, core.adaptNanos, core.adaptWorstNanos) }
+    func coreStateForTests() -> DecisionState? { core.state }
+    func coreKeysForTests() -> CoreKeys { core.keys }
+
+    /// THE call into `DecisionCore.step`. Returns the emitted actions (at most one). A `DecisionError` is logged, shown as `lastError`, and
+    /// stops order actuation (no action is returned) until the next successful step; it never defaults to anything.
+    @discardableResult
+    private func coreStep(_ e: Event, _ name: String, site: String) async -> [Action] {
+        if !coreSeeded {
+            coreSeeded = true
+            // TESTS ONLY (`assumeFullBarAtLaunch == false`, "known not full"): three quiet polls of a chevronless complete bar prove it, as 3 real reads would.
+            if !config.assumeFullBarAtLaunch {
+                let quiet = Read(kind: .poll, chevron: .absent, level: .complete, settled: true, stripOpen: false, drawn: [], pile: [], folded: [], trusted: [], nearFold: [])
+                for _ in 0..<3 { _ = core.step(.read(quiet), name: "read", site: "test seed (assumeFullBarAtLaunch == false)") }
+            }
+        }
+        switch core.step(e, name: name, site: site) {
+        case .success(let actions):
+            if coreErrorShown {
+                coreErrorShown = false
+                await publish { if case .decision? = $0.lastError { $0.lastError = nil } }
+            }
+            return actions
+        case .failure(let err):
+            log("engine: decision core error at \(site) (\(name)): \(err); order actuation stopped until the next successful step")
+            coreErrorShown = true
+            let m = "\(err)"
+            await publish { $0.lastError = .decision(m) }
+            return []
+        }
+    }
+
+    /// The record as core ids (what `ReadAdapter` makes of `layout.visible`: deduped, no chevron, no immovable key).
+    private func coreRecordIDs() -> [Key] {
+        let caps = activeCapabilities ?? capabilities
+        var seen = Set<ItemKey>(), out: [Key] = []
+        for k in layout.visible where !core.keys.isChevron(k) && seen.insert(k).inserted && caps.capability(for: k).canMove {
+            if let id = try? core.keys.intern(k) { out.append(id) }
+        }
+        return out
+    }
+
+    /// An ENGINE-made change of the record (new items, adoption, hand-drag adoption, System Settings hides): `userEdit(rec, [])`.
+    private func coreSyncRecord(site: String) async {
+        let rec = coreRecordIDs()
+        guard rec != core.record else { return }
+        await coreStep(.userEdit(record: rec, moved: []), "userEdit", site: site)
+        if !core.isDown { core.record = rec }
+    }
+
+    /// The USER's edit (`setLayout` with moved keys placed by the user): `userEdit(rec, moved)`.
+    private func coreUserEdit(moved: Set<ItemKey>, site: String) async {
+        let rec = coreRecordIDs()
+        let ids = moved.sorted { $0.description < $1.description }.compactMap { k in core.keys.isChevron(k) ? nil : try? core.keys.intern(k) }
+        await coreStep(.userEdit(record: rec, moved: ids), "userEdit", site: site)
+        if !core.isDown { core.record = rec }
+    }
+
+    /// The one answer to an emitted action. Exactly one per `Action`: vetoes after the step send `busy` with `posted: false`.
+    private func coreResult(_ a: Action, _ outcome: Outcome, posted: Bool, site: String) async {
+        await coreStep(.moveResult(a.subject, outcome, posted: posted), "moveResult", site: site)
+    }
+
+    /// Safety net: no emitted action may stay unanswered when a pass ends, whatever path ended it.
+    private func coreSettleStraggler(site: String) async {
+        guard let w = core.awaiting else { return }
+        log("engine: BUG? an emitted order move of \(w.subject) was not answered; answering busy (not posted) at \(site)")
+        await coreResult(w.action, .busy, posted: false, site: site)
+    }
+
+    /// Control Center entries that belong together (an app and its helpers): the adapter's `ownerFamilies`.
+    private func coreOwnerFamilies() -> [[String]] {
+        (resolverSnapshot?.entries ?? []).filter { !$0.menuItemKeys.isEmpty }.map { [$0.key] + $0.menuItemKeys }
+    }
+
+    /// Feeds ONE read to the core: adapts it (`ReadAdapter`), syncs the record, then `step(.read)`.
+    /// `vetoed` = a Swift-only veto known BEFORE the step (pause, conflict, sleep, not ready, membership batch this pass, pending adoption,
+    /// hand-drag adoption, transient reveal, reveal pass, post-move evidence): the read is downgraded to `settled: false`, which is the ONLY
+    /// edit a veto may make. A vetoed read is still fed, and never decides anything. Returns the emitted actions of a pass read.
+    @discardableResult
+    private func coreRead(_ o: ObservedOrder, bar: BarObservation, kind: ReadKind, vetoed: Bool, site: String) async -> [Action] {
+        let caps = activeCapabilities ?? capabilities
+        let immovable = Set((layout.visible + o.onBar + o.parked).filter { !caps.capability(for: $0).canMove })
+        var ctx = ReadContext(observation: bar, kind: kind, previousCompletePile: core.lastCompletePile, handDragUnverified: handDragUnverified,
+                              immovable: immovable, churnZone: SystemOverflowRule.churnZone(recentReads), selfPositioningOwners: config.selfPositioningOwners,
+                              log: log, itemInfo: itemInfo, ownerFamilies: coreOwnerFamilies())
+        if vetoed { ctx.settled = false }
+        let adapted: AdaptedRead
+        let adaptT0 = ContinuousClock.now
+        do {
+            adapted = try ReadAdapter.adapt(o, context: ctx, record: layout.visible, keys: &core.keys)
+            let d = adaptT0.duration(to: .now).components
+            core.noteAdapt(d.seconds * 1_000_000_000 + d.attoseconds / 1_000_000_000)
+        } catch {
+            log("engine: read adapter error at \(site): \(error); this read is not fed")
+            core.note(.error("adapter: \(error)"))
+            return []
+        }
+        if kind == .pass, ctx.settled, !adapted.read.settled { log(SystemOverflowRule.unsettledText(recentReads)) }   // the pile of the last two complete reads disagrees: evidence only
+        if bar.completeness == .complete {
+            let suspects = Set(o.staleOnBar).union(o.uncorroborated)
+            core.lastCompletePile = Set(o.onBar.filter { !suspects.contains($0) && !core.keys.isChevron($0) && o.systemOverflow.contains($0) })
+        }
+        if adapted.record != core.record {   // engine-made record changes reach the core before the read that judges them
+            await coreStep(.userEdit(record: adapted.record, moved: []), "userEdit", site: site + " (record sync)")
+            if !core.isDown { core.record = adapted.record }
+        }
+        let actions = await coreStep(.read(adapted.read), "read", site: site)
+        if kind != .pass || vetoed, let a = actions.first {   // cannot happen (only a settled pass read decides); answered, never performed
+            log("engine: BUG? the core emitted a move on a \(kind == .poll ? "poll" : "vetoed") read; not performed")
+            await coreResult(a, .busy, posted: false, site: site + " (unexpected action)")
+            return []
+        }
+        return actions
+    }
+
+    /// A read the pass cannot act on (an early exit of the pass): still fed, as evidence only.
+    private func coreFeedVetoed(_ o: ObservedOrder, site: String) async {
+        guard let b = lastBarObs else { return }
+        await coreRead(o, bar: b, kind: .pass, vetoed: true, site: site)
     }
 
     // MARK: Public control
@@ -709,6 +859,10 @@ public actor LayoutEngine {
             }
         }
         await clearFailures(keepingStripHold: keepHold)
+        // ejb.15 event userEdit (wiring plan section 1): the USER's placement (moved keys) is `userEdit(rec, moved)`; any other change of the record
+        // (a scan-built layout, a pending-adoption drop with nothing moved) is the engine's: `userEdit(rec, [])`.
+        if userPlacement, !movedKeys.isEmpty { await coreUserEdit(moved: movedKeys, site: "setLayout (user placement)") }
+        else { await coreSyncRecord(site: "setLayout (no user move)") }
         if config.layoutCoalesce > .zero {
             // The pass for this layout starts after the window; a further setLayout inside it replaces this one (same reason
             // key), so a quick change of mind plans only the final layout. The drop's revision stamp is unaffected: the first
@@ -873,6 +1027,7 @@ public actor LayoutEngine {
         clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
         lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
         _ = await publishLayout(l)
+        await coreSyncRecord(site: "adoptLateHandDrags (hand-drag adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
         await publishUnverified()
         await announceHandDrag()
     }
@@ -1137,6 +1292,7 @@ public actor LayoutEngine {
         clearGiveUp(Set(cannotPlace.keys).union(orderAttempts.keys).union(revertWatch.keys))
         lastVerifiedOrderMove = [:]; unverifiedStrikes = [:]
         _ = await publishLayout(l)
+        await coreSyncRecord(site: "adoptHandDrag (hand-drag adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
         await publishUnverified()
         await announceHandDrag()
     }
@@ -1157,6 +1313,7 @@ public actor LayoutEngine {
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         log("layout: adopted bar order on upgrade (\(n.count) keys)")
         _ = await publishLayout(l)
+        await coreSyncRecord(site: "adoptBarOrder (upgrade adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
     }
 
     /// Pure (9o9.3): `adopted` (the record adopted from the bar) with the user's drop applied. `requested` is the Visible order the
@@ -1263,6 +1420,7 @@ public actor LayoutEngine {
         userEditMoved = nil; userEditRestricting = false
         retryStripGrant = true; retryGrantPass = passSerial   // gdu.144 D5: ONE user-authorised strip session for the next single move, never past the next pass
         await clearFailures(keepingStripHold: false)
+        await coreStep(.userRetry, "userRetry", site: "userRetry() (Re-apply layout)")   // ejb.15 event userRetry
     }
 
     private func clearFailures(keepingStripHold: Bool) async {
@@ -1271,7 +1429,7 @@ public actor LayoutEngine {
             if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
             resetStripHold()
         }
-        failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]
+        failures = [:]; strikes = [:]; unverifiedStrikes = [:]; failedThisPass = []; allFailedStreak = 0; actuatorRefused = [:]; refusedEpoch = [:]; coreRefused = [:]
         positionWaitSince = [:]; positionTimedOut = []; positionRetryAttempts = 0
         delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
         unconfirmed = [:]
@@ -1291,7 +1449,7 @@ public actor LayoutEngine {
     /// Clears the give-up and the attempt history of `key` and plans it again (the Arrange "Retry" of one row).
     public func retry(key: ItemKey) async {
         clearGiveUp([key])
-        failures[key] = nil; strikes[key] = nil; unverifiedStrikes[key] = nil; lastVerifiedOrderMove[key] = nil; revertWatch[key] = nil
+        failures[key] = nil; strikes[key] = nil; unverifiedStrikes[key] = nil; lastVerifiedOrderMove[key] = nil; revertWatch[key] = nil; coreRefused[key] = nil
         positionWaitSince[key] = nil; positionTimedOut.remove(key)   // 9o9.24: a fresh 60 s wait
         log("engine: retry \(key): attempts cleared")
         resetEngineBudget()   // gdu.144 B5
@@ -1303,6 +1461,7 @@ public actor LayoutEngine {
         }
         if stripOpenHold != nil { log("engine: strip hold cleared (retry)") }
         resetStripHold()
+        if !core.keys.isChevron(key), let id = try? core.keys.intern(key) { await coreStep(.retryKey(id), "retryKey", site: "retry(key:) (Try again)") }   // ejb.15 event retryKey
         await publish { s in
             if case .cannotPlace? = s.perItem[key] { s.perItem[key] = .pending }
         }
@@ -1666,6 +1825,7 @@ public actor LayoutEngine {
         userPlacedVisible.subtract(moved)
         do { try store.save(l) } catch { log("cannot save layout: \(error)") }
         _ = await publishLayout(l)
+        await coreSyncRecord(site: "adoptSystemSettingsHides (System Settings hides)")   // ejb.15: engine-made record change = userEdit(rec, [])
         let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
         let names = moved.map { itemInfo[$0] != nil ? namer.name($0) : $0.description }
         systemNoticeSerial += 1
@@ -1868,9 +2028,16 @@ public actor LayoutEngine {
     /// read tree resets the count; three consecutive chevronless fully-read scans prove the bar not full). Ignored while a pass runs or is
     /// requested (the pass accounts for its own reads). The proof takes effect AT ONCE (the hold is released) and a pass follows to publish it:
     /// otherwise a plain bar would stay "Checking the menu bar…" until some unrelated trigger.
-    public func notePollScan(_ items: [ResolvedItem], completeness: ReadCompleteness) async {
+    public func notePollScan(_ items: [ResolvedItem], completeness: ReadCompleteness,
+                             unreadOwners: [UnreadOwner] = [], cachedOwners: [UnreadOwner] = [], ownerEvidence: OwnerEvidence? = nil) async {
         guard !inPass, !pending, requestedAt == nil, loaded, !stopped else { return }
         let o = ObservedOrder(resolved: items)
+        // ejb.15 event read, kind poll (wiring plan section 1; EngineTriggers `scanSignature`): a quiet poll's scan is evidence only. One scan is not an
+        // agreeing pair, so it is `settled: false`; a poll never decides (the core refuses a move on any read that is not a settled pass read).
+        // An empty bar is a non-observation, still told to the core (`observed: false`).
+        await coreRead(o, bar: BarObservation(items: items, settled: false, completeness: completeness, unreadOwners: unreadOwners,
+                                              cachedOwners: cachedOwners, ownerEvidence: ownerEvidence),
+                       kind: .poll, vetoed: false, site: "notePollScan (quiet poll)")
         guard !o.onBar.isEmpty else { return }
         noteAnyRead(o)
         guard fullBarState, !o.hasChevron else { return }
@@ -2144,6 +2311,12 @@ public actor LayoutEngine {
             positionRetryAttempts = 0
             delayed[Self.positionRetryReason]?.cancel(); delayed[Self.positionRetryReason] = nil
         }
+        // ejb.15: the key the CORE's move was refused for is not necessarily one the old planner plans a move for (the planners differ); its refusal is
+        // shown on its own row all the same, while it is out of place.
+        let barVisible = obs.onBar.filter { layout.visible.contains($0) }
+        let recordVisible = layout.visible.filter { barVisible.contains($0) }
+        for (k, why) in coreRefused where out[k] != nil && failures[k] == nil && out[k] != .notFitting
+            && barVisible.firstIndex(of: k) != recordVisible.firstIndex(of: k) { out[k] = .unsupported(why) }
         for (k, e) in failures where out[k] != nil { out[k] = .failed(e) }
         for (k, c) in cannotPlace where out[k] != nil && failures[k] == nil
             && !ArrangeSections.placementMatches(k, layout: layout, observed: obs, showHiddenSection: showHidden, showAlwaysHidden: showAlways) { out[k] = .cannotPlace(reason: c.reason, attempts: c.attempts) }   // 9o9.4
@@ -2256,12 +2429,14 @@ public actor LayoutEngine {
         do {
             let r = try await observer.observeDetailed(progress: progress, seed: seed)
             let o = ObservedOrder(resolved: r.items)
+            lastBarObs = r
             noteAnyRead(o)   // gdu.144 item 9: settled or not
             // gdu.144: a read of any level other than fully-read resets the proof too, settled or not: an unsettled `incomplete` read ends the pass
             // before `noteChevronEvidence` runs, so without this the count would survive it.
             if r.completeness != .complete, r.completeness != .completeExceptSelfPositioning { noChevronReads = 0; notFullProven = false }
-            if o.onBar.isEmpty { return .failure(.empty) }
-            if !r.settled, !allowUnsettled { return .failure(.noAgreement(scans: r.scans)) }
+            // ejb.15 wiring plan section 1 (read, `observed`): an empty bar is a non-observation, still a read the core is told about (evidence only).
+            if o.onBar.isEmpty { await coreRead(o, bar: r, kind: .pass, vetoed: true, site: "observeOnce: empty bar"); return .failure(.empty) }
+            if !r.settled, !allowUnsettled { await coreRead(o, bar: r, kind: .pass, vetoed: true, site: "observeOnce: scans disagree"); return .failure(.noAgreement(scans: r.scans)) }
             observedCompleteness = r.completeness
             lastObserveScans = r.scans
             let serialBefore = pollSignatureSerial
@@ -2321,6 +2496,10 @@ public actor LayoutEngine {
             let o = ObservedOrder(resolved: resolved)
             noteAnyRead(o)
             if !o.onBar.isEmpty {
+                // wiring plan section 1: the actuator's post-move snapshot is a pass read with settled:false, evidence only
+                await coreRead(o, bar: BarObservation(items: resolved, settled: false, completeness: snap.completeness, unreadOwners: snap.unreadOwners,
+                                                      cachedOwners: snap.cachedOwners, ownerEvidence: snap.ownerEvidence),
+                               kind: .pass, vetoed: true, site: "adopt: post-move snapshot")
                 itemInfo = ItemInfo.merge(previous: itemInfo, fresh: ItemInfo.index(from: resolved), retaining: ItemInfo.staleOnlyKeys(from: resolved))
                 noteEvidence(resolved)
                 let serialBefore = pollSignatureSerial
@@ -2330,7 +2509,9 @@ public actor LayoutEngine {
             }
         }
         switch await observeOnce() {
-        case .success(let (o, _)): obs = o; return true
+        case .success(let (o, _)):
+            if let b = lastBarObs { await coreRead(o, bar: b, kind: .pass, vetoed: true, site: "adopt: post-move scan") }   // evidence only (section 1)
+            obs = o; return true
         case .failure(let e):
             if e == .permissionDenied { stopped = true; await publish { $0.lastError = .permissionDenied } }
             else { let m = e.description; await publish { $0.lastError = .observe(m) } }
@@ -2368,6 +2549,7 @@ public actor LayoutEngine {
                 return .settled(o)
             }
             hasObservation = true
+            await coreFeedVetoed(o, site: "observeForPass: unsettled read (evidence only)")   // wiring plan section 1: an unsettled pass read is still a read
             let info = itemInfo
             log("observation unsettled; not actuating (\(took) ms)")
             let hu = rule
@@ -2422,9 +2604,11 @@ public actor LayoutEngine {
         passAgent = agentPID()
         foreignRestartInPass = false
         let r = await runPassBody(scheduled: scheduled)
+        await coreSettleStraggler(site: "runPass (end of pass)")   // ejb.15: exactly one moveResult per emitted action, whatever path ended the pass
         // gdu.144: when the user's chain ends, however it ends (spent, paused, failed, converged), no attempt is owed any more: nothing the user asked
         // for can fire later. (Only the drain chains: `pending` is set by a chained pass, and a request that arrived meanwhile is a regular pass.)
         if userEditRestricting, draining, !pending {
+            await coreStep(.passBoundary, "passBoundary", site: "runPass (a user chain ends)")   // ejb.15 event passBoundary: the user's chain is over
             userDropPending = []; foldDropRequest = []; foldRequestPlanned = []; foldRequestCreated = [:]
             // What the chain did not finish is the engine's business: ONE regular pass (budget, gates and hold apply) makes it, so the status never
             // sticks at "Working…" / "Moving" with nobody left to move anything. A regular pass is never restricted, so this cannot repeat.
@@ -2494,6 +2678,9 @@ public actor LayoutEngine {
             if editPass || !hadRequest { userEditRestricting = true }
             else { log("engine: user-edit restriction ended (regular pass)"); userEditMoved = nil; userEditRestricting = false }
         } else { userEditRestricting = false }
+        // ejb.15 event passBoundary: the start of a REGULAR pass (a request that is not the user's edit pass). Never at the start of the Re-apply pass
+        // (`userRetry()` marks it `userEditPassOwed`, so it is an `editPass`), and not for a pass chained from a user's edit (no request of its own).
+        if hadRequest, !editPass { await coreStep(.passBoundary, "passBoundary", site: "runPassBody (regular pass start)") }
         // gdu.144 blocker: a move is the USER's only inside the user's pass and the pass chained from it. The first regular pass ends every owed attempt
         // (the dropped keys' exemption and the fold request), dispatched or not: nothing the user asked for can fire later, after quiet polls.
         if !userEditRestricting { userDropPending = []; foldDropRequest = [] }
@@ -2522,6 +2709,7 @@ public actor LayoutEngine {
             if busy() {
                 if scheduled, !busyRetried { busyRetried = true; pending = true }
                 log("user is busy; pass skipped")
+                await coreFeedVetoed(obs, site: "runPassBody (b) user busy (veto)")
                 await publish { $0.passSequence += 1 }
                 return PassReport(outcome: .skippedBusy)
             }
@@ -2533,6 +2721,7 @@ public actor LayoutEngine {
         busyRetried = false
 
         if await foreignAgentChange() {
+            await coreFeedVetoed(obs, site: "runPassBody foreign agent restart (veto)")
             let r = PassReport(outcome: .agentRestarted)
             _ = await finish(r, converged: false)
             return r
@@ -2542,12 +2731,14 @@ public actor LayoutEngine {
         // agreed read can lack items). Nothing is planned or done from such an observation; the delayed reconcile follows.
         if sleeping {
             log("system is going to sleep; pass skipped")
+            await coreFeedVetoed(obs, site: "runPassBody (b2) sleeping (veto)")
             let r = PassReport(outcome: .incomplete)
             _ = await finish(r, converged: false)
             return r
         }
         if conflicted {
             log(conflictBox.value != nil ? "conflicting manager running; pass skipped" : "engine: paused: Sommelier paused by you; pass skipped")
+            await coreFeedVetoed(obs, site: "runPassBody (b2) conflict/pause (veto)")
             let r = PassReport(outcome: .paused)
             _ = await finish(r, converged: false)
             return r
@@ -2555,6 +2746,7 @@ public actor LayoutEngine {
         if let until = notReadyUntil {
             if config.instant() < until {
                 log("agent restarted moments ago; not acting on this observation")
+                await coreFeedVetoed(obs, site: "runPassBody (b2) not ready (veto)")
                 let r = PassReport(outcome: .unsettled)
                 _ = await finish(r, converged: false)
                 return r
@@ -2562,7 +2754,10 @@ public actor LayoutEngine {
             notReadyUntil = nil
         }
 
-        if generation != layoutGeneration { return await endSuperseded(PassReport(outcome: .superseded)) }   // the layout changed during observation
+        if generation != layoutGeneration {   // the layout changed during observation
+            await coreFeedVetoed(obs, site: "runPassBody superseded during observation (veto)")
+            return await endSuperseded(PassReport(outcome: .superseded))
+        }
         await publish { if case .observe? = $0.lastError { $0.lastError = nil } }
         storeRetryAttempts = 0
         delayed[Self.storeRetryReason]?.cancel(); delayed[Self.storeRetryReason] = nil
@@ -2624,6 +2819,7 @@ public actor LayoutEngine {
             await noteNewItems(plan.newItems)
             do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
             let stamp = await publishLayout(layout)   // a new revision: the engine itself changed the layout (gdu.48)
+            await coreSyncRecord(site: "runPassBody (d) new items")   // ejb.15: engine-made record change = userEdit(rec, [])
             for n in plan.newItems {
                 guard let sec = layout.section(of: n.key), let i = layout.keys(in: sec).firstIndex(of: n.key) else { continue }
                 engineAdditions.append((stamp.revision, n.key, sec, i))
@@ -2645,38 +2841,54 @@ public actor LayoutEngine {
         var consecutiveFailures = 0
         func report(_ o: PassReport.Outcome) -> PassReport { PassReport(outcome: o, phase: phaseReached, actionCount: actionCount) }
 
-        func isConverged() -> Bool { failures.isEmpty }
+        func isConverged() -> Bool { failures.isEmpty && !core.isDown }   // a core that cannot be called never shows "converged" (plan section 5)
 
-        // (e2) ORDER actuation that involves a self-positioning owner (a move's subject or relation target) waits for a COMPLETE
-        // read: with their items stale, their frames and slots are not trusted (gdu.51). Membership is not affected.
-        // Read completeness only (gdu.120): iStat items are ordinary orderable items, the wait is for fresh frames.
-        if plan.phase == .order, observedCompleteness != .complete {
-            let owners = config.selfPositioningOwners
-            let involved = plan.actions.contains { a in
-                guard case .move(let subject, let rel) = a else { return false }
-                if SelfPositioning.isSelfPositioning(subject, owners: owners) { return true }
-                switch rel {
-                case .before(let t), .after(let t): return SelfPositioning.isSelfPositioning(t, owners: owners)
-                case .leftmost, .rightmost: return false
-                }
-            }
-            if involved {
-                log("engine: order actuation involves a self-positioning owner and the read is \(observedCompleteness.rawValue); waiting for a complete read")
-                if draining { pending = true }
-                let r = PassReport(outcome: .unsettled)
-                _ = await finish(r, converged: false)
-                return r
+        // ejb.15 event read (wiring plan section 1): this pass's settled read goes to the core. The Swift-only vetoes known BEFORE the step may only
+        // downgrade it to settled:false (evidence); they never decide and never skip feeding the read: pending adoption, hand-drag adoption, a
+        // transient reveal, a reveal pass, a membership batch this pass (assumption 4). (Pause, conflict, sleep, not ready, user busy and a
+        // superseded pass exit earlier and feed the read the same way, `coreFeedVetoed`.)
+        // The user's interaction (a menu open, the mouse down, a modifier held, locked, asleep, an Arrange drag) is a pause: known BEFORE the step, so it
+        // is a veto of the read, never an action answered `busy` afterwards (a `busy` answer would make the core `skip` the key until a user event).
+        // The wait for the user to be quiet is the old one (`awaitQuiet`); only a pass with order work (by the old planner) waits, as before.
+        if plan.phase == .order, interactionBlock() != nil {
+            switch await awaitQuiet() {
+            case .clear: break
+            case .waitedThenClear:
+                await coreFeedVetoed(obs, site: "runPassBody (c) user interaction, waited (veto)")
+                if draining { pending = true }   // the observation is old after the wait: a fresh pass re-observes
+                await publish { $0.inFlight = nil }
+                let r = report(.incomplete)
+                return await finish(r, converged: false)
+            case .blocked(let why):
+                await coreFeedVetoed(obs, site: "runPassBody (c) user interaction (veto)")
+                await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+                return await endPausedForInteraction(why, report(.paused))
             }
         }
+        let coreVeto = plan.phase == .membership || layout.pendingAdoption || handAdopt != nil || !transientReveals.isEmpty || showHidden || showAlways
+        var coreAction: Action?
+        if let b = lastBarObs { coreAction = await coreRead(obs, bar: b, kind: .pass, vetoed: coreVeto, site: "runPassBody (c) pass read").first }
 
-        // (f)
-        if plan.phase == .converged, plan.skipped.contains(where: { Reconciler.isMovingNeighbourSkip($0.reason) }) {
+        // The core made no move although the OLD planner still has order moves (a bar not yet proven not full, a move that needs the strip, a spent budget, an
+        // untrusted key...): those moves are WITHHELD, exactly as `gateEngineMoves` withheld them. Without this the planned-but-never-made moves would show as a stuck
+        // "Moving N items…". This is display only (the old gates' flags `gatedDiffers`); Wiring 4 takes the status from the core.
+        if coreAction == nil, plan.phase == .order {
+            // reveal pass (display): the notice that the order is not applied on a full bar
+            if showHidden || showAlways, let r = await fullBarOrderGate(obs: obs, wroteMembership: false, fullBefore: false, actionCount: actionCount, phase: phaseReached) { return r }
+            plan.actions.removeAll { if case .move = $0 { return true } else { return false } }
+            plan.gatedDiffers = true; lastGatedDiffers = true
+            plan.phase = .converged; phaseReached = .converged
+            await publishObserved(obs, plan)
+        }
+
+        // (f) The old planner's "converged" ends the pass only when the core has no move to make: the core decides, the old plan is display.
+        if coreAction == nil, plan.phase == .converged, plan.skipped.contains(where: { Reconciler.isMovingNeighbourSkip($0.reason) }) {
             // 9o9.9: converged only because a move waits for an untrusted neighbour to hold still. Not converged: the strike memory stays
             // (an identical move planned after the wait is still judged against it) and the position-retry timer (waiting status) re-plans.
             _ = await finish(report(.incomplete), converged: false)
             return report(.incomplete)
         }
-        if plan.phase == .converged {
+        if coreAction == nil, plan.phase == .converged {
             lastVerifiedOrderMove = [:]
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
@@ -2690,7 +2902,6 @@ public actor LayoutEngine {
         }
 
         // (f2) gdu.80: on a full bar (a chevron) the order phase needs a settled overflow set; a reveal never orders.
-        if plan.phase == .order, let r = await fullBarOrderGate(obs: obs, wroteMembership: false, fullBefore: false, actionCount: actionCount, phase: phaseReached) { return r }
 
         // (g) membership phase
         if plan.phase == .membership {
@@ -2722,7 +2933,6 @@ public actor LayoutEngine {
                 scheduleReconcile(after: .seconds(2), reason: "hand drag retry")
                 return await abort(.incomplete)
             }
-            let fullBefore = obs.overflowChevron != nil
             if conflicted { return await pausedMidPass(report(.paused)) }
             switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
             case .clear: flightBox.begin()   // 9o9.7: at once (see the order loop)
@@ -2846,225 +3056,194 @@ public actor LayoutEngine {
                 // Still membership work (agent moved things): let the next pass handle it after it settles.
                 return await rescheduleIncomplete(report(.incomplete), converged: false)
             }
-            // gdu.80: the membership batch changed what fits: on a full bar the overflow pile just changed, so nothing is dragged
-            // in this pass. A follow-up pass orders once two complete reads agree on the pile.
-            if let r = await fullBarOrderGate(obs: obs, wroteMembership: true, fullBefore: fullBefore, actionCount: actionCount, phase: phaseReached) { return r }
+            // gdu.80 / ejb.15 assumption 4: the membership batch changed what fits, so nothing is dragged in this pass (its read was fed settled:false).
+            // A follow-up pass reads the changed bar and the core orders.
+            log("order deferred: membership changed this pass")
+            return await rescheduleIncomplete(report(.incomplete), converged: false)
         }
 
-        // (h) order phase
-        var lastAction: PlannedAction?
+        // (h) order phase: ONE move per pass, and only from the core's Action (ejb.15). The old order planner above ran for display only.
         var orderMoves = 0
-        while plan.phase == .order {
-            // Every iteration re-plans from the CURRENT layout, so a setLayout that arrived during a drag is acted on at the
-            // next iteration (the rest of the running drag cannot be taken back); log when that happens.
-            if generation != layoutGeneration {
-                log("layout changed during the order phase; dropping the rest of the stale plan")
-                return await endSuperseded(report(.superseded))
-            }
-            if let r = requestedAt, requestedDuringPass {
-                requestedAt = nil
-                log("\(requestReason) picked up by the running pass at its next re-plan, \(Self.ms(r.duration(to: .now))) ms after the request")
-            }
-            if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
-            if conflicted { return await pausedMidPass(report(.paused)) }
-            if sleeping {
-                log("system is going to sleep; pass ends after the action in flight")
-                await publish { $0.inFlight = nil }
-                return await abort(.incomplete)
-            }
-            guard actionCount < config.maxActionsPerPass else {
-                log("maxActionsPerPass reached")
-                return await rescheduleIncomplete(report(.incomplete), converged: false)
-            }
-            guard let action = plan.actions.first, case .move(let key, let rel) = action else { break }
-            if !effectiveCaps()(key).canMove {
-                log("engine: refusing move of \(key): capability forbids")
-                failures[key] = .unsupportedItem(reason: "capability forbids")
-                failedThisPass.insert(key); strikes[key] = config.maxKeyFailures   // deterministic: no retry
-                plan = makePlan(obs)
-                continue
-            }
-            // Verified last time (in this pass or an earlier one that did not converge: the persisted `lastVerifiedOrderMove`) yet still planned:
-            // the actuator's verdict and our observation disagree. Judged BEFORE the per-pass cap, which would otherwise end the pass first.
-            if lastAction == action || lastVerifiedOrderMove[key] == action {
-                // The strike streak resets when another key is the one struck in a later pass (the engine plans around a struck key),
-                // so verdict/observation disagreements are also counted per key across passes: the budget is spent once, not forever.
-                if let w = revertWatch[key] {   // 9o9.4: reverted within this pass (a later pass's revert was counted at its start)
-                    revertWatch[key] = nil
-                    if w.crossFold {   // gdu.134 rule 3: hold the bar instead of striking the key or counting an attempt
-                        log("order: \(key) was moved across the fold by a verified drag and is planned again: the move did not hold; holding every fold move until Retry or your next edit (or the bar is proven not full)")
-                        setStripHold(obs, unplaceable: false, didNotHold: true)
-                        lastVerifiedOrderMove[key] = nil
-                        lastAction = nil
-                        plan = makePlan(obs)
-                        phaseReached = plan.phase
-                        await publishObserved(obs, plan)
-                        continue
-                    }
-                    noteAttempt(key, cause: "the menu bar moved it back")
-                }
-                let disagreements = (unverifiedStrikes[key] ?? 0) + 1
-                unverifiedStrikes[key] = disagreements
-                log("order: \(key) was verified but is planned again (\(disagreements)); not dragged again, struck")
-                markFailed(key, .notVerified(expected: "\(rel)", observed: "unchanged"), fullStrike: disagreements >= config.maxKeyFailures)
-                consecutiveFailures += 1
-                await publishObserved(obs, makePlan(obs))
-                plan = makePlan(obs)
-                phaseReached = plan.phase
-                lastAction = nil
-                lastVerifiedOrderMove[key] = nil
-                continue
-            }
-            // 9o9.4: the per-minute cap skips the ORDER phase only (membership already ran above); the pass is not retried until it lifts.
-            if let lifts = orderCapLiftsAt() {
-                if capLoggedUntil != lifts { capLoggedUntil = lifts; log("engine: order moves capped for \(Int(windowSeconds(config.orderCapWindow))) s") }
-                if capPublished != lifts { capPublished = lifts; await publish { $0.orderCapUntil = lifts } }
-                scheduleReconcile(after: .seconds(max(0.1, lifts.timeIntervalSince(config.now()) + 0.1)), reason: Self.orderCapReason)
+        var moveFailed = false   // a failed drag ends the pass's order phase (the core strikes the key; no hammering within one pass)
+        while true {   // one iteration per core Action; only `Config.maxOrderMovesPerPass > 1` (tests) loops, production makes one move per pass
+        guard let ca = coreAction else {
+            // The core made no move. (If the core could not be called, `lastError` says so and the pass is never "converged".)
+            if orderMoves == 0 {
                 await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
                 return await abort(.incomplete)
-            } else if capPublished != nil {
-                capPublished = nil; capLoggedUntil = nil
-                await publish { $0.orderCapUntil = nil }
             }
-            guard orderMoves < config.maxOrderMovesPerPass else {
-                log("order: \(orderMoves) move(s) this pass (maxOrderMovesPerPass); the rest follows on the next pass")
-                await publish { $0.inFlight = nil }
-                return await rescheduleIncomplete(report(.incomplete), converged: false)
-            }
-            // gdu.144 B5: the single dispatch point's budget. An engine-initiated drag on a full bar needs a fresh chevron and budget left; whatever
-            // the planner did, past the budget nothing is dispatched.
-            let usersMove = isUsersMove(action)
-            let wasGranted = grantedAction == action
-            let fullNow = fullBar(obs)
-            if !usersMove, obs.stripExpanded || (fullNow && obs.hasChevron && obs.overflowChevron == nil) || engineMoveCount >= engineCap(fullNow) {
-                if !engineBudgetLogged { engineBudgetLogged = true; log("engine: \(engineMoveCount >= engineCap(fullNow) ? "\(engineCap(fullNow)) automatic order moves made" : "the chevron is not fresh"); \(key) not dragged") }
-                plan.actions = []; plan.phase = .converged
-                break
-            }
-            switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
-            case .clear: flightBox.begin()   // 9o9.7: at once, so a mouse-down after the gate check is never read as a hand drag
-            case .waitedThenClear:
-                if draining { pending = true }
-                await publish { $0.inFlight = nil }
-                return await abort(.incomplete)
-            case .blocked(let why):
-                await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
-                return await endPausedForInteraction(why, report(.paused))
-            }
-            lastAction = action
-            do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
-                let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
-                func name(_ k: ItemKey) -> String { itemInfo[k] != nil ? namer.name(k) : k.description }
-                var target: ItemKey?
-                switch rel { case .before(let t), .after(let t): target = t; default: break }
-                let text = OrderMoveNotice.text(name: name(key), relation: rel, target: target.map(name))
-                switch rel {
-                case .after(let t): log("order: moving \(key) after \(t) (record order)")
-                case .before(let t): log("order: moving \(key) before \(t) (record order)")
-                case .leftmost: log("order: moving \(key) to the left end (record order)")
-                case .rightmost: log("order: moving \(key) to the right end (record order)")
-                }
-                log("order: why: \(text); observed around \(key): \(DropTrace.around(key, in: obs.onBar))")   // gdu.102
-                await publish { $0.orderMoveNotice = text; $0.orderMoveReasons[key] = text }
-            }
-            log("engine: move subject evidence: \(evidence[key] ?? "none")")   // gdu.94
-            await setStatus(key, .moving, inFlight: action)
-            await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
-            await actuator.setRecordOrder(layout.visible)   // 9o9.19: a crossing is verified by the fold rule against the record
-            let crossesFold = Reconciler.crossesFold(action, overflow: obs.systemOverflow)   // gdu.134: judged on the pre-move observation
-            // gdu.144: the user's own drop gets its one attempt (and the ordinary retry); every other move on a bar with a chevron is ONE drag.
-            let isUserDrop = usersMove
-            if isUserDrop { userDropPending.remove(key) }
-            if wasGranted { retryStripGrant = false; grantedAction = nil }   // consumed on dispatch
-            let wasFoldRequest = foldDropRequest.remove(key) != nil
-            let engineInitiated = !isUserDrop
-            let chevronBar = fullNow   // gdu.144 D1/D2: the hold and the single drag follow the full bar (full until proven otherwise)
-            let countedEngineMove = engineInitiated
-            if countedEngineMove { engineMoveCount += 1 }   // gdu.144 D3: EVERY engine-initiated drag counts, verified or failed, full bar or not
-            // gdu.144 D2 + item 3: the actuator refuses (before any click) a move that would need the strip, for every engine-initiated move AND for the
-            // user's moves of an edit whose ONE strip session is already used (a granted Re-apply move is its own session)
-            await actuator.setEngineInitiated(engineInitiated || (editStripSessionUsed && !wasGranted))
-            await actuator.setSingleDrag(engineInitiated || chevronBar)   // gdu.144 D2/D7: ONE physical drag per engine-initiated move on every bar, and for the user's own move on a full bar
-            let result = await actuator.move(key, relation: rel)
-            flightBox.end()
-            actionCount += 1
-            orderMoves += 1
-            orderMoveTimes.append(config.now())
-            switch result {
-            case .verified(let snap):
-                consecutiveFailures = 0; allFailedStreak = 0
-                if await actuator.lastMoveOpenedStrip { editStripSessionUsed = true }
-                lastVerifiedOrderMove[key] = action
-                revertWatch[key] = (action, 2, crossesFold)
-                noteAttempt(key, cause: "it keeps being moved without holding its place")
-                guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
-                previousSettledBar = obs.onBar   // 9o9.9: the engine's own verified move is not the untrusted key's doing
-            case .failed(let e, let snap):
-                consecutiveFailures += 1
-                // gdu.144 item 10: the counter counts ACTUAL drags: a failure before any mouse event (notFound, a refusal, a busy mouse) refunds it
-                let touchedMouse = await actuator.lastMoveTouchedMouse
-                if countedEngineMove, !touchedMouse { engineMoveCount -= 1 }
-                if await actuator.lastMoveOpenedStrip { editStripSessionUsed = true }
-                if await handleFatal(e) { return await abort(.stopped) }
-                if e == .userBusy {
-                    // gdu.144 D6: re-armed only if NO mouse event was posted before the busy result; otherwise the attempt is consumed
-                    if !touchedMouse {
-                        if wasFoldRequest { foldDropRequest.insert(key) }   // no drag was made: not an attempt
-                        if isUserDrop { userDropPending.insert(key) }
-                    }
-                    _ = await adopt(snap, into: &obs)
-                    await publishObserved(obs, makePlan(obs))
-                    if draining { pending = true }
-                    return await abort(.incomplete)
-                }
-                // gdu.126: a failed strip open is a property of the BAR, not of the key: no attempt, no strike; the hold below stops the rest.
-                if !e.isOverflowRefusal, !e.isStripHoldFailure { noteAttempt(key, cause: ArrangeSections.describe(e)) }   // 9o9.4: a failed call is an attempt too
-                if e.isStripHoldFailure {
-                    consecutiveFailures -= 1
-                    log(e.isStripMoveDidNotHold ? "\(key): a move across the fold did not hold; one attempt per bar state, holding every fold move until Retry or your next edit (or the bar is proven not full)"
-                        : e.isStripUnplaceable ? "\(key): the « strip opened but the item could not be pinned down inside it; holding every fold move until Retry or your next edit (or the bar is proven not full)"
-                                             : "\(key): the « strip could not be opened; holding every fold move until Retry or your next edit (or the bar is proven not full)")
-                    // gdu.144 rule 5: the user's own fold drop failed: the row says so (the hold is the bar's, the failure is this key's).
-                    if wasFoldRequest { markFailed(key, e, fullStrike: true) }
-                } else if e.isOverflowRefusal {
-                    // gdu.69: refused before any drag; the item did not fail. A skip, not a strike.
-                    consecutiveFailures -= 1
-                    if Reconciler.crossesFold(action, overflow: obs.systemOverflow) {
-                        if foldRefused[key] == nil { log("\(key): move across the « chevron refused (\(e)); not a failure") }
-                        foldRefused[key] = Reconciler.overflowSkipReason
-                    } else {
-                        if overflowRefused[key] == nil { log("\(key): move skipped, in the system overflow area (\(e)); not a failure") }
-                        overflowRefused[key] = Reconciler.overflowSkipReason
-                    }
-                } else { markFailed(key, e) }
-                // gdu.144 rule 4: on a bar with a chevron ANY failed engine-initiated drag holds the bar (a refusal made before any drag is no drag).
-                // Set BEFORE adopt (gdu.135 b) from the pre-move fresh-chevron observation, then refreshed from the adopted one when it is fresh too.
-                let holdNow = e.isStripHoldFailure || (chevronBar && !e.isOverflowRefusal && touchedMouse)   // gdu.144 item 1: the user's failed drag holds the bar too
-                if holdNow {
-                    setStripHold(obs, unplaceable: e.isStripUnplaceable, didNotHold: e.isStripMoveDidNotHold)
-                    if !e.isStripHoldFailure { log("engine: \(key): an engine-initiated drag failed (\(ArrangeSections.describe(e))); holding every order move until Retry or your next edit (or the bar is proven not full)") }
-                }
-                guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
-                if holdNow, obs.overflowChevron != nil { setStripHold(obs, unplaceable: e.isStripUnplaceable, didNotHold: e.isStripMoveDidNotHold) }
-            }
-            plan = makePlan(obs)
-            phaseReached = plan.phase
-            await publishObserved(obs, plan)
-            if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
+            break
         }
-        await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
-        if plan.phase == .converged, plan.skipped.contains(where: { Reconciler.isMovingNeighbourSkip($0.reason) }) {
+        guard let (key, rel) = core.relation(ca) else {
+            // the core named a key this engine never interned: nothing to drag, answered at once (no mouse event: not an attempt)
+            log("engine: the core's move names an unknown key; not performed")
+            await coreResult(ca, .failed, posted: false, site: "order phase: unknown key")
             return await abort(.incomplete)
         }
+        let action: PlannedAction = .move(key, rel)
+        // Swift-only vetoes known only AFTER the step: each answers the emitted action with `busy, posted: false` (the core re-arms nothing it did not owe).
+        if generation != layoutGeneration {
+            await coreResult(ca, .busy, posted: false, site: "order phase: superseded (veto)")
+            log("layout changed before the order move; dropping it")
+            return await endSuperseded(report(.superseded))
+        }
+        if conflicted {
+            await coreResult(ca, .busy, posted: false, site: "order phase: conflict/pause (veto)")
+            return await pausedMidPass(report(.paused))
+        }
+        if sleeping {
+            await coreResult(ca, .busy, posted: false, site: "order phase: sleeping (veto)")
+            log("system is going to sleep; pass ends before the move")
+            await publish { $0.inFlight = nil }
+            return await abort(.incomplete)
+        }
+        guard actionCount < config.maxActionsPerPass else {
+            await coreResult(ca, .busy, posted: false, site: "order phase: maxActionsPerPass (veto)")
+            log("maxActionsPerPass reached")
+            return await rescheduleIncomplete(report(.incomplete), converged: false)
+        }
+        switch await awaitQuiet() {   // 9o9.4: no actuator call while the user is interacting
+        case .clear: flightBox.begin()   // 9o9.7: at once, so a mouse-down after the gate check is never read as a hand drag
+        case .waitedThenClear:
+            await coreResult(ca, .busy, posted: false, site: "order phase: awaitQuiet waited (veto)")
+            if draining { pending = true }
+            await publish { $0.inFlight = nil }
+            return await abort(.incomplete)
+        case .blocked(let why):
+            await coreResult(ca, .busy, posted: false, site: "order phase: awaitQuiet blocked (veto)")
+            await publish { $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+            return await endPausedForInteraction(why, report(.paused))
+        }
+        if generation != layoutGeneration {   // the layout changed while we waited for the user to be quiet
+            flightBox.end()
+            await coreResult(ca, .busy, posted: false, site: "order phase: superseded while waiting (veto)")
+            return await endSuperseded(report(.superseded))
+        }
+        do {   // gdu.89: say why this drag happens (status line, row tooltip, log)
+            let namer = RowNameRule.Namer(layout: layout, items: itemInfo)
+            func name(_ k: ItemKey) -> String { itemInfo[k] != nil ? namer.name(k) : k.description }
+            var target: ItemKey?
+            switch rel { case .before(let t), .after(let t): target = t; default: break }
+            let text = OrderMoveNotice.text(name: name(key), relation: rel, target: target.map(name))
+            switch rel {
+            case .after(let t): log("order: moving \(key) after \(t) (core action\(ca.user ? ", the user's" : ""))")
+            case .before(let t): log("order: moving \(key) before \(t) (core action\(ca.user ? ", the user's" : ""))")
+            case .leftmost, .rightmost: break
+            }
+            log("order: why: \(text); observed around \(key): \(DropTrace.around(key, in: obs.onBar))")   // gdu.102
+            await publish { $0.orderMoveNotice = text; $0.orderMoveReasons[key] = text }
+        }
+        log("engine: move subject evidence: \(evidence[key] ?? "none")")   // gdu.94
+        await setStatus(key, .moving, inFlight: action)
+        // DISPLAY bookkeeping of the old machinery (deleted in Wiring 5): it feeds the plan/status text only. NONE of it decides or gates a drag.
+        let crossesFold = Reconciler.crossesFold(action, overflow: obs.systemOverflow)   // judged on the pre-move observation
+        let isUserDrop = ca.user
+        if isUserDrop { userDropPending.remove(key) }
+        if grantedAction == action { retryStripGrant = false; grantedAction = nil }
+        let wasFoldRequest = foldDropRequest.remove(key) != nil
+        let countedEngineMove = !isUserDrop
+        if countedEngineMove { engineMoveCount += 1 }
+        // THE single actuator.move call site: nothing else in the engine moves an item in the order.
+        await actuator.setChurnZone(SystemOverflowRule.churnZone(recentReads))
+        await actuator.setRecordOrder(layout.visible)   // 9o9.19: a crossing is verified by the fold rule against the record
+        await actuator.setEngineInitiated(!ca.user)     // the strip-open refusal backstop (LiveActuator): only the user's own move may open the strip
+        await actuator.setSingleDrag(true)              // assumption 5: ONE physical drag per move, on every bar
+        await actuator.setStripAllowed(ca.strip)        // assumption 7: a move that needs the strip is refused unless the core licensed it
+        let result = await actuator.move(key, relation: rel)
+        flightBox.end()
+        actionCount += 1
+        let touchedMouse = await actuator.lastMoveTouchedMouse
+        let (outcome, posted) = OutcomeMapper.map(result, touchedMouse: touchedMouse)
+        await coreResult(ca, outcome, posted: posted, site: "order phase: the actuator's answer")   // the one moveResult of this action
+        switch result {
+        case .verified(let snap):
+            consecutiveFailures = 0; allFailedStreak = 0
+            if await actuator.lastMoveOpenedStrip { editStripSessionUsed = true }
+            lastVerifiedOrderMove[key] = action
+            revertWatch[key] = (action, 2, crossesFold)
+            noteAttempt(key, cause: "it keeps being moved without holding its place")
+            guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
+            previousSettledBar = obs.onBar   // 9o9.9: the engine's own verified move is not the untrusted key's doing
+        case .failed(let e, let snap):
+            consecutiveFailures += 1
+            moveFailed = true
+            // the counter counts ACTUAL drags: a failure before any mouse event (notFound, a refusal, a busy mouse) refunds it
+            if countedEngineMove, !touchedMouse { engineMoveCount -= 1 }
+            if await actuator.lastMoveOpenedStrip { editStripSessionUsed = true }
+            if await handleFatal(e) { return await abort(.stopped) }
+            if e == .userBusy {
+                if !touchedMouse {
+                    if wasFoldRequest { foldDropRequest.insert(key) }   // no drag was made: not an attempt
+                    if isUserDrop { userDropPending.insert(key) }
+                }
+                _ = await adopt(snap, into: &obs)
+                await publishObserved(obs, makePlan(obs))
+                if draining { pending = true }
+                return await abort(.incomplete)
+            }
+            // The CORE has judged the outcome (strikes, hold, give-up, the next move). What follows is the old machinery's DISPLAY of the same facts.
+            if !e.isOverflowRefusal, !e.isStripHoldFailure { noteAttempt(key, cause: ArrangeSections.describe(e)) }
+            if e.isStripHoldFailure {
+                consecutiveFailures -= 1
+                log(e.isStripMoveDidNotHold ? "\(key): a move across the fold did not hold; one attempt per bar state, holding every fold move until Retry or your next edit (or the bar is proven not full)"
+                    : e.isStripUnplaceable ? "\(key): the « strip opened but the item could not be pinned down inside it; holding every fold move until Retry or your next edit (or the bar is proven not full)"
+                                         : "\(key): the « strip could not be opened; holding every fold move until Retry or your next edit (or the bar is proven not full)")
+                if wasFoldRequest { markFailed(key, e, fullStrike: true) }
+            } else if e.isOverflowRefusal || e.isStripNotAllowedRefusal {
+                consecutiveFailures -= 1   // refused before any drag; the item did not fail
+                coreRefused[key] = Reconciler.overflowSkipReason
+                if crossesFold {
+                    if foldRefused[key] == nil { log("\(key): move across the « chevron refused (\(e)); not a failure") }
+                    foldRefused[key] = Reconciler.overflowSkipReason
+                } else {
+                    if overflowRefused[key] == nil { log("\(key): move skipped, in the system overflow area (\(e)); not a failure") }
+                    overflowRefused[key] = Reconciler.overflowSkipReason
+                }
+            } else { markFailed(key, e) }
+            let holdNow = e.isStripHoldFailure || (fullBar(obs) && !e.isOverflowRefusal && touchedMouse)
+            if holdNow {
+                setStripHold(obs, unplaceable: e.isStripUnplaceable, didNotHold: e.isStripMoveDidNotHold)
+                if !e.isStripHoldFailure { log("engine: \(key): an engine-initiated drag failed (\(ArrangeSections.describe(e))); holding every order move until Retry or your next edit (or the bar is proven not full)") }
+            }
+            guard await adopt(snap, into: &obs) else { return await abort(.observeFailed) }
+            if holdNow, obs.overflowChevron != nil { setStripHold(obs, unplaceable: e.isStripUnplaceable, didNotHold: e.isStripMoveDidNotHold) }
+        }
+        orderMoves += 1
+        plan = makePlan(obs)
+        phaseReached = plan.phase
+        await publishObserved(obs, plan)
+        // More than one move per pass (a test configuration): the next move is decided by a FRESH SETTLED read of the changed bar, never by the
+        // post-move snapshot (which was fed as evidence only).
+        if consecutiveFailures >= config.maxConsecutiveFailures { return await stopForFailures(report(.incomplete), obs: obs) }
+        guard orderMoves < config.maxOrderMovesPerPass, plan.phase == .order, !moveFailed else { break }
+        if conflicted { return await pausedMidPass(report(.paused)) }
+        if sleeping {
+            log("system is going to sleep; pass ends after the action in flight")
+            await publish { $0.inFlight = nil }
+            return await abort(.incomplete)
+        }
+        switch await observeForPass() {
+        case .settled(let o): obs = o
+        case .end(let r): return r
+        }
+        plan = makePlan(obs)
+        if let b = lastBarObs { coreAction = await coreRead(obs, bar: b, kind: .pass, vetoed: false, site: "runPassBody (h) next read of a multi-move pass").first } else { coreAction = nil }
+        }
+        await publish { $0.inFlight = nil; $0.orderMoveNotice = nil; $0.orderMoveReasons = [:] }
+        // The old planner's verdict on the adopted bar is DISPLAY (Wiring 4 replaces it): when it sees nothing left the pass ends converged; the core
+        // still judges the next settled read. Otherwise one order move per pass: the chained pass re-reads (a post-move read is evidence only)
+        // and the core decides the next one.
+        if plan.phase == .converged, plan.skipped.contains(where: { Reconciler.isMovingNeighbourSkip($0.reason) }) { return await abort(.incomplete) }
         if plan.phase == .converged {
             chained = 0; allFailedStreak = 0
             let ok = isConverged()
             _ = await finish(report(ok ? .converged : .incomplete), converged: ok)
             return report(ok ? .converged : .incomplete)
         }
-        // gdu.136: only the moves withheld after the user's edit remain: chain (bounded, only if this pass did something) so the edit's own
-        // move, not yet plannable before this pass's membership write, is made in a restricted chained pass; `finish` schedules the regular one.
-        if !plan.deferredAfterUserEdit.isEmpty { return await rescheduleIncomplete(report(.incomplete), converged: false) }
+        if orderMoves >= config.maxOrderMovesPerPass {
+            log("order: \(orderMoves) move(s) this pass (maxOrderMovesPerPass); the rest follows on the next pass")
+            return await rescheduleIncomplete(report(.incomplete), converged: false)
+        }
         return await abort(.incomplete)
     }
 

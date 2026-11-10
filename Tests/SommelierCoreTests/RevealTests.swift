@@ -148,7 +148,7 @@ private struct RevealCaps: CapabilityProvider {
         let inner = FakeActuator(order: order.map(k), capabilities: RevealCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let st = EngineState()
         let e = LayoutEngine(observer: RevealObserver(actuator: inner), actuator: inner, store: InMemoryLayoutStore(layout),
-                             capabilities: RevealCaps(), state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                             capabilities: RevealCaps(), state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         return (e, st, inner)
     }
 
@@ -190,7 +190,7 @@ private struct RevealCaps: CapabilityProvider {
         let st = EngineState()
         let e = LayoutEngine(observer: RevealObserver(actuator: inner), actuator: inner,
                              store: InMemoryLayoutStore(Layout(visible: [k("A")], hidden: [k("B"), k("C")])),
-                             capabilities: caps, state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                             capabilities: caps, state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         await e.start()
         await e.setReveal(hidden: true, alwaysHidden: false)
         let r = await e.reconcileOnce()

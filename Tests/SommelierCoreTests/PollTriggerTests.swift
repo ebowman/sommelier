@@ -79,7 +79,7 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
     let act = FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let state = EngineState()
     let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: InMemoryLayoutStore(.empty), capabilities: Caps(),
-                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                              state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
     let scans = ScanQueue(); scans.set([initial])
     let gate = GateBox(), fired = Counter(), sleeps = Counter()
     let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver, config: config,
@@ -285,7 +285,7 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
         let act = FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let state = EngineState()
         let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: InMemoryLayoutStore(.empty), capabilities: Caps(),
-                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         let scans = ScanQueue(), g = GateBox(), fired = Counter()
         let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver,
                                signature: BarSignature(selfPositioningOwners: ["S1", "S2"]),
@@ -519,7 +519,7 @@ private final class FakeApps: RunningAppsSource {
     private func make(owners: Set<Int32>? = nil) -> (EngineTriggers, FakeApps, Counter) {
         let state = EngineState()
         let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) }), store: InMemoryLayoutStore(.empty), capabilities: Caps(),
-                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         let apps = FakeApps(), hits = Counter(), scans = ScanQueue(); scans.set([base])
         let t = EngineTriggers(engine: engine, state: state, scanner: scans, resolve: resolver,
                                apps: apps, ownerPIDs: { owners }, launchQuitTrigger: { hits.hit() })

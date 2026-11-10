@@ -117,7 +117,7 @@ private struct Rig {
 extension LayoutEngine.Config {
     /// Tests written before 9o9.3 drag several items per pass; the one-move-per-pass default is covered by its own tests.
     /// gdu.144 D1: and from "known not full": production starts every launch with the bar assumed full; the plain-bar tests below do not exercise that.
-    nonisolated static var multiMove: LayoutEngine.Config { var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max; c.assumeFullBarAtLaunch = false; return c }
+    nonisolated static var multiMove: LayoutEngine.Config { var c = LayoutEngine.Config.plain(); c.maxOrderMovesPerPass = .max; c.assumeFullBarAtLaunch = false; return c }
 }
 
 @MainActor
@@ -208,8 +208,11 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let r = await rig(order: order, layout: layout, observer: obs)
         box.actuator = r.actuator
         let first = await r.engine.reconcileOnce()
-        #expect(first.outcome == .unsettled)
-        #expect(await r.actuator.calls.isEmpty)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the old (e2) gate that ended the pass on a partial read whenever the PLAN named a self-positioning
+        // owner is replaced by `trusted`: the core never names the untrusted iStat item (as subject or target) on a partial read, but it may still order the
+        // trusted keys (B before A), so the pass is no longer `.unsettled`. The safety assertion (no drag names iStat on a partial read) is kept.
+        #expect(first.outcome != .unsettled)
+        #expect(!(await r.actuator.calls).contains { c in if case .move(let s, let rel) = c { return s == istat || rel == .before(istat) || rel == .after(istat) } else { return false } })
         obs.level = .complete
         for _ in 0..<4 where await r.actuator.order != [k("B"), k("A"), istat] { _ = await r.engine.reconcileOnce() }
         #expect(await r.actuator.order == [k("B"), k("A"), istat])
@@ -225,15 +228,18 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let r = await rig(order: order, layout: layout, observer: obs)
         box.actuator = r.actuator
         let first = await r.engine.reconcileOnce()
-        #expect(first.outcome == .unsettled)
-        #expect(await r.actuator.calls.isEmpty)
-        #expect(await r.actuator.order == order)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: see layoutOrderOfAnIStatItemIsEnforcedOnACompleteRead. The trusted keys may be ordered on the
+        // partial read; no drag names iStat as subject or target until the read is complete (that safety assertion is kept).
+        #expect(first.outcome != .unsettled)
+        #expect(!(await r.actuator.calls).contains { c in if case .move(let s, let rel) = c { return s == istat || rel == .before(istat) || rel == .after(istat) } else { return false } })
         #expect(r.state.perItem.values.allSatisfy { if case .failed = $0 { false } else { true } })
         obs.level = .complete
+        _ = await r.engine.reconcileOnce()
         let second = await r.engine.reconcileOnce()
         #expect(second.outcome != .unsettled)
         let calls = await r.actuator.calls
-        #expect(calls.contains { if case .move(_, .before(let t)) = $0 { t == istat } else if case .move(_, .after(let t)) = $0 { t == istat } else { false } })
+        // ejb.15, CHANGED because the core decides: iStat is moved as the SUBJECT (before A), where the old planner moved A after iStat; either way a drag names it
+        #expect(calls.contains { if case .move(let sj, let rel) = $0 { sj == istat || rel == .before(istat) || rel == .after(istat) } else { false } })
         #expect(await r.actuator.order != order)
     }
 
@@ -287,21 +293,22 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
                           failOn: [(1, .mechanismFailed("boom"))])
         let first = await r.engine.reconcileOnce()
         #expect(first.outcome == .incomplete)
-        #expect(await r.actuator.order == ["B", "A"].map(k))   // the other item was moved around the failed anchor
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the old planner moved the OTHER item around the failed anchor within the pass; the core strikes
+        // the failed key and makes no second drag in that pass (it retries the same key on the next read, within its 3 strikes).
+        #expect(await r.actuator.order == ["A", "B"].map(k))
         guard case .move(let failedKey, _)? = await r.actuator.calls.first.flatMap({ c -> PlannedAction? in
             if case .move(let key, let rel) = c { return .move(key, rel) } else { return nil } }) else {
             Issue.record("expected a move call"); return
         }
         #expect(r.state.perItem[failedKey] == .failed(.mechanismFailed("boom")))
         #expect(!r.state.isConverged)
-        let n = await r.actuator.calls.count
-        let second = await r.engine.reconcileOnce()   // the failed key is retried (strike 1 < 3), but there is nothing left to do
-        #expect(await r.actuator.calls.count == n)
+        let second = await r.engine.reconcileOnce()   // the failed key is retried (strike 1 < 3) and now lands
+        #expect(await r.actuator.calls.count == 2)
+        #expect(await r.actuator.order == ["B", "A"].map(k))
         #expect(second.outcome == .converged)
         await r.engine.clearFailures()
         let again = await r.engine.reconcileOnce()
-        // The failed key was an anchor while suppressed: the other item was moved around it, so nothing is left to retry.
-        #expect(await r.actuator.calls.count == n)
+        #expect(await r.actuator.calls.count == 2)
         #expect(again.outcome == .converged)
         #expect(r.state.perItem[failedKey] == .inPlace)
     }
@@ -449,7 +456,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let act = FakeActuator(order: [k("A")])
         let state = EngineState()
         let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: BadStore(), capabilities: Caps(),
-                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         await engine.start()
         if case .observe? = state.lastError {} else { Issue.record("expected .observe error") }
         #expect(await engine.reconcileOnce().outcome == .stopped)
@@ -473,8 +480,13 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let calls = await r.actuator.calls
         #expect(calls.first == .applyHiddenBatch([k("B"): false]))
         #expect(calls.filter { if case .applyHiddenBatch = $0 { true } else { false } }.count == 1)
-        #expect(calls.count >= 2)
-        #expect(rep.outcome == .converged)
+        // ejb.15 (Wiring 3), CHANGED because the core decides (plan assumption 4): a pass that wrote membership feeds its read as settled:false, so NO order
+        // move is made in the same pass; the order follows on the next pass, from a fresh read.
+        #expect(calls.count == 1)
+        #expect(rep.outcome == .incomplete)
+        let next = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count >= 2)
+        #expect(next.outcome == .converged)
         #expect(r.state.observed.onBar == ["B", "A", "C"].map(k))
     }
 
@@ -534,7 +546,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     private func snapshotConfig(_ box: TrackedBox) -> LayoutEngine.Config {
-        var c = LayoutEngine.Config()
+        var c = LayoutEngine.Config.plain()
         c.trackedResolver = { box.resolver() }
         c.capabilitiesFor = { EngineFactory.makeCapabilityRules(resolver: $0, bundleID: { _ in nil }) }
         return c
@@ -682,7 +694,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func maxActionsPerPassRespected() async {
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.maxActionsPerPass = 1
         let r = await rig(order: ["A", "B", "C", "D"].map(k), layout: Layout.placedAll(visible: ["D", "C", "B", "A"].map(k)), config: cfg)
         let rep = await r.engine.reconcileOnce()
@@ -707,11 +719,15 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
                           failOn: [(1, .mechanismFailed("x")), (2, .mechanismFailed("x")), (3, .mechanismFailed("x"))])
         let rep = await r.engine.reconcileOnce()
         #expect(rep.outcome == .incomplete)
-        #expect(rep.actionCount == 3)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: after a failed drag the pass makes no second drag (the old planner moved other keys around the
+        // failed anchor, three failures in one pass). The core retries the SAME key on later passes and gives it up after 3 failed drags: three passes, one key.
+        #expect(rep.actionCount == 1)
+        #expect(await r.actuator.calls.count == 1)
+        #expect(r.state.lastError == nil)
+        _ = await r.engine.reconcileOnce(); _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 3)
-        #expect(r.state.lastError == nil)   // one pass of failures strikes the keys; the engine stops only after 3 such passes
         let failed = r.state.perItem.values.filter { if case .failed = $0 { true } else { false } }.count
-        #expect(failed == 3)
+        #expect(failed == 1)
         #expect(r.state.perItem.values.contains(.pending))
         // No chained pass follows.
         try? await Task.sleep(for: .milliseconds(50))
@@ -745,7 +761,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let obs = FixtureObserver([FakeMenuBar.resolved(onBar: [k("A")])])
         let state = EngineState()
         let engine = LayoutEngine(observer: obs, actuator: act, store: store, capabilities: Caps(), state: state,
-                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         await engine.start()
         await engine.clearFailures()
         await engine.requestReconcile()
@@ -763,20 +779,26 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         var cfg = LayoutEngine.Config.multiMove; cfg.maxAttemptsPerItem = 99; cfg.maxOrderMovesPerMinute = 99   // 9o9.4: the give-up and the cap would otherwise end the failing plan first
         let r = await rig(order: names.map(k), layout: Layout.placedAll(visible: names.reversed().map(k)), config: cfg,
                           failOn: (1...12).map { ($0, ActuationError.mechanismFailed("x")) })
+        // ejb.15 (Wiring 3), CHANGED because the core decides: an ORDER move never makes three failed actions in one pass any more (a failed drag ends the
+        // pass's order phase and the core retries the same key), so `.stoppedAfterFailures` is not reached by order moves. The bound the user sees is the core's:
+        // the key that failed three drags is given up, nothing more is dragged, and only the user's intent (Re-apply) lets the engine try again.
         _ = await r.engine.reconcileOnce(); _ = await r.engine.reconcileOnce()
         #expect(r.state.lastError == nil)
         _ = await r.engine.reconcileOnce()
-        #expect(r.state.lastError == .stoppedAfterFailures(3))   // the third pass in a row in which every action failed
-        _ = await r.engine.reconcileOnce()   // a successful observe must not clear it
-        #expect(r.state.lastError == .stoppedAfterFailures(3))
-        await r.engine.clearFailures()
+        #expect(await r.actuator.calls.count == 3)
+        _ = await r.engine.reconcileOnce()   // given up: no further drag, and no error either
+        #expect(await r.actuator.calls.count == 3)
         #expect(r.state.lastError == nil)
-        await r.engine.setLayout(Layout.placedAll(visible: names.map(k)))
-        #expect(r.state.lastError == nil)
+        await r.engine.clearFailures()       // not the user's intent to try again (permission resume): the core keeps the key given up
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 3)
+        await r.engine.userRetry()
+        _ = await r.engine.reconcileOnce()
+        #expect(await r.actuator.calls.count == 4)
     }
 
     @Test func chainedPassesAreCappedAtTwoAndRespectMinInterval() async {
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.maxActionsPerPass = 1
         let frozen = ContinuousClock.now
         cfg.instant = { frozen }                    // 9o9.27: the monotonic clock never advances, so each wait is exactly the min interval
@@ -925,7 +947,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 
     private static let staleWhy = "hides together with X: a member's state is unknown; retrying when the bar settles"
     private static func retryConfig(base: Duration = .milliseconds(150), attempts: Int = 10) -> LayoutEngine.Config {
-        var c = LayoutEngine.Config(); c.unsettledRetryBase = base; c.unsettledRetryCap = base; c.unsettledRetryMaxAttempts = attempts; return c
+        var c = LayoutEngine.Config.plain(); c.unsettledRetryBase = base; c.unsettledRetryCap = base; c.unsettledRetryMaxAttempts = attempts; return c
     }
 
     @Test func unsettledBatchSchedulesADelayedRetryWithTheFirstBackoff() async {

@@ -286,7 +286,7 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         let store = InMemoryLayoutStore(Layout.placedAll(visible: ["B", "A"].map(k)))
         let state = EngineState()
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: act), actuator: liar, store: store, capabilities: Caps(), state: state,
-                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) }, config: .plain())
         await engine.start()
         _ = await engine.reconcileOnce()
         #expect(await act.order == ["B", "A"].map(k))            // the bar now matches the layout ...

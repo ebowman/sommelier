@@ -134,7 +134,7 @@ private struct EntryActuatorObserver: MenuBarObserver {
     let act = FakeActuator(order: order, hidden: [], capabilities: CapabilityRules(hasTrackedEntry: { _ in true }),
                            makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let state = EngineState()
-    var cfg = LayoutEngine.Config()
+    var cfg = LayoutEngine.Config.plain()
     cfg.trackedResolver = { resolver }
     let engine = LayoutEngine(observer: EntryActuatorObserver(actuator: act), actuator: act, store: InMemoryLayoutStore(Layout(visible: order)),
                               capabilities: CapabilityRules(hasTrackedEntry: { _ in true }), state: state,
@@ -153,7 +153,7 @@ private struct EntryActuatorObserver: MenuBarObserver {
     let act = FakeActuator(order: order, hidden: [], capabilities: CapabilityRules(hasTrackedEntry: { _ in true }),
                            makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let state = EngineState()
-    var cfg = LayoutEngine.Config()
+    var cfg = LayoutEngine.Config.plain()
     cfg.trackedResolver = { resolver }
     let engine = LayoutEngine(observer: EntryActuatorObserver(actuator: act), actuator: act, store: InMemoryLayoutStore(Layout(visible: order)),
                               capabilities: CapabilityRules(hasTrackedEntry: { _ in true }), state: state,

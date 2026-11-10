@@ -63,7 +63,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
 private struct R { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let store: CountingStore; let sink: Sink }
 
 @MainActor
-private func rig(order: [String], hidden: Set<ItemKey> = [], layout: Layout, badSubject: ItemKey? = nil, config: LayoutEngine.Config = .init(), observerFor: (@Sendable (FakeActuator) -> any MenuBarObserver)? = nil) async -> R {
+private func rig(order: [String], hidden: Set<ItemKey> = [], layout: Layout, badSubject: ItemKey? = nil, config: LayoutEngine.Config = .plain(), observerFor: (@Sendable (FakeActuator) -> any MenuBarObserver)? = nil) async -> R {
     let act = FakeActuator(order: order.map(k), hidden: hidden, capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let store = CountingStore(layout), state = EngineState(), sink = Sink()
     let fallback: any MenuBarObserver = badSubject.map { BadJoinObserver(actuator: act, subject: $0) } ?? GoodObserver(actuator: act)
@@ -104,7 +104,7 @@ private final class SteerableBox: @unchecked Sendable {
         #expect(second.outcome == .converged && second.actionCount == 1)
         #expect(await r.actuator.order == ["C", "B", "A"].map(k))
         // one request only: the cap ends the first pass and the engine chains the second by itself
-        var c = LayoutEngine.Config(); c.minPassInterval = .zero; c.layoutCoalesce = .zero
+        var c = LayoutEngine.Config.plain(); c.minPassInterval = .zero; c.layoutCoalesce = .zero
         let q = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["C", "B", "A"].map(k)), config: c)
         await q.engine.requestReconcile(reason: "test")
         #expect(await waitUntil { await q.actuator.order == ["C", "B", "A"].map(k) })
@@ -119,21 +119,14 @@ private final class SteerableBox: @unchecked Sendable {
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 1)
         _ = await r.engine.reconcileOnce()
-        let moved = r.sink.lines.filter { $0.contains("order: moving") }
-        #expect(Set(moved).count == moved.count)   // the identical move is not dragged a second time (the engine plans around the struck key)
-        let failed = r.state.perItem.values.filter { if case .failed(.notVerified) = $0 { true } else { false } }
-        #expect(failed.count == 1)
-        // later passes retry a struck key only within its strike budget, and every repeat is separated by a strike
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the Swift strike on "verified but planned again" (`lastVerifiedOrderMove`, `unverifiedStrikes`: at most
+        // 3 identical drags) is the old planner's. The core has no such detection: it moves the first inversion again on every read that still shows it, and
+        // is bounded by its BUDGET only (20 engine drags on a bar known not full, 3 on a full one). The safety bound kept here is that budget, exactly.
+        for _ in 0..<30 { _ = await r.engine.reconcileOnce() }
+        let settled = await r.actuator.calls.count
+        #expect(settled == 20)
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
-        var last: String?
-        for l in r.sink.lines where l.contains("order: moving") || l.contains("planned again") {
-            if l.contains("planned again") { last = nil; continue }   // a strike separates repeats
-            #expect(l != last); last = l
-        }
-        let settled = await r.actuator.calls.count   // the strike budget (3 per key) is spent: no further drags
-        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
-        #expect(await r.actuator.calls.count == settled)
-        #expect(settled <= 2 * LayoutEngine.Config().maxKeyFailures + 1)
+        #expect(await r.actuator.calls.count == settled)   // the budget is spent: no further drags until the user's intent
     }
 
     @Test func aLayoutEqualToTheBarDoesNothing() async {
@@ -150,7 +143,8 @@ private final class SteerableBox: @unchecked Sendable {
         #expect(await r.actuator.calls.isEmpty)
         #expect(r.sink.lines.contains { $0.contains("order: skipped \(k("B")): stale frame") })
         box.obs.set(level: .complete, stale: nil)
-        _ = await r.engine.reconcileOnce()
+        // ejb.15 (Wiring 3), CHANGED because the core decides: ONE move per pass (the first inversion), so the bar reaches the record in three passes
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await r.actuator.order == ["A", "C", "D", "B"].map(k))
     }
 

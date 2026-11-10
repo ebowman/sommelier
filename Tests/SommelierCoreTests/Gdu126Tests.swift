@@ -260,7 +260,10 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         await regularPasses(r.engine, r.state)   // the regular pass plans the D3 / D4 mismatch; only the hold keeps it from being dragged
         let n = await moveCalls(r.actuator)
-        #expect(n == 1)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: 2 drags, not 1. The core's FIRST pass (in `holdRig`) already drags the live drawn D4 / D3 mismatch (a
+        // budgeted engine move; the old engine made no drag in its first pass), it fails and holds the bar; the second is the USER's drop of P1, which the hold never
+        // blocks (its one attempt). The assertion that guards safety is kept: nothing is dragged again over the 16 further passes (n stays 2).
+        #expect(n == 2)
         #expect(await r.engine.stripOpenHold != nil)
         // gdu.144: P2/P3 were never asked for, so nothing is planned for them (nothing to hold); the hold still reports N folded
         #expect(r.state.lastPlan.stripHoldFolded == 3 && !r.state.lastPlan.stripHeld.isEmpty)   // the drawn mismatch is held, not dragged

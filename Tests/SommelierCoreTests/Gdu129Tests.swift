@@ -16,7 +16,10 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         let r = await holdRig(failCalls: 20, message: ActuationError.stripUnplaceableMessage, record: ["D1", "P1", "D2", "P2", "D4", "P3", "D3"])   // + a live D3/D4 mismatch
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         await regularPasses(r.engine, r.state)   // the regular pass plans the D3 / D4 mismatch; only the hold keeps it from being dragged
-        #expect(await moveCalls(r.actuator) == 1)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: every count below is one higher than before. The core's first pass (in `holdRig`) already drags
+        // the live drawn D4 / D3 mismatch (one budgeted engine move, which fails and holds the bar); the old engine made no drag in its first pass. The user's
+        // drop of P1 still gets its one attempt, and nothing is dragged again by the hold (the safety assertions are unchanged).
+        #expect(await moveCalls(r.actuator) == 2)
         #expect(await r.engine.stripOpenHold != nil)
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
         #expect(r.bar.lines.contains { $0.contains("could not be pinned down inside it") })
@@ -31,13 +34,13 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         // a changed bar releases the hold; one more session only for the user's next drop; Retry alone drags nothing
         await r.actuator.removeItem(k("D4"))
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 1)
+        #expect(await moveCalls(r.actuator) == 2)
         await r.engine.setLayout(r.layout, moved: [k("P2")])
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 2)
+        #expect(await moveCalls(r.actuator) == 3)
         await r.engine.userRetry()
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 2)
+        #expect(await moveCalls(r.actuator) == 3)
     }
 
     @Test func theOpenFailureHoldKeepsItsOwnFlag() async {

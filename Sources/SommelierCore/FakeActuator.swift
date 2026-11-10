@@ -35,6 +35,10 @@ public actor FakeActuator: MenuBarActuator {
     public private(set) var singleDrag = false
     public private(set) var moveSingleDrag: [(ItemKey, Bool)] = []
     public func setSingleDrag(_ on: Bool) async { singleDrag = on }
+    /// ejb.15: the strip-allowed flag the engine last handed over, and the flag as it stood at each move (`moveStripAllowed`).
+    public private(set) var stripAllowed = true
+    public private(set) var moveStripAllowed: [(ItemKey, Bool)] = []
+    public func setStripAllowed(_ on: Bool) async { stripAllowed = on }
     public private(set) var engineInitiated = false
     public func setEngineInitiated(_ on: Bool) async { engineInitiated = on }
     private var scripted: [Int: ActuationError] = [:]
@@ -115,6 +119,7 @@ public actor FakeActuator: MenuBarActuator {
     }
     private func moveImpl(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         moveSingleDrag.append((key, singleDrag))
+        moveStripAllowed.append((key, stripAllowed))
         let strip = stripPolicy?(order, key, relation) ?? false
         if strip { stripEvents.append(.expanded); stripEvents.append(.moved(key, relation)) }
         defer { if strip { stripEvents.append(.collapsed) } }

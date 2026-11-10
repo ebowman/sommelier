@@ -78,6 +78,9 @@ public enum EngineError: Equatable, Sendable {
     /// A membership batch failed for a reason other than drift (e.g. `.mechanismFailed`). Sticky like `batchDrift`:
     /// observing does not clear it; only `clearFailures`/`setLayout` do.
     case batchFailed(String)
+    /// ejb.15: the proved decision core could not be called (`DecisionError`). Order actuation is stopped until the next successful step.
+    /// Cleared by the next successful step; never displayed as "matches".
+    case decision(String)
 }
 
 /// What the UI binds to. `observed` only ever holds observed truth (a verified actuator snapshot or a fresh observe),

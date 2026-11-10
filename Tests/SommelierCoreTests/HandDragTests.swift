@@ -109,7 +109,7 @@ private func rig(order: [String], layout: Layout, modes: Bool = false, gap: Bool
                  configure: (inout LayoutEngine.Config) -> Void = { _ in }) async -> R {
     let act = FakeActuator(order: order.map(k), capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let store = MemStore(layout), state = EngineState(), sink = Sink(), drags = FakeHandDrags()
-    var c = LayoutEngine.Config()
+    var c = LayoutEngine.Config.plain()
     c.maxOrderMovesPerPass = .max
     c.minPassInterval = .zero
     c.layoutCoalesce = .zero
@@ -224,7 +224,9 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         await r.actuator.setAfterCall(nil)
         await r.actuator.displace(k("C"), toIndex: 0)
         _ = await r.engine.reconcileOnce()
-        #expect(await r.actuator.calls.count == 2)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the core's planner moves the first inversion (A before C, then B before C: 2 drags) where the old
+        // minimal-move planner moved C once (plan section 6 risk 1: the order planner is a stub). The bar still ends in the record's order.
+        #expect(await r.actuator.calls.count == 3)
         #expect(await r.actuator.order == names.map(k))
     }
 
@@ -232,7 +234,7 @@ private func abcde() -> Layout { Layout(visible: names.map(k)) }
         let r = await rig(order: names, layout: abcde())
         await r.actuator.displace(k("C"), toIndex: 0)
         _ = await r.engine.reconcileOnce()                         // our own move, finished
-        #expect(await r.actuator.calls.count == 1)
+        #expect(await r.actuator.calls.count == 2)                 // ejb.15, CHANGED because the core decides: first-inversion moves (A before C, B before C), see above
         r.drags.fire(.began)
         await r.actuator.displace(k("B"), toIndex: 4)
         r.drags.fire(.ended)

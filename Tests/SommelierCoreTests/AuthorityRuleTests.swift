@@ -149,7 +149,7 @@ private final class Lines: @unchecked Sendable {
 private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], lines: Lines = Lines(), order: [ItemKey] = [k("A"), k("B")],
                       noticeLifetime: Duration = .seconds(10)) async -> (LayoutEngine, FakeActuator, EngineState, Lines) {
     let act = FakeActuator(order: order, hidden: [k("A")], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-    var cfg = LayoutEngine.Config()
+    var cfg = LayoutEngine.Config.plain()
     cfg.layoutCoalesce = .zero
     cfg.noticeLifetime = noticeLifetime
     cfg.trackedResolver = { TrackedEntryResolver(entries: ["com.x.A", "com.x.B"].map { entry($0, !flagFalse.contains($0)) }) }
@@ -218,7 +218,7 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
 
     @Test func aPlacementUnknownKeyIsNotAdopted() async {
         let act = FakeActuator(order: [k("A"), k("B")], hidden: [k("A")], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.layoutCoalesce = .zero
         cfg.trackedResolver = { TrackedEntryResolver(entries: ["com.x.A", "com.x.B"].map { entry($0, $0 != "com.x.A") }) }
         cfg.trackedAllowed = { $0 == "com.x.A" ? false : true }

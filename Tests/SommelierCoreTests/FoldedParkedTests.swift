@@ -213,7 +213,7 @@ private final class Lines: @unchecked Sendable {
         let folded = (0..<6).map { k("f\($0)") }
         let order = folded + (0..<2).map { k("pile\($0)") } + (0..<4).map { k("d\($0)") }
         let act = FakeActuator(order: order, hidden: Set(folded), capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.layoutCoalesce = .zero
         cfg.trackedAllowed = { _ in true }
         let state = EngineState()

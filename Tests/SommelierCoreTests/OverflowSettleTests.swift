@@ -45,7 +45,7 @@ struct OverflowSettleRuleTests {
             return pile.map { item($0, 772) } + [item(chevKey, 786, chevron: true), item(k("D"), x)]
         }
         let engine = LayoutEngine(observer: PileObserver(), actuator: FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) }),
-                                  store: InMemoryLayoutStore(Layout()), capabilities: Caps(), state: EngineState(), resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  store: InMemoryLayoutStore(Layout()), capabilities: Caps(), state: EngineState(), resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         await engine.noteChurn(items(813), .complete)
         await engine.noteChurn(items(813), .completeExceptSelfPositioning)
         let reads = await engine.recentReads
@@ -138,7 +138,7 @@ struct StackedPileStatusTests {
         let obs = PileObserver(); let sink = PileLines()
         let act = FakeActuator(order: [k("P1"), k("P2"), k("P3"), k("D1"), k("D2")], hidden: [], capabilities: Caps(),
                                makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-        var c = LayoutEngine.Config(); c.positionWaitTimeout = .milliseconds(60); c.positionRetryBase = .seconds(60); c.positionRetryCap = .seconds(60)
+        var c = LayoutEngine.Config.plain(); c.positionWaitTimeout = .milliseconds(60); c.positionRetryBase = .seconds(60); c.positionRetryCap = .seconds(60)
         let state = EngineState()
         let engine = LayoutEngine(observer: obs, actuator: act, store: InMemoryLayoutStore(Layout(visible: [k("P1"), k("P2"), k("P3"), chevKey, k("D1"), k("D2")])),
                                   capabilities: Caps(), state: state, busy: { false }, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { sink.add($0) }, config: c)
@@ -169,7 +169,7 @@ struct StackedPileStatusTests {
         let state = EngineState()
         let engine = LayoutEngine(observer: PileObserver(), actuator: act,
                                   store: InMemoryLayoutStore(Layout(visible: [k("P1"), k("P2"), chevKey, k("D1"), k("P3"), k("D2")])),
-                                  capabilities: Caps(), state: state, busy: { false }, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { _ in })
+                                  capabilities: Caps(), state: state, busy: { false }, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { _ in }, config: .plain())
         await engine.start()
         _ = await engine.reconcileOnce()
         let resolved = (try? await PileObserver().observe()) ?? []

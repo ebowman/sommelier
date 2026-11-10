@@ -49,7 +49,7 @@ private func settle(_ st: EngineState, passes n: Int) async -> Bool {
 }
 
 private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
-    var c = LayoutEngine.Config(); c.layoutCoalesce = .zero; c.userPassReuseWindow = window; c.minPassInterval = .zero; return c
+    var c = LayoutEngine.Config.plain(); c.layoutCoalesce = .zero; c.userPassReuseWindow = window; c.minPassInterval = .zero; return c
 }
 
 @MainActor

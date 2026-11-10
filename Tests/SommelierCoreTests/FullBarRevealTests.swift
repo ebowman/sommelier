@@ -29,7 +29,7 @@ private final class Lines: @unchecked Sendable {
 @MainActor
 private func rig(chevron: Bool, lines: Lines = Lines()) async -> (LayoutEngine, FakeActuator, EngineState) {
     let act = FakeActuator(order: [k("A"), k("B"), k("H1"), k("H2")], hidden: [k("H1"), k("H2")], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-    var cfg = LayoutEngine.Config()
+    var cfg = LayoutEngine.Config.plain()
     cfg.layoutCoalesce = .zero
     cfg.trackedAllowed = { _ in true }
     let state = EngineState()

@@ -262,7 +262,7 @@ private func engineRig(order: [String], layout: Layout, sink: LogSink) async -> 
     let store = InMemoryLayoutStore(layout)
     let state = EngineState()
     let engine = LayoutEngine(observer: ActuatorObserver(actuator: act), actuator: act, store: store, capabilities: Caps(), state: state,
-                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { sink.add($0) })
+                              resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { sink.add($0) }, config: .plain())
     await engine.start()
     return (engine, act, state, store)
 }
@@ -462,7 +462,7 @@ private func untrustedRig(order: [String], record: [String], subject: String, sc
     let act = FakeActuator(order: order.map(k), hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let obs = AmbiguousObserver(actuator: act, subject: k(subject), script: script.map { $0.map { $0.map(k) } })
     let state = EngineState()
-    var c = LayoutEngine.Config(); c.positionRetryBase = .seconds(600); c.positionRetryCap = .seconds(600)   // no timer interference
+    var c = LayoutEngine.Config.plain(); c.positionRetryBase = .seconds(600); c.positionRetryCap = .seconds(600)   // no timer interference
     let engine = LayoutEngine(observer: obs, actuator: act, store: InMemoryLayoutStore(Layout(visible: record.map(k))), capabilities: Caps(), state: state,
                               resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { sink.add($0) }, config: c)
     await engine.start()
@@ -476,8 +476,11 @@ struct UnsteadyGuardEngineTests {
         let sink = LogSink()
         let r = await untrustedRig(order: ["X", "S", "A", "B"], record: ["X", "A", "B", "S"], subject: "S", sink: sink)
         for _ in 0..<5 { _ = await r.engine.reconcileOnce() }
-        #expect(await r.actuator.order == ["X", "A", "B", "S"].map(k))
-        #expect(await r.actuator.calls.count == 2)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: S has an ambiguous frame, so the adapter reads it as UNREAD (A6) and the core, which cannot know
+        // where S stands among the open keys, makes NO drag across it (the old planner made the two crossings). The trusted keys X, A, B are already in order.
+        // The guard's property is kept: nothing is dragged on an untrusted key's say-so and nothing is "moving".
+        #expect(await r.actuator.order == ["X", "S", "A", "B"].map(k))
+        #expect(await r.actuator.calls.isEmpty)
         #expect(!sink.lines.contains { $0.contains("is moving") })
     }
 
@@ -489,15 +492,13 @@ struct UnsteadyGuardEngineTests {
                                    script: [["X", "S", "A"], ["X", "S", "A"], ["X", "S", "A"]], sink: sink)
         var outcomes: [PassReport.Outcome] = []
         for _ in 0..<6 { outcomes.append(await r.engine.reconcileOnce().outcome) }
-        #expect(sink.lines.contains { $0.contains("order: skipped") && $0.contains("is moving") })
-        #expect(sink.lines.contains { $0.contains("was verified but is planned again") })
-        #expect(outcomes[1] == .incomplete)   // the held pass is not "converged"
-        // bounded by the existing give-up: a few attempts at most, then the key is given up on (never an unbounded swap)
-        #expect(await r.actuator.calls.count <= 3)
-        #expect(sink.lines.contains { $0.contains("giving up on") })
-        let callsAfterGiveUp = await r.actuator.calls.count
+        // ejb.15 (Wiring 3), CHANGED because the core decides: an ambiguous-frame S is UNREAD for the core (A6), so there is no move to strike and no endless
+        // swap to bound: the engine makes no drag at all (the old "is moving" skip, "verified but planned again" strike and "giving up" are the old planner's).
+        // The safety property (never an unbounded swap, never a drag on the untrusted key's say-so) is kept as a hard bound of zero drags.
+        #expect(await r.actuator.calls.isEmpty)
+        #expect(!outcomes.contains(.stopped))
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await r.actuator.calls.count == callsAfterGiveUp)
+        #expect(await r.actuator.calls.isEmpty)
     }
 
     // The held pass is incomplete, and the key shows the transient waiting status, not unsupported.
@@ -505,9 +506,14 @@ struct UnsteadyGuardEngineTests {
         let sink = LogSink()
         let r = await untrustedRig(order: ["X", "S", "A"], record: ["X", "A", "S"], subject: "S",
                                    script: [["X", "S", "A"], ["X", "S", "A"]], sink: sink)
-        _ = await r.engine.reconcileOnce()      // moves A (script 1); previous := post-move snapshot
-        let rep = await r.engine.reconcileOnce()   // S looks flipped relative to it: held
-        #expect(rep.outcome == .incomplete)
-        if case .waitingForPosition? = r.state.perItem[k("A")] {} else { Issue.record("expected waitingForPosition, got \(String(describing: r.state.perItem[k("A")]))") }
+        _ = await r.engine.reconcileOnce()
+        let rep = await r.engine.reconcileOnce()
+        // ejb.15 (Wiring 3), CHANGED because the core decides: S is UNREAD for the core, so it makes no move and there is no "moving neighbour" hold; the pass is
+        // not converged, nothing was dragged and A is not marked failed or unsupported (its row text comes from the core in Wiring 4).
+        _ = rep
+        #expect(!r.state.isConverged)   // withheld like a gated bar: the status is "stopped while differing", never converged
+        #expect(await r.actuator.calls.isEmpty)
+        if case .failed? = r.state.perItem[k("A")] { Issue.record("A must not be failed") }
+        if case .unsupported? = r.state.perItem[k("A")] { Issue.record("A must not be unsupported") }
     }
 }

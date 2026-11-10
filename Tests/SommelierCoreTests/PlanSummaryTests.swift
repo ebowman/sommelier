@@ -27,7 +27,7 @@ private final class BadJoinObserver: MenuBarObserver, @unchecked Sendable {
 
 @MainActor
 private func rig(bar: [ItemKey], record: [ItemKey], subject: ItemKey, badScans: Int) async -> (LayoutEngine, EngineState) {
-    var cfg = LayoutEngine.Config(); cfg.positionRetryBase = .seconds(60); cfg.positionRetryCap = .seconds(60)   // no timer interference
+    var cfg = LayoutEngine.Config.plain(); cfg.positionRetryBase = .seconds(60); cfg.positionRetryCap = .seconds(60)   // no timer interference
     let act = FakeActuator(order: bar, hidden: [], capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
     let state = EngineState()
     let engine = LayoutEngine(observer: BadJoinObserver(actuator: act, subject: subject, badScans: badScans), actuator: act,

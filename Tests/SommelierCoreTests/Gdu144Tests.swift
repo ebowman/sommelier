@@ -44,7 +44,11 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
 
     @Test func aFailingDrawnMoveIsExactlyOneDragThenTheHoldAndNothingMoreOverTenPasses() async {
         // the drawn order is fully reversed: several moves are wanted; the first one fails
-        let r = await holdRig(failCalls: 20, message: "the drag did not land", drop: [], record: ["P1", "P2", "P3", "D4", "D3", "D2", "D1"])
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the record is now ONE swap away (D4 / D3) instead of fully reversed. With the reversed record the
+        // core's first inversion is `D4 before D1`, and D1 is in the churn zone, i.e. a move that needs the strip: the core withholds every engine move that needs
+        // the strip (only the user's drop or Re-apply's grant may), so no drag would be made at all. The property tested (one failing drag, then the hold,
+        // nothing more over ten passes) needs a drawn mismatch away from the zone.
+        let r = await holdRig(failCalls: 20, message: "the drag did not land", drop: [], record: ["P1", "P2", "P3", "D1", "D2", "D4", "D3"])
         for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
         #expect(await r.engine.stripOpenHold != nil)
@@ -55,15 +59,17 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         // Retry releases the hold: one more attempt
         await r.engine.userRetry()
         for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
-        // gdu.144 D5: the press frees ONE budgeted engine move (call 2, which fails and holds again) AND grants one user-authorised strip session for the
-        // next move that needs it (call 3: D1 stands in the churn zone); nothing more
-        #expect(await moveCalls(r.actuator) == 3)
+        // gdu.144 D5: the press frees ONE budgeted engine move (call 2, which fails and holds again); the granted strip session finds no move that needs it
+        // (the mismatch is away from the zone, see above); nothing more
+        #expect(await moveCalls(r.actuator) == 2)
         for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 3)
+        #expect(await moveCalls(r.actuator) == 2)
     }
 
     @Test func theUsersOwnDropGetsItsOneAttemptEvenWhileTheBarIsHeld() async {
-        let r = await holdRig(failCalls: 1, message: "the drag did not land", drop: [], record: ["P1", "P2", "P3", "D4", "D3", "D2", "D1"])
+        // ejb.15 (Wiring 3), CHANGED because the core decides: a one-swap record (D4 / D3), see aFailingDrawnMoveIsExactlyOneDrag...: the engine's first drag is
+        // the swap (it fails and holds); a fully reversed record would make no engine drag at all (its first move needs the strip).
+        let r = await holdRig(failCalls: 1, message: "the drag did not land", drop: [], record: ["P1", "P2", "P3", "D1", "D2", "D4", "D3"])
         for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
         #expect(await r.engine.stripOpenHold != nil)
@@ -302,6 +308,9 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
             #expect(await e.foldDropRequest.isEmpty)   // at once, before any pass
             if regularPasses { await regular144(e, st) } else { for _ in 0..<10 { _ = await e.reconcileOnce() } }
             #expect(!(await movedKeys144(a)).contains("P1"))
+            // ejb.15 (Wiring 3), CHANGED because the core decides: the user's first edit leaves P1 OWED in the core until the user's chain ends (`passBoundary`: the
+            // end of the drained chain, or the start of a regular pass). In production the chain ends by itself; reconcileOnce never ends it, so the harness does.
+            if !regularPasses { _ = await e.regularPassForTests() }
             await e.setLayout(Layout.placedAll(visible: ["D1", "P1", "D2", "P2", "D3", "P3", "D4"].map(k)), moved: [k("D1")])
             if regularPasses { await regular144(e, st) } else { for _ in 0..<10 { _ = await e.reconcileOnce() } }
             let moved = await movedKeys144(a)
@@ -323,6 +332,9 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         #expect(st.lastPlan.stoppedWhileDiffering && !st.lastPlan.orderDiffers && !st.lastPlan.checkingBar)
         #expect(!st.isConverged && StatusLine.text(state: st, trusted: true, conflicting: nil) == ArrangeBarState.stoppedWhileDifferingText)
         for _ in 0..<2 { _ = await e.reconcileOnce() }
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the user's chain ends here (production: `passBoundary` at the end of the drained chain; reconcileOnce
+        // never ends it), which is what makes the request "end with the user's pass": the key is no longer owed, so a later fresh scan does not pull it out.
+        _ = await e.regularPassForTests()
         m.carried = false
         for _ in 0..<10 { _ = await e.reconcileOnce() }
         #expect(!(await movedKeys144(a)).contains("P2"))

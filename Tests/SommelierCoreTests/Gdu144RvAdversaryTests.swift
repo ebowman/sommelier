@@ -141,6 +141,8 @@ private let rvP = ["P1", "P2", "P3"], rvD: [String] = ["D1", "D2", "D3", "D4", "
     return ArrangeSections.statusLine(perItem: st.perItem, lastError: st.lastError, isConverged: st.isConverged, inFlight: false, content: rvRowsOf(st), context: x)
 }
 private let rvScrambled = ["D6", "D5", "D4", "D3", "D2", "D1"]
+/// ejb.15: a scramble away from the churn zone (the first drawn key): one swap, so the core's first move (`D4 before D5`) needs no strip session.
+private let rvSwapped = ["D1", "D2", "D3", "D5", "D4", "D6"]
 private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]) -> [String] {
     var out: [String] = []
     for r in rows where r.barState == .matches {
@@ -156,8 +158,11 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let w = RvWorld(pile: rvP, drawn: rvScrambled); w.mode = .absent; w.applyProb = 0
         let (e, _, c) = await rvRig(w, record: rvP + rvD)
         _ = await e.reconcileOnce(); c.adv(120)
-        #expect(w.drags.count == 1)
-        #expect(await e.stripOpenHold != nil)   // the hold follows the full bar, which is assumed from launch
+        // ejb.15 (Wiring 3), CHANGED because the core decides: NO drag at launch (0, was 1). A chevronless bar is "checking" for the core until a fresh chevron or
+        // the proof (three complete chevronless reads) says what it is; the old engine dragged once on the assumed-full bar, failed, and held. No drag means no
+        // hold either (the old assertion `stripOpenHold != nil` is gone with it). The safety bound below (<= 3 physical drags, no chevron click) is unchanged.
+        #expect(w.drags.count == 0)
+        #expect(await e.stripOpenHold == nil)
         w.sync { w.mode = .fresh }
         for _ in 0..<30 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags.count <= 3 && w.clicks == 0, "physical=\(w.drags.count) clicks=\(w.clicks)")
@@ -225,8 +230,10 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let w = RvWorld(pile: [], drawn: rec.reversed()); w.mode = .absent
         let (e, st, c) = await rvRig(w, record: rec)
         for _ in 0..<80 { _ = await e.reconcileOnce(); c.adv(120) }
-        // exactly the 20 allowed drags were made and the bar is NOT in record order (D40 ... D22 D1 ... D21)
-        #expect(w.drags.count == 20 && w.drawn == (22...40).reversed().map { "D\($0)" } + (1...21).map { "D\($0)" })
+        // exactly the 20 allowed drags were made and the bar is NOT in record order.
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the bar the 20 drags leave is not the old planner's `D40 ... D22 D1 ... D21` (the core moves the first
+        // inversion each time, the old planner a different, minimal-move choice), so only the property is asserted: 20 drags, not in record order.
+        #expect(w.drags.count == 20 && w.drawn != rec)
         #expect(rvFalseChecks(rvRowsOf(st).visible.rows, record: rec, bar: w.drawn).isEmpty)
     }
     // chevronless read of a real full bar with D1 and D2 misplaced: no row is a check
@@ -427,13 +434,15 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
     }
     // the budget spent: Re-apply is no dead end (one budget, plus ONE user-authorised strip session), clearFailures (permission) gives nothing back
     @Test func reApplyIsNotADeadEndAndAPermissionResumeGivesNothingBack() async {
-        let w = RvWorld(pile: rvP, drawn: rvScrambled)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: a scramble the core can act on (D4 / D5 swapped, away from the churn zone). The fully reversed bar made
+        // the old planner spend 3 drags; the core's first move there needs the strip and is withheld, so it would make none. Budget and honesty are asserted as before.
+        let w = RvWorld(pile: rvP, drawn: rvSwapped)
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
-        for _ in 0..<12 { w.drawn = rvScrambled; _ = await e.reconcileOnce(); c.adv(120) }
+        for _ in 0..<12 { w.drawn = rvSwapped; _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags.count == 3 && w.clicks == 0)
         #expect(rvMenu(st) == ArrangeBarState.stoppedWhileDifferingText && rvArrangeLine(st) == rvMenu(st))
         w.events = []; w.drags = []
-        await e.clearFailures(); for _ in 0..<6 { w.drawn = rvScrambled; _ = await e.reconcileOnce(); c.adv(120) }
+        await e.clearFailures(); for _ in 0..<6 { w.drawn = rvSwapped; _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.events.isEmpty)   // Accessibility granted / permission resume: nothing
         await e.userRetry(); for _ in 0..<6 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(!w.drags.isEmpty && w.drags.count <= 3 + 1, "re-apply: \(w.events)")
@@ -588,12 +597,15 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
     }
     // item 2: the hold is released by the proof that the bar is not full
     @Test func theHoldIsReleasedByTheProofThatTheBarIsNotFull() async {
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the hold is now set on a bar with a FRESH chevron (the core makes no drag on a chevronless bar that is not
+        // yet proven not full), by a failing drag of the one swapped pair; then the chevron goes and three chevronless complete reads release it.
         let rec = (1...6).map { "D\($0)" }
-        let w = RvWorld(pile: [], drawn: rec.reversed()); w.mode = .absent; w.applyProb = 0
+        let w = RvWorld(pile: [], drawn: ["D1", "D2", "D4", "D3", "D5", "D6"]); w.mode = .fresh; w.applyProb = 0
         let (e, _, c) = await rvRig(w, record: rec)
         _ = await e.regularPassForTests(); c.adv(120)
         #expect(await e.stripOpenHold != nil)
-        for _ in 0..<5 { _ = await e.regularPassForTests(); c.adv(120) }
+        w.sync { w.mode = .absent }
+        for _ in 0..<6 { _ = await e.regularPassForTests(); c.adv(120) }
         #expect(await e.stripOpenHold == nil)
     }
     // item 3: ONE strip session per edit across all moved keys: the folded P2 is pulled out (session), and D3, dropped before the first drawn key (churn zone),
@@ -961,9 +973,11 @@ private struct RvFakeObserver: MenuBarObserver {
     // the budget comes back ONLY with a user's intent: `retry(key:)` and a user edit each give a full fresh budget of 3 to the next regular passes
     /// The bar is scrambled again before EVERY pass (something else keeps reordering it), so each engine drag verifies and the order is never reached:
     /// exactly the cap of 3 engine drags is spent, with no failed drag and so no hold.
-    private func scrambledPass(_ w: RvWorld, _ e: LayoutEngine, _ c: RvClock) async { w.sync { w.drawn = rvScrambled }; _ = await e.regularPassForTests(); c.adv(120) }
+    /// ejb.15 (Wiring 3), CHANGED because the core decides: the repeated scramble is `rvSwapped` (away from the churn zone), not the fully reversed bar, whose first
+    /// move the core withholds (it needs the strip) so no budget would ever be spent; the budget semantics tested are unchanged.
+    private func scrambledPass(_ w: RvWorld, _ e: LayoutEngine, _ c: RvClock) async { w.sync { w.drawn = rvSwapped }; _ = await e.regularPassForTests(); c.adv(120) }
     private func spentBar() async -> (RvWorld, LayoutEngine, EngineState, RvClock, Int) {
-        let w = RvWorld(pile: rvP, drawn: rvScrambled)
+        let w = RvWorld(pile: rvP, drawn: rvSwapped)
         let (e, st, c) = await rvRig(w, record: rvP + rvD, followUp: .milliseconds(30))
         for _ in 0..<10 { await scrambledPass(w, e, c) }
         return (w, e, st, c, w.drags.count)
@@ -988,7 +1002,10 @@ private struct RvFakeObserver: MenuBarObserver {
     @Test func aUserEditGivesTheEngineAFreshBudget() async {
         let (w, e, _, c, _) = await spentBar()
         let n0 = w.drags.count
-        await e.setLayout(Layout.placedAll(visible: (rvP + ["D2", "D1", "D3", "D4", "D5", "D6"]).map(k)), moved: [k("D2")]); await rvSettle(e, ms: 300)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the user drops D2 where the record already has it. The old edit (D2 before D1) put the first inversion on
+        // the churn zone, which the core's first-inversion planner then cannot leave (it withholds strip moves), so no engine drag could follow; the budget semantics
+        // are unchanged: a user edit gives the engine a fresh budget of 3 for the swapped pair.
+        await e.setLayout(Layout.placedAll(visible: (rvP + rvD).map(k)), moved: [k("D2")]); await rvSettle(e, ms: 300)
         for _ in 0..<10 { await scrambledPass(w, e, c) }
         let made = w.drags.count - n0
         #expect(made >= 3, "drags after the edit: \(made)")

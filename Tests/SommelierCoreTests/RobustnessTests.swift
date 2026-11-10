@@ -242,7 +242,7 @@ private final class Counter: @unchecked Sendable {
         let store = InMemoryLayoutStore(Layout.placedAll(visible: [k("A")], hidden: [k("B")]))
         let state = EngineState()
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: ToggleDuringBatch(inner: inner, box: box), store: store,
-                                  capabilities: Caps(), state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  capabilities: Caps(), state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         box.engine = engine
         await engine.start()
         let first = await engine.reconcileOnce()          // hides B; the reveal flips to "show" meanwhile
@@ -283,7 +283,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let logs = Logs()
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: RespawningBatch(inner: inner),
                                   store: InMemoryLayoutStore(Layout.placedAll(visible: [k("A")], hidden: [k("B")])), capabilities: Caps(),
-                                  state: EngineState(), resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) })
+                                  state: EngineState(), resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { logs.add($0) }, config: .plain())
         await engine.start()
         _ = await engine.reconcileOnce()
         _ = await engine.reconcileOnce()
@@ -302,7 +302,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let engine = LayoutEngine(observer: PidChangingObserver(inner: ActuatorObserver(actuator: inner), pid: pid, newPID: 200), actuator: inner,
                                   store: InMemoryLayoutStore(Layout.placedAll(visible: ["B", "A"].map(k))), capabilities: Caps(), state: state,
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
-                                  agentPID: { pid.value }, isOwnAgentPID: { _ in false })
+                                  config: .plain(), agentPID: { pid.value }, isOwnAgentPID: { _ in false })
         await engine.start()
         let rep = await engine.reconcileOnce()
         #expect(rep.outcome == .agentRestarted)
@@ -318,7 +318,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let engine = LayoutEngine(observer: PidChangingObserver(inner: ActuatorObserver(actuator: inner), pid: pid, newPID: 200), actuator: inner,
                                   store: InMemoryLayoutStore(Layout.placedAll(visible: ["B", "A"].map(k))), capabilities: Caps(), state: EngineState(),
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
-                                  agentPID: { pid.value }, isOwnAgentPID: { $0 == 200 })
+                                  config: .plain(), agentPID: { pid.value }, isOwnAgentPID: { $0 == 200 })
         await engine.start()
         #expect(await engine.reconcileOnce().outcome == .converged)
         #expect(await inner.order == ["B", "A"].map(k))
@@ -332,7 +332,7 @@ private struct PidChangingObserver: MenuBarObserver {
         let engine = LayoutEngine(observer: ActuatorObserver(actuator: inner), actuator: act,
                                   store: InMemoryLayoutStore(Layout.placedAll(visible: names.reversed().map(k))), capabilities: Caps(), state: EngineState(),
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
-                                  agentPID: { pid.value }, isOwnAgentPID: { _ in false })
+                                  config: .plain(), agentPID: { pid.value }, isOwnAgentPID: { _ in false })
         await engine.start()
         let rep = await engine.reconcileOnce()
         #expect(rep.outcome == .agentRestarted)

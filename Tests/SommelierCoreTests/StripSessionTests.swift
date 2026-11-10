@@ -560,7 +560,7 @@ private struct OpenCaps144: CapabilityProvider { func capability(for k: ItemKey)
 
 @MainActor private func realEngine144(_ w: StripWorld, observer: any MenuBarObserver, record: [String]) async -> (LayoutEngine, EngineState) {
     let st = EngineState()
-    var cfg = LayoutEngine.Config(); cfg.maxOrderMovesPerPass = .max
+    var cfg = LayoutEngine.Config.plain(); cfg.maxOrderMovesPerPass = .max
     let e = LayoutEngine(observer: observer, actuator: actuator(w), store: InMemoryLayoutStore(Layout.placedAll(visible: record.map(key))), capabilities: OpenCaps144(), state: st,
                          resolveSnapshot: { s in w.resolve(s) }, sleep: { _ in }, log: { _ in }, config: cfg)
     await e.start()

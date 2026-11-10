@@ -83,7 +83,7 @@ private final class Log: @unchecked Sendable {
 @Suite struct Gdu114EngineTests {
     @Test func aShowOfAKeyWithNoControlCenterEntryIsRefusedOnceAndTheNextPassConverges() async {
         let act = FakeActuator(order: [kk("A"), kk("C")], hidden: [kk("C")], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.layoutCoalesce = .zero
         cfg.trackedResolver = { TrackedEntryResolver(entries: [.init(key: "com.x.A", isAllowed: true, menuItemKeys: ["com.x.A"])]) }
         cfg.trackedAllowed = { _ in true }

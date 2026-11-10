@@ -42,7 +42,7 @@ private func moves136(_ a: FakeActuator) async -> [ItemKey] {
 private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state: EngineState, lines: Lines136) {
     let act = FakeActuator(order: ["A", "B", "C", "D", "E", "F"].map(k), hidden: [], capabilities: AllCaps136(),
                            makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-    var cfg = LayoutEngine.Config()
+    var cfg = LayoutEngine.Config.plain()
     cfg.layoutCoalesce = .zero
     cfg.delaySleep = { _ in try? await Task.sleep(for: .seconds(3600)) }   // the follow-up is released by the test, not by the clock
     let state = EngineState(), lines = Lines136()
@@ -82,7 +82,7 @@ private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state:
     @Test func aChainedPassAfterTheUsersPassPerformsNoOtherMove() async {
         let act = FakeActuator(order: ["A", "B", "C", "D"].map(k), hidden: [k("X")], capabilities: AllCaps136(),
                                makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.layoutCoalesce = .zero
         cfg.delaySleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
         let state = EngineState(), lines = Lines136()

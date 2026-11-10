@@ -168,7 +168,7 @@ private let denied = "access denied reading /Users/x/Library/Group Containers/gr
         let store = InMemoryLayoutStore(layout)
         let state = EngineState()
         let engine = LayoutEngine(observer: observer, actuator: act, store: store, capabilities: Caps(), state: state, busy: { false },
-                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .init())
+                                  resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         await engine.start()
         return (engine, state, act, store)
     }
@@ -202,7 +202,7 @@ private let denied = "access denied reading /Users/x/Library/Group Containers/gr
                                makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let observer = AgreedScanObserver(scanner: Scripted(box: box), resolve: { FakeMenuBar.resolve($0) },
                                           maxScans: 6, deadline: 15, accessibilityTrusted: { true }, sleep: { _ in })
-        var cfg = LayoutEngine.Config()
+        var cfg = LayoutEngine.Config.plain()
         cfg.storeRetryBase = .milliseconds(20); cfg.storeRetryCap = .milliseconds(40)
         let state = EngineState()
         let engine = LayoutEngine(observer: observer, actuator: act, store: InMemoryLayoutStore(layout), capabilities: Caps(), state: state,
@@ -239,7 +239,7 @@ private let denied = "access denied reading /Users/x/Library/Group Containers/gr
         let act = FakeActuator(order: [], hidden: [], capabilities: Caps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
         let state = EngineState()
         let engine = LayoutEngine(observer: FixtureObserver([[]]), actuator: act, store: InMemoryLayoutStore(.empty), capabilities: Caps(),
-                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in })
+                                  state: state, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .plain())
         let t = EngineTriggers(engine: engine, state: state, scanner: NoScans(), resolve: { FakeMenuBar.resolve($0) },
                                gate: { PollGate() }, trigger: { hits.n += 1 }, sleep: { _ in })
         await t.poll()

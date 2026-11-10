@@ -31,7 +31,7 @@ private final class JoinObserver: MenuBarObserver, @unchecked Sendable {
 private struct PRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let observer: JoinObserver }
 
 @MainActor
-private func prig(badScans: Int?, config: LayoutEngine.Config = .init(), inOrder: Bool = false) async -> PRig {
+private func prig(badScans: Int?, config: LayoutEngine.Config = .plain(), inOrder: Bool = false) async -> PRig {
     // bar a b c; the layout wants c first, so c is the order-move subject.
     let a = k("a"), b = k("b"), c = k("c")
     let act = FakeActuator(order: [a, b, c], hidden: [], capabilities: OpenCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
@@ -55,7 +55,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     private func unsupported(_ s: EngineState) -> [ItemKey] { s.perItem.filter { if case .unsupported = $0.value { true } else { false } }.map(\.key) }
 
     @Test func uncorroboratedSubjectWaitsThenMovesOnACorroboratedScan() async {
-        var c = LayoutEngine.Config(); c.positionRetryBase = .seconds(60); c.positionRetryCap = .seconds(60)   // no timer interference
+        var c = LayoutEngine.Config.plain(); c.positionRetryBase = .seconds(60); c.positionRetryCap = .seconds(60)   // no timer interference
         let r = await prig(badScans: 2, config: c)
         let before = await r.actuator.order
         for _ in 0..<2 {
@@ -71,7 +71,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func retryIsScheduledWithoutATriggerAndMovesWhenCorroborated() async {
-        var c = LayoutEngine.Config(); c.positionRetryBase = .milliseconds(30); c.positionRetryCap = .milliseconds(60)
+        var c = LayoutEngine.Config.plain(); c.positionRetryBase = .milliseconds(30); c.positionRetryCap = .milliseconds(60)
         let r = await prig(badScans: 2, config: c)
         _ = await r.engine.reconcileOnce()   // the only explicit pass
         #expect(await waitUntil { await r.actuator.order.first == k("c") })   // later passes came from the retry timer alone
@@ -80,14 +80,14 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     }
 
     @Test func retryDelayDoublesAndIsCapped() {
-        let c = LayoutEngine.Config()
+        let c = LayoutEngine.Config.plain()
         #expect(c.positionRetryBase == .seconds(2) && c.positionRetryCap == .seconds(15) && c.positionWaitTimeout == .seconds(60))
         #expect((0..<6).map { LayoutEngine.positionRetryDelay(attempt: $0, config: c) } == [2, 4, 8, 15, 15, 15].map { Duration.seconds($0) })
         #expect(LayoutEngine.positionRetryDelay(attempt: 500, config: c) == .seconds(15))
     }
 
     @Test func staysWaitingWithOneRetryAtATimeAndTimesOutToUnsupported() async {
-        var c = LayoutEngine.Config()
+        var c = LayoutEngine.Config.plain()
         c.positionRetryBase = .milliseconds(100); c.positionRetryCap = .milliseconds(200); c.positionWaitTimeout = .seconds(1)
         let r = await prig(badScans: nil, config: c)
         _ = await r.engine.reconcileOnce()
@@ -144,7 +144,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
     // MARK: 9o9.24 an uncorroborated key with no skip of its own is on the 60 s timer too
 
     @Test func anUncorroboratedKeyWithNoSkipTimesOutToATryAgainWarningAndRetryRestartsTheWait() async {
-        var c = LayoutEngine.Config()
+        var c = LayoutEngine.Config.plain()
         c.positionRetryBase = .milliseconds(20); c.positionRetryCap = .milliseconds(40); c.positionWaitTimeout = .milliseconds(150)   // the 60 s path, compressed
         let r = await prig(badScans: nil, config: c, inOrder: true)   // the bar already matches the record: the planner has no skip for c
         _ = await r.engine.reconcileOnce()

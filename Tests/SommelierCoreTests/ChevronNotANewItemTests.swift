@@ -26,7 +26,7 @@ private final class Lines: @unchecked Sendable {
 @MainActor
 private func rig(bar: [ItemKey], layout: Layout, flagged: Bool = true, lines: Lines) async -> (LayoutEngine, FakeActuator, EngineState, InMemoryLayoutStore) {
     let act = FakeActuator(order: bar, hidden: [], capabilities: AllCaps(), makeSnapshot: { FakeMenuBar.snapshot(order: $0, hidden: $1) })
-    var cfg = LayoutEngine.Config(); cfg.layoutCoalesce = .zero
+    var cfg = LayoutEngine.Config.plain(); cfg.layoutCoalesce = .zero
     let state = EngineState(), store = InMemoryLayoutStore(layout)
     let e = LayoutEngine(observer: ChevObserver(bar: bar, flagged: flagged), actuator: act, store: store, capabilities: AllCaps(), state: state,
                          resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { lines.add($0) }, config: cfg)

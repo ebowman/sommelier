@@ -287,20 +287,15 @@ struct FullBarChurnEngineTests {
         _ = await r.engine.reconcileOnce()
         await r.engine.setLayout(layout, moved: [k("P3")])   // gdu.144: the user drops P3
         for _ in 0..<5 { _ = await r.engine.reconcileOnce() }
+        // ejb.15 (Wiring 3), CHANGED because the core decides: D1, the only drawn key left of P3 in the record, has an untrusted frame (blind), so the core is told
+        // it is UNREAD (A6). It cannot place P3 against a key it cannot judge: it makes NO pull-out (the old planner re-spelled it `P3 before D2`, relative to a key
+        // it trusted). Safety kept: no drag names the untrusted D1, nothing is struck, and P3 stays behind the chevron until D1 can be read.
         let ms = moves(await r.actuator.calls)
-        #expect(ms == [.move(k("P3"), .before(k("D2")))], "moves=\(ms)")
+        #expect(ms.isEmpty, "moves=\(ms)")
         #expect(!r.lines.has("struck"))
         let after = await r.actuator.order
-        let idx = { (x: String) in after.firstIndex(of: k(x))! }
-        #expect(idx("D1") < idx("P3") && idx("P3") < idx("D2"))
         let pile: Set<ItemKey> = Set(after.prefix(3))
-        #expect(!pile.contains(k("P3")))
-        let observed = ObservedOrder(onBar: after + [chevKey], parked: [], systemOverflow: pile, overflowChevron: chevKey)
-        var t = ArrangeTracker()
-        let now = Date()
-        t.record([k("P3")], passesStarted: 1, now: now, awaitingStamp: false, dropID: 9, intent: DropIntent(key: k("P3"), left: k("D1"), right: k("D2")))
-        _ = t.update(observed: observed, layout: layout, perItem: [k("P3"): .inPlace], passSequence: 1, showHiddenSection: false, now: now)
-        #expect(t.timedOut.isEmpty)
+        #expect(pile.contains(k("P3")))
     }
 
     @Test func anOrdinaryOrderPassOnABarWithoutAChevronIsUnchanged() async {
@@ -313,14 +308,19 @@ struct FullBarChurnEngineTests {
         #expect(!r.lines.has("order deferred"))
     }
 
-    @Test func aMembershipThenOrderPassOnABarWithoutAChevronStillOrdersInOnePass() async {
+    // ejb.15 (Wiring 3), CHANGED because the core decides (plan assumption 4): a pass that wrote membership feeds its read as settled:false and makes no order
+    // move in that pass, chevron or not; the order follows on the next pass (it used to follow in the same pass on a bar without a chevron).
+    @Test func aMembershipThenOrderPassOnABarWithoutAChevronOrdersOnTheNextPass() async {
         let order = [k("A"), k("B"), k("C"), k("D")]
         let r = await chevRig(order: order, layout: Layout.placedAll(visible: [k("C"), k("B"), k("A")], hidden: [k("D")]), chevron: false)
         let rep = await r.engine.reconcileOnce()
         let calls = await r.actuator.calls
-        #expect(rep.outcome == .converged)
+        #expect(rep.outcome == .incomplete)
         #expect(calls.contains { if case .applyHiddenBatch = $0 { true } else { false } })
-        #expect(!moves(calls).isEmpty)
+        #expect(moves(calls).isEmpty)
+        let next = await r.engine.reconcileOnce()
+        #expect(next.outcome == .converged)
+        #expect(!moves(await r.actuator.calls).isEmpty)
     }
 
     /// 9o9.12: touching the churn zone is no longer refused; the move is performed inside ONE strip session (open, drag, close).
@@ -416,7 +416,11 @@ struct FullBarChevronChangeTests {
         // the post-write read (no chevron) does not agree with the pre-write one (chevron); the follow-up pass's own read agrees
         // with the post-write read, so ordering happens there and only there
         _ = await r.engine.reconcileOnce()
-        // gdu.144 D1: no chevron in this read: ordering happens here (the budget caps it at 3 while the bar is still assumed full)
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the chevron was fresh in the pre-write read, so the core no longer knows the bar is not full and
+        // makes no move on the chevronless read that follows (the old engine ordered here, capped at 3). It orders once chevronless complete reads prove the
+        // bar not full (gdu.144 D1: three in a row, the proof taking effect from the next pass read).
+        #expect(moves(await r.actuator.calls).isEmpty)
+        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         #expect(!moves(await r.actuator.calls).isEmpty)
     }
 

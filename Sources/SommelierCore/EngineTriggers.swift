@@ -236,7 +236,7 @@ public final class EngineTriggers {
     /// Signature of a fresh fast scan; nil when unusable (empty bar, or a non-self-positioning stale item on the bar).
     private func scanSignature(feedEngine: Bool = false) async -> BarSignature.Value? {
         let snap = await scanner.scanVisible()
-        if feedEngine { await engine.notePollScan(resolve(snap), completeness: snap.completeness) }   // gdu.144: a quiet poll's scan is evidence of a not-full bar
+        if feedEngine { await engine.notePollScan(resolve(snap), completeness: snap.completeness, unreadOwners: snap.unreadOwners, cachedOwners: snap.cachedOwners, ownerEvidence: snap.ownerEvidence) }   // gdu.144: a quiet poll's scan is evidence of a not-full bar
         let res = AgreedScanObserver.dedupe(resolve(snap)).items
         guard res.contains(where: { $0.item.isOnMenuBar && $0.item.frame.width > 1 }) else { return nil }
         return signature.value(res)?.forPoll(selfPositioningOwners: signature.selfPositioningOwners)
