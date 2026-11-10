@@ -45,11 +45,16 @@ public struct Layout: Codable, Equatable, Sendable {
     /// re-applies them on top of the adopted drag. Absent on disk = empty; written only while `handWindowDrops` is non-empty.
     public var handWindowBaseline: [ItemKey]
     public var handWindowDrops: [WindowDrop]
+    /// gdu.145: names of one-time record migrations that have already run on this file ("gdu145"). Absent on disk = empty; written only while
+    /// non-empty. Older builds ignore the unknown field (their decoders read only the keys they know) and drop it on their next save, which
+    /// at worst re-runs the migration once (it is idempotent and backs up first).
+    public var migrations: [String]
 
     public init(schemaVersion: Int = Layout.currentSchemaVersion, visible: [ItemKey] = [], hidden: [ItemKey] = [],
                 alwaysHidden: [ItemKey] = [], newItemPolicy: NewItemPolicy = .visibleAtEnd, pendingAdoption: Bool = false,
                 pendingHandDrag: Date? = nil, unreadAfterHandDrag: [ItemKey] = [],
-                handWindowBaseline: [ItemKey] = [], handWindowDrops: [WindowDrop] = []) {
+                handWindowBaseline: [ItemKey] = [], handWindowDrops: [WindowDrop] = [], migrations: [String] = []) {
+        self.migrations = migrations
         self.handWindowBaseline = handWindowBaseline
         self.handWindowDrops = handWindowDrops
         self.pendingAdoption = pendingAdoption
@@ -240,7 +245,7 @@ public struct Layout: Codable, Equatable, Sendable {
 
     // MARK: Codable (keys are stored as their string form)
 
-    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, handWindowBaseline, handWindowDrops }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, handWindowBaseline, handWindowDrops, migrations }
 
     static func isoString(_ d: Date) -> String {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -278,7 +283,8 @@ public struct Layout: Codable, Equatable, Sendable {
             pendingHandDrag: try c.decodeIfPresent(String.self, forKey: .pendingHandDrag).flatMap(Self.isoDate),
             unreadAfterHandDrag: try (c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag) ?? []).compactMap { ItemKey(storeKey: $0) },
             handWindowBaseline: try (c.decodeIfPresent([String].self, forKey: .handWindowBaseline) ?? []).compactMap { ItemKey(storeKey: $0) },
-            handWindowDrops: Self.windowDrops(try c.decodeIfPresent([WindowDropCoding].self, forKey: .handWindowDrops)))
+            handWindowDrops: Self.windowDrops(try c.decodeIfPresent([WindowDropCoding].self, forKey: .handWindowDrops)),
+            migrations: try c.decodeIfPresent([String].self, forKey: .migrations) ?? [])
         var l = raw.dedup().layout
         l.visible.removeAll(where: \.isOverflowChevron)   // 9o9.14 (the warning is reported by `decode`)
         l.hidden.removeAll(where: \.isOverflowChevron)
@@ -296,6 +302,7 @@ public struct Layout: Codable, Equatable, Sendable {
         if pendingAdoption { try c.encode(true, forKey: .pendingAdoption) }   // absent = false
         if let d = pendingHandDrag { try c.encode(Self.isoString(d), forKey: .pendingHandDrag) }
         if !unreadAfterHandDrag.isEmpty { try c.encode(unreadAfterHandDrag.map(\.description), forKey: .unreadAfterHandDrag) }
+        if !migrations.isEmpty { try c.encode(migrations, forKey: .migrations) }
         if !handWindowDrops.isEmpty {
             try c.encode(handWindowBaseline.map(\.description), forKey: .handWindowBaseline)
             try c.encode(handWindowDrops.map { WindowDropCoding(visible: $0.visible.map(\.description), moved: $0.moved.map(\.description)) }, forKey: .handWindowDrops)
@@ -315,9 +322,10 @@ public struct Layout: Codable, Equatable, Sendable {
             var unreadAfterHandDrag: [String]?
             var handWindowBaseline: [String]?
             var handWindowDrops: [WindowDropCoding]?
+            var migrations: [String]?
             var legacyOrderMode: Bool
             var legacyPlaced: Bool
-            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, handWindowBaseline, handWindowDrops, orderMode, placed }
+            enum CodingKeys: String, CodingKey { case schemaVersion, visible, hidden, alwaysHidden, newItemPolicy, pendingAdoption, pendingHandDrag, unreadAfterHandDrag, handWindowBaseline, handWindowDrops, migrations, orderMode, placed }
             init(from decoder: any Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion)
@@ -330,6 +338,7 @@ public struct Layout: Codable, Equatable, Sendable {
                 unreadAfterHandDrag = try c.decodeIfPresent([String].self, forKey: .unreadAfterHandDrag)
                 handWindowBaseline = try c.decodeIfPresent([String].self, forKey: .handWindowBaseline)
                 handWindowDrops = try c.decodeIfPresent([WindowDropCoding].self, forKey: .handWindowDrops)
+                migrations = try c.decodeIfPresent([String].self, forKey: .migrations)
                 legacyOrderMode = c.contains(.orderMode)   // 9o9.2: legacy fields are ignored (their value is not even parsed)
                 legacyPlaced = c.contains(.placed)
             }
@@ -366,6 +375,7 @@ public struct Layout: Codable, Equatable, Sendable {
         layout.unreadAfterHandDrag = (r.unreadAfterHandDrag ?? []).compactMap { ItemKey(storeKey: $0) }
         layout.handWindowBaseline = (r.handWindowBaseline ?? []).compactMap { ItemKey(storeKey: $0) }
         layout.handWindowDrops = windowDrops(r.handWindowDrops)
+        layout.migrations = r.migrations ?? []
         warnings += chevronSections.map { "ignored chevron key in \($0.rawValue)" }
         warnings += d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {

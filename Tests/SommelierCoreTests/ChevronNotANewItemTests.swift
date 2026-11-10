@@ -86,7 +86,8 @@ private func rig(bar: [ItemKey], layout: Layout, flagged: Bool = true, lines: Li
         #expect(!lines.all.contains { $0.contains("New item") })
         let after = try? store.load()
         #expect(after?.visible == [k("A"), k("B")] && after?.visible.contains(chev) == false)
-        #expect(after == layout)
+        var expected = layout; expected.migrations = after?.migrations ?? []   // gdu.145: the one-time marker is the only difference
+        #expect(after == expected)
         #expect(state.layout.visible == [k("A"), k("B")])
     }
 

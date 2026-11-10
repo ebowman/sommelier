@@ -3,6 +3,13 @@ import Foundation
 public protocol LayoutStore: Sendable {
     func load() throws -> Layout
     func save(_ layout: Layout) throws
+    /// gdu.145: copies the current stored layout aside BEFORE a migration changes it. Returns the backup's name (nil: nothing to copy).
+    /// Never overwrites an existing backup. Throws when the copy cannot be made (the migration must then not run).
+    func backupBeforeMigration() throws -> String?
+}
+
+public extension LayoutStore {
+    func backupBeforeMigration() throws -> String? { nil }
 }
 
 public struct FileLayoutStore: LayoutStore {
@@ -32,6 +39,17 @@ public struct FileLayoutStore: LayoutStore {
             throw LayoutError.corrupt(underlying: error, backup: bak)
         }
         return (try Layout.migrate(decoded.layout), decoded.warnings)
+    }
+
+    /// `<file>.gdu145-backup`; if that exists, `<file>.gdu145-backup-2`, `-3`, ... (an earlier backup is never overwritten).
+    public func backupBeforeMigration() throws -> String? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        var n = 1
+        var dest = url.appendingPathExtension("gdu145-backup")
+        while fm.fileExists(atPath: dest.path) { n += 1; dest = url.appendingPathExtension("gdu145-backup-\(n)") }
+        try fm.copyItem(at: url, to: dest)
+        return dest.lastPathComponent
     }
 
     public func save(_ layout: Layout) throws {

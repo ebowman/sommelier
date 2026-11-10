@@ -67,6 +67,13 @@ otherwise (findings-identity; the dev Sommelier build and MBDummy therefore key 
 **corroborated** (gdu.28: a synthesized fingerprint key whose owner-to-hosted-frame pairing was independently corroborated), **heuristic**
 (attribute fingerprint, not a store key). Rules for the UI:
 
+Heuristic keys and the record (gdu.145, `HeuristicKeyRule.swift`): one predicate decides that a heuristic key is a duplicate of an accounted-for item: the scan
+is complete and settled, the key is not observed, its owner is running and fully read, and every item observed for that owner is under a status key seen on
+this scan (status keys only in the record do not count). An agent-hosted heuristic key is a duplicate when not observed and no unjoined agent-hosted element is
+observed. The migration runs ONCE EVER per layout file (marker `gdu145` in the file's `migrations` array, saved with the migrated layout; set on the first complete settled scan whether or not anything was dropped; a failed backup sets no marker and retries next launch), writes one backup `layout.json.gdu145-backup` first, and drops exactly those keys; nothing hides rows in Arrange afterwards; an Arrange composition built before the migration never writes the dropped keys back (`setLayout`); a NEW heuristic key is recorded only after two consecutive
+complete settled scans observed it (it is never refused forever). An owner that is not running, unread or partially read keeps all its keys, and so does an owner whose
+live items read only as heuristic keys. Fingerprint text is not altered by this rule.
+
 * exact: full controls, "verified" claims allowed.
 * inferred: movement is allowed (drags use the live item's frame, not the key), but any claim about a persisted position is made only after a
   full scan; fallback (order-store edit) is allowed only for exact keys or inferred keys confirmed by a post-hoc scan, because writing

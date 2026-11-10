@@ -678,6 +678,54 @@ public actor LayoutEngine {
         await publish { $0.layout = l; $0.showHiddenSection = sh; $0.lastError = nil; $0.lastNormalization = mv; $0.layoutRevision += 1; $0.passesStartedAtRevision = $0.passesStarted }
     }
 
+    /// gdu.145: gate for heuristic new items (step 2), the held keys already logged, and the one-time alias migration (step 4).
+    private var heuristicGate = HeuristicNewItemGate()
+    private var heldNewItemLogged = Set<ItemKey>()
+    /// Keys the one-time migration dropped in this process: a stale Arrange composition must not write them back (`setLayout`).
+    private var migrationDropped = Set<ItemKey>()
+    static let migrationMarker = "gdu145"
+
+    /// Normalised owners of the apps the latest observation did not read (unread or cache-attributed).
+    private func unreadOwnerSet(_ bar: BarObservation) -> Set<String> {
+        Set((bar.unreadOwners + bar.cachedOwners).flatMap { u in ([u.bundleID].compactMap { $0 } + u.ownerKeys).map(ReadAdapter.normalisedOwner) })
+    }
+
+    /// gdu.145 step 4. Runs ONCE EVER per layout file: the marker `gdu145` in `Layout.migrations` is saved together with the migrated layout, and a
+    /// file that carries it is never migrated again (a real second item that is only sometimes shown must not lose its key at a later launch).
+    /// Runs on the first COMPLETE, settled read with every owner read (no unread or cached owner) and no adoption pending; never on a bare load.
+    /// Drops the heuristic keys that `HeuristicKeyRule.duplicates` calls duplicates on that read, after a backup next to the layout file (if the
+    /// backup cannot be written nothing changes and no marker is set, so the next launch retries; the backup is written only when keys are dropped,
+    /// at most once). When nothing is dropped the marker alone is saved. Status and module keys are never touched; the remaining keys keep their
+    /// relative order, so no real item moves and the engine plans no drag because of it.
+    private func migrateHeuristicAliases() async {
+        guard loaded, !layout.migrations.contains(Self.migrationMarker), observedCompleteness == .complete, !layout.pendingAdoption, handAdopt == nil,
+              let bar = lastBarObs, bar.settled, bar.completeness == .complete else { return }
+        var (migrated, dropped) = HeuristicKeyRule.migrate(layout, observed: Set(bar.items.map(\.key)), unreadOwners: unreadOwnerSet(bar), complete: true)
+        if !dropped.isEmpty {
+            do {
+                let backup = try store.backupBeforeMigration()
+                if let backup { log("layout: gdu.145 migration: backup written as \(backup)") }
+            } catch {
+                log("layout: gdu.145 migration skipped, cannot write the backup: \(error)")
+                return
+            }
+        }
+        migrated.migrations.append(Self.migrationMarker)
+        layout = migrated
+        for k in dropped { log("layout: gdu.145 migration dropped duplicate heuristic key \(k.description)") }
+        migrationDropped.formUnion(dropped)
+        engineAdditions.removeAll { a in dropped.contains(a.key) }
+        do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
+        if dropped.isEmpty {
+            // Marker only: no key changed, so no new layout revision and no record sync (a revision bump would invalidate compositions for nothing).
+            let l = layout
+            await publish { $0.layout = l }
+            return
+        }
+        _ = await publishLayout(layout)
+        coreSyncRecord(site: "migrateHeuristicAliases")
+    }
+
     /// Keys the engine itself appended (new-item policy) with the layout revision that added them and their engine-chosen
     /// position, newest last, capped at `maxEngineAdditions` (gdu.52). `setLayout(_:basedOn:)` re-adds those newer than the
     /// revision a drop was composed on, so a drop never discards an item the engine appended in between.
@@ -722,6 +770,14 @@ public actor LayoutEngine {
         // the layout is left as it is (the Arrange window refuses such a drop before it gets here).
         new.pendingAdoption = layout.pendingAdoption
         new.pendingHandDrag = layout.pendingHandDrag   // 9o9.18: engine state, like pendingAdoption
+        new.migrations = layout.migrations             // gdu.145: engine state; a composition built before the migration must not erase the marker
+        // gdu.145: a composition built before the one-time migration still lists the keys it dropped; they are not written back (unless the
+        // engine has since recorded one of them again, which then is in the current layout).
+        let stale = migrationDropped.filter { new.section(of: $0) != nil && layout.section(of: $0) == nil }
+        if !stale.isEmpty {
+            new.visible.removeAll { stale.contains($0) }; new.hidden.removeAll { stale.contains($0) }; new.alwaysHidden.removeAll { stale.contains($0) }
+            log("setLayout: not writing back \(stale.count) key(s) the gdu.145 migration removed")
+        }
         new.handWindowBaseline = layout.handWindowBaseline; new.handWindowDrops = layout.handWindowDrops   // 9o9.27 (refreshed below)
         var adoptedPendingNow = false
         if layout.pendingAdoption, userPlacement, new.visible != layout.visible {
@@ -2400,10 +2456,19 @@ public actor LayoutEngine {
         else { await adoptLateHandDrags(obs) }
 
         await adoptSystemSettingsHides(obs)   // 9o9.25
+        await migrateHeuristicAliases()       // gdu.145
 
         // (c) plan
         noteFoldEvidence(obs, completeness: observedCompleteness)
         var plan = makePlan(obs)
+        // gdu.145 step 2: a heuristic key is a new item only after two consecutive complete settled scans saw it. Held keys stay unrecorded.
+        let completeRead = observedCompleteness == .complete && (lastBarObs?.settled ?? true)
+        heuristicGate.note(observed: obs.onBar + obs.parked, layout: layout, complete: completeRead)
+        if !plan.newItems.isEmpty {
+            let (admitted, held) = heuristicGate.filter(plan.newItems, complete: completeRead)
+            for (n, why) in held where heldNewItemLogged.insert(n.key).inserted { log("layout: not recording heuristic key \(n.key.description): \(why)") }
+            plan.newItems = admitted
+        }
         // (d) persist new items, once per pass
         if !plan.newItems.isEmpty {
             for n in plan.newItems { layout.append(n.key, to: n.section) }
