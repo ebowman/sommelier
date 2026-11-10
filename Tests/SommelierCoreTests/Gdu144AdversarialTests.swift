@@ -471,12 +471,22 @@ private final class AdvClock: @unchecked Sendable {
 @MainActor
 @Suite struct AdversarialDispatchGateTests {
     // The planner-side gate switched OFF (test flag): the DISPATCH-point gate alone must hold the budget (3 on a full bar) and refuse a stale chevron
-    @Test func theDispatchGateAloneHoldsTheBudget() async {
+    // ejb.22: deterministic (fixed seeds, no system randomness). The budget (n <= 3) holds in EVERY case. The core makes NO engine drag exactly when the
+    // planned move needs the « strip (near-fold withholding); then the status must say so (differs(needsReapply), rendered "Re-apply to move ...").
+    @Test(arguments: [UInt64](1...12) + [17, 57]) func theDispatchGateAloneHoldsTheBudget(seed: UInt64) async {
         let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"])
         let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
-        for _ in 0..<30 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
+        var g = AdvRNG(s: seed)
+        for _ in 0..<30 { w.drawn = w.drawn.shuffled(using: &g); _ = await e.reconcileOnce() }
         let n = await a.count()
-        #expect(n >= 1 && n <= 3, "physical drags \(n)")
+        #expect(n <= 3, "seed \(seed): physical drags \(n)")
+        if n == 0 {
+            let d = await e.coreDisplayForTests()
+            guard case .differs(.needsReapply)? = d?.status else {
+                Issue.record("seed \(seed): no drag but status is \(String(describing: d?.status)), not needsReapply"); return
+            }
+            #expect(d?.reapplyKey != nil, "seed \(seed): needsReapply names no key")
+        }
     }
     @Test func theDispatchGateAloneRefusesAStaleChevronsMoves() async {
         let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"]); w.mode = .staleOld
