@@ -17,6 +17,16 @@ Headline: `verified_revert_bounded`.  Under any event list with no user event in
 
 namespace Sommelier
 
+/-- The events the bound `verified_revert_bounded` allows: reads, drag results and pass boundaries.  NO `userEdit` at all (ejb.26: every edit changes the record and so clears the
+mark, even one that moves no key, which `isUserEvent` does not count), and no `userRetry` or `retryKey`. -/
+def vFree : Event → Bool
+  | .userEdit _ _ => false
+  | .userRetry | .retryKey _ => false
+  | _ => true
+
+theorem vFree_notUser {e : Event} (h : vFree e = true) : isUserEvent e = false := by
+  cases e <;> simp_all [vFree, isUserEvent]
+
 def strikeCount (s : State) (x : Key) : Nat := (s.strikes.filter (fun y => y == x)).length
 
 /-- 1 iff this event is the result of a POSTED drag of the engine (not the user) of `k` that is in flight. -/
@@ -116,8 +126,8 @@ theorem markFail_proven (t : State) (k : Key) (h : t.provenNotFull = true) :
 
 theorem judge_cases (s : State) (r : Read) :
     judge s r = s ∨ ∃ k0, s.verified = some k0 ∧ s.inFlight = none ∧ s.gate r = true ∧
-      ((stillMisplaced s r k0 = false ∧ judge s r = { s with verified := none }) ∨
-       (stillMisplaced s r k0 = true ∧ judge s r = markStrike { s with verified := none } k0)) := by
+      ((verFailed s r k0 = false ∧ judge s r = { s with verified := none }) ∨
+       (verFailed s r k0 = true ∧ judge s r = markStrike { s with verified := none } k0)) := by
   unfold judge
   cases hv : s.verified with
   | none => exact Or.inl rfl
@@ -131,7 +141,7 @@ theorem judge_cases (s : State) (r : Read) :
         | some _ => simp [hi] at this
       · exact (Bool.and_eq_true _ _ ▸ hc).2
       · simp only [hc, if_true]
-        by_cases hm : stillMisplaced s r k0 = true
+        by_cases hm : verFailed s r k0 = true
         · exact Or.inr ⟨hm, by simp [hm]⟩
         · exact Or.inl ⟨by simpa using hm, by simp [hm]⟩
     · left; simp [hc]
@@ -163,7 +173,7 @@ theorem result_cases (s : State) (a : Action) (o : Outcome) (p : Bool) :
   by_cases hf : p = true ∧ o = .failed
   · left
     obtain ⟨rfl, rfl⟩ := hf
-    exact ⟨rfl, rfl, { s with inFlight := none, moveCount := s.moveCount + (if (!a.user) = true then 1 else 0), verified := none },
+    exact ⟨rfl, rfl, { s with inFlight := none, moveCount := s.moveCount + (if (!a.user) = true then 1 else 0), verified := none, verRel := a.rel },
       rfl, rfl, rfl, by unfold result; simp⟩
   · right
     unfold result markFail markStrike
@@ -325,7 +335,7 @@ theorem result_vinv {s : State} (h : VInv s) (a : Action) (o : Outcome) (p : Boo
       rw [h2]; exact h.strikes x hx
   · intro b hb; rw [hf.1] at hb; cases hb
 
-theorem vinv_step {s : State} (h : VInv s) (e : Event) (hn : isUserEvent e = false) : VInv (step s e).1 := by
+theorem vinv_step {s : State} (h : VInv s) (e : Event) (hn : vFree e = true) : VInv (step s e).1 := by
   cases e with
   | read r =>
     have hj := judge_vinv h r
@@ -339,12 +349,9 @@ theorem vinv_step {s : State} (h : VInv s) (e : Event) (hn : isUserEvent e = fal
       · intro hu
         rw [noteRead_givenUp']
         exact plan_subject_not_givenUp (hp hu)
-  | userEdit rec moved =>
-    have hm : moved.isEmpty = true := by simpa [isUserEvent] using hn
-    simp only [step, hm, if_true]
-    exact ⟨h.pend, h.strikes, h.flight⟩
-  | userRetry => simp [isUserEvent] at hn
-  | retryKey k => simp [isUserEvent] at hn
+  | userEdit rec moved => simp [vFree] at hn
+  | userRetry => simp [vFree] at hn
+  | retryKey k => simp [vFree] at hn
   | moveResult k o p =>
     simp only [step]
     split
@@ -366,12 +373,12 @@ theorem pot_congr {k : Key} {s t : State} (h1 : t.givenUp = s.givenUp) (h2 : t.s
   unfold pot strikeCount; rw [h1, h2, h3]
 
 theorem pot_judge {s : State} (r : Read) (k : Key)
-    (hr : s.gate r = true → stillMisplaced s r k = true) : pot k (judge s r) ≤ pot k s := by
+    (hr : s.verified = some k → s.gate r = true → verFailed s r k = true) : pot k (judge s r) ≤ pot k s := by
   rcases judge_cases s r with h | ⟨k0, hv, hi, hg, ⟨hm, h⟩ | ⟨hm, h⟩⟩
   · rw [h]; exact Nat.le_refl _
   · rw [h]
     by_cases hk : k0 = k
-    · subst hk; rw [hr hg] at hm; cases hm
+    · subst hk; rw [hr hv hg] at hm; cases hm
     · unfold pot strikeCount
       have : ¬ (s.verified = some k) := by rw [hv]; simpa using hk
       simp [this]
@@ -401,9 +408,9 @@ theorem pot_judge {s : State} (r : Read) (k : Key)
         unfold pot
         simp [hng, hgu, hsc, markStrike_verified, this]
 
-theorem pot_step {s : State} (h : VInv s) (k : Key) (e : Event) (hn : isUserEvent e = false)
+theorem pot_step {s : State} (h : VInv s) (k : Key) (e : Event) (hn : vFree e = true)
     (hv : ∀ k' o p, e = .moveResult k' o p → k' = k → o = .verified ∧ p = true)
-    (hr : ∀ r, e = .read r → s.gate r = true → stillMisplaced s r k = true) :
+    (hr : ∀ r, e = .read r → s.verified = some k → s.gate r = true → verFailed s r k = true) :
     verCnt k s e + pot k (step s e).1 ≤ pot k s := by
   cases e with
   | read r =>
@@ -417,14 +424,9 @@ theorem pot_step {s : State} (h : VInv s) (k : Key) (e : Event) (hn : isUserEven
       · rw [h1]
         exact pot_congr (by simp [emit, noteRead_givenUp']) (by simp [emit, noteRead_strikes']) (by simp [emit, noteRead_verified])
     rw [heq]; exact hj
-  | userEdit rec moved =>
-    have hm : moved.isEmpty = true := by simpa [isUserEvent] using hn
-    have h0 : verCnt k s (.userEdit rec moved) = 0 := by simp [verCnt]
-    rw [h0, Nat.zero_add]
-    simp only [step, hm, if_true]
-    exact Nat.le_of_eq (pot_congr rfl rfl rfl)
-  | userRetry => simp [isUserEvent] at hn
-  | retryKey k => simp [isUserEvent] at hn
+  | userEdit rec moved => simp [vFree] at hn
+  | userRetry => simp [vFree] at hn
+  | retryKey k => simp [vFree] at hn
   | passBoundary =>
     have h0 : verCnt k s .passBoundary = 0 := by simp [verCnt]
     rw [h0, Nat.zero_add]
@@ -495,10 +497,10 @@ theorem pot_step {s : State} (h : VInv s) (k : Key) (e : Event) (hn : isUserEven
 
 /-! ### The theorem -/
 
-/-- Every read the gate accepts still shows `k` misplaced (macOS reverted every move of it). -/
-def StillMisplacedAtGate (k : Key) : State → Read → Prop := fun s r => s.gate r = true → stillMisplaced s r k = true
+/-- Every read the gate accepts, while a verified drag of `k` awaits judgement, shows that drag undone (macOS reverted every move of `k`): `k` still misplaced AND on the wrong side of its anchor. -/
+def StillMisplacedAtGate (k : Key) : State → Read → Prop := fun s r => s.verified = some k → s.gate r = true → verFailed s r k = true
 
-theorem verDrags_le_pot (k : Key) : ∀ (es : List Event) (s : State), VInv s → (∀ e ∈ es, isUserEvent e = false) →
+theorem verDrags_le_pot (k : Key) : ∀ (es : List Event) (s : State), VInv s → (∀ e ∈ es, vFree e = true) →
     AllVerified k es → AtReads (StillMisplacedAtGate k) s es → verDrags k s es ≤ pot k s
   | [], s, _, _, _, _ => by simp [verDrags]
   | e :: es, s, h, hn, hv, hr => by
@@ -512,7 +514,7 @@ theorem verDrags_le_pot (k : Key) : ∀ (es : List Event) (s : State), VInv s �
 `verified` (posted) and every read the gate accepts still shows `k` misplaced, the engine posts at most THREE drags of `k`
 (fewer if `k` already has strikes).  No hypothesis on the hold, the budget (3 on a full bar, 20 on a proven one), the pile, or what the other keys do. -/
 theorem verified_revert_bounded_from (k : Key) (s : State) (es : List Event) (h : VInv s)
-    (hn : ∀ e ∈ es, isUserEvent e = false) (hv : AllVerified k es) (hr : AtReads (StillMisplacedAtGate k) s es) :
+    (hn : ∀ e ∈ es, vFree e = true) (hv : AllVerified k es) (hr : AtReads (StillMisplacedAtGate k) s es) :
     verDrags k s es ≤ 3 - strikeCount s k := by
   have := verDrags_le_pot k es s h hn hv hr
   unfold pot at this
@@ -520,7 +522,7 @@ theorem verified_revert_bounded_from (k : Key) (s : State) (es : List Event) (h 
 
 /-- The same from a fresh state: at most three posted engine drags of `k`, however many reads follow. -/
 theorem verified_revert_bounded (rec : List Key) (k : Key) (es : List Event)
-    (hn : ∀ e ∈ es, isUserEvent e = false) (hv : AllVerified k es) (hr : AtReads (StillMisplacedAtGate k) (State.init rec) es) :
+    (hn : ∀ e ∈ es, vFree e = true) (hv : AllVerified k es) (hr : AtReads (StillMisplacedAtGate k) (State.init rec) es) :
     verDrags k (State.init rec) es ≤ 3 := by
   have := verified_revert_bounded_from k (State.init rec) es (VInv.init rec) hn hv hr
   omega
@@ -541,7 +543,7 @@ theorem res_unverified_no_mark (s : State) (a : Action) (o : Outcome) (p : Bool)
 /-- The next usable read (gate true, nothing in flight) that still finds the marked key misplaced takes a strike for it, clears the mark, and never touches the hold
 (on any bar: the contradiction is no evidence that the bar is full) ... -/
 theorem judge_contradicted_strikes {s : State} {r : Read} {k : Key} (hv : s.verified = some k) (hi : s.inFlight = none)
-    (hg : s.gate r = true) (hm : stillMisplaced s r k = true) :
+    (hg : s.gate r = true) (hm : verFailed s r k = true) :
     (judge s r).strikes = k :: s.strikes ∧ (judge s r).verified = none ∧ (judge s r).hold = s.hold := by
   have h : judge s r = markStrike { s with verified := none } k := by
     unfold judge; simp [hv, hi, hg, hm]
@@ -550,7 +552,7 @@ theorem judge_contradicted_strikes {s : State} {r : Read} {k : Key} (hv : s.veri
 
 /-- ... and given up at the third strike. -/
 theorem judge_contradicted_giveup {s : State} {r : Read} {k : Key} (hv : s.verified = some k) (hi : s.inFlight = none)
-    (hg : s.gate r = true) (hm : stillMisplaced s r k = true) (h2 : 2 ≤ strikeCount s k) :
+    (hg : s.gate r = true) (hm : verFailed s r k = true) (h2 : 2 ≤ strikeCount s k) :
     k ∈ (judge s r).givenUp := by
   have h : judge s r = markStrike { s with verified := none } k := by
     unfold judge; simp [hv, hi, hg, hm]
@@ -560,7 +562,7 @@ theorem judge_contradicted_giveup {s : State} {r : Read} {k : Key} (hv : s.verif
 
 /-- A read that confirms the move (the key is no longer misplaced) clears the mark and takes no strike. -/
 theorem judge_confirmed_clears {s : State} {r : Read} {k : Key} (hv : s.verified = some k) (hi : s.inFlight = none)
-    (hg : s.gate r = true) (hm : stillMisplaced s r k = false) :
+    (hg : s.gate r = true) (hm : verFailed s r k = false) :
     (judge s r).verified = none ∧ (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp ∧ (judge s r).hold = s.hold := by
   have h : judge s r = { s with verified := none } := by
     unfold judge; simp [hv, hi, hg, hm]
@@ -582,19 +584,81 @@ theorem filter_some_pred (o : Option Key) (p : Key → Bool) (k : Key) (h : o.fi
     · rename_i hp; injection h with h; subst h; exact hp
     · simp at h
 
-theorem edit_clears_verified (s : State) (rec moved : List Key) (hm : moved ≠ []) (k : Key) (hk : k ∈ moved) :
-    (step s (.userEdit rec moved)).1.verified ≠ some k := by
-  cases moved with
-  | nil => contradiction
-  | cons x xs =>
-    simp only [step, List.isEmpty_cons, Bool.false_eq_true, if_false]
-    intro heq
-    have := filter_some_pred _ _ _ heq
-    simp at this
-    simp at hk
-    rcases hk with h | h
-    · exact this.1 h
-    · exact this.2 h
+/-- ejb.26: ANY record change clears the mark, whether or not it moves a key. -/
+theorem edit_clears_verified (s : State) (rec moved : List Key) :
+    (step s (.userEdit rec moved)).1.verified = none := by
+  simp only [step]; split <;> rfl
+
+/-- (a') After a user edit the next read judges nothing: it takes no strike, whichever key was pending. -/
+theorem edit_read_no_strike (s : State) (rec moved : List Key) (r : Read) :
+    (step (step s (.userEdit rec moved)).1 (.read r)).1.strikes = (step s (.userEdit rec moved)).1.strikes ∧
+    (step (step s (.userEdit rec moved)).1 (.read r)).1.givenUp = (step s (.userEdit rec moved)).1.givenUp := by
+  have hv := edit_clears_verified s rec moved
+  generalize (step s (.userEdit rec moved)).1 = t at hv ⊢
+  have hj : judge t r = t := by unfold judge; rw [hv]
+  rcases step_read_state t r with h1 | ⟨a, _, h1⟩
+  · rw [h1, hj]; exact ⟨noteRead_strikes' _ _, noteRead_givenUp' _ _⟩
+  · rw [h1, hj]; exact ⟨by simp [emit, noteRead_strikes'], by simp [emit, noteRead_givenUp']⟩
+
+/-- (a'), the whole story: an engine drag of `k` answered `verified`, then a user edit (of any kind), then any read: `k` has no more strikes than before the drag, and is given up only
+if it already was. -/
+theorem verified_drag_edit_read_no_strike (s : State) (a : Action) (hu : a.user = false) (rec moved : List Key) (r : Read) :
+    strikeCount (step (step (result s a .verified true) (.userEdit rec moved)).1 (.read r)).1 a.subject ≤ strikeCount s a.subject ∧
+    (a.subject ∈ (step (step (result s a .verified true) (.userEdit rec moved)).1 (.read r)).1.givenUp → a.subject ∈ s.givenUp) := by
+  have h := edit_read_no_strike (result s a .verified true) rec moved r
+  have hf := (result_facts s a .verified true).2.2.2.2.2 (Or.inr (by simp))
+  have e1 : strikeCount (step (result s a .verified true) (.userEdit rec moved)).1 a.subject ≤ strikeCount (result s a .verified true) a.subject := by
+    simp only [step]; split
+    · exact Nat.le_refl _
+    · unfold strikeCount
+      exact ((List.filter_sublist).filter _).length_le
+  have e2 : ∀ x, x ∈ (step (result s a .verified true) (.userEdit rec moved)).1.givenUp → x ∈ (result s a .verified true).givenUp := by
+    intro x hx; simp only [step] at hx; split at hx
+    · exact hx
+    · exact (List.mem_filter.1 hx).1
+  have e3 : strikeCount (result s a .verified true) a.subject = strikeCount s a.subject := by unfold strikeCount; rw [hf.1]
+  refine ⟨?_, fun hg => ?_⟩
+  · unfold strikeCount at e1 e3 ⊢
+    rw [h.1]; omega
+  · rw [h.2] at hg
+    have := e2 _ hg
+    rwa [hf.2] at this
+
+/-- (b') THE VERDICT LOOKS AT `k` AND ITS ANCHOR ALONE: it is a function of the movable keys `k` and the anchor, in the order the read draws them.  Two reads that draw those two keys in the same
+order (whatever the other keys, the record keys macOS moved across `k` among them) give the same verdict. -/
+theorem crossing_keeps_verdict (s : State) (r r' : Read) (k : Key) (rel : Rel)
+    (h : (movable s r).filter (fun x => x == k || x == rel.target) = (movable s r').filter (fun x => x == k || x == rel.target)) :
+    revertedFromAnchor s r k rel = revertedFromAnchor s r' k rel := by
+  unfold revertedFromAnchor; rw [h]
+
+/-- A key `y` other than `k` and the anchor that is moved to another place (the bar without it is unchanged) does not change what is drawn of `k` and the anchor. -/
+theorem filter_erase_other (l : List Key) (y : Key) (p : Key → Bool) (hy : p y = false) : (l.erase y).filter p = l.filter p := by
+  induction l with
+  | nil => rfl
+  | cons x xs ih =>
+    by_cases hx : x = y
+    · subst hx; simp [hy]
+    · simp [hx, List.filter_cons, ih]
+
+theorem crossing_move_keeps_verdict (s : State) (r r' : Read) (k y : Key) (rel : Rel) (hk : y ≠ k) (ht : y ≠ rel.target)
+    (h : (movable s r).erase y = (movable s r').erase y) :
+    revertedFromAnchor s r k rel = revertedFromAnchor s r' k rel := by
+  apply crossing_keeps_verdict
+  have hp : (fun x => x == k || x == rel.target) y = false := by simp [hk, ht]
+  rw [← filter_erase_other _ y _ hp, ← filter_erase_other (movable s r') y _ hp, h]
+
+/-- (b') A read that shows `k` on the side of its anchor the drag put it (not `revertedFromAnchor`) takes NO strike for it, whatever else it shows: the key's mark is cleared and strikes and
+given-up keys are exactly as before. -/
+theorem judge_landed_no_strike {s : State} {r : Read} {k : Key} (hv : s.verified = some k)
+    (hl : revertedFromAnchor s r k s.verRel = false) :
+    (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp := by
+  rcases judge_cases s r with h | ⟨k0, hv0, _, _, ⟨_, h⟩ | ⟨hm, h⟩⟩
+  · rw [h]; exact ⟨rfl, rfl⟩
+  · rw [h]; exact ⟨rfl, rfl⟩
+  · exfalso
+    rw [hv0] at hv; cases hv
+    unfold verFailed at hm
+    simp [hl] at hm
 
 theorem retry_clears_verified (s : State) : (step s .userRetry).1.verified = none := by simp [step]
 

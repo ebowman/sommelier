@@ -482,7 +482,7 @@ def judgeF (s : State) (r : Read) : State :=
   | none => s
   | some k =>
       if s.inFlight.isNone && s.gateF r then
-        (if stillMisplaced s r k then markStrike { s with verified := none } k else { s with verified := none })
+        (if verFailed s r k then markStrike { s with verified := none } k else { s with verified := none })
       else s
 
 theorem judgeF_eq (s : State) (r : Read) : judgeF s r = judge s r := by

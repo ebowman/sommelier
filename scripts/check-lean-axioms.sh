@@ -45,7 +45,7 @@ invs_eq_invN costScan_get argminV_eq argmin_congr' afterCount_eq penalty_eq fall
 verdictF_eq shownVerdictF_eq freeKeysF_eq userMoveF_eq userMove2F_eq userPickF_eq decideMoveF_eq stepF_eq pendingF_eq statusLineF_eq
 movingKeyF_eq waitingKeyF_eq rowLineF_eq rowNoteF_eq
 verified_revert_bounded verified_revert_bounded_from res_verified_marks res_unverified_no_mark judge_contradicted_strikes judge_contradicted_giveup
-judge_confirmed_clears judge_unusable_keeps edit_clears_verified retry_clears_verified rk_clears_verified vinv_step verDrags_le_pot"
+judge_confirmed_clears judge_unusable_keeps edit_clears_verified retry_clears_verified rk_clears_verified vinv_step verDrags_le_pot edit_read_no_strike verified_drag_edit_read_no_strike crossing_keeps_verdict crossing_move_keeps_verdict judge_landed_no_strike"
 ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Verified.lean Sommelier/Fast.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $HEADLINE; do
   echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty/Verified/Fast.lean"; exit 1; }

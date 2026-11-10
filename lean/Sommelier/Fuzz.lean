@@ -426,6 +426,51 @@ def budgetTrace (fresh : Bool) (prove : Bool) (n : Nat) : G (Nat × Nat) := do
       evs := evs ++ [e2]; s := (step s e2).1
   pure (postedEngine s0 evs, s.moveCount)
 
+/-- ejb.26.  A read of `bar`: every key drawn and trusted, a fresh chevron, settled and complete. -/
+def barRead (bar : List Key) : Event :=
+  .read { kind := .pass, chevron := .fresh, level := .complete, settled := true, stripOpen := false, drawn := bar, pile := [], folded := [], trusted := bar, nearFold := [] }
+
+/-- ejb.26.  An HONEST macOS applies every drag the engine makes and answers `verified`.  Then no key is ever struck or given up, and the last confirming
+read clears the mark (`verified = none`): a mutant that never strikes is blind here, but one that keeps the mark after a confirming read, or strikes a drag
+that took, is not. -/
+def honestTrace : G (List (String × Bool)) := do
+  let mut bar ← shuffle allKeys
+  let mut s := State.init allKeys
+  for _ in List.range 10 do
+    let (s1, acts) := step s (barRead bar)
+    s := s1
+    for a in acts do
+      bar := applyMove bar a
+      s := (step s (.moveResult a.subject .verified true)).1
+  for _ in List.range 2 do
+    s := (step s (barRead bar)).1
+  pure [("honest_no_strike", s.strikes.isEmpty && s.givenUp.isEmpty), ("honest_mark_cleared", s.verified.isNone)]
+
+/-- ejb.26.  After ONE honest verified engine drag of `k`, either a user edit (any record, any moved keys) or a record key other than `k` and its anchor that macOS moves
+to another place; the next read takes NO strike (it is not a revert of `k`'s own drag). -/
+def falseStrikeTrace (edit : Bool) : G (List (String × Bool)) := do
+  let bar ← shuffle allKeys
+  let s0 := State.init allKeys
+  let (s1, acts) := step s0 (barRead bar)
+  match acts with
+  | [] => pure []
+  | a :: _ =>
+    let bar1 := applyMove bar a
+    let s2 := (step s1 (.moveResult a.subject .verified true)).1
+    if edit then
+      let rec2 ← shuffle allKeys
+      let moved ← subset rec2 30
+      let s3 := (step s2 (.userEdit rec2 moved)).1
+      let bar2 ← shuffle allKeys
+      let s4 := (step s3 (barRead bar2)).1
+      pure [("edit_no_strike", s4.strikes == s3.strikes && s4.givenUp == s3.givenUp)]
+    else
+      let others := allKeys.filter (fun y => y != a.subject && y != a.rel.target)
+      let y := others.getD (← rnd others.length) 0
+      let bar2 := insertAt y (bar1.erase y) (← rnd bar1.length)
+      let s3 := (step s2 (barRead bar2)).1
+      pure [("crossing_no_strike", s3.strikes == s2.strikes)]
+
 /-- ejb.17.  A bar macOS never changes: every drag is answered `verified` but every later read shows the same inversions.  No key is dragged more
 than three times (`verified_revert_bounded`), on a full bar and on a bar proven not full alike. -/
 def revertTrace (fresh prove : Bool) : G (List (String × Bool)) := do
@@ -445,7 +490,7 @@ def revertTrace (fresh prove : Bool) : G (List (String × Bool)) := do
       if !a.user then moves := a.subject :: moves
       s := (step s (.moveResult a.subject .verified true)).1
   let worst := allKeys.foldl (fun m k => max m (moves.filter (· == k)).length) 0
-  pure ([("revert_bound", decide (worst ≤ 3))] ++ (if worst == 3 then [("revert_hit3", true)] else []))
+  pure ([("revert_bound", decide (worst ≤ 3)), ("revert_struck_at_three", moves.isEmpty || worst == 3)] ++ (if worst == 3 then [("revert_hit3", true)] else []))
 
 /-- Budget and strip invariants over a trace from the initial state with no user event. -/
 def pureChecks (t : Trace) : List (String × Bool) :=
@@ -641,6 +686,10 @@ def fuzz (mixed pure_ seed : Nat) : List Tally × Nat × Nat :=
       let fresh ← coin 50
       let prove ← coin 50
       ts := addAll ts (← revertTrace fresh (prove && !fresh)) (fun _ => s!"revertTrace {fresh} {prove}")
+    for _ in List.range (pure_ / 5) do
+      ts := addAll ts (← honestTrace) (fun _ => "honestTrace")
+      ts := addAll ts (← falseStrikeTrace true) (fun _ => "falseStrikeTrace edit")
+      ts := addAll ts (← falseStrikeTrace false) (fun _ => "falseStrikeTrace crossing")
     for _ in List.range pure_ do
       let t ← genTrace 30 false
       ts := addAll ts (pureChecks t) (fun _ => toString (repr (t.record, t.evs)))

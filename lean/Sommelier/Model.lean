@@ -147,6 +147,9 @@ structure State where
   usable settled read judges it: if the key is still misplaced the move did not take (macOS reverted it), and the key takes a strike exactly like
   a failed drag.  Cleared by that read, by every other result, and by the user events that reset the key's strikes. -/
   verified : Option Key := none
+  /-- the place that drag put the marked key (ejb.26): meaningful only while `verified` is `some`; `judge` strikes the key only if the read shows it on the WRONG side of this
+  target (its own placement failed), so a record key that macOS moves across it does not.  Never read when `verified` is `none`. -/
+  verRel : Rel := .before 0
   deriving Repr
 
 def State.init (record : List Key) : State where
@@ -171,6 +174,7 @@ def State.init (record : List Key) : State where
   flightReq := false
   inFlight := none
   verified := none
+  verRel := .before 0
 
 /-- Engine-initiated drags allowed per user event on a full bar. -/
 def capFull : Nat := 3

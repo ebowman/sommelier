@@ -77,6 +77,23 @@ example : (run (State.init [1, 2, 3, 4, 5]) ([.read (mkRead .fresh [3, 2, 1, 4] 
 example : (run (State.init [1, 2]) [.read (mkRead .fresh [2, 1] []), ok 1, .read (mkRead .fresh [1, 2] [])]).1.strikes = [] := by decide
 example : (run (State.init [1, 2]) [.read (mkRead .fresh [2, 1] []), ok 1, .read (mkRead .fresh [1, 2] [])]).1.verified = none := by decide
 
+/-- ejb.26 (a).  Key 2 is dragged before 3 (verified); then the user drops 3 first in the record (an edit that keeps 2's strikes): the read that follows cannot say whether 2's drag
+took (the record it was judged against is gone), so it takes no strike.  Repeated, 2 is never given up. -/
+def editAfterVerified : List Event :=
+  [.read (mkRead .fresh [1, 3, 2] []), ok 2, .userEdit [3, 1, 2] [3], .read (mkRead .fresh [1, 2, 3] [])]
+example : (run (State.init [1, 2, 3]) editAfterVerified).1.strikes = [] := by decide
+example : (run (State.init [1, 2, 3]) editAfterVerified).1.verified = none := by decide
+/-- ... and an edit that moves no key clears the mark too. -/
+example : (run (State.init [1, 2, 3]) [.read (mkRead .fresh [1, 3, 2] []), ok 2, .userEdit [3, 1, 2] [], .read (mkRead .fresh [1, 2, 3] [])]).1.strikes = [] := by decide
+/-- ejb.26 (b).  Key 2 is dragged before 3 (verified); then macOS moves record key 1 across it: the bar reads [2, 1, 3].  Key 2 is still right of nothing it was dragged beside (it is
+before its anchor 3), so no strike; the engine goes on to fix key 1. -/
+def crossedAfterVerified : List Event :=
+  [.read (mkRead .fresh [1, 3, 2] []), ok 2, .read (mkRead .fresh [2, 1, 3] [])]
+example : (run (State.init [1, 2, 3]) crossedAfterVerified).1.strikes = [] := by decide
+example : (run (State.init [1, 2, 3]) crossedAfterVerified).2.length = 2 := by decide
+/-- The anchor itself crossing back IS a revert of the drag: [1, 3, 2] again, struck. -/
+example : (run (State.init [1, 2, 3]) [.read (mkRead .fresh [1, 3, 2] []), ok 2, .read (mkRead .fresh [1, 3, 2] [])]).1.strikes = [2] := by decide
+
 /-! 3. Resume after a chain.  The user drops folded Wifi (5) right of the fold line: one strip drag, which
 fails.  The chain ends; a later regular pass (Resume) makes no strip move and no other drag. -/
 def resume : List Event :=

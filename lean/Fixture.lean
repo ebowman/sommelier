@@ -67,7 +67,7 @@ def namedCases : List (String × List Key × List Event) :=
     ("refusedLoop", r123, refusedLoop), ("kReads", r123, kReads), ("bad1", r12, bad1), ("proven", r12, proven),
     ("provenBudget20", r12, proven ++ (List.replicate 30 [mism, ok 1]).flatten),
     ("spentRetry", r123456, spent ++ [.userRetry]), ("spentEdit", r123456, spent ++ [.userEdit [2, 1, 3, 4, 5, 6] [2]]),
-    ("reverted", r12345, reverted), ("revertedProven", r12, revertedProven), ("revertedRetryKey", r12345, reverted ++ [.retryKey 1, .read (mkRead .fresh [3, 2, 1, 4] [5])]),
+    ("reverted", r12345, reverted), ("editAfterVerified", r123, editAfterVerified), ("crossedAfterVerified", r123, crossedAfterVerified), ("revertedProven", r12, revertedProven), ("revertedRetryKey", r12345, reverted ++ [.retryKey 1, .read (mkRead .fresh [3, 2, 1, 4] [5])]),
     ("pulled", r1245, pulled), ("pulledBusy", r1245, pulled ++ [.moveResult 5 .busy false]),
     ("failedPlusRetryKey", [1, 2, 3, 4], failedPlus ++ [.retryKey 1]), ("strikeOne", r12, strikeOne),
     ("t4", [1, 2, 5, 6], t4), ("t5", [1, 2, 5, 6, 9], t5), ("t6", [7, 5], t6),

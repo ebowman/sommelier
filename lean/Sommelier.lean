@@ -9,3 +9,4 @@ import Sommelier.Honesty
 import Sommelier.Pins
 import Sommelier.Fast
 import Sommelier.Verified
+import Sommelier.VerExamples

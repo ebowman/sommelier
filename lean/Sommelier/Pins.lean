@@ -612,18 +612,31 @@ example : ∀ (s : State) (r : Read) (a : Action), decideMove s r = some a →
     (s.view r).usable ∧ (s.view r).consistent = true := @decideMove_gated
 
 -- ejb.17: a verified move the next read contradicts is a strike; the engine never repeats it more than three times
-example : ∀ (rec : List Key) (k : Key) (es : List Event), (∀ e ∈ es, isUserEvent e = false) → AllVerified k es →
+example : ∀ (rec : List Key) (k : Key) (es : List Event), (∀ e ∈ es, vFree e = true) → AllVerified k es →
     AtReads (StillMisplacedAtGate k) (State.init rec) es → verDrags k (State.init rec) es ≤ 3 := @verified_revert_bounded
-example : ∀ (k : Key) (s : State) (es : List Event), VInv s → (∀ e ∈ es, isUserEvent e = false) → AllVerified k es →
+example : ∀ (k : Key) (s : State) (es : List Event), VInv s → (∀ e ∈ es, vFree e = true) → AllVerified k es →
     AtReads (StillMisplacedAtGate k) s es → verDrags k s es ≤ 3 - strikeCount s k := @verified_revert_bounded_from
 example : ∀ (s : State) (a : Action), a.user = false → (result s a .verified true).verified = some a.subject := @res_verified_marks
 example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → s.inFlight = none → s.gate r = true →
-    stillMisplaced s r k = true →
+    verFailed s r k = true →
     (judge s r).strikes = k :: s.strikes ∧ (judge s r).verified = none ∧ (judge s r).hold = s.hold := @judge_contradicted_strikes
 example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → s.inFlight = none → s.gate r = true →
-    stillMisplaced s r k = true → 2 ≤ strikeCount s k → k ∈ (judge s r).givenUp := @judge_contradicted_giveup
+    verFailed s r k = true → 2 ≤ strikeCount s k → k ∈ (judge s r).givenUp := @judge_contradicted_giveup
 example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → s.inFlight = none → s.gate r = true →
-    stillMisplaced s r k = false → (judge s r).verified = none ∧ (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp ∧
+    verFailed s r k = false → (judge s r).verified = none ∧ (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp ∧
       (judge s r).hold = s.hold := @judge_confirmed_clears
+
+-- ejb.26: any record change clears the mark; the read after an edit takes no strike; the verdict looks at the key and its anchor alone
+example : ∀ (s : State) (rec moved : List Key), (step s (.userEdit rec moved)).1.verified = none := @edit_clears_verified
+example : ∀ (s : State) (rec moved : List Key) (r : Read),
+    (step (step s (.userEdit rec moved)).1 (.read r)).1.strikes = (step s (.userEdit rec moved)).1.strikes ∧
+    (step (step s (.userEdit rec moved)).1 (.read r)).1.givenUp = (step s (.userEdit rec moved)).1.givenUp := @edit_read_no_strike
+example : ∀ (s : State) (a : Action), a.user = false → ∀ (rec moved : List Key) (r : Read),
+    strikeCount (step (step (result s a .verified true) (.userEdit rec moved)).1 (.read r)).1 a.subject ≤ strikeCount s a.subject ∧
+    (a.subject ∈ (step (step (result s a .verified true) (.userEdit rec moved)).1 (.read r)).1.givenUp → a.subject ∈ s.givenUp) := @verified_drag_edit_read_no_strike
+example : ∀ (s : State) (r r' : Read) (k y : Key) (rel : Rel), y ≠ k → y ≠ rel.target →
+    (movable s r).erase y = (movable s r').erase y → revertedFromAnchor s r k rel = revertedFromAnchor s r' k rel := @crossing_move_keeps_verdict
+example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → revertedFromAnchor s r k s.verRel = false →
+    (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp := @judge_landed_no_strike
 
 end Sommelier

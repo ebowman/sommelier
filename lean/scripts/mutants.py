@@ -338,18 +338,25 @@ M=[
 ('fast_row_never_moving',"def rowLineF (s : State) (r : Read) (k : Key) : RowLine :=\n  if movingKeyF s r k then .moving","def rowLineF (s : State) (r : Read) (k : Key) : RowLine :=\n  if false then .moving"),
 ('fast_free_movable_inverted',"&& !hv.contains x && !(fresh && fs.contains x))","&& hv.contains x && !(fresh && fs.contains x))"),
 # ejb.17: a verified move the next read contradicts is a strike
-('ver_no_strike',"(if stillMisplaced s r k then markStrike { s with verified := none } k else { s with verified := none })","{ s with verified := none }"),
-('ver_never_marked',"verified := if posted && !a.user && o == .verified then some a.subject else none }","verified := none }"),
+('ver_no_strike',"(if verFailed s r k then markStrike { s with verified := none } k else { s with verified := none })","{ s with verified := none }"),
+('ver_never_marked',"verified := if posted && !a.user && o == .verified then some a.subject else none,\n                     verRel := a.rel }","verified := none,\n                     verRel := a.rel }"),
 ('ver_mark_user_drags',"if posted && !a.user && o == .verified then","if posted && o == .verified then"),
-('ver_judge_ungated',"if s.inFlight.isNone && s.gate r then\n        (if stillMisplaced","if s.inFlight.isNone then\n        (if stillMisplaced"),
+('ver_judge_ungated',"if s.inFlight.isNone && s.gate r then\n        (if verFailed","if s.inFlight.isNone then\n        (if verFailed"),
 ('ver_confirm_keeps_mark',"else { s with verified := none })\n      else s","else s)\n      else s"),
 ('ver_misplaced_not_checked',"(movable s r).contains k && s.record.contains k && misplaced s r k","(movable s r).contains k && s.record.contains k"),
 ('ver_retry_keeps_mark',"({ s with\n            verified := none,\n            moveCount := 0, hold := false, givenUp := [], strikes","({ s with\n            moveCount := 0, hold := false, givenUp := [], strikes"),
-('ver_edit_keeps_mark',"            verified := s.verified.filter (fun k => !moved.contains k),   -- ejb.17: the key's mark goes with its strikes\n",""),
+('ver_edit_keeps_mark',"            verified := none,   -- ejb.26: ANY record change clears the mark (ejb.17 cleared only the moved keys')\n",""),
+('ver_edit_empty_keeps_mark',"            verified := none,   -- ejb.26: ANY record change clears the mark (the read can no longer say whether the drag took)\n",""),
+('ver_edit_clears_moved_only',"verified := none,   -- ejb.26: ANY record change clears the mark (ejb.17 cleared only the moved keys')","verified := s.verified.filter (fun k => !moved.contains k),"),
+('ver_crossing_strikes',"stillMisplaced s r k && revertedFromAnchor s r k s.verRel","stillMisplaced s r k"),
+('ver_anchor_side_swapped',"| .before t => two == [t, k]\n  | .after t => two == [k, t]","| .before t => two == [k, t]\n  | .after t => two == [t, k]"),
+('ver_rel_not_recorded',"verRel := a.rel }","verRel := .before 0 }"),
 ('ver_rk_keeps_mark',"            verified := s.verified.filter (fun x => x != k),\n",""),
 ]
 
 
+# ejb.26: these must also be noticed SEMANTICALLY (a failing example or a fuzz counterexample), not only by a broken proof
+SEMANTIC_MUST_KILL = {'ver_mark_user_drags', 'ver_no_strike', 'ver_confirm_keeps_mark', 'ver_edit_keeps_mark', 'ver_edit_empty_keeps_mark', 'ver_edit_clears_moved_only', 'ver_crossing_strikes', 'ver_anchor_side_swapped', 'ver_rel_not_recorded'}
 PROOF_MUST_KILL_ANY = {'ver_no_strike', 'ver_never_marked', 'ver_confirm_keeps_mark', 'ver_judge_ungated', 'own_whole_drawn_only', 'own_whole_unlisted_fails', 'own_whole_unread_fresh', 'free_ignores_unlisted', 'free_ignores_unread', 'free_ignores_movable', 'free_ignores_fold',
   'free_fold_any_chevron', 'engine_grant_bypasses_budget', 'needsStrip_false', 'postedEngine_skips_case', 'F1_label_user',
   'proof_counts_unsettled', 'proof_unobserved_counts', 'proof_pass_flips_early', 'proof_poll_flips_late'}  # some theorem or pin (Safety.lean or Gates/Truth/Honesty)
@@ -419,6 +426,7 @@ FAST_MUST_KILL = {m[0] for m in M if m[0].startswith('fast_')}
 # check is `gate_facts` (Honesty.lean) and the runner below: a mutant listed here must not be noticed by any example or fuzz check; it may still break a
 # proof script that unfolds the redundant guard (a positional break, not a falsified property).
 EQUIVALENT = {
+  'ver_misplaced_not_checked': 'an engine drag is always `k before h` with h after k in the record (planOrderMoves: the first inversion), so k on the wrong side of its anchor h already means `misplaced`; the check only guards states no engine drag leaves',
   'plan_on_poll': 'the gate requires r.kind = .pass (Read.usable), so the guard `r.kind != .pass` in decideMove is redundant',
   'plan_unsettled': 'the gate requires r.settled = true (Read.usable), so the guard `!r.settled` in decideMove is redundant',
   'plan_incomplete': 'the gate requires r.level != .incomplete (Read.usable), so the guard in decideMove is redundant',
@@ -475,6 +483,9 @@ def run(m, w):
     pf = subprocess.run(['lake', 'build', 'Sommelier.Pins'], cwd=d, capture_output=True, text=True).returncode != 0
     e = subprocess.run(['lake', 'build', 'Sommelier.Examples'], cwd=d, capture_output=True, text=True)
     ex = sorted(set(int(x) for x in re.findall(r'error: Sommelier/Examples.lean:(\d+)', e.stdout + e.stderr)))
+    # ejb.26: the verified-drag examples live in a module that imports only Step, so they decide the semantics even when a mutant breaks a Truth proof (Examples.lean then never builds)
+    ve = subprocess.run(['lake', 'build', 'Sommelier.VerExamples'], cwd=d, capture_output=True, text=True)
+    ex = ex + sorted(set(100000 + int(x) for x in re.findall(r'error: Sommelier/VerExamples.lean:(\d+)', ve.stdout + ve.stderr)))
     fk = {}
     if tf is None:
         bs = subprocess.run(['lake', 'build', 'Sommelier.Status'], cwd=d, capture_output=True, text=True)
@@ -543,6 +554,8 @@ if __name__ == '__main__':
     MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems', 'fast', 'verified'}
     sem = [n for n, ex, k in ok if ex or any(t not in MODK for t in k)]
     proof_only = [n for n, ex, k in ok if n not in sem]
+    for n in sorted(SEMANTIC_MUST_KILL):
+        if n in {r[0] for r in res} and n in proof_only: print('  FINDING: not noticed semantically (example/fuzz), only by a proof:', n)
     print(f'{len(sem)} killed mutants are also noticed semantically (a failing example or a fuzz counterexample); {len(proof_only)} die only to a broken proof/pin:')
     for n in proof_only: print('  proof-only:', n)
     ran = {r[0] for r in res}

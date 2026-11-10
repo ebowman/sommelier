@@ -140,7 +140,7 @@ private final class SteerableBox: @unchecked Sendable {
     }
 
     // The intent of the old per-minute cap: a key macOS keeps reverting is dragged at most 3 times in all, however many passes run (here 200 passes), and a user's
-    // "Try again" on that key gives it exactly one fresh round of at most 3.
+    // "Try again" on that key gives it one fresh round: the user's own drag of it (1) and then at most 3 engine drags (3 here: macOS reverts every one).
     @Test func aKeyMacOSKeepsRevertingIsDraggedAtMostThreeTimesNoMatterHowManyPassesRun() async {
         let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "C", "B"].map(k)),
                           observerFor: { _ in FrozenObserver(order: ["A", "B", "C"].map(k)) })
@@ -150,7 +150,30 @@ private final class SteerableBox: @unchecked Sendable {
         await r.engine.retry(key: k("C"))
         for _ in 0..<200 { _ = await r.engine.reconcileOnce() }
         let second = await r.actuator.calls.count
-        #expect(second > first && second <= first + 1 + 3, "after Try again: \(second) (before: \(first))")
+        #expect(second == first + 1 + 3, "after Try again: \(second) (before: \(first))")   // the user's one drag of C, then one fresh round of exactly 3 reverted engine drags
+    }
+
+    // ejb.26 (a): a verified drag followed by a USER edit of the record (the bar then reads as "wrong" against the NEW record) is not a revert of the drag: the key is not struck.
+    // Three such coincidences used to give the key up until Try again, so the key must still be dragged by the engine in a fourth round.
+    @Test func aVerifiedDragIsNotStruckWhenTheUserEditsTheRecordBeforeTheNextRead() async {
+        let r = await rig(order: ["A", "C", "B"], layout: Layout(visible: ["A", "B", "C"].map(k)))
+        var dragsOfB = 0
+        for round in 1...4 {
+            let before = await r.actuator.calls.count
+            _ = await r.engine.reconcileOnce()   // the engine drags B before C: the bar reads A B C
+            let calls = Array(await r.actuator.calls.dropFirst(before))
+            if calls.contains(where: { if case .move(let key, _) = $0 { return key == k("B") } else { return false } }) { dragsOfB += 1 }
+            #expect(await r.actuator.order == ["A", "B", "C"].map(k), "round \(round): the engine's drag landed")
+            // the user drops C first: the record becomes C A B; the next read (bar A B C) is wrong against it, because of the edit, not because B's drag failed
+            _ = await r.engine.setLayout(Layout.placedAll(visible: ["C", "A", "B"].map(k)), moved: [k("C")])
+            _ = await r.engine.reconcileOnce()   // the user's move of C (or none): either way a judged read
+            // put the world back: record A B C, bar A C B
+            _ = await r.engine.setLayout(Layout.placedAll(visible: ["A", "B", "C"].map(k)), userPlacement: false)
+            await r.actuator.displace(k("C"), toIndex: 1)
+            await r.engine.retry(key: k("A"))   // (a user's fresh round; it does not clear B's strikes, only A's)
+            #expect(await r.actuator.order == ["A", "C", "B"].map(k), "round \(round): the bar is back to A C B")
+        }
+        #expect(dragsOfB == 4, "B was dragged in every round (never given up): \(dragsOfB)")
     }
 
     @Test func aLayoutEqualToTheBarDoesNothing() async {

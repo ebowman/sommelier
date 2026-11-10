@@ -42,7 +42,7 @@ on a device, the theorems that use it say nothing about that device.
 | `movable` | gdu.144 rule 3: drawn, trusted, not in `foldedAll`: the only keys a planned move names. |
 | `lastFreshPile` | `lastFreshChevronObs` pile: REPLACED only by a settled, non-`incomplete`, strip-closed read with a fresh chevron; any other chevron read (stale, unsettled, incomplete, strip open) adds to it (a SETTLED, closed, readable fresh poll replaces it, like a pass read); kept through chevronless reads until the proof. |
 | `givenUp`, `strikes` | `cannotPlace`/`orderAttempts`/`revertWatch`/strikes. On a bar not proven not-full the first failed posted drag gives a key up; once proven not-full, 3 failed posted drags. On ANY bar, a verified engine drag the next usable read finds undone is a strike (3 give the key up): see `verified` and the ejb.17 section. Cleared by user events: `userEdit` clears only the MOVED keys' entries, `userRetry` all, `retryKey` that key. There is no `appsChanged` release (dropped: only user events clear given-up keys). |
-| `verified` | `lastVerifiedOrderMove`/`unverifiedStrikes` (ejb.17): the subject of the last POSTED ENGINE drag answered `verified`, until a usable read judges it. Set by `result` (a user's drag, a failed, refused or interrupted one, a drag with no mouse event leave none); judged and cleared by the next read with the gate true and nothing in flight (`judge`); cleared by `userRetry`, and for the moved keys of a `userEdit` and the key of a `retryKey` (the same events that clear the key's strikes). |
+| `verified`, `verRel` | `lastVerifiedOrderMove`/`unverifiedStrikes` (ejb.17): the subject of the last POSTED ENGINE drag answered `verified`, until a usable read judges it; `verRel` is the place that drag put it (its anchor and side; ejb.26, meaningful only while `verified` is set). Set by `result` (a user's drag, a failed, refused or interrupted one, a drag with no mouse event leave none); judged and cleared by the next read with the gate true and nothing in flight (`judge`); cleared by `userRetry`, by EVERY `userEdit` (ejb.26) and by the `retryKey` of that key. |
 | `skipped` | a key whose drag was refused/busy/failed without a mouse event: no engine move of it until a user event (so a refused key cannot loop). |
 | `inFlight`, `gen`, `flightOwed` | the serial actuator call; only its `moveResult` clears it. `gen` is bumped by `passBoundary` and `userRetry`; `flightOwed` records at emit time whether the drag's subject was owed by the CURRENT chain (never true for a granted move), which is the only case a user `busy` without a mouse event is re-armed. |
 | `planOrderMoves` | `Reconciler.plan` order phase (stub). An engine move that needs the strip is withheld (not emitted, not counted) unless `stripGrant`. |
@@ -294,22 +294,29 @@ after 3 (`unverifiedStrikes`, `revertWatch`). The rule now:
 
 * `result` records the subject of a posted ENGINE drag answered `verified` in `State.verified` (`res_verified_marks`); nothing else leaves a mark (`res_unverified_no_mark`).
 * The next read that the gate accepts (`State.gate`: usable and consistent) with nothing in flight JUDGES the mark (`judge`, run BEFORE the read decides: `decideMove s r = decideMove0 (judge s r) r`,
-  so the repeat is never planned from the read that struck the key). If the key is still `stillMisplaced` (movable, in the record, and some movable record key stands on the wrong
-  side of it: `misplaced`) it takes a STRIKE (`markStrike`, the strike of a failed drag on a proven bar: given up at the third) and the mark is cleared
+  so the repeat is never planned from the read that struck the key). If the key's OWN drag did not take (`verFailed`, ejb.26) it takes a STRIKE; `verFailed` is both (1) `stillMisplaced`
+  (movable, in the record, and some movable record key stands on the wrong side of it: `misplaced`) and (2) `revertedFromAnchor`: among the movable keys, the read draws `k` and the
+  anchor `rel.target` the drag put it next to (`State.verRel`, recorded by `result`) in the OPPOSITE order to the one the drag made (`k` before its anchor for an `after` drag, behind it for a `before` drag).
+  Only the order of those two keys counts, so a record key `y` that macOS moves across `k` (not the anchor) cannot make a strike (`crossing_keeps_verdict`, `crossing_move_keeps_verdict`,
+  `judge_landed_no_strike`). If the anchor itself crosses back, the read is indistinguishable from a revert and strikes. An anchor the read does not show movable cannot be judged: no strike.
+  The key takes a strike (`markStrike`, the strike of a failed drag on a proven bar: given up at the third) and the mark is cleared
   (`judge_contradicted_strikes`, `judge_contradicted_giveup`); otherwise the mark is just cleared, no strike (`judge_confirmed_clears`). A read that cannot judge (unsettled, strip open, a poll, unusable, a drag in flight)
   leaves the mark (`judge_unusable_keeps`).
 * Choice, on a bar NOT proven not full: the contradicted move takes the same strike (no hold, no immediate give-up). A failed posted drag on such a bar holds the bar because a failure says the
   bar's reading is unreliable; a verified drag the read contradicts says only that this key did not move, so the key's three strikes (which agree with the full bar's budget of 3) are the limit and
   the rest of the bar keeps working.
-* User events reset the mark with the key's strikes: `userRetry` all (`retry_clears_verified`), `userEdit` the moved keys (`edit_clears_verified`), `retryKey` that key (`rk_clears_verified`).
+* ANY record change clears the mark (ejb.26): `userEdit` clears `verified` whether or not it moves a key (`edit_clears_verified`), because the record the drag was judged against is gone; the read after an edit
+  takes no strike (`edit_read_no_strike`, `verified_drag_edit_read_no_strike`: after a verified drag of `k`, an edit and a read, `k` has no more strikes than before the drag). A `userEdit` that moves no key
+  still does not clear the strikes or the budget (only the mark): a user edit can thus make a pending drag go unjudged, which is accepted (a user action). `userRetry` clears all (`retry_clears_verified`), `retryKey` that key (`rk_clears_verified`).
   Given-up keys are skipped by the planner, so a stuck key stops the whole order phase until the user acts (as a failed key always did).
 
-Headline: `verified_revert_bounded`: from `State.init rec`, over any event list with no user event (`isUserEvent`), in which every drag of `k` is answered `verified` (posted)
-(`AllVerified k es`) and every read the gate accepts still shows `k` misplaced (`AtReads (StillMisplacedAtGate k)`), `verDrags k (State.init rec) es <= 3`: at most three posted engine
+Headline: `verified_revert_bounded`: from `State.init rec`, over any event list with no user event and no edit at all (`vFree`: ejb.26 hypothesis change, `isUserEvent` does not count an edit that moves no key, but such an edit now clears the mark and
+so could dodge a strike), in which every drag of `k` is answered `verified` (posted) (`AllVerified k es`) and every read the gate accepts while a drag of `k` awaits judgement shows it undone, `k` still misplaced AND on the wrong side of its
+anchor (`AtReads (StillMisplacedAtGate k)`: macOS reverts `k` every time), `verDrags k (State.init rec) es <= 3`: at most three posted engine
 drags of `k`, on a full bar and on a proven one alike, whatever the hold, the pile or the other keys do. `verified_revert_bounded_from` states it from any state satisfying `VInv` as
 `<= 3 - strikes of k`. Proof: a potential `pot k s` (none once `k` is given up; else 3 less its strikes, less 1 while its verified drag awaits judgement) never rises (`pot_step`, `pot_judge`) and
 each posted drag of `k` lowers it by one (`verDrags_le_pot`); the invariant `VInv` (a mark exists only with nothing in flight; three strikes imply given up; an engine drag in flight is not of a given-up key)
-is preserved by every non-user event (`vinv_step`). `lake exe fuzz` checks it on random bars that macOS never changes (`revert_bound`, `revert_hit3`); `mutants.py` has the `ver_*` mutants.
+is preserved by every non-user event (`vinv_step`). `lake exe fuzz` checks it on random bars that macOS never changes (`revert_bound`, `revert_struck_at_three`, `revert_hit3`) and the two no-false-strike cases on random bars (`honest_no_strike`, `honest_mark_cleared`, `edit_no_strike`, `crossing_no_strike`); examples `editAfterVerified`, `crossedAfterVerified` are also fixtures; `mutants.py` has the `ver_*` mutants.
 The Swift suite: `RecordOrderEngineTests.aVerifiedMoveThatTheReadStillPlansIsStruckNotRepeated` (3 drags, plain config), `...OnABarAssumedFull`, `aKeyMacOSKeepsRevertingIsDraggedAtMostThreeTimesNoMatterHowManyPassesRun`.
 (The R1 review caveat of ejb.15, "the core repeats a verified-but-undone drag until its budget", no longer holds.)
 

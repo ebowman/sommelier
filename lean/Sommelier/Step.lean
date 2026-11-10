@@ -294,8 +294,21 @@ wrong side of it (`misplaced`).  A correctly executed engine move of `k` puts it
 def stillMisplaced (s : State) (r : Read) (k : Key) : Bool :=
   (movable s r).contains k && s.record.contains k && misplaced s r k
 
-/-- ejb.17.  THE READ JUDGES THE LAST VERIFIED ENGINE MOVE.  Applies only to a usable, consistent read (`gate`) with no drag in flight.  If the pending key is still
-misplaced, it takes a strike (`markStrike`: given up at the third, on ANY bar: a verified drag the read contradicts is not evidence that the bar is full, so it
+/-- ejb.26.  The read shows `k` on the WRONG side of the key `rel` names, among the movable keys: the drag put `k` `rel` that key, and now it is not.  Only the placement of
+`k` against ITS OWN anchor counts: it looks at the movable keys `k` and the anchor alone (`two`, in the order the read draws them), so a record key `y` that macOS moves across `k`
+changes nothing here unless `y` is the anchor itself (`crossing_keeps_verdict`).  A target the read does not show movable cannot be judged: no verdict, so no strike. -/
+def revertedFromAnchor (s : State) (r : Read) (k : Key) (rel : Rel) : Bool :=
+  let two := (movable s r).filter (fun x => x == k || x == rel.target)
+  match rel with
+  | .before t => two == [t, k]
+  | .after t => two == [k, t]
+
+/-- ejb.26.  THE VERIFIED DRAG OF `k` DID NOT TAKE: `k` is still out of place (`stillMisplaced`) AND it stands on the wrong side of the anchor the drag put it next to. -/
+def verFailed (s : State) (r : Read) (k : Key) : Bool :=
+  stillMisplaced s r k && revertedFromAnchor s r k s.verRel
+
+/-- ejb.17.  THE READ JUDGES THE LAST VERIFIED ENGINE MOVE.  Applies only to a usable, consistent read (`gate`) with no drag in flight.  If the pending key's own drag did not take (`verFailed`: still
+misplaced and on the wrong side of its anchor), it takes a strike (`markStrike`: given up at the third, on ANY bar: a verified drag the read contradicts is not evidence that the bar is full, so it
 never holds the bar, unlike a failed drag on a bar not proven not full); otherwise the pending marker is simply cleared.  It runs BEFORE the read decides, so a repeat of the contradicted drag is never planned from a read that already struck out the key.
 Other reads (unsettled, strip open, polls, unusable) leave the marker. -/
 def judge (s : State) (r : Read) : State :=
@@ -303,7 +316,7 @@ def judge (s : State) (r : Read) : State :=
   | none => s
   | some k =>
       if s.inFlight.isNone && s.gate r then
-        (if stillMisplaced s r k then markStrike { s with verified := none } k else { s with verified := none })
+        (if verFailed s r k then markStrike { s with verified := none } k else { s with verified := none })
       else s
 
 /-- The one decision per read: at most one move.  Only a settled pass read with a readable tree may plan.
@@ -345,7 +358,8 @@ user event), the strip session is returned, and a user's interrupted drag (`busy
 def result (s : State) (a : Action) (o : Outcome) (posted : Bool) : State :=
   let s0 := { s with inFlight := none, moveCount := s.moveCount + (if posted && !a.user then 1 else 0),
                      -- ejb.17: a verified posted ENGINE drag is judged by the next usable read; every other result leaves nothing to judge
-                     verified := if posted && !a.user && o == .verified then some a.subject else none }
+                     verified := if posted && !a.user && o == .verified then some a.subject else none,
+                     verRel := a.rel }
   let core : State :=
     if posted then
       match o with
@@ -372,6 +386,7 @@ def step (s : State) : Event → State × List Action
   | .userEdit rec moved =>
       if moved.isEmpty then
         ({ s with
+            verified := none,   -- ejb.26: ANY record change clears the mark (the read can no longer say whether the drag took)
             record := rec, owedKeys := s.owedKeys.filter (fun k => rec.contains k),
             foldRequest := s.foldRequest.filter (fun k => rec.contains k),
             -- a reorder can invalidate the in-flight pull-out: a busy result must not re-arm it
@@ -385,7 +400,7 @@ def step (s : State) : Event → State × List Action
                                  && (rec.takeWhile (fun x => x != k)).any (fun x => s.lastDrawn.contains x))
         let release := moved.any (fun k => s.holdFolded.contains k || s.lastFreshPile.contains k)
         ({ s with
-            verified := s.verified.filter (fun k => !moved.contains k),   -- ejb.17: the key's mark goes with its strikes
+            verified := none,   -- ejb.26: ANY record change clears the mark (ejb.17 cleared only the moved keys')
             record := rec, moveCount := 0, restricted := true, editSessionUsed := false,
             owedKeys := owed,
             foldRequest := match pull with
