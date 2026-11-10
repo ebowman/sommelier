@@ -25,6 +25,9 @@ struct CoreDriver {
     private(set) var down: DecisionError?
     /// The emitted action that still awaits its `moveResult`.
     private(set) var awaiting: (action: Action, subject: ItemKey)?
+    /// ejb.21: the real answer (outcome, posted) of a `moveResult` step that threw while the action awaited. The end-of-pass net replays it
+    /// instead of a made-up busy/not-posted; nil when no real answer was ever obtained.
+    private(set) var awaitingRealAnswer: (outcome: Outcome, posted: Bool)?
     private(set) var emitted = 0
     private(set) var resolved = 0
     /// An action emitted while another still awaited its result, a result with nothing awaiting, or a result for another subject.
@@ -94,12 +97,12 @@ struct CoreDriver {
             if case .moveResult(let k, let o, let posted) = e {
                 // the one answer to the awaiting action, counted only once the core has it (a failed step leaves the action awaiting,
                 // so the end-of-pass safety net or the next attempt still answers it, exactly once overall)
-                if let w = awaiting { if w.action.subject != k { violations += 1 }; awaiting = nil; resolved += 1; note(.result(subject: w.subject, outcome: o, posted: posted, site: site)) }
+                if let w = awaiting { if w.action.subject != k { violations += 1 }; awaiting = nil; awaitingRealAnswer = nil; resolved += 1; note(.result(subject: w.subject, outcome: o, posted: posted, site: site)) }
                 else { violations += 1 }
             }
             if let a = actions.first, let subject = keys.key(for: a.subject) {
                 if awaiting != nil { violations += 1 }
-                awaiting = (a, subject)
+                awaiting = (a, subject); awaitingRealAnswer = nil
                 emitted += 1
                 let rel: Relation
                 switch a.rel {
@@ -110,12 +113,13 @@ struct CoreDriver {
             } else if let a = actions.first {
                 // an Action naming a key this engine never interned: cannot be performed; answered by the caller as failed/not posted
                 if awaiting != nil { violations += 1 }
-                awaiting = (a, ItemKey.module(name: "?unmapped"))
+                awaiting = (a, ItemKey.module(name: "?unmapped")); awaitingRealAnswer = nil
                 emitted += 1
             }
             return .success(actions)
         } catch {
             down = error
+            if case .moveResult(_, let o, let posted) = e, awaiting != nil { awaitingRealAnswer = (o, posted) }   // ejb.21: keep the real answer for the net
             note(.error("\(error)"))
             return .failure(error)
         }

@@ -575,6 +575,11 @@ public actor LayoutEngine {
     /// Safety net: no emitted action may stay unanswered when a pass ends, whatever path ended it.
     private func coreSettleStraggler(site: String) {
         guard let w = core.awaiting else { return }
+        if let real = core.awaitingRealAnswer {   // ejb.21: the answer was obtained but the step threw; replay it, never invent busy
+            log("engine: replaying the real answer (\(real.outcome), posted \(real.posted)) of \(w.subject) at \(site)")
+            coreResult(w.action, real.outcome, posted: real.posted, site: site)
+            return
+        }
         log("engine: BUG? an emitted order move of \(w.subject) was not answered; answering busy (not posted) at \(site)")
         coreResult(w.action, .busy, posted: false, site: site)
     }
@@ -2019,7 +2024,7 @@ public actor LayoutEngine {
         let now = Date()
         // Observed reveal state, only from a pass that completed its work (converged or incomplete) and from what it observed.
         // The core's word: "converged" is published only when the core's status says the menu bar matches the record (checking, moving, differs: not converged).
-        let coreMatches: Bool = { switch core.display?.status { case .matches?: return true; default: return false } }()
+        let coreMatches: Bool = core.awaiting != nil ? false : { switch core.display?.status { case .matches?: return true; default: return false } }()
         let judge = report.outcome == .converged || report.outcome == .incomplete
         let lay = layout, wantHidden = showHidden, wantAlways = showAlways
         await publish { s in
@@ -2420,7 +2425,7 @@ public actor LayoutEngine {
         var consecutiveFailures = 0
         func report(_ o: PassReport.Outcome) -> PassReport { PassReport(outcome: o, phase: phaseReached, actionCount: actionCount) }
 
-        func isConverged() -> Bool { failures.isEmpty && !core.isDown && core.displayError == nil }   // a core that cannot be called never shows "converged" (plan section 5)
+        func isConverged() -> Bool { failures.isEmpty && !core.isDown && core.displayError == nil && core.awaiting == nil }   // a core that cannot be called never shows "converged" (plan section 5)
 
         // ejb.15 event read (wiring plan section 1): this pass's settled read goes to the core. The Swift-only vetoes known BEFORE the step may only
         // downgrade it to settled:false (evidence); they never decide and never skip feeding the read: pending adoption, hand-drag adoption, a

@@ -186,6 +186,46 @@ private func expectVetoSites(_ w: World, contains: String, sourceLocation: Sourc
         #expect(resultSites(b.trace).count == emittedCount)
     }
 
+    // ejb.21: a moveResult step that throws must not lose the actuator's real outcome: the net replays it, never an invented busy.
+    @Test func aFailingMoveResultAfterAFailedDragReplaysFailedPosted() async {
+        let w = await world(order: Self.reversed, record: Self.record, failOn: [(1, .mechanismFailed("boom"))])
+        await w.engine.injectCoreFailureForTests(.undecodableOutput, onMoveResultOnly: true)
+        _ = await w.engine.reconcileOnce()
+        #expect(results(await w.engine.coreAudit().trace).isEmpty)
+        await w.engine.injectCoreFailureForTests(nil)
+        _ = await w.engine.reconcileOnce()
+        let a = await w.engine.coreAudit()
+        let rs = results(a.trace)
+        #expect(rs.first.map { $0 == (.failed, true) } == true, "the core must receive failed/posted:true, got \(rs)")
+        #expect(a.violations == 0 && !a.awaiting)
+    }
+
+    @Test func aFailingMoveResultAfterAVerifiedDragDoesNotLeaveTheKeySkipped() async {
+        let w = await world(order: Self.reversed, record: Self.record)
+        await w.engine.injectCoreFailureForTests(.undecodableOutput, onMoveResultOnly: true)
+        _ = await w.engine.reconcileOnce()
+        await w.engine.injectCoreFailureForTests(nil)
+        for _ in 0..<8 { _ = await w.engine.reconcileOnce() }   // no userRetry: a skipped key would stall the bar
+        let a = await w.engine.coreAudit()
+        #expect(results(a.trace).first.map { $0 == (.verified, true) } == true, "got \(results(a.trace))")
+        #expect(await w.actuator.order == Self.record.map(k), "the bar must reach the record without user action")
+        #expect(a.violations == 0 && !a.awaiting)
+    }
+
+    @Test func aPassWhereOnlyMoveResultStepsFailNeverReportsConvergedWhileAnActionAwaits() async {
+        let w = await world(order: Self.reversed, record: Self.record)
+        await w.engine.injectCoreFailureForTests(.undecodableOutput, onMoveResultOnly: true)
+        for _ in 0..<3 {
+            let rep = await w.engine.reconcileOnce()
+            let a = await w.engine.coreAudit()
+            if a.awaiting {
+                #expect(rep.outcome != .converged, "converged while an action awaits")
+                #expect(!w.state.isConverged, "isConverged while an action awaits")
+            }
+        }
+        #expect(await w.engine.coreAudit().awaiting)
+    }
+
     // The core is asked again after a veto: the vetoed key is `skipped` (an unposted drag is not an attempt) until a user event; nothing is left awaiting.
     @Test(arguments: [false, true]) func nothingStaysAwaitingAcrossManyMixedPasses(production: Bool) async {
         let msg = "D \(ActuationError.overflowRefusalMarker) (hidden by macOS because the bar is full); a drag cannot reach it"
