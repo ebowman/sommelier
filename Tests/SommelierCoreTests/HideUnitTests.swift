@@ -53,26 +53,26 @@ struct HideUnitTests {
         #expect(w.contains { $0.contains("hide units normalized") && $0.contains("status:com.a::2") })
     }
 
-    @Test func moveBringsSiblingsAlong() {
+    @Test func moveBringsSiblingsAlong()  throws {
         var l = Layout(visible: [a1, b1, a2, c1])
-        let moved = l.move(a1, to: .hidden)
-        #expect(moved == [a1, a2])
+        let moved = try l.move(a1, to: .hidden)
+        #expect(moved == [a1])   // ejb.32/gdu.149: the user moved ONE key; the sibling follows it into the section but is not reported as moved
         #expect(l.hidden == [a1, a2]); #expect(l.visible == [b1, c1])
     }
 
-    @Test func moveIndexPlacementAndOrder() {
+    @Test func moveIndexPlacementAndOrder()  throws {
         var l = Layout(visible: [b1], hidden: [c1, a2], alwaysHidden: [a3])
-        let moved = l.move(a1, to: .hidden, index: 0)   // a1 is not in the layout yet; a2/a3 follow it
-        #expect(moved == [a1, a2, a3])
+        let moved = try l.move(a1, to: .hidden, index: 0)   // a1 is not in the layout yet; a2/a3 follow it
+        #expect(moved == [a1])
         #expect(l.hidden == [a1, a2, a3, c1]); #expect(l.alwaysHidden.isEmpty)
-        let back = l.move(a2, to: .visible, index: 0)
-        #expect(back == [a2, a1, a3])
+        let back = try l.move(a2, to: .visible, index: 0)
+        #expect(back == [a2])
         #expect(l.visible == [a2, a1, a3, b1]); #expect(l.hidden == [c1])
     }
 
-    @Test func moveSingleItemReturnsItself() {
+    @Test func moveSingleItemReturnsItself() throws {
         var l = Layout(visible: [a1, b1])
-        #expect(l.move(b1, to: .hidden) == [b1])
+        #expect(try l.move(b1, to: .hidden) == [b1])
     }
 
     @Test func overflowEntriesKeepUnitsAdjacent() {

@@ -9,5 +9,10 @@ import Sommelier.Honesty
 import Sommelier.Pins
 import Sommelier.Fast
 import Sommelier.Adopt
+import Sommelier.GestureDef
+import Sommelier.Gesture
+import Sommelier.GestureProv
+import Sommelier.GestureExamples
+import Sommelier.GestureFuzz
 import Sommelier.Verified
 import Sommelier.VerExamples

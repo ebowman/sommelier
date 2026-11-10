@@ -393,14 +393,14 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
 
 // MARK: toolbar actions
 
-@Test func hideNotFittingHidesTheOverflowedUnitsAndReportsBlockedOnes() {
+@Test func hideNotFittingHidesTheOverflowedUnitsAndReportsBlockedOnes()  throws {
     let o1 = k("o1"), o2 = k("o2"), ap = k("apple")
     let layout = Layout(visible: [o1, ap, o2, chev, k("a"), clock])
     let obs = ObservedOrder(onBar: layout.visible, parked: [], systemOverflow: [o1, ap, o2], overflowChevron: chev)
-    let r = ArrangeDrop.hideNotFitting(layout: layout, observed: obs, capabilities: caps)
+    let r = try ArrangeDrop.hideNotFitting(layout: layout, observed: obs, capabilities: caps)
     #expect(r.layout.hidden == [o1, o2] && r.moved == [o1, o2] && r.blocked == [ap])
     #expect(r.layout.visible == [ap, chev, k("a"), clock])
-    let none = ArrangeDrop.hideNotFitting(layout: layout, observed: ObservedOrder(onBar: layout.visible, parked: []), capabilities: caps)
+    let none = try ArrangeDrop.hideNotFitting(layout: layout, observed: ObservedOrder(onBar: layout.visible, parked: []), capabilities: caps)
     #expect(none.layout == layout && none.moved.isEmpty)
 }
 

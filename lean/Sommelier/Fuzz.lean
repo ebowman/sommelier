@@ -1,5 +1,6 @@
 import Sommelier.Step
 import Sommelier.Status
+import Sommelier.GestureFuzz
 
 /-!
 # Fuzz harness
@@ -757,6 +758,20 @@ def fuzzMain (args : List String) : IO UInt32 := do
   IO.println s!"needs Re-apply table, 5 keys (cases, shown, violations): {rc}, {rs}, {rb}"
   if rs == 0 || rb != 0 then
     IO.println "  NEEDS-REAPPLY TABLE FAILED"
+    bad := bad + 1
+  -- ejb.32: gestures (random layouts and drops against their meaning, GestureFuzz.lean)
+  let gr := Sommelier.GestureFuzz.run 6000 seed
+  for (nm, t) in [("gesture_same_section", gr.same), ("gesture_cross_section", gr.cross), ("gesture_absent_key", gr.absent),
+                  ("gesture_hide", gr.hide), ("gesture_hide_any", gr.hideAny)] do
+    IO.println s!"  {nm}: {t.n} instances, {t.bad} failures"
+    bad := bad + t.bad
+    if let some c := t.cex then IO.println s!"    first counterexample: {c}"
+    if t.n == 0 then
+      IO.println s!"  NOT EXERCISED: {nm}"
+      bad := bad + 1
+  IO.println s!"  gesture coverage: index none {gr.seenNone}, index out of range {gr.seenOutOfRange}, nine-key unit {gr.seenBig}, system block {gr.seenSys}"
+  if gr.seenNone == 0 || gr.seenOutOfRange == 0 || gr.seenBig == 0 || gr.seenSys == 0 then
+    IO.println "  NOT EXERCISED: a gesture case class"
     bad := bad + 1
   for t in ts do
     IO.println s!"  {t.name}: {t.n} instances, {t.bad} failures"

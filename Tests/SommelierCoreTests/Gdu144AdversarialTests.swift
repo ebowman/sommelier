@@ -338,13 +338,13 @@ private final class AdvClock: @unchecked Sendable {
     }
 
     // A10: membership is unaffected and uncounted while the budget is spent
-    @Test func aSpentBudgetStillHidesAndNeverCountsIt() async {
+    @Test func aSpentBudgetStillHidesAndNeverCountsIt() async throws {
         let w = AdvWorld(pile: advP, drawn: ["D1", "D2", "D4", "D3", "D5", "D6"])
         let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
         for _ in 0..<12 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
         let spent = await a.count()   // ejb.15 (Wiring 3), CHANGED because the core decides: whatever was spent (<= 3, the core withholds strip-needing moves)
         #expect(spent <= 3)
-        var l = Layout.placedAll(visible: (advP + advD).map(k)); _ = l.move(k("D6"), to: .hidden, units: .ownerKeys)
+        var l = Layout.placedAll(visible: (advP + advD).map(k)); _ = try l.move(k("D6"), to: .hidden, units: .ownerKeys)
         await e.setLayout(l, userPlacement: false)
         for _ in 0..<3 { _ = await e.reconcileOnce() }
         #expect(await a.hideCalls >= 1)

@@ -956,6 +956,14 @@ engine's published state; it never computes a claim of its own about the bar.
   (`effectiveUserMoved`: section changed, or order flipped against another key; an unchanged layout keeps the set, a parked-key show
   request) and logs `setLayout: user moved <keys>`.
 
+- Gestures are computed by the PROVED core (ejb.32, docs/verified-core.md "Gestures"): `Layout.move`, `Layout.hideNotFitting` and `ArrangeDrop.outcome / drop / step / hideNotFitting`
+  (and the System Settings adoption) call `Layout.applying` (`GestureCore.swift`), which sends the layout, the hide-unit table, the system-module keys and the gesture to the Lean
+  `applyGesture` (`sommelier_gesture`) and gets back the new three sections and the moved keys (`moved == [key]` for a drop; every key moved for hide-what-does-not-fit, which
+  `confirmed(.hideNotFitting)` now passes on as the edit's moved set instead of recomputing it). Swift keeps: mapping the dropped slot to a section index (`ArrangeDrop.index`), capability
+  refusals, the "will not fit" hint, the no-op test, and the `ItemKey <-> core key` scratch table (it covers every key of the layout, modules and parked keys included). If the core
+  cannot answer (a `DecisionError`) the gesture is refused with the message "Sommelier's layout core could not compute this change ...", nothing is changed and there is no fallback
+  logic. The old pure-Swift implementation survives only as the test oracle `Tests/SommelierCoreTests/GestureOracle.swift` (`GestureDifferentialTests`).
+
 - Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange fold line after the last key the observation reports as overflowed; rows behind it carry the « badge. Dropping left of the fold line is allowed but flagged. Dropping right of the trailing system block clamps to before it (`ArrangeDrop.index`, which also clamps after the LEADING anchors, e.g. Wi-Fi leftmost, so index 0 = first movable slot; the debug hook `SOMMELIER_ARRANGE_MOVE` goes through the same function, 0-based among movable items); dropping on the item's own position is a no-op.
 
 - Capabilities (`CapabilityRules`, bundle ids from `EngineState.items`): modules cannot be dragged; items that cannot be hidden

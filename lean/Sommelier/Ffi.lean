@@ -1,12 +1,13 @@
 import Sommelier.Status
 import Sommelier.Fast
 import Sommelier.Adopt
+import Sommelier.GestureDef
 
 /-!
 # C boundary: the thin exports the Swift app links
 
 The app holds an opaque `State` and sends flat `Nat` token lists (the C shim turns `UInt32` words into `Nat`s).  Every export only
-DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`, `rowNote`, `adoptProposal`), and ENCODES the answer.
+DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`, `rowNote`, `adoptProposal`, `applyGesture`), and ENCODES the answer.
 No decision is made here.  This file adds no definition to any other module.
 
 The exports call the FAST versions of `Fast.lean` (`stepF`, `statusLineF`, `shownVerdictF`, `rowLineF`, `rowVerdictF`); each is PROVED EQUAL to the specification
@@ -300,6 +301,124 @@ def rowNoteTok (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
 def adoptTok (s : State) (rd : List Nat) : List Nat :=
   match decRead rd with | none => errAns | some r => okAns (encAdopt (adoptProposal s r))
 
+
+/-! ## Gestures (ejb.32): `applyGesture` -/
+
+def encSection : Section → Nat | .visible => 0 | .hidden => 1 | .alwaysHidden => 2
+def decSection : Nat → Option Section | 0 => some .visible | 1 => some .hidden | 2 => some .alwaysHidden | _ => none
+theorem decSection_enc (s : Section) : decSection (encSection s) = some s := by cases s <;> rfl
+
+/-- the layout: three length-prefixed key lists, Visible, Hidden, Always hidden -/
+def encLayout3 (L : Layout3) : List Nat := encList L.visible ++ encList L.hidden ++ encList L.alwaysHidden
+
+/-- a layout at the start of the words, and the words after it -/
+def decLayout3Rest (ts : List Nat) : Option (Layout3 × List Nat) := do
+  let (v, ts) ← decList ts
+  let (h, ts) ← decList ts
+  let (a, ts) ← decList ts
+  some (⟨v, h, a⟩, ts)
+
+def decLayout3 (ts : List Nat) : Option Layout3 :=
+  match decLayout3Rest ts with | some (L, []) => some L | _ => none
+
+theorem decLayout3Rest_enc (L : Layout3) (rest : List Nat) : decLayout3Rest (encLayout3 L ++ rest) = some (L, rest) := by
+  obtain ⟨v, h, a⟩ := L
+  simp [encLayout3, decLayout3Rest, decList_enc, List.append_assoc, bind, Option.bind]
+
+theorem decLayout3_enc (L : Layout3) : decLayout3 (encLayout3 L) = some L := by
+  have := decLayout3Rest_enc L []
+  simp only [List.append_nil] at this
+  simp [decLayout3, this]
+
+/-- the answer of a gesture: the new layout, then the moved keys (length-prefixed) -/
+def encGestureResult (r : Layout3 × List Key) : List Nat := encLayout3 r.1 ++ encList r.2
+
+def decGestureResult (ts : List Nat) : Option (Layout3 × List Key) := do
+  let (L, ts) ← decLayout3Rest ts
+  let (mv, ts) ← decList ts
+  if ts = [] then some (L, mv) else none
+
+theorem decGestureResult_enc (r : Layout3 × List Key) : decGestureResult (encGestureResult r) = some r := by
+  obtain ⟨L, mv⟩ := r
+  simp [encGestureResult, decGestureResult, decLayout3Rest_enc, decList_enc', bind, Option.bind]
+
+/-- the hide-unit table: length-prefixed, `(key, unit)` pairs flattened.  A key the table does not list is its own unit (`4294967296 + key`, outside the 32-bit ids a unit
+is given on the Swift side) -/
+def encUnits (tbl : List (Key × Nat)) : List Nat := encList (tbl.flatMap fun p => [p.1, p.2])
+
+def decPairs : List Nat → Option (List (Key × Nat))
+  | [] => some []
+  | k :: u :: r => (decPairs r).map ((k, u) :: ·)
+  | _ => none
+
+def decUnits (ts : List Nat) : Option (List (Key × Nat)) :=
+  match decList ts with | some (l, []) => decPairs l | _ => none
+
+theorem decPairs_enc (tbl : List (Key × Nat)) : decPairs (tbl.flatMap fun p => [p.1, p.2]) = some tbl := by
+  induction tbl with
+  | nil => rfl
+  | cons p tbl ih => simp [decPairs, ih]
+
+theorem decUnits_enc (tbl : List (Key × Nat)) : decUnits (encUnits tbl) = some tbl := by
+  simp [decUnits, encUnits, decList_enc', decPairs_enc]
+
+/-- a bare length-prefixed key list (the system-module keys) -/
+def encKeyList (l : List Key) : List Nat := encList l
+def decKeyList (ts : List Nat) : Option (List Key) := match decList ts with | some (l, []) => some l | _ => none
+theorem decKeyList_enc (l : List Key) : decKeyList (encKeyList l) = some l := by simp [decKeyList, encKeyList, decList_enc']
+
+/-- the unit function of a table -/
+def unitOfTable (tbl : List (Key × Nat)) (k : Key) : Nat := (tbl.lookup k).getD (4294967296 + k)
+
+/-- a gesture: `[0, key, section, 0]` (no index), `[0, key, section, 1, index]`, or `1 :: length-prefixed keys` (hide what does not fit) -/
+def encGesture : Gesture → List Nat
+  | .drop k s none => [0, k, encSection s, 0]
+  | .drop k s (some n) => [0, k, encSection s, 1, n]
+  | .hideNotFitting ks => 1 :: encList ks
+
+def decGesture : List Nat → Option Gesture
+  | [0, k, s, 0] => (decSection s).map fun sec => .drop k sec none
+  | [0, k, s, 1, n] => (decSection s).map fun sec => .drop k sec (some n)
+  | 1 :: ts => match decList ts with | some (ks, []) => some (.hideNotFitting ks) | _ => none
+  | _ => none
+
+theorem decGesture_enc (g : Gesture) : decGesture (encGesture g) = some g := by
+  cases g with
+  | drop k s idx => cases idx <;> cases s <;> rfl
+  | hideNotFitting ks => simp [encGesture, decGesture, decList_enc']
+
+/-- malformed gestures are refused, never defaulted -/
+theorem decGesture_malformed :
+    decGesture [] = none ∧ decGesture [2] = none ∧ decGesture [0, 1, 3, 0] = none ∧ decGesture [0, 1, 0, 2] = none ∧
+    decGesture [0, 1, 0, 1] = none ∧ decGesture [0, 1, 0, 0, 5] = none ∧ decGesture [1] = none ∧ decGesture [1, 2, 7] = none ∧
+    decGesture [1, 0, 9] = none := by decide
+
+/-- malformed layouts, unit tables and key lists are refused (a short list, trailing words, an odd pair count) -/
+theorem decGestureInputs_malformed :
+    decLayout3 [] = none ∧ decLayout3 [1, 5, 0] = none ∧ decLayout3 [0, 0, 0, 7] = none ∧ decLayout3 [2, 5, 0, 0] = none ∧
+    decUnits [] = none ∧ decUnits [3, 1, 2, 3] = none ∧ decUnits [2, 1, 2, 9] = none ∧ decUnits [2, 1] = none ∧
+    decKeyList [] = none ∧ decKeyList [1] = none ∧ decKeyList [0, 4] = none := by decide
+
+/-- `gestureTok layout units sys gesture`: all four inputs decode, or the answer is the error word -/
+def gestureTok (lay units sys gst : List Nat) : List Nat :=
+  match decLayout3 lay, decUnits units, decKeyList sys, decGesture gst with
+  | some L, some tbl, some sysKeys, some g => okAns (encGestureResult (applyGesture (unitOfTable tbl) (fun k => sysKeys.contains k) L g))
+  | _, _, _, _ => errAns
+
+theorem gestureTok_enc (L : Layout3) (tbl : List (Key × Nat)) (sysKeys : List Key) (g : Gesture) :
+    gestureTok (encLayout3 L) (encUnits tbl) (encKeyList sysKeys) (encGesture g) =
+      okAns (encGestureResult (applyGesture (unitOfTable tbl) (fun k => sysKeys.contains k) L g)) := by
+  simp [gestureTok, decLayout3_enc, decUnits_enc, decKeyList_enc, decGesture_enc]
+
+theorem gestureTok_bad_layout (lay units sys gst : List Nat) (h : decLayout3 lay = none) : gestureTok lay units sys gst = errAns := by
+  simp [gestureTok, h]
+theorem gestureTok_bad_units (lay units sys gst : List Nat) (h : decUnits units = none) : gestureTok lay units sys gst = errAns := by
+  simp [gestureTok, h]
+theorem gestureTok_bad_sys (lay units sys gst : List Nat) (h : decKeyList sys = none) : gestureTok lay units sys gst = errAns := by
+  simp [gestureTok, h]
+theorem gestureTok_bad_gesture (lay units sys gst : List Nat) (h : decGesture gst = none) : gestureTok lay units sys gst = errAns := by
+  simp [gestureTok, h]
+
 /-! ## Wrapper theorems: encoded input gives the encoding of the proved value; undecodable input gives the error word -/
 
 theorem initTok_enc (rec : List Key) : initTok (encKeys rec) = State.init rec := rfl
@@ -454,6 +573,9 @@ def nameEvent : Event → String
   | .moveResult k o p => s!"moveResult({k} {nameOutcome o} posted={p})"
   | .passBoundary => "passBoundary"
 
+def nameLayout3 (L : Layout3) : String := s!"visible={nameList L.visible} hidden={nameList L.hidden} alwaysHidden={nameList L.alwaysHidden}"
+def nameGestureResult (r : Layout3 × List Key) : String := s!"{nameLayout3 r.1} moved={nameList r.2}"
+
 /-- the Lean-side reading of an input: the name of the event the words decode to -/
 def describeTok (ev : List Nat) : List Nat :=
   match decEvent ev with
@@ -489,6 +611,12 @@ def exRowNote (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowNot
 /-- ejb.9: the adopted record, or `[0]` (no proposal). Decides in `adoptProposal` (Adopt.lean); nothing here. -/
 @[export sommelier_adopt]
 def exAdopt (s : State) (r : Array Nat) : Array Nat := (adoptTok s r.toList).toArray
+
+/-- ejb.32: `applyGesture`.  Inputs: the layout, the hide-unit table, the system-module keys, the gesture (see `encLayout3`, `encUnits`, `encKeyList`, `encGesture`).
+Answer: `okTag :: new layout ++ length-prefixed moved keys`, or `[errTag]` if ANY input does not decode.  Decides in `applyGesture` (GestureDef.lean); nothing here.
+There is no `Fast` twin: one call per gesture, never on a hot path. -/
+@[export sommelier_gesture]
+def exGesture (lay units sys gst : Array Nat) : Array Nat := (gestureTok lay.toList units.toList sys.toList gst.toList).toArray
 
 /-- Test support: the name of the event the words decode to, as UTF-8 bytes (`[errTag]` if they do not decode). -/
 @[export sommelier_describe_event]

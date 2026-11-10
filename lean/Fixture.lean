@@ -1,6 +1,8 @@
 import Sommelier.Ffi
 import Sommelier.Fuzz
 import Sommelier.Examples
+import Sommelier.GestureFuzz
+import Sommelier.GestureExamples
 /-!
 # Fixture generator for the Swift `DecisionCoreTests`
 
@@ -95,6 +97,45 @@ def namedCases : List (String × List Key × List Event) :=
     ("notFullProven-flag", r12, [.read { mkRead .absent [2, 1] [] with notFullProven := true }])
   ]
 
+/-! ### Gestures (ejb.32)
+
+Format (one case = six lines, all NAMES, never codes: the Swift test parses the text itself and renders its own result with `Names`):
+  GCASE <name>
+  GLAYOUT visible=[..] hidden=[..] alwaysHidden=[..]
+  GUNITS <key>:<unit> ...            (keys the table does not list are their own unit)
+  GSYS <key> ...                     (the system-module keys)
+  GGESTURE drop <key> <visible|hidden|alwaysHidden> <index|none>   |   GGESTURE hide [<keys>]
+  GEXPECT visible=[..] hidden=[..] alwaysHidden=[..] moved=[..]     (computed by `applyGesture`) -/
+
+def nameSection : Section → String | .visible => "visible" | .hidden => "hidden" | .alwaysHidden => "alwaysHidden"
+def nameGesture : Gesture → String
+  | .drop k s none => s!"drop {k} {nameSection s} none"
+  | .drop k s (some n) => s!"drop {k} {nameSection s} {n}"
+  | .hideNotFitting ks => s!"hide {nameList ks}"
+
+def emitGesture (name : String) (L : Layout3) (tbl : List (Key × Nat)) (sysKeys : List Key) (g : Gesture) (out : IO.FS.Stream) : IO Unit := do
+  out.putStrLn s!"GCASE {name}"
+  out.putStrLn s!"GLAYOUT {nameLayout3 L}"
+  out.putStrLn ("GUNITS " ++ " ".intercalate (tbl.map fun p => s!"{p.1}:{p.2}"))
+  out.putStrLn ("GSYS " ++ " ".intercalate (sysKeys.map toString))
+  out.putStrLn s!"GGESTURE {nameGesture g}"
+  out.putStrLn s!"GEXPECT {nameGestureResult (applyGesture (unitOfTable tbl) (fun k => sysKeys.contains k) L g)}"
+
+def namedGestures : List (String × Layout3 × List (Key × Nat) × List Key × Gesture) :=
+  let tbl : List (Key × Nat) := (List.range 9).map fun i => (10 + i, 7)
+  let sys := [90, 91]
+  [ ("incident-same-section", exL, tbl, sys, .drop 12 .visible (some 0)),
+    ("same-section-none", exL, tbl, sys, .drop 12 .visible none),
+    ("same-section-out-of-range", exL, tbl, sys, .drop 12 .visible (some 99)),
+    ("cross-hidden", exL, tbl, sys, .drop 12 .hidden none),
+    ("cross-always-index", exL, tbl, sys, .drop 12 .alwaysHidden (some 0)),
+    ("show-before-system-block", exL, tbl, sys, .drop 3 .visible none),
+    ("absent-key", ⟨[1, 10, 11, 2], [3], []⟩, tbl, sys, .drop 12 .hidden none),
+    ("split-unit", ⟨[10, 1], [11], [12]⟩, tbl, sys, .drop 13 .visible (some 0)),
+    ("hide-unit", exL, tbl, sys, .hideNotFitting [11, 2]),
+    ("hide-twice-one-unit", exL, tbl, sys, .hideNotFitting [10, 12, 3, 77]),
+    ("hide-none", exL, tbl, sys, .hideNotFitting []) ]
+
 def main (args : List String) : IO UInt32 := do
   let traces := (args.getD 0 "2000").toNat!
   let seed0 := (args.getD 1 "20260509").toNat!
@@ -106,4 +147,11 @@ def main (args : List String) : IO UInt32 := do
     let (t, seed') := (Sommelier.Fuzz.genTrace 30 true).run seed
     seed := seed'
     emitCase s!"fuzz{i}" t.record t.evs 10 out
+  for (name, L, tbl, sysKeys, g) in namedGestures do emitGesture name L tbl sysKeys g out
+  -- random layouts, unit tables (incl. a nine-key unit), system blocks and gestures (GestureFuzz.lean's generators)
+  let mut gseed := seed0
+  for i in [0:(args.getD 2 "1500").toNat!] do
+    let ((c, g), gseed') := (do let c ← Sommelier.GestureFuzz.genCase; let g ← Sommelier.GestureFuzz.genGesture; pure (c, g) : Sommelier.GestureFuzz.G _).run gseed
+    gseed := gseed'
+    emitGesture s!"fuzzg{i}" c.layout c.units [90, 91, 92, 93] g out
   return 0

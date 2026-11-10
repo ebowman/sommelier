@@ -1918,10 +1918,12 @@ public actor LayoutEngine {
         }
         guard !found.isEmpty else { return }
         var l = layout
-        var moved: [ItemKey] = []
-        for (k, tk) in found {
-            guard l.section(of: k) == .visible else { continue }
-            for m in l.move(k, to: .hidden, units: rule) where !moved.contains(m) { moved.append(m) }
+        // ejb.32: "each visible key, with its unit, to the end of Hidden" is the proved core's hide-what-does-not-fit gesture; it returns every key it moved, once each.
+        let moved: [ItemKey]
+        do { moved = try l.hideNotFitting(found.map(\.0), units: rule) }
+        catch { log("layout: adopting the System Settings hides was refused: the layout core could not compute it (\(error))"); return }
+        let wasVisible = Set(layout.visible)
+        for (k, tk) in found where wasVisible.contains(k) && moved.contains(k) {
             log("layout: adopted System Settings: \(k) is hidden there; moved to Hidden")
             log("engine: Control Center \(tk) isAllowed=false; evidence: \(evidence[k] ?? "none")")
         }

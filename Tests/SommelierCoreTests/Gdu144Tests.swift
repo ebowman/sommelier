@@ -124,11 +124,11 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         }
     }
 
-    @Test func hideWhatDoesNotFitIncludesTheFoldedParkedKeysToo() {
+    @Test func hideWhatDoesNotFitIncludesTheFoldedParkedKeysToo()  throws {
         let (p1, f1, d1) = (k("P1"), k("F1"), k("D1"))
         var o = ObservedOrder(onBar: [p1, chev, d1], parked: [f1], systemOverflow: [p1], overflowChevron: chev)
         o.foldedParked = [f1]
-        let r = ArrangeDrop.hideNotFitting(layout: Layout(visible: [d1, p1, f1]), observed: o, capabilities: caps)
+        let r = try ArrangeDrop.hideNotFitting(layout: Layout(visible: [d1, p1, f1]), observed: o, capabilities: caps)
         #expect(Set(r.moved) == [p1, f1])
         #expect(r.layout.hidden.contains(f1) && r.layout.hidden.contains(p1))
     }

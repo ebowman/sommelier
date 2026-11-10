@@ -148,7 +148,7 @@ struct ArrangeView: View {
     }
     private func confirmText(_ c: ArrangeViewModel.Confirm) -> String {
         switch c {
-        case .hideNotFitting(_, let titles, let blocked, _):
+        case .hideNotFitting(_, let titles, let blocked, _, _):
             var t = titles.isEmpty ? "Nothing can be hidden." : "These will move to Hidden (an app's items hide together): " + titles.joined(separator: ", ") + "."
             if !blocked.isEmpty { t += " Cannot be hidden and stay: " + blocked.joined(separator: ", ") + "." }
             return t

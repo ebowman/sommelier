@@ -62,4 +62,9 @@ enum Names {
         case .passBoundary: return "passBoundary"
         }
     }
+
+    /// ejb.32: `visible=[..] hidden=[..] alwaysHidden=[..] moved=[..]`, as `Ffi.lean`'s `nameGestureResult` renders a gesture's answer.
+    static func gestureResult(_ r: (layout: Layout3, moved: [Key])) -> String {
+        "visible=\(list(r.layout.visible)) hidden=\(list(r.layout.hidden)) alwaysHidden=\(list(r.layout.alwaysHidden)) moved=\(list(r.moved))"
+    }
 }

@@ -41,16 +41,16 @@ private let clock = ItemKey.module(name: "Clock")
     #expect(g.map(\.keys) == [[ord1, ord2], [other]])
 }
 
-@Test func layoutMovesTheWholeEntryUnitFromEitherMember() {
+@Test func layoutMovesTheWholeEntryUnitFromEitherMember()  throws {
     let l = Layout(visible: [other, helper, parent])
     for member in [helper, parent] {
         var m = l
-        let moved = m.move(member, to: .hidden, units: rule)
-        #expect(Set(moved) == [helper, parent] && moved.first == member)
+        let moved = try m.move(member, to: .hidden, units: rule)
+        #expect(moved == [member])   // ejb.32: the dropped key is the only key reported as moved; its unit follows it into the section
         #expect(Set(m.hidden) == [helper, parent] && m.visible == [other])
     }
     var owner = l   // without the rule the helper moves alone (the pre-gdu.75 bug shape)
-    #expect(owner.move(helper, to: .hidden) == [helper])
+    #expect(try owner.move(helper, to: .hidden) == [helper])
     // A split unit normalizes to visible.
     let split = Layout(visible: [parent, other], hidden: [helper])
     let n = split.normalizedHideUnits(units: rule)

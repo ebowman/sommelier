@@ -32,7 +32,7 @@ struct ArrangePayload: Transferable, Equatable {
 final class ArrangeViewModel {
     enum Confirm: Identifiable {
         /// `base`: the engine layout revision the dialog's layout was composed on (when it opened), passed as `setLayout(basedOn:)`.
-        case hideNotFitting(ArrangeLayout, titles: [String], blocked: [String], base: Int)
+        case hideNotFitting(ArrangeLayout, titles: [String], blocked: [String], base: Int, moved: [ItemKey])
         var id: String {
             switch self {
             case .hideNotFitting: return "hide"
@@ -513,20 +513,26 @@ final class ArrangeViewModel {
     }
 
     func askHideNotFitting() {
-        let r = ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap, units: units)
+        let r: (layout: ArrangeLayout, moved: [ItemKey], blocked: [ItemKey])
+        do { r = try ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap, units: units) }
+        catch {   // ejb.32: the proved core could not compute it; refuse visibly, no fallback
+            message = "Sommelier's layout core could not compute this change (\(error)); nothing was changed."
+            AppLog.log(.arrange, "arrange: hide what does not fit refused: \(error)")
+            return
+        }
         let c = content
         func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows + c.visible.notRunning + c.hidden.notRunning + c.alwaysHidden.notRunning).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
-        confirm = .hideNotFitting(r.layout, titles: r.moved.map(t), blocked: r.blocked.map(t), base: state.layoutRevision)
+        confirm = .hideNotFitting(r.layout, titles: r.moved.map(t), blocked: r.blocked.map(t), base: state.layoutRevision, moved: r.moved)
     }
 
     func confirmed(_ c: Confirm) {
         confirm = nil
         switch c {
-        case .hideNotFitting(let l, let titles, _, let base):
+        case .hideNotFitting(let l, let titles, _, let base, let moved):
             AppLog.log(.arrange, "arrange: hide what does not fit: \(titles.joined(separator: ", "))")
             let old = layout
             apply(l, tracking: l.hidden.filter { old.section(of: $0) == .visible }, basedOn: base,
-                  moved: Set(l.hidden.filter { old.section(of: $0) == .visible }))   // gdu.144 rule 6: the hidden keys are the edit's moved keys
+                  moved: Set(moved))   // gdu.144 rule 6 / ejb.32: the moved keys are the ones the proved core reported
         }
     }
 

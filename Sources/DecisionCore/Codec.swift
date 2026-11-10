@@ -24,6 +24,28 @@ enum Codec {
         }
     }
 
+    static func encode(_ l: Layout3) -> [UInt32] {
+        var w: [UInt32] = []; list(l.visible, into: &w); list(l.hidden, into: &w); list(l.alwaysHidden, into: &w); return w
+    }
+
+    /// `(key, unit)` pairs, flattened, length-prefixed (the pair count is doubled in the prefix: the prefix counts WORDS), in key order.
+    static func encode(units: [Key: UInt32]) -> [UInt32] {
+        var w: [UInt32] = [UInt32(units.count * 2)]
+        for k in units.keys.sorted() { w.append(k); w.append(units[k]!) }
+        return w
+    }
+
+    static func encode(keys: [Key]) -> [UInt32] { var w: [UInt32] = []; list(keys, into: &w); return w }
+
+    static func encode(_ g: LayoutGesture) -> [UInt32] {
+        switch g {
+        case .drop(let k, let s, let idx):
+            if let n = idx { return [0, k, s.rawValue, 1, n] } else { return [0, k, s.rawValue, 0] }
+        case .hideNotFitting(let ks):
+            var w: [UInt32] = [1]; list(ks, into: &w); return w
+        }
+    }
+
     // MARK: outputs (each takes the payload after the ok tag; nil = not an encoding the Lean side produces)
 
     static func bool(_ w: UInt32) -> Bool? { w == 0 ? false : (w == 1 ? true : nil) }
@@ -112,5 +134,19 @@ enum Codec {
         case 3: return .notOnBar; case 4: return .outOfPlace; case 5: return .cannotTell
         default: return nil
         }
+    }
+
+    /// The answer of a gesture: three length-prefixed lists (the layout), then the length-prefixed moved keys; nothing may follow.
+    static func gestureResult(_ w: [UInt32]) -> (Layout3, [Key])? {
+        var i = 0
+        func take() -> [Key]? {
+            guard i < w.count else { return nil }
+            let n = Int(w[i]); i += 1
+            guard n <= w.count - i else { return nil }
+            defer { i += n }
+            return Array(w[i..<(i + n)])
+        }
+        guard let v = take(), let h = take(), let a = take(), let mv = take(), i == w.count else { return nil }
+        return (Layout3(visible: v, hidden: h, alwaysHidden: a), mv)
     }
 }

@@ -174,12 +174,12 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     #expect(e.map(\.kind) == [.hiddenByUs, .notFitting, .notFitting])
 }
 
-@Test func hideNotFittingMovesTheKeysAndTheirUnitsToHidden() {
+@Test func hideNotFittingMovesTheKeysAndTheirUnitsToHidden()  throws {
     var l = lay(v: ["a", "o1", "b", "o2"], h: ["h"])
-    let moved = l.hideNotFitting([k("o1"), k("o2"), k("h"), k("zz")])   // h is already hidden, zz unknown: ignored
+    let moved = try l.hideNotFitting([k("o1"), k("o2"), k("h"), k("zz")])   // h is already hidden, zz unknown: ignored
     #expect(moved == [k("o1"), k("o2")])
     #expect(l.visible == [k("a"), k("b")] && l.hidden == [k("h"), k("o1"), k("o2")])
-    #expect(l.hideNotFitting([]).isEmpty)
+    #expect(try l.hideNotFitting([]).isEmpty)
 }
 
 // MARK: overflowed keys never influence drawn keys (third corrective pass)

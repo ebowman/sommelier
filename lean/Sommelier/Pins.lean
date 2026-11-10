@@ -3,6 +3,7 @@ import Sommelier.Gates
 import Sommelier.Honesty
 import Sommelier.Truth
 import Sommelier.Verified
+import Sommelier.GestureProv
 
 /-!
 # Statement pins
@@ -652,5 +653,73 @@ example : ∀ {s : State} {r : Read} {a : Action}, enginePlan s r = some a →
     (a.strip = false → decideMove s r = some a) ∧
     (a.strip = true → s.stripGrant = true → decideMove s r = some { a with user := true }) ∧
     (a.strip = true → s.stripGrant = false → decideMove s r = none) := @enginePlan_decides
+
+/-! ejb.32: gestures.  A drop is an input; the core computes the new layout and the keys the user moved (Gesture.lean, GestureProv.lean). -/
+-- G1 same-section drop
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k = some s →
+    ((moveKey unit sys L k s idx).keys s).filter (fun x => x != k) = (L.keys s).filter (fun x => x != k) := @same_order
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.Nodup → L.sectionOf k = some s → ∀ {t : Section}, t ≠ s → (moveKey unit sys L k s idx).keys t = L.keys t := @same_other
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.Nodup → L.sectionOf k = some s → (moveKey unit sys L k s idx).allKeys.Perm L.allKeys := @same_perm
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.Nodup → L.sectionOf k = some s → ∀ {x : Key}, x ≠ k → ∀ (t : Section),
+    x ∈ (moveKey unit sys L k s idx).keys t ↔ x ∈ L.keys t := @same_section
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k = some s → ((moveKey unit sys L k s idx).keys s).idxOf k =
+      insIdx sys ((L.keys s).filter (fun x => x != k)) s idx := @same_idx
+-- G1/G2 a drop reports exactly the dropped key as moved
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} (k : Key) (s : Section) (idx : Option Nat),
+    applyGesture unit sys L (.drop k s idx) = (moveKey unit sys L k s idx, [k]) := @drop_moved
+-- G2 cross-section drop
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k ≠ some s → ∀ {x : Key}, (x = k ∨ x ∈ L.allKeys) → unit x = unit k →
+    x ∈ (moveKey unit sys L k s idx).keys s := @cross_unit_in
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k ≠ some s → ∀ {x : Key}, x ∈ L.allKeys → unit x ≠ unit k → ∀ (t : Section),
+    x ∈ (moveKey unit sys L k s idx).keys t ↔ x ∈ L.keys t := @cross_section
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k ≠ some s → ∀ (t : Section),
+    ((moveKey unit sys L k s idx).keys t).filter (fun x => unit x != unit k) = (L.keys t).filter (fun x => unit x != unit k) := @cross_order
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k ≠ some s →
+    ((moveKey unit sys L k s idx).keys s).filter (fun x => unit x == unit k) = groupOf unit L k := @cross_group
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k ≠ some s → ∀ {t : Section}, t ≠ s →
+    ((moveKey unit sys L k s idx).keys t).filter (fun x => unit x == unit k) = [] := @cross_group_ne
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3} {k : Key} {s : Section} {idx : Option Nat},
+    L.sectionOf k ≠ some s → ((moveKey unit sys L k s idx).keys s).idxOf k =
+      insIdx sys ((L.keys s).filter (fun x => !(groupOf unit L k).contains x)) s idx := @cross_idx
+-- G3 no gesture loses or duplicates a key
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3}, L.Nodup → ∀ (g : Gesture),
+    (applyGesture unit sys L g).1.Nodup := @gesture_nodup
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3}, L.Nodup → ∀ (g : Gesture) {x : Key},
+    x ∈ (applyGesture unit sys L g).1.allKeys ↔ x ∈ L.allKeys ∨ x ∈ g.dropped := @gesture_mem
+-- G4 hide what does not fit
+example : ∀ {unit : Key → Nat} {sys : Key → Bool} {L : Layout3}, L.Nodup → UnitNormal unit L → ∀ (ks : List Key),
+    (∀ x ∈ L.allKeys, (∀ k ∈ ks, unit x ≠ unit k) → ∀ t, (x ∈ (applyGesture unit sys L (.hideNotFitting ks)).1.keys t ↔ x ∈ L.keys t)) ∧
+    (∀ t, ((applyGesture unit sys L (.hideNotFitting ks)).1.keys t).filter (fun x => ks.all (fun k => unit x != unit k)) =
+      (L.keys t).filter (fun x => ks.all (fun k => unit x != unit k))) ∧
+    (∀ x ∈ L.hidden, x ∈ (applyGesture unit sys L (.hideNotFitting ks)).1.hidden) ∧
+    (∀ x ∈ L.alwaysHidden, x ∈ (applyGesture unit sys L (.hideNotFitting ks)).1.alwaysHidden) ∧
+    (∀ x ∈ L.visible, x ∈ (applyGesture unit sys L (.hideNotFitting ks)).1.visible ∨ x ∈ (applyGesture unit sys L (.hideNotFitting ks)).1.hidden) ∧
+    (applyGesture unit sys L (.hideNotFitting ks)).2.Nodup ∧
+    (∀ m ∈ (applyGesture unit sys L (.hideNotFitting ks)).2, m ∈ L.allKeys) := @hide_spec
+-- G5 provenance: composed with step
+example : ∀ (s : State) (rec moved : List Key) (es : List Event), (∀ e ∈ es, isUserEvent e = false) →
+    ∀ a ∈ (run (step s (.userEdit rec moved)).1 es).2, a.user = true →
+      a.subject ∈ moved ∨ a.subject ∈ s.owedKeys ∨ s.foldRequest = some a.subject ∨ (∃ f, s.inFlight = some f ∧ f.subject = a.subject) ∨
+      (a.strip = true ∧ s.stripGrant = true) := @userEdit_provenance
+example : ∀ (unit : Key → Nat) (sys mov : Key → Bool) (s : State) (L : Layout3) (g : Gesture) (es : List Event),
+    (∀ e ∈ es, isUserEvent e = false) →
+    ∀ a ∈ (run (step s (.userEdit (coreRecord mov (applyGesture unit sys L g).1) (applyGesture unit sys L g).2)).1 es).2, a.user = true →
+      a.subject ∈ (applyGesture unit sys L g).2 ∨ a.subject ∈ s.owedKeys ∨ s.foldRequest = some a.subject ∨
+      (∃ f, s.inFlight = some f ∧ f.subject = a.subject) ∨ (a.strip = true ∧ s.stripGrant = true) := @gesture_provenance
+example : ∀ (unit : Key → Nat) (sys mov : Key → Bool) (s : State) (L : Layout3) (k : Key) (t : Section) (idx : Option Nat) (es : List Event),
+    (∀ e ∈ es, isUserEvent e = false) → s.owedKeys = [] → s.foldRequest = none → s.inFlight = none → s.stripGrant = false →
+    ∀ a ∈ (run (step s (.userEdit (coreRecord mov (moveKey unit sys L k t idx)) [k])).1 es).2, a.user = true → a.subject = k := by
+  intro unit sys mov s L k t idx es hes h1 h2 h3 h4
+  exact drop_provenance_idle unit sys mov s L k t idx es hes h1 h2 h3 h4
 
 end Sommelier

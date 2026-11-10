@@ -670,6 +670,10 @@ public enum ArrangeDrop {
     public static let noObservation = "Can't put this item on the menu bar until Sommelier can read the bar."
     /// 9o9.5: a drop onto or into the trailing system block (Clock, Control Center, ...) is refused: macOS owns that end of the bar.
     public static let systemItemsAtRightEnd = "macOS keeps the system items at the right end"
+    /// ejb.32: the proved core could not compute the gesture (a malformed request or an unusable runtime). The gesture is refused; there is no fallback logic.
+    public static func gestureCoreFailed(_ error: DecisionError) -> String {
+        "Sommelier's layout core could not compute this change (\(error)); nothing was changed."
+    }
 
     /// gdu.116: refusal texts for a payload whose SOURCE row cannot be picked up. The drag gesture is attached to every capsule
     /// (a gesture that appears or disappears mid-drag kills the NSDraggingSession), so "not draggable" is judged here, at drop time.
@@ -731,13 +735,15 @@ public enum ArrangeDrop {
         let cap = capabilities(key)
         guard cap.canMove else { return .rejected(cap.reason ?? "This item cannot be moved.") }
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
-        var l = layout
-        l.move(key, to: section, index: index, units: units)
+        // ejb.32: the new layout and the keys the user moved are computed by the PROVED core (Lean `applyGesture`), not here. No fallback: if the core cannot answer, the
+        // drop is refused with a visible message and nothing changes.
         // gdu.149: the user dropped ONE key. `moved` (what the engine/core treat as the user's own placement, and what the window tracks with
         // "⟳") is that key alone, also for a membership change: the unit's siblings follow it into the section (Control Center hides per app),
         // but the membership phase works from the layout's sections, not from `moved`. Siblings that come into Visible and sit where the bar
         // disagrees with the record are ordinary engine order work (budgeted, near-fold withheld), never drags the user is owed.
-        let moved = [key]
+        let l: Layout, moved: [ItemKey]
+        do { (l, moved) = try layout.applying(.drop(key, section, index: index), units: units) }
+        catch { return .rejected(gestureCoreFailed(error)) }
         if !showRequest, l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
         return .move(layout: l, moved: moved, willNotFit: willNotFit && section == .visible)
     }
@@ -864,14 +870,13 @@ public enum ArrangeDrop {
     /// `blocked` lists overflowed keys that cannot be hidden (Apple apps, untracked apps); they stay.
     public static func hideNotFitting(layout: Layout, observed: ObservedOrder,
                                       capabilities: (ItemKey) -> Capability,
-                                      units: HideUnitRule = .ownerKeys) -> (layout: Layout, moved: [ItemKey], blocked: [ItemKey]) {
+                                      units: HideUnitRule = .ownerKeys) throws(DecisionError) -> (layout: Layout, moved: [ItemKey], blocked: [ItemKey]) {
         // gdu.144 rule 6: every folded key, the pile AND the keys macOS folds for width (folded-parked), is hidden; the caller passes `moved` as the edit's keys.
         let keys = layout.visible.filter { (observed.systemOverflow.contains($0) || observed.foldedParked.contains($0)) && $0 != observed.overflowChevron }
         let ok = keys.filter { capabilities($0).canHide && capabilities($0).canMove }
         let blocked = keys.filter { k in !ok.contains(k) }
-        var l = layout
-        let moved = l.hideNotFitting(ok, units: units)
-        return (l, moved, blocked)
+        let r = try layout.applying(.hideNotFitting(ok), units: units)   // ejb.32: computed by the proved core
+        return (r.layout, r.moved, blocked)
     }
 }
 

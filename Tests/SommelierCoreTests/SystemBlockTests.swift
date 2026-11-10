@@ -14,23 +14,23 @@ struct LayoutDefaultInsertionTests {
     private func base() -> Layout {
         Layout(visible: [k("a"), k("b"), wifi, k("c"), bento, clock])
     }
-    @Test func visibleInsertsBeforeTrailingModules() {
-        var l = base(); l.move(k("n"), to: .visible)
+    @Test func visibleInsertsBeforeTrailingModules()  throws {
+        var l = base(); try l.move(k("n"), to: .visible)
         #expect(l.visible == [k("a"), k("b"), wifi, k("c"), k("n"), bento, clock])
         #expect(l.visible.firstIndex(of: k("n")) == 4)
     }
-    @Test func noModulesAppends() {
-        var l = Layout(visible: [k("a"), k("b")]); l.move(k("n"), to: .visible)
+    @Test func noModulesAppends()  throws {
+        var l = Layout(visible: [k("a"), k("b")]); try l.move(k("n"), to: .visible)
         #expect(l.visible == [k("a"), k("b"), k("n")])
     }
-    @Test func explicitIndexUnchanged() {
-        var l = base(); l.move(k("n"), to: .visible, index: 99)
+    @Test func explicitIndexUnchanged()  throws {
+        var l = base(); try l.move(k("n"), to: .visible, index: 99)
         #expect(l.visible.last == k("n"))
-        l.move(k("n"), to: .visible, index: 0)
+        try l.move(k("n"), to: .visible, index: 0)
         #expect(l.visible.first == k("n"))
     }
-    @Test func hiddenAppends() {
-        var l = base(); l.hidden = [k("h")]; l.move(k("n"), to: .hidden)
+    @Test func hiddenAppends()  throws {
+        var l = base(); l.hidden = [k("h")]; try l.move(k("n"), to: .hidden)
         #expect(l.hidden == [k("h"), k("n")])
     }
     @Test func trailingBlockHelper() {

@@ -12,6 +12,7 @@ lean_object *sommelier_row_line(lean_object *, lean_object *, lean_object *);
 lean_object *sommelier_row_note(lean_object *, lean_object *, lean_object *);
 lean_object *sommelier_adopt(lean_object *, lean_object *);
 lean_object *sommelier_row_verdict(lean_object *, lean_object *, lean_object *);
+lean_object *sommelier_gesture(lean_object *, lean_object *, lean_object *, lean_object *);
 lean_object *sommelier_describe_event(lean_object *);
 void lean_initialize_runtime_module(void);
 void lean_initialize_thread(void);
@@ -116,6 +117,12 @@ void sm_adopt(sm_state_t s, const uint32_t *rd, size_t n, sm_result *out) {
   if (sm_runtime_init() != 0) { fail(out); return; }
   lean_inc((lean_object *)s);
   take_arr(sommelier_adopt((lean_object *)s, mk_arr(rd, n)), out);
+}
+
+void sm_gesture(const uint32_t *lay, size_t nlay, const uint32_t *units, size_t nunits, const uint32_t *sys, size_t nsys,
+                const uint32_t *gst, size_t ngst, sm_result *out) {
+  if (sm_runtime_init() != 0) { fail(out); return; }
+  take_arr(sommelier_gesture(mk_arr(lay, nlay), mk_arr(units, nunits), mk_arr(sys, nsys), mk_arr(gst, ngst)), out);
 }
 
 void sm_describe_event(const uint32_t *ev, size_t n, sm_result *out) {

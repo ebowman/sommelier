@@ -52,6 +52,7 @@ enum Fixture {
         }
         var cases: [FixtureCase] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.hasPrefix("G") { continue }   // gesture cases (ejb.32) are read by `GestureFixture.all`
             if line.hasPrefix("CASE ") { cases.append(FixtureCase(name: String(line.dropFirst(5)), record: [], items: [])); continue }
             if line.hasPrefix("INIT") { cases[cases.count - 1].record = words(line.dropFirst(4)); continue }
             let g = line.components(separatedBy: ";")
@@ -93,4 +94,51 @@ enum Fixture {
         }
         return bad
     }
+}
+
+/// ejb.32: the gesture cases Lean printed (`lake exe fixture`): every field is text by NAME, parsed here with plain string code, never with the codec under test.
+struct GestureFixture {
+    var name: String
+    var layout: Layout3
+    var units: [Key: UInt32]
+    var sys: Set<Key>
+    var gesture: LayoutGesture
+    var expected: String
+
+    static func keys(_ s: Substring) -> [Key] {
+        let inner = s.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return inner.isEmpty ? [] : inner.split(separator: ",").map { Key($0)! }
+    }
+    /// `visible=[..] hidden=[..] alwaysHidden=[..]`
+    static func layout(_ s: String) -> Layout3 {
+        let parts = s.split(separator: " ")
+        return Layout3(visible: keys(parts[0].dropFirst("visible=".count)), hidden: keys(parts[1].dropFirst("hidden=".count)),
+                       alwaysHidden: keys(parts[2].dropFirst("alwaysHidden=".count)))
+    }
+    static func section(_ s: Substring) -> LayoutSection3 {
+        switch s { case "visible": return .visible; case "hidden": return .hidden; case "alwaysHidden": return .alwaysHidden; default: fatalError("section \(s)") }
+    }
+
+    static let all: [GestureFixture] = {
+        guard let text = try? String(contentsOfFile: Fixture.path, encoding: .utf8) else { fatalError("no fixture at \(Fixture.path)") }
+        var out: [GestureFixture] = []
+        var name = "", lay = Layout3(visible: [], hidden: [], alwaysHidden: []), units: [Key: UInt32] = [:], sys = Set<Key>(), g: LayoutGesture?
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if !line.hasPrefix("G") { continue }   // the step/probe lines are read by `Fixture.all`
+            if line.hasPrefix("GCASE ") { name = String(line.dropFirst(6)) }
+            else if line.hasPrefix("GLAYOUT ") { lay = layout(String(line.dropFirst(8))) }
+            else if line.hasPrefix("GUNITS") {
+                units = [:]
+                for p in line.dropFirst(6).split(separator: " ") { let x = p.split(separator: ":"); units[Key(x[0])!] = UInt32(x[1])! }
+            } else if line.hasPrefix("GSYS") { sys = Set(line.dropFirst(4).split(separator: " ").map { Key($0)! }) }
+            else if line.hasPrefix("GGESTURE ") {
+                let x = line.dropFirst(9).split(separator: " ", maxSplits: 3)
+                if x[0] == "hide" { g = .hideNotFitting(keys(x[1])) }
+                else { g = .drop(Key(x[1])!, section(x[2]), index: x[3] == "none" ? nil : UInt32(x[3])!) }
+            } else if line.hasPrefix("GEXPECT ") {
+                out.append(GestureFixture(name: name, layout: lay, units: units, sys: sys, gesture: g!, expected: String(line.dropFirst(8))))
+            } else { fatalError("unparsable fixture line: \(line.prefix(80))") }
+        }
+        return out
+    }()
 }

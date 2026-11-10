@@ -174,11 +174,11 @@ private func rig(order: [ItemKey], layout: Layout, observe: Bool = false) async 
         #expect(c.visible.contains(own) && !c.hidden.contains(own) && !c.alwaysHidden.contains(own))
     }
 
-    @Test func setLayoutNeverStoresItHidden() async {
+    @Test func setLayoutNeverStoresItHidden() async throws {
         let r = await rig(order: [k("a"), own, clock], layout: Layout(visible: [k("a"), own, clock]))
         _ = await r.engine.reconcileOnce()
         var l = r.state.layout
-        l.move(own, to: .hidden)
+        try l.move(own, to: .hidden)
         _ = await r.engine.setLayout(l)
         #expect(r.state.layout.section(of: own) == .visible)
     }
@@ -193,7 +193,7 @@ private func rig(order: [ItemKey], layout: Layout, observe: Bool = false) async 
 
     // MARK: Arrange
 
-    @Test func arrangeShowsADraggableRowInVisibleAndRefusesHiding() {
+    @Test func arrangeShowsADraggableRowInVisibleAndRefusesHiding()  throws {
         let items: [ItemKey: ItemInfo] = [
             k("a"): ItemInfo(key: k("a"), title: "", axDescription: "A", ownerPID: 1, ownerBundleID: "com.x", ownerName: "A", width: 30, isOnBar: true),
             own: ItemInfo(key: own, title: " Observe", axDescription: "Sommelier", ownerPID: 99, ownerBundleID: menuBarAgentBundleID, ownerName: "Sommelier", width: 70, isOnBar: true),
@@ -214,7 +214,7 @@ private func rig(order: [ItemKey], layout: Layout, observe: Bool = false) async 
             #expect(!ArrangeDrop.canMove(layout: layout, key: own, to: s, capabilities: caps))
         }
         // "Hide what does not fit" never takes it.
-        let hnf = ArrangeDrop.hideNotFitting(layout: layout, observed: ObservedOrder(onBar: [k("a"), own, clock], parked: [], systemOverflow: [own]), capabilities: caps, units: .ownerKeys)
+        let hnf = try ArrangeDrop.hideNotFitting(layout: layout, observed: ObservedOrder(onBar: [k("a"), own, clock], parked: [], systemOverflow: [own]), capabilities: caps, units: .ownerKeys)
         #expect(!hnf.layout.hidden.contains(own))
     }
 

@@ -855,7 +855,9 @@ func runLayout(_ a: [String]) async {
         var idx: Int? = nil
         if a.count == 4 { guard let n = Int(a[3]) else { usage() }; idx = n - 1 }
         var l = load()
-        let movedKeys = l.move(key, to: section, index: idx, units: HideUnitRule(resolver: EngineFactory.currentTrackedResolver()))
+        let movedKeys: [ItemKey]
+        do { movedKeys = try l.move(key, to: section, index: idx, units: HideUnitRule(resolver: EngineFactory.currentTrackedResolver())) }
+        catch { fail("the layout core could not compute the move: \(error)") }
         if movedKeys.count > 1 { print("also moved: " + movedKeys.dropFirst().map(\.description).joined(separator: ", ")) }
         do { try store.save(l) } catch { fail("save failed: \(error)") }
         printLayout(l, only: section)

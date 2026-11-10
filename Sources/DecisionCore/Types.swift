@@ -98,6 +98,24 @@ public enum RowNote: Equatable, Sendable { case noMoveHelps, cantJudge, noMoveHe
 /// The verdict on one key (Lean `RowVerdict`).
 public enum RowVerdict: Equatable, Sendable { case inOrder, behindChevron, behindOutOfTurn, notOnBar, outOfPlace, cannotTell }
 
+/// A section of the layout (Lean `Section`).
+public enum LayoutSection3: UInt32, Sendable, CaseIterable { case visible, hidden, alwaysHidden }
+
+/// The three ordered sections of the layout, as core keys (Lean `Layout3`).
+public struct Layout3: Equatable, Sendable {
+    public var visible: [Key]
+    public var hidden: [Key]
+    public var alwaysHidden: [Key]
+    public init(visible: [Key], hidden: [Key], alwaysHidden: [Key]) { self.visible = visible; self.hidden = hidden; self.alwaysHidden = alwaysHidden }
+}
+
+/// What the user did to the layout (Lean `Gesture`). `index` is an insertion index in the section AFTER the lifted keys are removed (clamped by the core); `nil` appends
+/// (Visible: before the trailing system block).
+public enum LayoutGesture: Equatable, Sendable {
+    case drop(Key, LayoutSection3, index: UInt32?)
+    case hideNotFitting([Key])
+}
+
 /// Why a call into the proved core failed. A failure is NEVER answered with a default value.
 public enum DecisionError: Error, Equatable, Sendable {
     /// The Lean side could not decode the input words (answer tag 1).

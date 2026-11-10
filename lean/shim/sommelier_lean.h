@@ -36,6 +36,15 @@ void sm_row_note(sm_state_t s, const uint32_t *rd, size_t n, const uint32_t *key
 /* "Use the bar's current order" (ejb.9): the record the read would adopt for state `s`. After the ok tag: [0] = no proposal, or [1, k1, k2, ...] = the proposed record. */
 void sm_adopt(sm_state_t s, const uint32_t *rd, size_t n, sm_result *out);
 
+/* A gesture (ejb.32, Lean `applyGesture`): the new layout and the keys the user moved. No state: a pure function.  Inputs, each a word list:
+ *   lay   = three length-prefixed key lists: Visible, Hidden, Always hidden;
+ *   units = a length-prefixed list of (key, unit) pairs, flattened (a key it does not list is its own unit);
+ *   sys   = a length-prefixed list of the system-module keys (the trailing block of Visible);
+ *   gst   = [0, key, section, 0] | [0, key, section, 1, index] (a drop; section 0/1/2 = Visible/Hidden/Always hidden) | [1, n, keys...] (hide what does not fit).
+ * Answer after the ok tag: the new layout (three length-prefixed lists), then the moved keys (length-prefixed). Tag 1 (no payload) if ANY input does not decode. */
+void sm_gesture(const uint32_t *lay, size_t nlay, const uint32_t *units, size_t nunits, const uint32_t *sys, size_t nsys,
+                const uint32_t *gst, size_t ngst, sm_result *out);
+
 /* Test support: Lean's reading of an event, as UTF-8 bytes (one per word) after the ok tag. */
 void sm_describe_event(const uint32_t *ev, size_t n, sm_result *out);
 

@@ -51,9 +51,9 @@ struct OrderObligationPlannerTests {
 
 struct LayoutRecordModelTests {
 
-    @Test func leavingVisibleOrTheLayoutKeepsTheLayoutValid() {
+    @Test func leavingVisibleOrTheLayoutKeepsTheLayoutValid()  throws {
         var l = Layout(visible: [k("a"), k("b")], hidden: [k("c")])
-        l.move(k("a"), to: .hidden)
+        try l.move(k("a"), to: .hidden)
         #expect(l.visible == [k("b")])
         l.remove(k("b"))
         #expect(l.visible.isEmpty && l.isValid)

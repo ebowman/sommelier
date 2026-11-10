@@ -138,42 +138,8 @@ public struct Layout: Codable, Equatable, Sendable {
         return Array(ks[start...])
     }
 
-    /// Moves (or inserts) the WHOLE hide unit of `key` into `section` (a cross-section move; a same-section drop moves only `key`, gdu.149) and returns every key that moved, `key` first.
-    /// Control Center hides per app (see `HideUnit`), so siblings (all keys of the same unit currently in the layout)
-    /// come along: the moved key lands at `index` (clamped to 0...count, evaluated after the unit is lifted out) and
-    /// its siblings follow immediately after it, in their previous layout order (visible, hidden, alwaysHidden).
-    /// With `index == nil`, `.hidden`/`.alwaysHidden` append; `.visible` inserts immediately BEFORE the trailing run of
-    /// `.module` keys (see `trailingSystemBlock`), because anything right of it is unreachable and the engine would
-    /// otherwise try to drag real items to realize it. With no such run it appends. An explicit index is taken literally.
-    @discardableResult
-    public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil, units: HideUnitRule = .ownerKeys) -> [ItemKey] {
-        // gdu.149: a drop inside the section the key already sits in is a REORDER: exactly that key moves (`index` is taken after only
-        // the key is lifted out); siblings keep their places and relative order. Grouping applies to membership changes only.
-        if self.section(of: key) == section {
-            remove(key)
-            insert([key], into: section, at: index)
-            return [key]
-        }
-        let unit = units.unit(of: key)
-        let siblings = allKeys.filter { $0 != key && units.unit(of: $0) == unit }
-        let group = [key] + siblings
-        for k in group { remove(k) }
-        insert(group, into: section, at: index)
-        return group
-    }
-
-    /// "Hide what does not fit" (gdu.45; called by the Arrange window toolbar, gdu.19): moves each key, with its
-    /// hide-unit siblings, to the end of `hidden`, in the order given. Keys not in the layout or already hidden/always
-    /// hidden are ignored. Returns every key that actually moved (siblings included), in the order moved.
-    @discardableResult
-    public mutating func hideNotFitting(_ keys: [ItemKey], units: HideUnitRule = .ownerKeys) -> [ItemKey] {
-        var moved: [ItemKey] = []
-        for k in keys {
-            guard let s = section(of: k), s == .visible else { continue }
-            for m in move(k, to: .hidden, units: units) where !moved.contains(m) { moved.append(m) }
-        }
-        return moved
-    }
+    // `move(_:to:index:units:)` and `hideNotFitting(_:units:)` live in GestureCore.swift: since ejb.32 a gesture is computed by the proved Lean core.
+    // The pure-Swift implementation they replaced is kept ONLY in Tests/SommelierCoreTests/GestureOracle.swift, as the oracle of the differential test.
 
     /// Single-key placement, no sibling handling (used by builders and in-section reordering).
     private mutating func insert(_ group: [ItemKey], into section: LayoutSection, at index: Int?) {

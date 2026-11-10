@@ -12,21 +12,21 @@ private func tmpDir() -> URL {
 }
 
 struct LayoutTests {
-    @Test func moveBetweenSectionsRemovesFromOld() {
+    @Test func moveBetweenSectionsRemovesFromOld()  throws {
         var l = Layout(visible: [a, b])
-        l.move(a, to: .hidden)
+        try l.move(a, to: .hidden)
         #expect(l.visible == [b]); #expect(l.hidden == [a]); #expect(l.isValid)
         #expect(l.section(of: a) == .hidden)
     }
-    @Test func moveClampsIndex() {
+    @Test func moveClampsIndex()  throws {
         var l = Layout(visible: [a, b])
-        l.move(c, to: .visible, index: 99); #expect(l.visible == [a, b, c])
-        l.move(c, to: .visible, index: -5); #expect(l.visible == [c, a, b])
+        try l.move(c, to: .visible, index: 99); #expect(l.visible == [a, b, c])
+        try l.move(c, to: .visible, index: -5); #expect(l.visible == [c, a, b])
         l.reorder(c, in: .visible, toIndex: 1); #expect(l.visible == [a, c, b])
-        l.move(a, to: .visible, index: 50); #expect(l.visible == [c, b, a])
+        try l.move(a, to: .visible, index: 50); #expect(l.visible == [c, b, a])
     }
-    @Test func moveUnknownAppends() {
-        var l = Layout(visible: [a]); l.move(b, to: .alwaysHidden)
+    @Test func moveUnknownAppends()  throws {
+        var l = Layout(visible: [a]); try l.move(b, to: .alwaysHidden)
         #expect(l.alwaysHidden == [b]); #expect(l.allKeys == [a, b])
         l.append(c, to: .hidden); #expect(l.hidden == [c])
     }

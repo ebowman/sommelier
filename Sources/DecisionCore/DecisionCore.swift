@@ -75,6 +75,15 @@ public enum DecisionCore {
         return v
     }
 
+    /// ejb.32, Lean `applyGesture`: what a gesture does to the layout and which keys the user moved (a drop moves exactly the dropped key; hide-what-does-not-fit lists
+    /// every key it moved). `units` is the hide-unit table (key -> unit id; a key it does not list is its own unit), `immovable` the system-module keys (the trailing block
+    /// of Visible). Swift only encodes the inputs and decodes the answer; a malformed input throws `.malformedInput`, never a default layout.
+    public static func applyGesture(layout: Layout3, units: [Key: UInt32], immovable: Set<Key>, gesture: LayoutGesture) throws(DecisionError) -> (layout: Layout3, moved: [Key]) {
+        let payload = try Raw.gesture(Codec.encode(layout), Codec.encode(units: units), Codec.encode(keys: immovable.sorted()), Codec.encode(gesture))
+        guard let r = Codec.gestureResult(payload) else { throw .undecodableOutput }
+        return (r.0, r.1)
+    }
+
     /// `rowVerdict s.record (s.view r) k`
     public static func rowVerdict(_ state: DecisionState, _ read: Read, _ key: Key) throws(DecisionError) -> RowVerdict {
         guard let v = Codec.rowVerdict(try Raw.query(.rowVerdict, state, Codec.encode(read), key: [key])) else { throw .undecodableOutput }
@@ -104,6 +113,14 @@ enum Raw {
         words.withUnsafeBufferPointer { sm_describe_event($0.baseAddress, $0.count, &r) }
         let bytes = try payload(&r)
         return String(decoding: bytes.map { UInt8(truncatingIfNeeded: $0) }, as: UTF8.self)
+    }
+
+    static func gesture(_ lay: [UInt32], _ units: [UInt32], _ sys: [UInt32], _ gst: [UInt32]) throws(DecisionError) -> [UInt32] {
+        var r = sm_result(words: nil, n: 0)
+        lay.withUnsafeBufferPointer { l in units.withUnsafeBufferPointer { u in sys.withUnsafeBufferPointer { s in gst.withUnsafeBufferPointer { g in
+            sm_gesture(l.baseAddress, l.count, u.baseAddress, u.count, s.baseAddress, s.count, g.baseAddress, g.count, &r)
+        } } } }
+        return try payload(&r)
     }
 
     static func step(_ state: DecisionState, _ words: [UInt32]) throws(DecisionError) -> (DecisionState, [UInt32]) {

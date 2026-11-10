@@ -80,6 +80,19 @@ M=[
 ('eng_budget_notfull_only',"s.moveCount < cap (fullBar s r)","s.moveCount < capNotFull"),
 ('cap_full_4',"def capFull : Nat := 3","def capFull : Nat := 4"),
 ('cap_notfull_1000',"def capNotFull : Nat := 20","def capNotFull : Nat := 1000"),
+# ejb.32: gestures (GestureDef.lean).  Each must be noticed BY MEANING (GestureExamples.lean or the gesture fuzz), see GESTURE_MUST_KILL.
+('gest_same_regroup',"if L.sectionOf k = some s then insertGroup sys","if False then insertGroup sys"),
+('gest_moved_siblings',"| .drop k s idx => (moveKey unit sys L k s idx, [k])","| .drop k s idx => (moveKey unit sys L k s idx, groupOf unit L k)"),
+('gest_lose_key',"else insertGroup sys (L.keep (fun x => !(groupOf unit L k).contains x)) (groupOf unit L k) s idx","else insertGroup sys (L.keep (fun x => !(groupOf unit L k).contains x)) ((groupOf unit L k).drop 1) s idx"),
+('gest_cross_leaves_sibling',"k :: L.allKeys.filter (fun x => x != k && unit x == unit k)","k :: (L.allKeys.filter (fun x => x != k && unit x == unit k)).dropLast"),
+('gest_siblings_reversed',"k :: L.allKeys.filter (fun x => x != k && unit x == unit k)","k :: (L.allKeys.filter (fun x => x != k && unit x == unit k)).reverse"),
+('gest_index_off_by_one',"| some n => min n ks.length","| some n => min (n + 1) ks.length"),
+('gest_none_visible_append',"| none => if s = .visible then trailStart sys ks else ks.length","| none => ks.length"),
+('gest_trail_ignores_sys',"ks.length - (ks.reverse.takeWhile sys).length","ks.length"),
+('gest_keep_one_section',"⟨L.visible.filter f, L.hidden.filter f, L.alwaysHidden.filter f⟩","⟨L.visible.filter f, L.hidden, L.alwaysHidden⟩"),
+('gest_hide_no_unit',"(moveKey unit sys acc.1 k .hidden none,","(moveKey (fun x => x) sys acc.1 k .hidden none,"),
+('gest_hide_any_section',"if acc.1.sectionOf k = some .visible then","if acc.1.sectionOf k ≠ none then"),
+('gest_hide_moved_dups',"if mv.contains m then mv else mv ++ [m]","mv ++ [m]"),
 # decideMove
 ('plan_on_poll',"if r.kind != .pass || !r.settled ||","if !r.settled ||"),
 ('plan_unsettled',"if r.kind != .pass || !r.settled ||","if r.kind != .pass ||"),
@@ -434,6 +447,7 @@ HONESTY_MUST_KILL = {
   'note_never', 'note_without_owed', 'note_on_any_owed', 'note_on_tick', 'helps_ignores_others', 'helps_ignores_fallback', 'helps_not_misplaced', 'helps_always', 'helps_not_movable', 'helps_ignores_whole', 'cant_flipped', 'cant_ignores_decide', 'cant_not_misplaced', 'own_cant_no_owed', 'own_cant_userpick', 'cant_ignores_fallback'}
 # ejb.12: a mutant of a fast definition must make an equality theorem of Fast.lean fail (the fast version is PROVED equal to the specification).
 FAST_MUST_KILL = {m[0] for m in M if m[0].startswith('fast_')}
+GESTURE_MUST_KILL = {m[0] for m in M if m[0].startswith('gest_')} - {'gest_hide_moved_dups'}   # gest_hide_moved_dups is semantically equivalent (hideStep moves a key only while it is Visible and a unit moves wholesale, so no key is in two groups); the dedup is a safety net that `addMoved_foldl` proves, and that proof kills the mutant
 # Redundant guards: `decideMove` returns `none` unless `s.gate r`, and the gate requires `Read.usable` (a settled pass read, level not incomplete, strip
 # closed, chevron fresh or proven absent), so the same conditions repeated in `decideMove`'s own guard and in `engineAllowed` change no decision.  The
 # check is `gate_facts` (Honesty.lean) and the runner below: a mutant listed here must not be noticed by any example or fuzz check; it may still break a
@@ -452,7 +466,7 @@ def fresh(d):
     shutil.copytree(LEAN, d, symlinks=True, ignore=shutil.ignore_patterns('.lake', 'scripts'))
 
 def apply(d, old, new):
-    for f in ['Sommelier/Step.lean', 'Sommelier/Model.lean', 'Sommelier/Safety.lean', 'Sommelier/Status.lean', 'Sommelier/Truth.lean', 'Sommelier/Fast.lean']:
+    for f in ['Sommelier/Step.lean', 'Sommelier/Model.lean', 'Sommelier/Safety.lean', 'Sommelier/Status.lean', 'Sommelier/Truth.lean', 'Sommelier/Fast.lean', 'Sommelier/GestureDef.lean']:
         t = open(f'{d}/{f}').read()
         if t.count(old) == 1:
             open(f'{d}/{f}', 'w').write(t.replace(old, new)); return True
@@ -493,12 +507,16 @@ def run(m, w):
     hf = failing_theorems(d, 'Honesty') if (gf is None and tf is None) else None
     ff = failing_theorems(d, 'Fast') if (gf is None and tf is None and hf is None) else None
     vf = failing_theorems(d, 'Verified') if (gf is None and tf is None and hf is None) else None   # ejb.17: the verified-revert bound
+    gsf = failing_theorems(d, 'Gesture')   # ejb.32: the gesture proofs
+    gpf = failing_theorems(d, 'GestureProv') if gsf is None else None
     pf = subprocess.run(['lake', 'build', 'Sommelier.Pins'], cwd=d, capture_output=True, text=True).returncode != 0
     e = subprocess.run(['lake', 'build', 'Sommelier.Examples'], cwd=d, capture_output=True, text=True)
     ex = sorted(set(int(x) for x in re.findall(r'error: Sommelier/Examples.lean:(\d+)', e.stdout + e.stderr)))
     # ejb.26: the verified-drag examples live in a module that imports only Step, so they decide the semantics even when a mutant breaks a Truth proof (Examples.lean then never builds)
     ve = subprocess.run(['lake', 'build', 'Sommelier.VerExamples'], cwd=d, capture_output=True, text=True)
     ex = ex + sorted(set(100000 + int(x) for x in re.findall(r'error: Sommelier/VerExamples.lean:(\d+)', ve.stdout + ve.stderr)))
+    ge = subprocess.run(['lake', 'build', 'Sommelier.GestureExamples'], cwd=d, capture_output=True, text=True)   # ejb.32: concrete gesture examples (GestureDef only)
+    ex = ex + sorted(set(200000 + int(x) for x in re.findall(r'error: Sommelier/GestureExamples.lean:(\d+)', ge.stdout + ge.stderr)))
     fk = {}
     if tf is None:
         bs = subprocess.run(['lake', 'build', 'Sommelier.Status'], cwd=d, capture_output=True, text=True)
@@ -517,8 +535,10 @@ def run(m, w):
     if tf: kills['truth'] = tf
     if ff: kills['fast'] = ff
     if vf: kills['verified'] = vf
-    if pf and not (eq or sf or gf or hf or tf or ff or vf): kills['pins'] = ['<pin>']
-    if sf or gf or hf or pf or eq or tf or ff or vf: kills['theorems'] = 1
+    if gsf: kills['gesture'] = gsf
+    if gpf: kills['gesture'] = (kills.get('gesture') or []) + gpf
+    if pf and not (eq or sf or gf or hf or tf or ff or vf or gsf or gpf): kills['pins'] = ['<pin>']
+    if sf or gf or hf or pf or eq or tf or ff or vf or gsf or gpf: kills['theorems'] = 1
     return name, 'OK', ex, kills
 
 if __name__ == '__main__':
@@ -557,14 +577,14 @@ if __name__ == '__main__':
     for n in only_ef: print('  examples/fuzz-only:', n)
     # does a HEADLINE theorem (the named statements of scripts/check-lean-axioms.sh) fail, or only a helper / specification lemma?
     hl = set(re.search(r'HEADLINE="(.*?)"', open(os.path.join(LEAN, '..', 'scripts', 'check-lean-axioms.sh')).read(), re.S).group(1).split())
-    def failing(k): return set(sum([k[t] for t in ('eqns', 'safety', 'gates', 'truth', 'honesty', 'fast', 'verified') if t in k], []))
+    def failing(k): return set(sum([k[t] for t in ('eqns', 'safety', 'gates', 'truth', 'honesty', 'fast', 'verified', 'gesture') if t in k], []))
     by_head = [n for n, ex, k in ok if failing(k) & hl]
     by_helper = [n for n, ex, k in ok if 'theorems' in k and not (failing(k) & hl)]
     print(f'of the theorem kills, {len(by_head)} fail a named headline theorem (a theorem about the property) and {len(by_helper)} fail only a '
           f'helper/specification lemma or a pin (a break that may be incidental):')
     # semantic detection: an example (a concrete trace) or the fuzz harness (counterexample against a random honest bar) notices the
     # mutant; a mutant noticed ONLY by a broken proof script may be an incidental (positional) break, not a falsified property
-    MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems', 'fast', 'verified'}
+    MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems', 'fast', 'verified', 'gesture'}
     sem = [n for n, ex, k in ok if ex or any(t not in MODK for t in k)]
     proof_only = [n for n, ex, k in ok if n not in sem]
     for n in sorted(SEMANTIC_MUST_KILL):
@@ -588,7 +608,10 @@ if __name__ == '__main__':
     by_f = {n for n, ex, k in ok if 'fast' in k}
     must_f = [n for n in sorted(FAST_MUST_KILL) if n in ran and n not in by_f]
     for n in must_f: print('  FINDING: no Fast.lean equality theorem catches', n)
-    must = must + must_h + must_t + eqv + must_f
+    # ejb.32: a gesture mutant must be noticed BY MEANING: a failing GestureExamples example or a gesture fuzz failure
+    must_g = [n for n in sorted(GESTURE_MUST_KILL) if n in ran and n not in sem]
+    for n in must_g: print('  FINDING: no example or gesture fuzz notices (by meaning)', n)
+    must = must + must_h + must_t + eqv + must_f + must_g
     killed = len(res) - len(surv) - len(invalid)
     print(f'{len(res)} mutants: {killed} killed, {len(surv)} survived, {len(invalid)} invalid (BADPATCH/NOCOMPILE, not counted as killed)')
     for n in surv: print('  survivor:', n, '-', EQUIVALENT.get(n, 'UNEXPLAINED'))
