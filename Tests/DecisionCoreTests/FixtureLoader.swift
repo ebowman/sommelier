@@ -4,7 +4,7 @@ import Foundation
 /// The expected values computed by Lean (`lake exe fixture`, run by scripts/build-lean-core.sh into build/LeanCore/fixture.txt).
 /// Format: see lean/Fixture.lean.
 struct FixtureStep { var words: [UInt32]; var event: Event; var expected: String }
-struct FixtureProbe { var read: Read; var status: String; var verdict: String; var rows: [(key: Key, row: String, rowVerdict: String)] }
+struct FixtureProbe { var read: Read; var status: String; var verdict: String; var rows: [(key: Key, row: String, rowVerdict: String, note: String)] }
 enum FixtureItem { case step(FixtureStep), probe(FixtureProbe) }
 struct FixtureCase { var name: String; var record: [Key]; var items: [FixtureItem] }
 
@@ -59,8 +59,8 @@ enum Fixture {
                 let w = words(Substring(g[0].dropFirst(3)))
                 cases[cases.count - 1].items.append(.step(FixtureStep(words: w, event: TestDecode.event(w), expected: g[1].trimmingCharacters(in: .whitespaces))))
             } else if line.hasPrefix("PROBE ") {
-                let rows: [(key: Key, row: String, rowVerdict: String)] = g.dropFirst(4).map { t in
-                    let x = t.split(separator: " "); return (UInt32(x[0])!, String(x[1]), String(x[2]))
+                let rows: [(key: Key, row: String, rowVerdict: String, note: String)] = g.dropFirst(4).map { t in
+                    let x = t.split(separator: " "); return (UInt32(x[0])!, String(x[1]), String(x[2]), String(x[3]))
                 }
                 cases[cases.count - 1].items.append(.probe(FixtureProbe(
                     read: TestDecode.read(words(Substring(g[0].dropFirst(6)))), status: g[1].trimmingCharacters(in: .whitespaces),
@@ -87,6 +87,7 @@ enum Fixture {
                 for r in p.rows {
                     if Names.row(try DecisionCore.row(s, p.read, r.key)) != r.row { bad += 1 }
                     if Names.rowVerdict(try DecisionCore.rowVerdict(s, p.read, r.key)) != r.rowVerdict { bad += 1 }
+                    if Names.note(try DecisionCore.rowNote(s, p.read, r.key)) != r.note { bad += 1 }
                 }
             }
         }

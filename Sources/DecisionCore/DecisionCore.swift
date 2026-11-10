@@ -61,6 +61,13 @@ public enum DecisionCore {
         return v
     }
 
+    /// `rowNote s r k`: the note beside the row (`nil` = no note). Throws `.malformedInput` for a malformed read or key and
+    /// `.undecodableOutput` for an answer that is not a note code.
+    public static func rowNote(_ state: DecisionState, _ read: Read, _ key: Key) throws(DecisionError) -> RowNote? {
+        guard let v = Codec.note(try Raw.query(.rowNote, state, Codec.encode(read), key: [key])) else { throw .undecodableOutput }
+        return v
+    }
+
     /// `rowVerdict s.record (s.view r) k`
     public static func rowVerdict(_ state: DecisionState, _ read: Read, _ key: Key) throws(DecisionError) -> RowVerdict {
         guard let v = Codec.rowVerdict(try Raw.query(.rowVerdict, state, Codec.encode(read), key: [key])) else { throw .undecodableOutput }
@@ -70,7 +77,7 @@ public enum DecisionCore {
 
 /// The word-level calls (internal; `@testable` tests feed them malformed words to check that the Lean side refuses them).
 enum Raw {
-    enum Query { case status, shownVerdict, rowLine, rowVerdict }
+    enum Query { case status, shownVerdict, rowLine, rowVerdict, rowNote }
 
     /// Returns the payload after the ok tag. Tag 1 (malformed) throws; anything else is undecodable.
     static func payload(_ r: inout sm_result) throws(DecisionError) -> [UInt32] {
@@ -108,6 +115,7 @@ enum Raw {
                 case .status: sm_status(state.handle, rd.baseAddress, rd.count, &r)
                 case .shownVerdict: sm_shown_verdict(state.handle, rd.baseAddress, rd.count, &r)
                 case .rowLine: sm_row_line(state.handle, rd.baseAddress, rd.count, k.baseAddress, k.count, &r)
+                case .rowNote: sm_row_note(state.handle, rd.baseAddress, rd.count, k.baseAddress, k.count, &r)
                 case .rowVerdict: sm_row_verdict(state.handle, rd.baseAddress, rd.count, k.baseAddress, k.count, &r)
                 }
             }

@@ -5,7 +5,7 @@ import Sommelier.Examples
 # Fixture generator for the Swift `DecisionCoreTests`
 
 `lake exe fixture [traces] [seed]` prints, to stdout, the expected values of the PROVED functions (`step`, `statusLine`, `shownVerdict`,
-`rowLine`, `rowVerdict`), run by Lean itself, on (1) the named traces of `Sommelier/Examples.lean` and the review traces and (2) random
+`rowLine`, `rowVerdict`, `rowNote`), run by Lean itself, on (1) the named traces of `Sommelier/Examples.lean` and the review traces and (2) random
 traces from the fuzz generator (`Sommelier/Fuzz.lean`).  Swift replays the same inputs through the linked C and must get the same values.
 Nothing here is hand-copied: every expectation is computed by the Lean functions.  Inputs are the token encoding of `Sommelier/Ffi.lean` (round trips are theorems); every OUTPUT is printed by NAME (the `name…` functions
 of `Ffi.lean`), never as a code, so the Swift tests do not depend on the Swift decoder they test.
@@ -14,14 +14,14 @@ Format (one record per line; ` ; ` separates groups; groups may be empty):
   CASE <name>
   INIT <record keys>
   EV <event tokens> ; <actions by name, " | " separated>                (the actions `step` returned for this event)
-  PROBE <read tokens> ; <status name> ; <verdict name> ; <k rowName rowVerdictName> ; ...     (against the state after the preceding events)
+  PROBE <read tokens> ; <status name> ; <verdict name> ; <k rowName rowVerdictName noteName> ; ...     (against the state after the preceding events)
 -/
 open Sommelier Sommelier.Ffi
 
 def toks (l : List Nat) : String := " ".intercalate (l.map toString)
 
 def probeLine (s : State) (r : Read) (keys : List Key) : String :=
-  let rows := keys.map fun k => s!"{k} {nameRow (rowLine s r k)} {nameRowVerdict (rowVerdict s.record (s.view r) k)}"
+  let rows := keys.map fun k => s!"{k} {nameRow (rowLine s r k)} {nameRowVerdict (rowVerdict s.record (s.view r) k)} {nameNote (rowNote s r k)}"
   s!"PROBE {toks (encRead r)} ; {nameStatus (statusLine s r)} ; {nameVerdict (shownVerdict s r)} ; " ++ " ; ".intercalate rows
 
 def lastRead : List Event → Option Read
@@ -85,6 +85,11 @@ def namedCases : List (String × List Key × List Event) :=
     ("incomplete-poll", r12, [.read { mkRead .absent [2, 1] [] with level := .incomplete, kind := .poll }]),
     ("poll-read", r12, [.read (poll true), .read (poll false)]),
     ("unread-keys", r123, [.read { mkRead .fresh [1, 2] [] with unread := [3] }, .userEdit [3, 1, 2] [3], .read { mkRead .fresh [1, 2] [] with unread := [3] }]),
+    -- row notes (ejb.14): noMoveHelps (verified bar, no single drag of 2 helps), cantJudge (review-10b T1, T2), none (a moving row, in-order rows)
+    ("note-noMoveHelps", r123, [.userEdit r123 [2], .read (mkRead .fresh [3, 1, 2] [9])]),
+    ("note-cantJudge-T2", [1, 2, 3, 4], [.userEdit [1, 2, 3, 4] [3], .read { mkRead .fresh [3, 2, 4, 1] [9] with trusted := [3, 4, 1, 9] }]),
+    ("note-cantJudge-T1", r12345, [.userEdit r12345 [3], .read { mkRead .fresh [4, 3, 5, 2, 1] [9] with trusted := [4, 3, 5, 2, 9] }]),
+    ("note-none-moving", r123, [.userEdit r123 [1], .read (mkRead .fresh [2, 3, 1] [9])]),
     ("notFullProven-flag", r12, [.read { mkRead .absent [2, 1] [] with notFullProven := true }])
   ]
 

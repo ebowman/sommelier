@@ -531,4 +531,20 @@ theorem rowLineF_eq (s : State) (r : Read) (k : Key) : rowLineF s r k = rowLine 
   unfold rowLineF rowLine
   rw [movingKeyF_eq, waitingKeyF_eq, rowVerdictF_eq]
 
+/-- The note beside a row, from the fast versions of everything `rowNote` calls that is costly (`rowLineF`, `fallbackMoveF`, `userPickF`, `decideMoveF`). -/
+def rowNoteF (s : State) (r : Read) (k : Key) : Option RowNote :=
+  if rowLineF s r k == .notWherePut && owedNow s k then
+    if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && wholeBar s r && misplaced s r k
+        && (fallbackMoveF s r k).isNone && (userPickF s r).isNone then
+      some .noMoveHelps
+    else if (movable s r).contains k && s.owedKeys.contains k && s.record.contains k && !wholeBar s r && misplaced s r k
+        && (fallbackMoveF s r k).isNone && (decideMoveF s r).isNone then
+      some .cantJudge
+    else some .noMoveHere
+  else none
+
+theorem rowNoteF_eq (s : State) (r : Read) (k : Key) : rowNoteF s r k = rowNote s r k := by
+  unfold rowNoteF rowNote
+  rw [rowLineF_eq, fallbackMoveF_eq, userPickF_eq, decideMoveF_eq]
+
 end Sommelier

@@ -5,7 +5,7 @@ import Sommelier.Fast
 # C boundary: the thin exports the Swift app links
 
 The app holds an opaque `State` and sends flat `Nat` token lists (the C shim turns `UInt32` words into `Nat`s).  Every export only
-DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`), and ENCODES the answer.
+DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`, `rowNote`), and ENCODES the answer.
 No decision is made here.  This file adds no definition to any other module.
 
 The exports call the FAST versions of `Fast.lean` (`stepF`, `statusLineF`, `shownVerdictF`, `rowLineF`, `rowVerdictF`); each is PROVED EQUAL to the specification
@@ -231,6 +231,21 @@ def decRowVerdict : Nat → Option RowVerdict
 
 theorem decRowVerdict_enc (v : RowVerdict) : decRowVerdict (encRowVerdict v) = some v := by cases v <;> rfl
 
+/-- the row note: `0` = no note, else the note's code (an `Option RowNote` is one word) -/
+def encNote : Option RowNote → Nat
+  | none => 0 | some .noMoveHelps => 1 | some .cantJudge => 2 | some .noMoveHere => 3
+
+def decNote : Nat → Option (Option RowNote)
+  | 0 => some none | 1 => some (some .noMoveHelps) | 2 => some (some .cantJudge) | 3 => some (some .noMoveHere) | _ => none
+
+theorem decNote_enc (n : Option RowNote) : decNote (encNote n) = some n := by
+  cases n with
+  | none => rfl
+  | some w => cases w <;> rfl
+
+/-- a word that is not a note code is refused -/
+theorem decNote_malformed : decNote 4 = none ∧ decNote 99 = none := by decide
+
 /-- the answer envelope round-trips, and the error word is never an ok answer -/
 def decAns : List Nat → Option (Option (List Nat))
   | okTag' :: p => if okTag' = okTag then some (some p) else if okTag' = errTag then (if p = [] then some none else none) else none
@@ -262,6 +277,11 @@ def rowLineTok (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
 def rowVerdictTok (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
   match decRead rd, decKey key with
   | some r, some k => okAns [encRowVerdict (rowVerdict s.record (s.view r) k)]
+  | _, _ => errAns
+
+def rowNoteTok (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
+  match decRead rd, decKey key with
+  | some r, some k => okAns [encNote (rowNote s r k)]
   | _, _ => errAns
 
 /-! ## Wrapper theorems: encoded input gives the encoding of the proved value; undecodable input gives the error word -/
@@ -307,6 +327,16 @@ theorem rowVerdictTok_bad_read (s : State) (rd key : List Nat) (h : decRead rd =
 theorem rowVerdictTok_bad_key (s : State) (rd key : List Nat) (h : decKey key = none) : rowVerdictTok s rd key = errAns := by
   simp [rowVerdictTok, h]
 
+theorem rowNoteTok_enc (s : State) (r : Read) (k : Key) :
+    rowNoteTok s (encRead r) (encKey k) = okAns [encNote (rowNote s r k)] := by
+  simp [rowNoteTok, decRead_enc, decKey_enc]
+
+theorem rowNoteTok_bad_read (s : State) (rd key : List Nat) (h : decRead rd = none) : rowNoteTok s rd key = errAns := by
+  simp [rowNoteTok, h]
+
+theorem rowNoteTok_bad_key (s : State) (rd key : List Nat) (h : decKey key = none) : rowNoteTok s rd key = errAns := by
+  simp [rowNoteTok, h]
+
 /-! ## The token functions the exports compute: the fast versions, proved equal to the ones above -/
 
 def stepTokF (s : State) (ev : List Nat) : State × List Nat :=
@@ -329,6 +359,15 @@ def rowVerdictTokF (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
   match decRead rd, decKey key with
   | some r, some k => okAns [encRowVerdict (rowVerdictF s.record (s.view r) k)]
   | _, _ => errAns
+
+def rowNoteTokF (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
+  match decRead rd, decKey key with
+  | some r, some k => okAns [encNote (rowNoteF s r k)]
+  | _, _ => errAns
+
+theorem rowNoteTokF_eq (s : State) (rd key : List Nat) : rowNoteTokF s rd key = rowNoteTok s rd key := by
+  unfold rowNoteTokF rowNoteTok
+  cases decRead rd <;> cases decKey key <;> simp only [rowNoteF_eq]
 
 theorem stepTokF_eq (s : State) (ev : List Nat) : stepTokF s ev = stepTok s ev := by
   unfold stepTokF stepTok
@@ -375,6 +414,8 @@ def nameVerdict : Verdict → String
 def nameRow : RowLine → String
   | .moving => "moving" | .waiting => "waiting" | .tick => "tick" | .behind => "behind" | .notWherePut => "notWherePut"
   | .notOnBar => "notOnBar" | .cannotTell => "cannotTell"
+def nameNote : Option RowNote → String
+  | none => "none" | some .noMoveHelps => "noMoveHelps" | some .cantJudge => "cantJudge" | some .noMoveHere => "noMoveHere"
 def nameRowVerdict : RowVerdict → String
   | .inOrder => "inOrder" | .behindChevron => "behindChevron" | .behindOutOfTurn => "behindOutOfTurn" | .notOnBar => "notOnBar"
   | .outOfPlace => "outOfPlace" | .cannotTell => "cannotTell"
@@ -420,6 +461,8 @@ def exRowLine (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowLin
 @[export sommelier_row_verdict]
 def exRowVerdict (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowVerdictTokF s r.toList k.toList).toArray
 
+@[export sommelier_row_note]
+def exRowNote (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowNoteTokF s r.toList k.toList).toArray
 
 /-- Test support: the name of the event the words decode to, as UTF-8 bytes (`[errTag]` if they do not decode). -/
 @[export sommelier_describe_event]

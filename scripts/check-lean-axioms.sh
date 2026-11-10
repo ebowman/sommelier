@@ -43,7 +43,7 @@ wholeBar_unlisted wholeBar_iff_free penalty_wholeBar worstCount_wholeBar fallbac
 bar_movable_facts invs_split fallback_improves_bar noMoveHelps_bar
 invs_eq_invN costScan_get argminV_eq argmin_congr' afterCount_eq penalty_eq fallbackMoveF_eq nodupB_eq consistentF_eq gateF_eq rowVerdictF_eq
 verdictF_eq shownVerdictF_eq freeKeysF_eq userMoveF_eq userMove2F_eq userPickF_eq decideMoveF_eq stepF_eq pendingF_eq statusLineF_eq
-movingKeyF_eq waitingKeyF_eq rowLineF_eq"
+movingKeyF_eq waitingKeyF_eq rowLineF_eq rowNoteF_eq"
 ALL=$(cat Sommelier/Eqns.lean Sommelier/Safety.lean Sommelier/Gates.lean Sommelier/Truth.lean Sommelier/Honesty.lean Sommelier/Fast.lean | grep -E '^theorem [^ ]+' | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $HEADLINE; do
   echo "$ALL" | grep -qx "$h" || { echo "FAIL: headline theorem $h is missing from Eqns/Safety/Gates/Truth/Honesty/Fast.lean"; exit 1; }
@@ -53,6 +53,7 @@ FFI_HEADLINE="ub_b ok_ne_err decList_enc decList_enc' decKeys_enc decKey_enc dec
 decActions_enc decWhy_enc decStatus_enc decVerdict_enc decRowLine_enc decRowVerdict_enc decAns_ok decAns_err
 initTok_enc stepTok_enc stepTok_bad statusTok_enc statusTok_bad shownTok_enc shownTok_bad rowLineTok_enc rowLineTok_bad_read rowLineTok_bad_key
 rowVerdictTok_enc rowVerdictTok_bad_read rowVerdictTok_bad_key
+decNote_enc decNote_malformed rowNoteTok_enc rowNoteTok_bad_read rowNoteTok_bad_key rowNoteTokF_eq
 stepTokF_eq statusTokF_eq shownTokF_eq rowLineTokF_eq rowVerdictTokF_eq"
 FFI_ALL=$(grep -E '^theorem [^ ]+' Sommelier/Ffi.lean | sed -E 's/^theorem ([^ ]+).*/\1/' | sort -u)
 for h in $FFI_HEADLINE; do

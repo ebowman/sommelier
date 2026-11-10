@@ -78,6 +78,15 @@ enum Codec {
         }
     }
 
+    /// One word: 0 = no note. Returns `.some(nil)` for "no note", `nil` for a word Lean never produces.
+    static func note(_ w: [UInt32]) -> RowNote?? {
+        guard w.count == 1 else { return nil }
+        switch w[0] {
+        case 0: return .some(nil); case 1: return .some(.noMoveHelps); case 2: return .some(.cantJudge); case 3: return .some(.noMoveHere)
+        default: return nil
+        }
+    }
+
     static func rowVerdict(_ w: [UInt32]) -> RowVerdict? {
         guard w.count == 1 else { return nil }
         switch w[0] {

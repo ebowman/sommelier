@@ -364,22 +364,24 @@ lean/shim/sommelier_lean.c      C: UInt32 words <-> Lean Array Nat, runtime and 
    v
 lean/Sommelier/Ffi.lean         @[export]: decode, call the PROVED function, encode
    v
-step, statusLine, rowLine, shownVerdict, rowVerdict   (Step.lean, Truth.lean, Status.lean: unchanged)
+step, statusLine, rowLine, rowNote, shownVerdict, rowVerdict   (Step.lean, Truth.lean, Status.lean: unchanged)
 ```
 
-Exports (`sommelier_init/step/status/shown_verdict/row_line/row_verdict/describe_event`) are thin: each is `decode; call; encode` and nothing else (`…Tok` functions in `Ffi.lean`).
+Exports (`sommelier_init/step/status/shown_verdict/row_line/row_verdict/row_note/describe_event`) are thin: each is `decode; call; encode` and nothing else (`…Tok` functions in `Ffi.lean`).
 An answer is `0 :: payload`, or the single word `[1]` when the INPUT does not decode (`step` then also returns the state unchanged). There is no default value for
 a malformed event, read or key: Swift throws `DecisionError.malformedInput`. `ok_ne_err` proves the two answers cannot be confused.
 
 States are immutable and persistent: `DecisionCore.step` returns a NEW `DecisionState` and leaves its input usable. The C handle is released in `deinit`.
 
+**Row notes (ejb.14).** `sommelier_row_note(state, read, key)` answers `0 :: [code]` with the code of `rowNote s r k` (`DecisionCore.rowNote(state, read, key) -> RowNote?`, `nil` = no note; a malformed read or key throws `.malformedInput`, a word that is no note code throws `.undecodableOutput`). It is thin like the others and runs `rowNoteF` (`Fast.lean`), which differs from `rowNote` only by calling `rowLineF`, `fallbackMoveF`, `userPickF` and `decideMoveF`; `rowNoteF_eq` and `rowNoteTokF_eq` prove it equal to the specification with no hypothesis. The fixture prints each probed row's note by name (`none`, `noMoveHelps`, `cantJudge`, `noMoveHere`), the named traces `note-noMoveHelps`, `note-cantJudge-T1`, `note-cantJudge-T2` (review-10b) and `note-none-moving` cover the cases, and the 2000 fuzz traces show all three notes; `fastfuzz` compares `rowNoteF` with `rowNote`.
+
 ### Round-trip theorems (`Ffi.lean`, in `scripts/check-lean-axioms.sh`, standard axioms only)
 
 Inputs, `dec (enc x) = some x`: `decEvent_enc` (every `Event`), `decRead_enc` (every `Read`: kind, chevron, level, the four Bools, six key lists), `decOutcome_enc`,
 `decList_enc`/`decList_enc'` (length-prefixed key lists: the record and `moved` of `userEdit`, the read's sets), `decKeys_enc` (the `init` record), `decKey_enc` (the row key), `ub_b` (Bool).
-Outputs: `decActions_enc` (every `List Action`, so every `Rel`), `decStatus_enc` (with `decWhy_enc`), `decVerdict_enc`, `decRowLine_enc`, `decRowVerdict_enc`.
-Wrappers: `stepTok_enc`, `statusTok_enc`, `shownTok_enc`, `rowLineTok_enc`, `rowVerdictTok_enc`, `initTok_enc` (encoded input gives exactly the encoding of the proved function's value), and
-`stepTok_bad`, `statusTok_bad`, `shownTok_bad`, `rowLineTok_bad_read`, `rowLineTok_bad_key`, `rowVerdictTok_bad_read`, `rowVerdictTok_bad_key` (an input that does not decode gives `[1]`).
+Outputs: `decActions_enc` (every `List Action`, so every `Rel`), `decStatus_enc` (with `decWhy_enc`), `decVerdict_enc`, `decRowLine_enc`, `decRowVerdict_enc`, `decNote_enc` (the row note, `Option RowNote`: one word, 0 = no note, 1 `noMoveHelps`, 2 `cantJudge`, 3 `noMoveHere`; `decNote_malformed`: 4 and above are refused by the definition; `decNote_malformed` proves it for 4 and 99).
+Wrappers: `stepTok_enc`, `statusTok_enc`, `shownTok_enc`, `rowLineTok_enc`, `rowVerdictTok_enc`, `rowNoteTok_enc`, `initTok_enc` (encoded input gives exactly the encoding of the proved function's value), and
+`stepTok_bad`, `statusTok_bad`, `shownTok_bad`, `rowLineTok_bad_read`, `rowLineTok_bad_key`, `rowVerdictTok_bad_read`, `rowVerdictTok_bad_key`, `rowNoteTok_bad_read`, `rowNoteTok_bad_key` (an input that does not decode gives `[1]`).
 `decEvent_malformed` pins nine concrete malformed events (bad tag, trailing word, list longer than the words left, a non-Bool, an unknown outcome).
 What the round trips buy is Lean-side only: Lean's decode of a word list is the value that was encoded, and Lean's encoding of an answer decodes back to it. The Swift `Codec` is a separate piece of code and is not proved. `DifferentialTests` establish, by comparison and not by proof:
 (1) the Swift encoder emits exactly Lean's words for the 60000 events of the fuzz traces and the named traces; (2) for every `Event`/`Read` case (kind, chevron, level and Bool combinations, empty and non-empty lists) and for the events of the named and 200 fuzz traces, Lean's own reading of the Swift-encoded words (the `sommelier_describe_event` export, rendered by name) equals the Swift-side name of the event Swift meant;

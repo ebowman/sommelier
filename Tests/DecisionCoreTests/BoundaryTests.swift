@@ -48,7 +48,7 @@ private func sampleRead() -> Read {
             }
             _ = try Raw.query(q, s, good)
         }
-        for q in [Raw.Query.rowLine, .rowVerdict] {
+        for q in [Raw.Query.rowLine, .rowVerdict, .rowNote] {
             #expect(throws: DecisionError.malformedInput) { _ = try Raw.query(q, s, [], key: [1]) }
             #expect(throws: DecisionError.malformedInput) { _ = try Raw.query(q, s, good, key: []) }          // no key
             #expect(throws: DecisionError.malformedInput) { _ = try Raw.query(q, s, good, key: [1, 2]) }       // two words
@@ -72,6 +72,7 @@ private func sampleRead() -> Read {
         #expect(Codec.status([]) == nil); #expect(Codec.status([9]) == nil); #expect(Codec.status([3, 7]) == nil); #expect(Codec.status([3]) == nil)
         #expect(Codec.verdict([]) == nil); #expect(Codec.verdict([4]) == nil); #expect(Codec.verdict([2, 1]) == nil)
         #expect(Codec.row([7]) == nil); #expect(Codec.row([]) == nil); #expect(Codec.row([1, 1]) == nil)
+        #expect(Codec.note([]) == nil); #expect(Codec.note([4]) == nil); #expect(Codec.note([1, 1]) == nil)
         #expect(Codec.rowVerdict([6]) == nil); #expect(Codec.rowVerdict([]) == nil)
     }
 }

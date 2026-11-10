@@ -32,6 +32,11 @@ enum Names {
         case .notWherePut: return "notWherePut"; case .notOnBar: return "notOnBar"; case .cannotTell: return "cannotTell"
         }
     }
+    static func note(_ n: RowNote?) -> String {
+        switch n {
+        case nil: return "none"; case .noMoveHelps?: return "noMoveHelps"; case .cantJudge?: return "cantJudge"; case .noMoveHere?: return "noMoveHere"
+        }
+    }
     static func rowVerdict(_ v: RowVerdict) -> String {
         switch v {
         case .inOrder: return "inOrder"; case .behindChevron: return "behindChevron"; case .behindOutOfTurn: return "behindOutOfTurn"

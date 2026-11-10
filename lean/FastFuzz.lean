@@ -7,7 +7,7 @@ open Sommelier Sommelier.Fuzz
 
 Random states and reads (records of 2..36 keys, 36 in a fifth of the cases; reads that list a key twice; owed keys, fold requests, holds, in-flight
 drags) are given to both the specification and the fast version of `fallbackMove`, `userMove`, `userPick`, `decideMove`, `step`, `statusLine`,
-`shownVerdict`, `rowVerdict` and `rowLine`; any difference is a failure.  The equality is a THEOREM (`Fast.lean`); this check finds a false statement
+`shownVerdict`, `rowVerdict`, `rowLine` and `rowNote`; any difference is a failure.  The equality is a THEOREM (`Fast.lean`); this check finds a false statement
 before a proof is spent on it, and exercises the compiled code.  The specification is slow (22 ms per fallback at 36 keys), so each case asks the
 slow functions about a few keys only.  Exit code 1 on any difference or if a branch was never exercised.
 -/
@@ -144,6 +144,7 @@ def oneCase : G (Nat → FTally → FTally) := do
       t := check t (userMove2F s r k == userMove2 s r k) (fun _ => s!"userMove2 k={k} " ++ desc ())
       t := check t (decide (rowVerdictF s.record (s.view r) k = rowVerdict s.record (s.view r) k)) (fun _ => s!"rowVerdict k={k} " ++ desc ())
       t := check t (decide (rowLineF s r k = rowLine s r k)) (fun _ => s!"rowLine k={k} " ++ desc ())
+      t := check t (decide (rowNoteF s r k = rowNote s r k)) (fun _ => s!"rowNote k={k} " ++ desc ())
     return t
 
 def fastFuzzMain (args : List String) : IO UInt32 := do

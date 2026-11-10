@@ -88,6 +88,9 @@ public enum Verdict: Equatable, Sendable {
 /// What a record row shows (Lean `RowLine`).
 public enum Row: Equatable, Sendable { case moving, waiting, tick, behind, notWherePut, notOnBar, cannotTell }
 
+/// The note beside a row that says "not where you put it" (Lean `RowNote`). A row with no note is `nil` in `DecisionCore.rowNote`.
+public enum RowNote: Equatable, Sendable { case noMoveHelps, cantJudge, noMoveHere }
+
 /// The verdict on one key (Lean `RowVerdict`).
 public enum RowVerdict: Equatable, Sendable { case inOrder, behindChevron, behindOutOfTurn, notOnBar, outOfPlace, cannotTell }
 
