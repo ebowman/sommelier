@@ -37,8 +37,19 @@ public struct BarObservation: Sendable {
     /// The weakest read level among the scans this observation rests on (gdu.51). `.completeExceptSelfPositioning`: the
     /// self-positioning owners' items are stale (present, but their frames are not trusted).
     public var completeness: ReadCompleteness
-    public init(items: [ResolvedItem], settled: Bool = true, scans: Int = 1, completeness: ReadCompleteness = .complete) {
-        self.items = items; self.settled = settled; self.scans = scans; self.completeness = completeness
+    /// ejb.13 (A6): the union over the scans this observation rests on of the apps whose items were not read (`MenuBarSnapshot.unreadOwners`).
+    /// Existing consumers ignore it.
+    public var unreadOwners: [UnreadOwner] = []
+    /// ejb.13: the union of `MenuBarSnapshot.cachedOwners` (fast-path scans only): items attributed from the cache, untrusted but not unread.
+    public var cachedOwners: [UnreadOwner] = []
+    /// ejb.13 (A6): who is running (a snapshot taken after the last AX read), of the LAST scan this observation rests on (nil = unknown, or the returned
+    /// items are not that scan's). The evidence for rule (i) of `ReadAdapter.decideAbsence`.
+    public var ownerEvidence: OwnerEvidence?
+    public init(items: [ResolvedItem], settled: Bool = true, scans: Int = 1, completeness: ReadCompleteness = .complete,
+                unreadOwners: [UnreadOwner] = [], cachedOwners: [UnreadOwner] = [], ownerEvidence: OwnerEvidence? = nil) {
+        self.ownerEvidence = ownerEvidence
+        self.items = items; self.settled = settled; self.scans = scans; self.completeness = completeness; self.unreadOwners = unreadOwners
+        self.cachedOwners = cachedOwners
     }
 }
 
@@ -274,6 +285,9 @@ public struct AgreedScanObserver: MenuBarObserver {
         var bestClean = false
         var bestLevel = ReadCompleteness.complete
         var prevLevel = ReadCompleteness.complete
+        var unreadOwners: [UnreadOwner] = []   // ejb.13: union over the scans of this observation
+        var cachedOwners: [UnreadOwner] = []
+        var bestEvidence: OwnerEvidence?
         // gdu.71: an adopted observation (which already passed the agreement rule) stands in for the first scan; the first FRESH
         // scan must agree with it. If it does not, the loop simply continues as if that fresh scan were the first.
         var seedItems: [ResolvedItem]?
@@ -286,6 +300,8 @@ public struct AgreedScanObserver: MenuBarObserver {
             let snap = await scanner.scan()
             scans += 1
             if let why = snap.trackedStoreProblem { throw ObserveError.trackedStoreUnreadable(why) }
+            for o in snap.unreadOwners where !unreadOwners.contains(o) { unreadOwners.append(o) }
+            for o in snap.cachedOwners where !cachedOwners.contains(o) { cachedOwners.append(o) }
             let raw = resolve(snap)
             let (res, dups) = Self.dedupe(raw)
             prevRes = scans == 1 ? seedItems : lastRes
@@ -319,10 +335,10 @@ public struct AgreedScanObserver: MenuBarObserver {
             // read may be returned as the unsettled result.
             if !empty, !sentProgress { sentProgress = true; progress?(res) }
             if !empty, level.membershipUsable {
-                if sig != nil || !bestClean { best = res; bestClean = sig != nil; bestLevel = level }
+                if sig != nil || !bestClean { best = res; bestClean = sig != nil; bestLevel = level; bestEvidence = snap.ownerEvidence }
             }
             if !empty, let compareSig, compareSig == prevSig {
-                return (BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel)),
+                return (BarObservation(items: res, settled: true, scans: scans, completeness: Self.weakest(level, prevLevel), unreadOwners: unreadOwners, cachedOwners: cachedOwners, ownerEvidence: snap.ownerEvidence),
                         ScanDisagreement(scans: scans, staleKeys: [], changedKeys: []), unknownSeen, unknownReasons, incompleteReasons)
             }
             prevSig = sig
@@ -334,7 +350,7 @@ public struct AgreedScanObserver: MenuBarObserver {
         let disagreement = ScanDisagreement.make(scans: scans, previous: prevRes, last: lastRes, rule: rule)
         if let best {
             log("scans did not agree after \(scans) attempts; returning the latest complete read, unsettled")
-            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel), disagreement, unknownSeen, unknownReasons, incompleteReasons)
+            return (BarObservation(items: best, settled: false, scans: scans, completeness: bestLevel, unreadOwners: unreadOwners, cachedOwners: cachedOwners, ownerEvidence: bestEvidence), disagreement, unknownSeen, unknownReasons, incompleteReasons)
         }
         return (nil, disagreement, unknownSeen, unknownReasons, incompleteReasons)
     }

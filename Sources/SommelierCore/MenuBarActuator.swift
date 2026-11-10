@@ -52,6 +52,13 @@ extension ActuationError {
     }
     /// gdu.126 / gdu.129 / gdu.134: any bar-level strip failure (open failed, opened but unplaceable, or a cross-fold move did not hold).
     public var isStripHoldFailure: Bool { isStripOpenFailure || isStripUnplaceable || isStripMoveDidNotHold }
+    /// ejb.13 (A7, wiring plan section 2): the text of the refusal `LiveActuator` returns when `setStripAllowed(false)` and the move would need the
+    /// « strip. Distinct from the overflow refusal; nothing was clicked or dragged.
+    public static let stripNotAllowedMarker = "needs the « strip, which this move may not open"
+    public var isStripNotAllowedRefusal: Bool {
+        if case .mechanismFailed(let m) = self { return m.contains(Self.stripNotAllowedMarker) }
+        return false
+    }
     /// Text carried by the actuator's refusal to drag an item (or anchor) that sits in macOS's overflow area (gdu.25, gdu.69).
     public static let overflowRefusalMarker = "is in the menu bar overflow area"
     /// The actuator refused BEFORE any drag because the subject or relation anchor is in macOS's overflow area. Not a failure
@@ -106,6 +113,9 @@ public protocol MenuBarActuator: Sendable {
     /// needs the « strip (a folded subject or target, or a churn-zone key), it refuses before any click or drag (an overflow refusal, never a strike).
     /// Only the user's own drop (`false`) may open the strip.
     func setEngineInitiated(_ on: Bool) async
+    /// ejb.13 (assumption 7): handed over right before every order move by the future core-driven engine. `false` = a move that needs the « strip is
+    /// refused (`ActuationError.isStripNotAllowedRefusal`) before any click or drag. Default `true`: today's behaviour. Nothing calls it with `false` yet.
+    func setStripAllowed(_ on: Bool) async
     /// gdu.144 D6: some mouse event (a drag, a chevron click) of the LAST `move` call may have been posted. A `.userBusy` result after one is consumed by
     /// the engine, not re-armed.
     var lastMoveTouchedMouse: Bool { get async }
@@ -118,6 +128,7 @@ public extension MenuBarActuator {
     func setRecordOrder(_ keys: [ItemKey]) async {}
     func setSingleDrag(_ on: Bool) async {}
     func setEngineInitiated(_ on: Bool) async {}
+    func setStripAllowed(_ on: Bool) async {}
     var lastMoveTouchedMouse: Bool { get async { false } }
     var lastMoveOpenedStrip: Bool { get async { false } }
     /// True when the last `applyHiddenBatch` ended in (or went through) an agent respawn (the fallback path). Default: never.

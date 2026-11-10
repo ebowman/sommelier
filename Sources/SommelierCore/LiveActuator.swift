@@ -324,6 +324,9 @@ public actor LiveActuator: MenuBarActuator {
     /// gdu.144 D2: the next move is engine-initiated: it never opens the strip, whatever the engine's own read said.
     private var engineInitiatedMove = false
     public func setEngineInitiated(_ on: Bool) async { engineInitiatedMove = on }
+    /// ejb.13 (assumption 7): when false, a move that needs the « strip is refused before any click or drag. Default true (today's behaviour).
+    private var stripAllowed = true
+    public func setStripAllowed(_ on: Bool) async { stripAllowed = on }
     /// 9o9.19: set by `moveCore` inside a session WE opened when the expanded read already satisfies the fold rule: the verdict waits
     /// for a settled read taken after the strip closes (`stripMove`).
     private var foldCandidate = false
@@ -369,6 +372,11 @@ public actor LiveActuator: MenuBarActuator {
         if !config.forceFallback, engineInitiatedMove, let need = stripNeed(plan, relation) {
             note("refused: engine-initiated move needs the « strip (\(need.why)); only a drop of yours opens it")
             return .failed(.mechanismFailed("\(key) \(ActuationError.overflowRefusalMarker); engine moves never open the « strip"), plan.snapshot)
+        }
+        // ejb.13 (assumption 7): the decision core said this move may not use the strip (Action.strip == false).
+        if !config.forceFallback, !stripAllowed, let need = stripNeed(plan, relation) {
+            note("refused: the move needs the « strip (\(need.why)) and the core did not allow it")
+            return .failed(.mechanismFailed("\(key) \(ActuationError.stripNotAllowedMarker)"), plan.snapshot)
         }
         if !config.forceFallback, let need = stripNeed(plan, relation) {
             return await stripMove(key, relation, plan: plan, need: need)

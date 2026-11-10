@@ -110,7 +110,7 @@ public actor FakeActuator: MenuBarActuator {
     public var lastMoveTouchedMouse: Bool { touchedLast }
     public func move(_ key: ItemKey, relation: Relation) async -> ActuationResult {
         let r = await moveImpl(key, relation: relation)
-        touchedLast = !(r.error == .notFound || (r.error?.isOverflowRefusal ?? false))
+        touchedLast = !(r.error == .notFound || (r.error?.isOverflowRefusal ?? false) || (r.error?.isStripNotAllowedRefusal ?? false))
         return r
     }
     private func moveImpl(_ key: ItemKey, relation: Relation) async -> ActuationResult {

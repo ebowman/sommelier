@@ -1,6 +1,6 @@
 # Manual testing
 
-`make test` builds the proved Lean core first and runs the DecisionCore tests; plain `swift test` skips them when `build/LeanCore` was never built (it becomes mandatory at ejb.7). After deleting `build/LeanCore`, run `make clean` or `swift package purge-cache` first: SwiftPM caches the manifest.
+The Lean core is now required for every build: run `make lean-core` (or `make test`) first. `make test` builds the proved Lean core, runs the main suite (`swift test --skip AdapterPropertyTests`) and then the heavy ReadAdapter property test in its OWN invocation (`swift test --filter AdapterPropertyTests`, about 1 s of CPU), so the property test never runs concurrently with the timing-sensitive engine tests (Gdu126, Gdu144Adversarial). Plain `swift test` runs both targets, one after the other (separate test bundles), and so also works; it does not isolate them in separate processes. `make test` runs all tests, including the DecisionCore tests. A plain `swift build` / `swift test` without `build/LeanCore` fails with a message naming `make lean-core` (the manifest checks for the library). After a Lean change SwiftPM may cache the manifest: run `swift package purge-cache` if it disagrees.
 
 `make verify-core` runs every check on the proved decision core (Lean build, axioms, fuzz, oracle, fastfuzz, Lean-C build, DecisionCoreTests, mutant patch check; `MUTANTS=full` adds the mutant run); see docs/verified-core.md.
 

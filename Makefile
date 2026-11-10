@@ -20,8 +20,11 @@ build: lean-core
 	swift build
 	codesign --force --sign - --entitlements Resources/Sommelier.entitlements "$$(swift build --show-bin-path)/mbprobe"
 
+# The ReadAdapter property test (AdapterPropertyTests, ~1 s of CPU) runs in its OWN invocation after the main suite, never concurrently with the
+# timing-sensitive engine tests (it starved Gdu126 / Gdu144Adversarial when they shared a run). Plain `swift test` runs both targets, one after the other.
 test: lean-core
-	swift test
+	swift test --skip AdapterPropertyTests
+	swift test --filter AdapterPropertyTests
 
 app: build
 	rm -rf $(APP)
@@ -70,7 +73,7 @@ dummy-stop:
 	-@sleep 1; pkill -x MBDummy || true
 
 clean:
-	swift package clean
+	-swift package clean   # the manifest refuses to load without build/LeanCore (see Package.swift): clean must still remove build/
 	rm -rf build
 
 # Release pipeline (Developer ID, hardened runtime, notarized, stapled DMG). See CONTRIBUTING.md.

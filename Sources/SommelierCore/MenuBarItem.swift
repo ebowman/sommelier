@@ -420,6 +420,28 @@ public enum HostedEvidence {
     }
 }
 
+/// ejb.13 (A6): an app whose items this scan could NOT read (its AX read failed or missed the budget, it was skipped as recently empty,
+/// or the fast path read no app-side extras at all). Whatever items it owns are unread: the core must not judge them.
+public struct UnreadOwner: Hashable, Sendable {
+    public var pid: pid_t
+    public var bundleID: String?
+    /// The DISPLAY name (`RunningAppInfo.name`); NOT necessarily an item's owner key.
+    public var name: String
+    /// Every value an item of this app could carry as its owner key (`OwnerKeyRule.candidates`: bundle id, executable name, bundle dir, ...).
+    public var ownerKeys: [String]
+    public init(pid: pid_t, bundleID: String?, name: String = "", ownerKeys: [String] = []) {
+        self.pid = pid; self.bundleID = bundleID; self.name = name; self.ownerKeys = ownerKeys
+    }
+}
+
+/// ejb.13 (A6 (i)): what a scan knows about WHO is running, the evidence `ReadAdapter.decideAbsence` needs. nil in a snapshot / observation = unknown
+/// (hand-built, fake observers): then nothing may be concluded absent.
+public struct OwnerEvidence: Hashable, Sendable {
+    /// Every app the scanner's `runningApps()` returned in a snapshot taken AFTER the scan's last AX read (an app launched before the read ended is in it). That list omits `.prohibited` processes (AccessibilitySource.runningApps).
+    public var running: [UnreadOwner]
+    public init(running: [UnreadOwner]) { self.running = running }
+}
+
 public struct MenuBarSnapshot: Codable, Sendable {
     private enum CodingKeys: String, CodingKey { case items, capturedAt, hostedReadComplete }
     /// The hosted tree of this scan, left to right (set by the scanner; not serialized). nil on hand-built snapshots.
@@ -439,6 +461,14 @@ public struct MenuBarSnapshot: Codable, Sendable {
     /// gdu.87: why Control Center's tracked-applications store could not be read (nil = readable or not consulted). Not serialized.
     /// While set, no item's hidden/visible state is known: the engine refuses to act and says so.
     public var trackedStoreProblem: String?
+    /// ejb.13 (A6): the apps this scan could not read (see `UnreadOwner`). Set by the scanner; not serialized; empty on hand-built snapshots.
+    /// Nothing reads it yet except `BarObservation.unreadOwners` (the future `ReadAdapter` input).
+    public var unreadOwners: [UnreadOwner] = []
+    /// ejb.13 (A6): fast path only: apps attributed from a valid cache of the last full scan. Their items are listed but not corroborated by a read
+    /// of the app: untrusted, not unread.
+    public var cachedOwners: [UnreadOwner] = []
+    /// ejb.13 (A6): who is running and who was read successfully (see `OwnerEvidence`). Set by the scanner; not serialized.
+    public var ownerEvidence: OwnerEvidence?
     /// gdu.120: one line, per running self-positioning owner, of how its app-side and hosted reads fared in this full scan
     /// ("iStat Menus Menubar: app=timedOut hosted=carried(9)"); nil on the fast path / without such an owner. Not serialized.
     public var selfPositioningReads: String?

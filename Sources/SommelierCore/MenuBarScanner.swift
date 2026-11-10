@@ -32,6 +32,8 @@ public struct MenuBarScanner {
     public var trackedEntries: @Sendable () -> TrackedStoreRead = { .notConfigured }
     /// The clock for the `recentlyVerified` age bound (gdu.120); injectable for tests.
     public var now: @Sendable () -> Date = Date.init
+    /// What is known about a running app, for its owner-key candidate names (`UnreadOwner.ownerKeys`); injectable for tests. Cached per pid.
+    public var ownerInfo: @Sendable (pid_t) -> OwnerAppInfo? = { OwnerAppInfo.live(pid: $0) }
     private let state: ScanState
 
     /// - Parameter cacheURL: when set, the scan cache is loaded from / saved to this file, so a new process starts warm.
@@ -417,6 +419,7 @@ public struct MenuBarScanner {
     public func scanVisible() -> MenuBarSnapshot {
         state.loadIfNeeded()
         let apps = source.runningApps()
+        state.ownerNames = state.ownerNames.filter { pid, _ in apps.contains { $0.pid == pid } }   // ejb.13: an app that quit is forgotten
         let agent = apps.first { $0.bundleID == menuBarAgentBundleID }
         let myPID = source.currentPID
         let t0 = Date()
@@ -425,17 +428,28 @@ public struct MenuBarScanner {
         let tree = readHosted(agent: agent, apps: apps, retry: false, lap: lap)
         let queried = apps.filter { $0.bundleID != menuBarAgentBundleID && (includeSelf || $0.pid != myPID) }
         var candidates: [Candidate] = []
+        var cachedPIDs = Set<pid_t>()
         for c in state.validCached(running: queried) {
+            cachedPIDs.insert(c.app.pid)
             for info in c.infos { candidates.append(Candidate(app: c.app, info: info)) }
         }
         state.save()
-        return assemble(agent: agent, tree: tree, candidates: candidates, failedApps: [], running: Set(apps.map(\.pid)), verifiedOnly: true,
-                        carryUnverified: tree.failedReads > 0 && tree.unnamedTimeouts > 0)
+        // ejb.13 (A6): the fast path reads no app-side extras. An app with a valid cache is attributed from it: its items are listed (drawn) but
+        // their positions are not corroborated by a read of the app, so they are `cachedOwners` (untrusted, not unread). Only an app with NO valid
+        // cache has items we cannot even attribute: unread.
+        let unread = queried.filter { !cachedPIDs.contains($0.pid) }.map(unreadOwner)
+        let cached = queried.filter { cachedPIDs.contains($0.pid) }.map(unreadOwner)
+        let endApps = source.runningApps()   // ejb.13 (A6 (i)): the running list for the not-running rule is taken AFTER the last AX read
+        var snap = assemble(agent: agent, tree: tree, candidates: candidates, failedApps: [], running: Set(apps.map(\.pid)), verifiedOnly: true,
+                            carryUnverified: tree.failedReads > 0 && tree.unnamedTimeouts > 0, unreadOwners: unread, cachedOwners: cached)
+        snap.ownerEvidence = OwnerEvidence(running: endApps.map(unreadOwner))
+        return snap
     }
 
     public func scan() -> MenuBarSnapshot {
         state.loadIfNeeded()
         let apps = source.runningApps()
+        state.ownerNames = state.ownerNames.filter { pid, _ in apps.contains { $0.pid == pid } }   // ejb.13: an app that quit is forgotten
         let agent = apps.first { $0.bundleID == menuBarAgentBundleID }
         let myPID = source.currentPID
 
@@ -520,7 +534,25 @@ public struct MenuBarScanner {
         state.chronic = Set(failedApps.map(\.pid))
         state.hasFullScan = true
         state.save()
-        return assemble(agent: agent, tree: tree, candidates: candidates, failedApps: failedApps, running: Set(apps.map(\.pid)))
+        // ejb.13 (A6): an app whose read failed or missed the budget (`failedApps`, both cases of `fallBack`) and an app skipped as recently
+        // empty were not read in this scan: their items, if any, are unread.
+        let unread = (failedApps + queried.filter { skip.contains($0.pid) }).map(unreadOwner)
+        let endApps = source.runningApps()   // ejb.13 (A6 (i)): taken AFTER the hosted tree and every app read; an app launched before this is in it
+        var snap = assemble(agent: agent, tree: tree, candidates: candidates, failedApps: failedApps, running: Set(apps.map(\.pid)), unreadOwners: unread)
+        snap.ownerEvidence = OwnerEvidence(running: endApps.map(unreadOwner))
+        return snap
+    }
+
+    /// ejb.13: an `UnreadOwner` for `app`, carrying every owner-key name the app's items could be keyed by (`OwnerKeyRule.candidates`: the bundle id,
+    /// the executable name, ... -- the executable name is the key for apps outside installed locations, and it is NOT the display name).
+    private func unreadOwner(_ app: RunningAppInfo) -> UnreadOwner {
+        if let c = state.ownerNames[app.pid], c.bundleID == app.bundleID, c.name == app.name { return c }   // same launch: no lookup
+        let info = ownerInfo(app.pid) ?? OwnerAppInfo(bundleID: app.bundleID, localizedName: app.name)
+        let names = OwnerKeyRule.candidates(for: info) + [app.bundleID, app.name].compactMap { $0 }
+        var seen = Set<String>()
+        let o = UnreadOwner(pid: app.pid, bundleID: app.bundleID, name: app.name, ownerKeys: names.filter { !$0.isEmpty && seen.insert($0).inserted })
+        state.ownerNames[app.pid] = o
+        return o
     }
 
     /// An app whose read failed or missed the budget keeps its items from the previous scan (marked stale).
@@ -536,7 +568,7 @@ public struct MenuBarScanner {
 
     private func assemble(agent: RunningAppInfo?, tree: AgentHostedTree, candidates: [Candidate],
                           failedApps: [RunningAppInfo], running: Set<pid_t>, verifiedOnly: Bool = false,
-                          carryUnverified: Bool = false) -> MenuBarSnapshot {
+                          carryUnverified: Bool = false, unreadOwners: [UnreadOwner] = [], cachedOwners: [UnreadOwner] = []) -> MenuBarSnapshot {
         let strip = tree.stripFrame ?? state.lastStrip ?? fallbackStrip
 
         // Dedupe hosted elements (group + button may both report the same item).
@@ -1088,6 +1120,8 @@ public struct MenuBarScanner {
         var snapshot = MenuBarSnapshot(items: marked, capturedAt: Date(), hostedReadComplete: hostedComplete, hostedLayout: layout,
                                        incompleteOnlyForSelfPositioning: spOnly)
         snapshot.completenessReason = hostedComplete || spOnly ? nil : reason
+        snapshot.unreadOwners = unreadOwners
+        snapshot.cachedOwners = cachedOwners
         // gdu.120: how each self-positioning owner's reads fared in this scan (one line per scan, built by the observer's log).
         if !verifiedOnly {
             let parts: [String] = state.appReadOutcome.sorted { $0.key < $1.key }.compactMap { pid, rec in

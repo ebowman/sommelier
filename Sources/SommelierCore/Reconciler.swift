@@ -34,6 +34,19 @@ public struct ObservedOrder: Equatable, Sendable {
     /// gdu.144 D1: a chevron item is on the bar in this read, FRESH, carried (recent) or STALE with no time limit. Any chevron in any read means
     /// the bar may be full; a stale one counts as a chevron for pile rows and planning (its pile is derived from its last frame).
     public var chevronPresent = false
+    /// ejb.13 (A6): stale items that are NOT on the bar, which the filter in `init(resolved:)` drops (a carried-forward parked item is never planned
+    /// on). Their position is unread in this scan: `ReadAdapter` sends them to `unread`. Not used by the planner.
+    public var staleOff: Set<ItemKey> = []
+    /// ejb.13: the key of the first chevron item on the bar in this read, of ANY kind (fresh, carried or stale; `overflowChevron` is the fresh one only).
+    /// `ReadAdapter` uses it to keep the chevron out of every list the core sees (A7: the chevron is never a key).
+    public var chevronAnyKey: ItemKey?
+    /// ejb.13: the keys of EVERY item in the read whose role is the overflow chevron (`isOverflowChevron`), on the bar or not, fresh or stale, even
+    /// those the filter drops. `ReadAdapter` keeps all of them out of every list and out of `CoreKeys` (a stale off-bar chevron must never be interned).
+    public var chevronKeys: Set<ItemKey> = []
+    /// ejb.13 (A6): parked keys whose placement this scan cannot vouch for: `placementUnknown`, plus every parked key Control Center does not
+    /// say is hidden (`controlCenterAllowed == nil`, or allowed and not hidden: folded for width, or just not drawn). A superset of `foldedParked`
+    /// and `placementUnknown`. Not used by the planner.
+    public var parkedUnreadable: Set<ItemKey> = []
     /// gdu.144 D1: a chevron of any kind is in this read.
     public var hasChevron: Bool { overflowChevron != nil || chevronRecent || chevronPresent }
     public init(onBar: [ItemKey], parked: [ItemKey], systemOverflow: Set<ItemKey> = [], overflowChevron: ItemKey? = nil,
@@ -68,6 +81,11 @@ public struct ObservedOrder: Equatable, Sendable {
         var chevronAnyKey: ItemKey?
         var expanded = false
         var foldCandidates = Set<ItemKey>()
+        var staleOffKeys = Set<ItemKey>()
+        var unreadable = Set<ItemKey>()
+        var chevronRoleKeys = Set<ItemKey>()
+        for r in resolved where r.item.isOverflowChevron { chevronRoleKeys.insert(r.key) }   // ejb.13: by role, wherever the item stands
+        for r in resolved where r.item.frame.width > 1 && r.item.stale && !r.item.isOnMenuBar && !r.item.isOverflowChevron { staleOffKeys.insert(r.key) }   // ejb.13
         for r in resolved where r.item.frame.width > 1 && (!r.item.stale || r.item.isOnMenuBar) {
             guard seen.insert(r.key).inserted else { continue }
             if r.item.isOnMenuBar {
@@ -83,6 +101,8 @@ public struct ObservedOrder: Equatable, Sendable {
                     || r.item.hiddenInControlCenter { uncorr.insert(r.key) }
             } else {
                 off.append(r.key)
+                if r.item.isOverflowChevron { /* never unread: the chevron is the boundary (ejb.13) */ }
+                else if r.item.placementUnknown || r.item.controlCenterAllowed == nil || (r.item.controlCenterAllowed == true && !r.item.hiddenInControlCenter) { unreadable.insert(r.key) }   // ejb.13
                 if r.item.placementUnknown { unknown.insert(r.key) }
                 else if r.item.controlCenterAllowed == true, !r.item.hiddenInControlCenter { foldCandidates.insert(r.key) }
             }
@@ -98,6 +118,10 @@ public struct ObservedOrder: Equatable, Sendable {
         let ordered = bar.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }
         self.init(onBar: ordered.map(\.element.1), parked: off, systemOverflow: ovf, overflowChevron: chevron, placementUnknown: unknown, uncorroborated: uncorr, staleOnBar: stale)
         self.carriedRecently = recent
+        self.chevronAnyKey = chevronAnyKey
+        self.chevronKeys = chevronRoleKeys
+        self.staleOff = staleOffKeys.subtracting(bar.map(\.1)).subtracting(off)
+        self.parkedUnreadable = unreadable
         self.stripExpanded = expanded && chevron != nil
         if stripExpanded { systemOverflow = [] }   // an open strip draws every item at a real frame
         // gdu.121: with a fresh chevron and the strip collapsed, an allowed parked item is folded for width.

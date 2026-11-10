@@ -53,6 +53,8 @@ final class ScanState: @unchecked Sendable {
     /// How each app's extras read fared in the last full scan ("ok" / "timedOut" / "failed" / "skipped"), by pid (in-memory only).
     var appReadOutcome: [pid_t: (name: String, bundleID: String?, outcome: String)] = [:]
     var perApp: [pid_t: CachedApp] = [:]
+    /// ejb.13: `UnreadOwner` per running pid, so `OwnerAppInfo.live` runs once per app launch, not once per poll. Pruned when an app quits.
+    var ownerNames: [pid_t: UnreadOwner] = [:]
     /// Pids whose last read succeeded with no extras, with the time of that read (in-memory only).
     var emptyAt: [pid_t: Date] = [:]
     var lastHosted: [AXElementInfo] = []

@@ -1,0 +1,3302 @@
+{
+ "scans": [
+  {
+   "file": "list1.json",
+   "completeness": "complete",
+   "items": [
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.network",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 757,
+     "w": 52,
+     "join": "identifier",
+     "desc": "iStat Menus Network",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.sensors",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 764,
+     "w": 45,
+     "join": "identifier",
+     "desc": "iStat Menus Sensors",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.battery",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 781,
+     "w": 28,
+     "join": "identifier",
+     "desc": "iStat Menus Battery",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.memory",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 788,
+     "w": 21,
+     "join": "identifier",
+     "desc": "iStat Menus Memory",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.disks",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 788,
+     "w": 21,
+     "join": "identifier",
+     "desc": "iStat Menus Disks",
+     "title": ""
+    },
+    {
+     "key": "module:WiFi",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Wi‑Fi, connected, 3 bars",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": true,
+     "x": 789,
+     "w": 22,
+     "join": "none",
+     "desc": "Wi‑Fi, connected, 3 bars",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.focusmode",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Focus",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": true,
+     "x": 789,
+     "w": 22,
+     "join": "none",
+     "desc": "Focus",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.astronomy",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 791,
+     "w": 18,
+     "join": "identifier",
+     "desc": "iStat Menus Astronomy",
+     "title": ""
+    },
+    {
+     "key": "module:Show Hidden Menu Bar Items",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Show Hidden Menu Bar Items",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 794,
+     "w": 17.5,
+     "join": "none",
+     "desc": "Show Hidden Menu Bar Items",
+     "title": ""
+    },
+    {
+     "key": "status:com.apple.systemuiserver::com.apple.menuextra.TimeMachine",
+     "bundle": "com.apple.systemuiserver",
+     "name": "SystemUIServer",
+     "pid": 825,
+     "onBar": true,
+     "cc": null,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 842,
+     "w": 22,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "module:WiFi",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Wi‑Fi, connected, 3 bars",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 875,
+     "w": 22,
+     "join": "none",
+     "desc": "Wi‑Fi, connected, 3 bars",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.focusmode",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Focus",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 913,
+     "w": 22,
+     "join": "none",
+     "desc": "Focus",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.cpu",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 938,
+     "w": 51,
+     "join": "identifier",
+     "desc": "iStat Menus CPU",
+     "title": ""
+    },
+    {
+     "key": "status:info.marcel-dierkes.KeepingYouAwake::Item-0",
+     "bundle": "info.marcel-dierkes.KeepingYouAwake",
+     "name": "KeepingYouAwake",
+     "pid": 1980,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 942,
+     "w": 30,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.p5sys.jump.connect::Item-0",
+     "bundle": "com.p5sys.jump.connect",
+     "name": "Jump Desktop Connect",
+     "pid": 50159,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 974,
+     "w": 24,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:signal::Item-0",
+     "bundle": "signal",
+     "name": "WiFi Signal",
+     "pid": 1897,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1000,
+     "w": 61,
+     "join": "description",
+     "desc": "",
+     "title": " \n 65%"
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.weather",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1062,
+     "w": 41,
+     "join": "identifier",
+     "desc": "iStat Menus Weather",
+     "title": ""
+    },
+    {
+     "key": "status:com.corsair.ControlCenter::Item-0",
+     "bundle": "com.corsair.ControlCenter",
+     "name": "ControlCenter",
+     "pid": 59267,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1108,
+     "w": 24,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:GateOpener::Item-0",
+     "bundle": "ie.boboco.GateOpener",
+     "name": "GateOpener",
+     "pid": 1936,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1137,
+     "w": 24,
+     "join": "description",
+     "desc": "GateOpener — click to open the gate",
+     "title": ""
+    },
+    {
+     "key": "status:com.king.cto.mcpmaestro::Item-0",
+     "bundle": "com.king.cto.mcpmaestro",
+     "name": "MCP Maestro",
+     "pid": 1845,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1165,
+     "w": 24,
+     "join": "identifier",
+     "desc": "MCP Maestro",
+     "title": ""
+    },
+    {
+     "key": "status:ie.boboco.vpnswitch::Item-0",
+     "bundle": "ie.boboco.vpnswitch",
+     "name": "VPN Switch",
+     "pid": 92664,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1190,
+     "w": 24,
+     "join": "description",
+     "desc": "",
+     "title": "Shield Lefthalf Filled With A Checkmark Badge"
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.time",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1197,
+     "w": 65,
+     "join": "identifier",
+     "desc": "iStat Menus Time",
+     "title": ""
+    },
+    {
+     "key": "status:ie.boboco.FloTile::Item-0",
+     "bundle": "ie.boboco.FloTile",
+     "name": "FlöTile",
+     "pid": 86808,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1237,
+     "w": 24,
+     "join": "description",
+     "desc": "FlöTile",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.controlcenter",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Control Center",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 1272,
+     "w": 26,
+     "join": "none",
+     "desc": "Control Center",
+     "title": ""
+    },
+    {
+     "key": "module:Clock",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Clock",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 1314,
+     "w": 18,
+     "join": "none",
+     "desc": "Clock",
+     "title": ""
+    },
+    {
+     "key": "status:com.devon-technologies.think::Item-0",
+     "bundle": "com.devon-technologies.think",
+     "name": "DEVONthink",
+     "pid": 765,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 138,
+     "w": 98,
+     "join": "none",
+     "desc": "",
+     "title": "DEVONthink"
+    },
+    {
+     "key": "status:com.1password.1password::bb3cc23c-6950-4e96-8b40-850e09f46934",
+     "bundle": "com.1password.1password",
+     "name": "1Password",
+     "pid": 775,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 380,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:co.podzim.boltai-mobile::Item-0",
+     "bundle": "co.podzim.boltai-mobile",
+     "name": "BoltAI",
+     "pid": 812,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 275,
+     "w": 24,
+     "join": "none",
+     "desc": "BoltAI",
+     "title": ""
+    },
+    {
+     "key": "status:85C27NK92C.com.flexibits.fantastical2.mac.helper::Fantastical",
+     "bundle": "85C27NK92C.com.flexibits.fantastical2.mac.helper",
+     "name": "Fantastical Helper",
+     "pid": 1348,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 134,
+     "w": 24,
+     "join": "none",
+     "desc": "9. November 2026",
+     "title": "Fantastical"
+    },
+    {
+     "key": "status:86Z3GCJ4MF.com.noodlesoft.HazelHelper::Item-0",
+     "bundle": "86Z3GCJ4MF.com.noodlesoft.HazelHelper",
+     "name": "Hazel Helper",
+     "pid": 1562,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 136,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.apple.ScriptMenuApp::com.apple.scriptmenu",
+     "bundle": "com.apple.ScriptMenuApp",
+     "name": "Script Menu",
+     "pid": 1836,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 803,
+     "w": 22,
+     "join": "none",
+     "desc": "AppleScript scroll document, filled",
+     "title": ""
+    },
+    {
+     "key": "status:com.airmail2hookmark.app::Item-0",
+     "bundle": "com.airmail2hookmark.app",
+     "name": "Airmail2Hookmark",
+     "pid": 1863,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1632,
+     "w": 27,
+     "join": "none",
+     "desc": "Airmail2Hookmark",
+     "title": ""
+    },
+    {
+     "key": "status:com.pilotmoon.popclip::Item-0",
+     "bundle": "com.pilotmoon.popclip",
+     "name": "PopClip",
+     "pid": 1868,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 167,
+     "w": 23,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.houdah.HoudahSpot4.HoudahSpotHelper::Item-0",
+     "bundle": "com.houdah.HoudahSpot4.HoudahSpotHelper",
+     "name": "HoudahSpotHelper",
+     "pid": 1800,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 798,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.runningwithcrayons.Alfred::Item-0",
+     "bundle": "com.runningwithcrayons.Alfred",
+     "name": "Alfred",
+     "pid": 1872,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 196,
+     "w": 33,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.valerijs.boguckis.store.TextSniper::Item-0",
+     "bundle": "com.valerijs.boguckis.store.TextSniper",
+     "name": "TextSniper",
+     "pid": 1878,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 184,
+     "w": 30,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.choosyosx.Choosy::Item-0",
+     "bundle": "com.choosyosx.Choosy",
+     "name": "Choosy",
+     "pid": 1879,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 140,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::#0",
+     "bundle": "com.robinlu.mac.Tooth-Fairy",
+     "name": "ToothFairy",
+     "pid": 1889,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 163,
+     "w": 29,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Eric’s AirPods Pro #2#0",
+     "bundle": "com.robinlu.mac.Tooth-Fairy",
+     "name": "ToothFairy",
+     "pid": 1889,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 233,
+     "w": 29,
+     "join": "none",
+     "desc": "Eric’s AirPods Pro #2",
+     "title": ""
+    },
+    {
+     "key": "status:com.rescuetime.RescueTime::Item-0",
+     "bundle": "com.rescuetime.RescueTime",
+     "name": "RescueTime",
+     "pid": 1912,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 303,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.stairways.keyboardmaestro.engine::Main Status Menu",
+     "bundle": "com.stairways.keyboardmaestro.engine",
+     "name": "Keyboard Maestro Engine",
+     "pid": 1979,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 242,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.obdev.MicroSnitch::Item-0",
+     "bundle": "at.obdev.MicroSnitch",
+     "name": "Micro Snitch",
+     "pid": 1983,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 263,
+     "w": 28,
+     "join": "none",
+     "desc": "Micro Snitch, no microphone or camera is active",
+     "title": ""
+    },
+    {
+     "key": "status:com.devon-technologies.sphereexpress::Item-0",
+     "bundle": "com.devon-technologies.sphereexpress",
+     "name": "DEVONsphere Express",
+     "pid": 1984,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 331,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.crowdcafe.windowmagnet::Item-0",
+     "bundle": "com.crowdcafe.windowmagnet",
+     "name": "Magnet",
+     "pid": 1986,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 212,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.obdev.littlesnitch.agent::Item-0",
+     "bundle": "at.obdev.littlesnitch.agent",
+     "name": "Little Snitch Agent",
+     "pid": 1807,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 234,
+     "w": 57,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.manytricks.Moom::com.manytricks.Moom.StatusItem",
+     "bundle": "com.manytricks.Moom",
+     "name": "Moom",
+     "pid": 63901,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 192,
+     "w": 18,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.iconfactory.Tot::Item-0",
+     "bundle": "com.iconfactory.Tot",
+     "name": "Tot",
+     "pid": 65886,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 241,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.EternalStorms.Yoink::Item-0",
+     "bundle": "at.EternalStorms.Yoink",
+     "name": "Yoink",
+     "pid": 72650,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 131,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.grammarly.ProjectLlama::Item-0",
+     "bundle": "com.grammarly.ProjectLlama",
+     "name": "Grammarly Desktop",
+     "pid": 41046,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 356,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.getdropbox.dropbox::Item-0",
+     "bundle": "com.getdropbox.dropbox",
+     "name": "Dropbox",
+     "pid": 30915,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": -1,
+     "w": 30,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.openai.codex::Item-0",
+     "bundle": "com.openai.codex",
+     "name": "ChatGPT",
+     "pid": 98015,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 3,
+     "w": 24,
+     "join": "none",
+     "desc": "ChatGPT",
+     "title": ""
+    },
+    {
+     "key": "status:com.google.drivefs::Item-0",
+     "bundle": "com.google.drivefs",
+     "name": "Google Drive",
+     "pid": 4582,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": -1,
+     "w": 26,
+     "join": "none",
+     "desc": "Google Drive",
+     "title": ""
+    }
+   ]
+  },
+  {
+   "file": "list3.json",
+   "completeness": "complete",
+   "items": [
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.network",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 757,
+     "w": 52,
+     "join": "identifier",
+     "desc": "iStat Menus Network",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.sensors",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 764,
+     "w": 45,
+     "join": "identifier",
+     "desc": "iStat Menus Sensors",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.battery",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 781,
+     "w": 28,
+     "join": "identifier",
+     "desc": "iStat Menus Battery",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.memory",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 788,
+     "w": 21,
+     "join": "identifier",
+     "desc": "iStat Menus Memory",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.disks",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 788,
+     "w": 21,
+     "join": "identifier",
+     "desc": "iStat Menus Disks",
+     "title": ""
+    },
+    {
+     "key": "module:WiFi",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Wi‑Fi, connected, 3 bars",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": true,
+     "x": 789,
+     "w": 22,
+     "join": "none",
+     "desc": "Wi‑Fi, connected, 3 bars",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.focusmode",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Focus",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": true,
+     "x": 789,
+     "w": 22,
+     "join": "none",
+     "desc": "Focus",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.astronomy",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": true,
+     "x": 791,
+     "w": 18,
+     "join": "identifier",
+     "desc": "iStat Menus Astronomy",
+     "title": ""
+    },
+    {
+     "key": "module:Show Hidden Menu Bar Items",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Show Hidden Menu Bar Items",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 794,
+     "w": 17.5,
+     "join": "none",
+     "desc": "Show Hidden Menu Bar Items",
+     "title": ""
+    },
+    {
+     "key": "status:com.apple.systemuiserver::com.apple.menuextra.TimeMachine",
+     "bundle": "com.apple.systemuiserver",
+     "name": "SystemUIServer",
+     "pid": 825,
+     "onBar": true,
+     "cc": null,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 842,
+     "w": 22,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "module:WiFi",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Wi‑Fi, connected, 3 bars",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 875,
+     "w": 22,
+     "join": "none",
+     "desc": "Wi‑Fi, connected, 3 bars",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.focusmode",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Focus",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 913,
+     "w": 22,
+     "join": "none",
+     "desc": "Focus",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.cpu",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 938,
+     "w": 51,
+     "join": "identifier",
+     "desc": "iStat Menus CPU",
+     "title": ""
+    },
+    {
+     "key": "status:info.marcel-dierkes.KeepingYouAwake::Item-0",
+     "bundle": "info.marcel-dierkes.KeepingYouAwake",
+     "name": "KeepingYouAwake",
+     "pid": 1980,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 942,
+     "w": 30,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.p5sys.jump.connect::Item-0",
+     "bundle": "com.p5sys.jump.connect",
+     "name": "Jump Desktop Connect",
+     "pid": 50159,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 974,
+     "w": 24,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:signal::Item-0",
+     "bundle": "signal",
+     "name": "WiFi Signal",
+     "pid": 1897,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1000,
+     "w": 61,
+     "join": "description",
+     "desc": "",
+     "title": " \n 65%"
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.weather",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1062,
+     "w": 41,
+     "join": "identifier",
+     "desc": "iStat Menus Weather",
+     "title": ""
+    },
+    {
+     "key": "status:com.corsair.ControlCenter::Item-0",
+     "bundle": "com.corsair.ControlCenter",
+     "name": "ControlCenter",
+     "pid": 59267,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1108,
+     "w": 24,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:GateOpener::Item-0",
+     "bundle": "ie.boboco.GateOpener",
+     "name": "GateOpener",
+     "pid": 1936,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1137,
+     "w": 24,
+     "join": "description",
+     "desc": "GateOpener — click to open the gate",
+     "title": ""
+    },
+    {
+     "key": "status:com.king.cto.mcpmaestro::Item-0",
+     "bundle": "com.king.cto.mcpmaestro",
+     "name": "MCP Maestro",
+     "pid": 1845,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1165,
+     "w": 24,
+     "join": "identifier",
+     "desc": "MCP Maestro",
+     "title": ""
+    },
+    {
+     "key": "status:ie.boboco.vpnswitch::Item-0",
+     "bundle": "ie.boboco.vpnswitch",
+     "name": "VPN Switch",
+     "pid": 92664,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1190,
+     "w": 24,
+     "join": "description",
+     "desc": "",
+     "title": "Shield Lefthalf Filled With A Checkmark Badge"
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.time",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1197,
+     "w": 65,
+     "join": "identifier",
+     "desc": "iStat Menus Time",
+     "title": ""
+    },
+    {
+     "key": "status:ie.boboco.FloTile::Item-0",
+     "bundle": "ie.boboco.FloTile",
+     "name": "FlöTile",
+     "pid": 86808,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1237,
+     "w": 24,
+     "join": "description",
+     "desc": "FlöTile",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.controlcenter",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Control Center",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 1272,
+     "w": 26,
+     "join": "none",
+     "desc": "Control Center",
+     "title": ""
+    },
+    {
+     "key": "module:Clock",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Clock",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 1314,
+     "w": 18,
+     "join": "none",
+     "desc": "Clock",
+     "title": ""
+    },
+    {
+     "key": "status:com.devon-technologies.think::Item-0",
+     "bundle": "com.devon-technologies.think",
+     "name": "DEVONthink",
+     "pid": 765,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 138,
+     "w": 98,
+     "join": "none",
+     "desc": "",
+     "title": "DEVONthink"
+    },
+    {
+     "key": "status:com.1password.1password::bb3cc23c-6950-4e96-8b40-850e09f46934",
+     "bundle": "com.1password.1password",
+     "name": "1Password",
+     "pid": 775,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 380,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:co.podzim.boltai-mobile::Item-0",
+     "bundle": "co.podzim.boltai-mobile",
+     "name": "BoltAI",
+     "pid": 812,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 275,
+     "w": 24,
+     "join": "none",
+     "desc": "BoltAI",
+     "title": ""
+    },
+    {
+     "key": "status:85C27NK92C.com.flexibits.fantastical2.mac.helper::Fantastical",
+     "bundle": "85C27NK92C.com.flexibits.fantastical2.mac.helper",
+     "name": "Fantastical Helper",
+     "pid": 1348,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 134,
+     "w": 24,
+     "join": "none",
+     "desc": "9. November 2026",
+     "title": "Fantastical"
+    },
+    {
+     "key": "status:86Z3GCJ4MF.com.noodlesoft.HazelHelper::Item-0",
+     "bundle": "86Z3GCJ4MF.com.noodlesoft.HazelHelper",
+     "name": "Hazel Helper",
+     "pid": 1562,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 136,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.apple.ScriptMenuApp::com.apple.scriptmenu",
+     "bundle": "com.apple.ScriptMenuApp",
+     "name": "Script Menu",
+     "pid": 1836,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 803,
+     "w": 22,
+     "join": "none",
+     "desc": "AppleScript scroll document, filled",
+     "title": ""
+    },
+    {
+     "key": "status:com.airmail2hookmark.app::Item-0",
+     "bundle": "com.airmail2hookmark.app",
+     "name": "Airmail2Hookmark",
+     "pid": 1863,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1632,
+     "w": 27,
+     "join": "none",
+     "desc": "Airmail2Hookmark",
+     "title": ""
+    },
+    {
+     "key": "status:com.pilotmoon.popclip::Item-0",
+     "bundle": "com.pilotmoon.popclip",
+     "name": "PopClip",
+     "pid": 1868,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 167,
+     "w": 23,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.houdah.HoudahSpot4.HoudahSpotHelper::Item-0",
+     "bundle": "com.houdah.HoudahSpot4.HoudahSpotHelper",
+     "name": "HoudahSpotHelper",
+     "pid": 1800,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 798,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.runningwithcrayons.Alfred::Item-0",
+     "bundle": "com.runningwithcrayons.Alfred",
+     "name": "Alfred",
+     "pid": 1872,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 196,
+     "w": 33,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.valerijs.boguckis.store.TextSniper::Item-0",
+     "bundle": "com.valerijs.boguckis.store.TextSniper",
+     "name": "TextSniper",
+     "pid": 1878,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 184,
+     "w": 30,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.choosyosx.Choosy::Item-0",
+     "bundle": "com.choosyosx.Choosy",
+     "name": "Choosy",
+     "pid": 1879,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 140,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::#0",
+     "bundle": "com.robinlu.mac.Tooth-Fairy",
+     "name": "ToothFairy",
+     "pid": 1889,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 163,
+     "w": 29,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Eric’s AirPods Pro #2#0",
+     "bundle": "com.robinlu.mac.Tooth-Fairy",
+     "name": "ToothFairy",
+     "pid": 1889,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 233,
+     "w": 29,
+     "join": "none",
+     "desc": "Eric’s AirPods Pro #2",
+     "title": ""
+    },
+    {
+     "key": "status:com.rescuetime.RescueTime::Item-0",
+     "bundle": "com.rescuetime.RescueTime",
+     "name": "RescueTime",
+     "pid": 1912,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 303,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.stairways.keyboardmaestro.engine::Main Status Menu",
+     "bundle": "com.stairways.keyboardmaestro.engine",
+     "name": "Keyboard Maestro Engine",
+     "pid": 1979,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 242,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.obdev.MicroSnitch::Item-0",
+     "bundle": "at.obdev.MicroSnitch",
+     "name": "Micro Snitch",
+     "pid": 1983,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 263,
+     "w": 28,
+     "join": "none",
+     "desc": "Micro Snitch, no microphone or camera is active",
+     "title": ""
+    },
+    {
+     "key": "status:com.devon-technologies.sphereexpress::Item-0",
+     "bundle": "com.devon-technologies.sphereexpress",
+     "name": "DEVONsphere Express",
+     "pid": 1984,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 331,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.crowdcafe.windowmagnet::Item-0",
+     "bundle": "com.crowdcafe.windowmagnet",
+     "name": "Magnet",
+     "pid": 1986,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 212,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.obdev.littlesnitch.agent::Item-0",
+     "bundle": "at.obdev.littlesnitch.agent",
+     "name": "Little Snitch Agent",
+     "pid": 1807,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 234,
+     "w": 57,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.manytricks.Moom::com.manytricks.Moom.StatusItem",
+     "bundle": "com.manytricks.Moom",
+     "name": "Moom",
+     "pid": 63901,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 192,
+     "w": 18,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.iconfactory.Tot::Item-0",
+     "bundle": "com.iconfactory.Tot",
+     "name": "Tot",
+     "pid": 65886,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 241,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.EternalStorms.Yoink::Item-0",
+     "bundle": "at.EternalStorms.Yoink",
+     "name": "Yoink",
+     "pid": 72650,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 131,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.grammarly.ProjectLlama::Item-0",
+     "bundle": "com.grammarly.ProjectLlama",
+     "name": "Grammarly Desktop",
+     "pid": 41046,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 356,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.getdropbox.dropbox::Item-0",
+     "bundle": "com.getdropbox.dropbox",
+     "name": "Dropbox",
+     "pid": 30915,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": -1,
+     "w": 30,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.openai.codex::Item-0",
+     "bundle": "com.openai.codex",
+     "name": "ChatGPT",
+     "pid": 98015,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 3,
+     "w": 24,
+     "join": "none",
+     "desc": "ChatGPT",
+     "title": ""
+    },
+    {
+     "key": "status:com.google.drivefs::Item-0",
+     "bundle": "com.google.drivefs",
+     "name": "Google Drive",
+     "pid": 4582,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": -1,
+     "w": 26,
+     "join": "none",
+     "desc": "Google Drive",
+     "title": ""
+    }
+   ]
+  },
+  {
+   "file": "list2.json",
+   "completeness": "exceptSelfPositioning",
+   "items": [
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.network",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": true,
+     "x": 757,
+     "w": 52,
+     "join": "identifier",
+     "desc": "iStat Menus Network",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.sensors",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": true,
+     "x": 764,
+     "w": 45,
+     "join": "identifier",
+     "desc": "iStat Menus Sensors",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.battery",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": true,
+     "x": 781,
+     "w": 28,
+     "join": "identifier",
+     "desc": "iStat Menus Battery",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.memory",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": true,
+     "x": 788,
+     "w": 21,
+     "join": "identifier",
+     "desc": "iStat Menus Memory",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.disks",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": true,
+     "x": 788,
+     "w": 21,
+     "join": "identifier",
+     "desc": "iStat Menus Disks",
+     "title": ""
+    },
+    {
+     "key": "module:WiFi",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Wi‑Fi, connected, 3 bars",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": true,
+     "x": 789,
+     "w": 22,
+     "join": "none",
+     "desc": "Wi‑Fi, connected, 3 bars",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.focusmode",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Focus",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": true,
+     "x": 789,
+     "w": 22,
+     "join": "none",
+     "desc": "Focus",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.astronomy",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": true,
+     "x": 791,
+     "w": 18,
+     "join": "identifier",
+     "desc": "iStat Menus Astronomy",
+     "title": ""
+    },
+    {
+     "key": "module:Show Hidden Menu Bar Items",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Show Hidden Menu Bar Items",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 794,
+     "w": 17.5,
+     "join": "none",
+     "desc": "Show Hidden Menu Bar Items",
+     "title": ""
+    },
+    {
+     "key": "status:com.apple.systemuiserver::com.apple.menuextra.TimeMachine",
+     "bundle": "com.apple.systemuiserver",
+     "name": "SystemUIServer",
+     "pid": 825,
+     "onBar": true,
+     "cc": null,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 842,
+     "w": 22,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "module:WiFi",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Wi‑Fi, connected, 3 bars",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 875,
+     "w": 22,
+     "join": "none",
+     "desc": "Wi‑Fi, connected, 3 bars",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.focusmode",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Focus",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 913,
+     "w": 22,
+     "join": "none",
+     "desc": "Focus",
+     "title": ""
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.cpu",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": false,
+     "x": 938,
+     "w": 51,
+     "join": "identifier",
+     "desc": "iStat Menus CPU",
+     "title": ""
+    },
+    {
+     "key": "status:info.marcel-dierkes.KeepingYouAwake::Item-0",
+     "bundle": "info.marcel-dierkes.KeepingYouAwake",
+     "name": "KeepingYouAwake",
+     "pid": 1980,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 942,
+     "w": 30,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.p5sys.jump.connect::Item-0",
+     "bundle": "com.p5sys.jump.connect",
+     "name": "Jump Desktop Connect",
+     "pid": 50159,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 974,
+     "w": 24,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:signal::Item-0",
+     "bundle": "signal",
+     "name": "WiFi Signal",
+     "pid": 1897,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1000,
+     "w": 61,
+     "join": "description",
+     "desc": "",
+     "title": " \n 65%"
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.weather",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": false,
+     "x": 1062,
+     "w": 41,
+     "join": "identifier",
+     "desc": "iStat Menus Weather",
+     "title": ""
+    },
+    {
+     "key": "status:com.corsair.ControlCenter::Item-0",
+     "bundle": "com.corsair.ControlCenter",
+     "name": "ControlCenter",
+     "pid": 59267,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1108,
+     "w": 24,
+     "join": "frameUnique",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:GateOpener::Item-0",
+     "bundle": "ie.boboco.GateOpener",
+     "name": "GateOpener",
+     "pid": 1936,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1137,
+     "w": 24,
+     "join": "description",
+     "desc": "GateOpener — click to open the gate",
+     "title": ""
+    },
+    {
+     "key": "status:com.king.cto.mcpmaestro::Item-0",
+     "bundle": "com.king.cto.mcpmaestro",
+     "name": "MCP Maestro",
+     "pid": 1845,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1165,
+     "w": 24,
+     "join": "identifier",
+     "desc": "MCP Maestro",
+     "title": ""
+    },
+    {
+     "key": "status:ie.boboco.vpnswitch::Item-0",
+     "bundle": "ie.boboco.vpnswitch",
+     "name": "VPN Switch",
+     "pid": 92664,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1190,
+     "w": 24,
+     "join": "description",
+     "desc": "",
+     "title": "Shield Lefthalf Filled With A Checkmark Badge"
+    },
+    {
+     "key": "status:com.bjango.istatmenus.status::com.bjango.istatmenus.time",
+     "bundle": "com.bjango.istatmenus.status",
+     "name": "iStat Menus Menubar",
+     "pid": 43316,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": true,
+     "overflow": false,
+     "x": 1197,
+     "w": 65,
+     "join": "identifier",
+     "desc": "iStat Menus Time",
+     "title": ""
+    },
+    {
+     "key": "status:ie.boboco.FloTile::Item-0",
+     "bundle": "ie.boboco.FloTile",
+     "name": "FlöTile",
+     "pid": 86808,
+     "onBar": true,
+     "cc": true,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1237,
+     "w": 24,
+     "join": "description",
+     "desc": "FlöTile",
+     "title": ""
+    },
+    {
+     "key": "module:com.apple.menuextra.controlcenter",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Control Center",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 1272,
+     "w": 26,
+     "join": "none",
+     "desc": "Control Center",
+     "title": ""
+    },
+    {
+     "key": "module:Clock",
+     "bundle": "com.apple.MenuBarAgent",
+     "name": "Clock",
+     "pid": 21399,
+     "onBar": true,
+     "cc": null,
+     "source": "agentHostedOnly",
+     "stale": false,
+     "overflow": false,
+     "x": 1314,
+     "w": 18,
+     "join": "none",
+     "desc": "Clock",
+     "title": ""
+    },
+    {
+     "key": "status:com.devon-technologies.think::Item-0",
+     "bundle": "com.devon-technologies.think",
+     "name": "DEVONthink",
+     "pid": 765,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 138,
+     "w": 98,
+     "join": "none",
+     "desc": "",
+     "title": "DEVONthink"
+    },
+    {
+     "key": "status:com.1password.1password::bb3cc23c-6950-4e96-8b40-850e09f46934",
+     "bundle": "com.1password.1password",
+     "name": "1Password",
+     "pid": 775,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 380,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:co.podzim.boltai-mobile::Item-0",
+     "bundle": "co.podzim.boltai-mobile",
+     "name": "BoltAI",
+     "pid": 812,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 275,
+     "w": 24,
+     "join": "none",
+     "desc": "BoltAI",
+     "title": ""
+    },
+    {
+     "key": "status:85C27NK92C.com.flexibits.fantastical2.mac.helper::Fantastical",
+     "bundle": "85C27NK92C.com.flexibits.fantastical2.mac.helper",
+     "name": "Fantastical Helper",
+     "pid": 1348,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 134,
+     "w": 24,
+     "join": "none",
+     "desc": "9. November 2026",
+     "title": "Fantastical"
+    },
+    {
+     "key": "status:86Z3GCJ4MF.com.noodlesoft.HazelHelper::Item-0",
+     "bundle": "86Z3GCJ4MF.com.noodlesoft.HazelHelper",
+     "name": "Hazel Helper",
+     "pid": 1562,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 136,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.apple.ScriptMenuApp::com.apple.scriptmenu",
+     "bundle": "com.apple.ScriptMenuApp",
+     "name": "Script Menu",
+     "pid": 1836,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 803,
+     "w": 22,
+     "join": "none",
+     "desc": "AppleScript scroll document, filled",
+     "title": ""
+    },
+    {
+     "key": "status:com.airmail2hookmark.app::Item-0",
+     "bundle": "com.airmail2hookmark.app",
+     "name": "Airmail2Hookmark",
+     "pid": 1863,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 1632,
+     "w": 27,
+     "join": "none",
+     "desc": "Airmail2Hookmark",
+     "title": ""
+    },
+    {
+     "key": "status:com.pilotmoon.popclip::Item-0",
+     "bundle": "com.pilotmoon.popclip",
+     "name": "PopClip",
+     "pid": 1868,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 167,
+     "w": 23,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.houdah.HoudahSpot4.HoudahSpotHelper::Item-0",
+     "bundle": "com.houdah.HoudahSpot4.HoudahSpotHelper",
+     "name": "HoudahSpotHelper",
+     "pid": 1800,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 798,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.runningwithcrayons.Alfred::Item-0",
+     "bundle": "com.runningwithcrayons.Alfred",
+     "name": "Alfred",
+     "pid": 1872,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 196,
+     "w": 33,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.valerijs.boguckis.store.TextSniper::Item-0",
+     "bundle": "com.valerijs.boguckis.store.TextSniper",
+     "name": "TextSniper",
+     "pid": 1878,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 184,
+     "w": 30,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.choosyosx.Choosy::Item-0",
+     "bundle": "com.choosyosx.Choosy",
+     "name": "Choosy",
+     "pid": 1879,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 140,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::#0",
+     "bundle": "com.robinlu.mac.Tooth-Fairy",
+     "name": "ToothFairy",
+     "pid": 1889,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 163,
+     "w": 29,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Eric’s AirPods Pro #2#0",
+     "bundle": "com.robinlu.mac.Tooth-Fairy",
+     "name": "ToothFairy",
+     "pid": 1889,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 233,
+     "w": 29,
+     "join": "none",
+     "desc": "Eric’s AirPods Pro #2",
+     "title": ""
+    },
+    {
+     "key": "status:com.rescuetime.RescueTime::Item-0",
+     "bundle": "com.rescuetime.RescueTime",
+     "name": "RescueTime",
+     "pid": 1912,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 303,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.stairways.keyboardmaestro.engine::Main Status Menu",
+     "bundle": "com.stairways.keyboardmaestro.engine",
+     "name": "Keyboard Maestro Engine",
+     "pid": 1979,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 242,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.obdev.MicroSnitch::Item-0",
+     "bundle": "at.obdev.MicroSnitch",
+     "name": "Micro Snitch",
+     "pid": 1983,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 263,
+     "w": 28,
+     "join": "none",
+     "desc": "Micro Snitch, no microphone or camera is active",
+     "title": ""
+    },
+    {
+     "key": "status:com.devon-technologies.sphereexpress::Item-0",
+     "bundle": "com.devon-technologies.sphereexpress",
+     "name": "DEVONsphere Express",
+     "pid": 1984,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 331,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.crowdcafe.windowmagnet::Item-0",
+     "bundle": "com.crowdcafe.windowmagnet",
+     "name": "Magnet",
+     "pid": 1986,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 212,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.obdev.littlesnitch.agent::Item-0",
+     "bundle": "at.obdev.littlesnitch.agent",
+     "name": "Little Snitch Agent",
+     "pid": 1807,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 234,
+     "w": 57,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.manytricks.Moom::com.manytricks.Moom.StatusItem",
+     "bundle": "com.manytricks.Moom",
+     "name": "Moom",
+     "pid": 63901,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 192,
+     "w": 18,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.iconfactory.Tot::Item-0",
+     "bundle": "com.iconfactory.Tot",
+     "name": "Tot",
+     "pid": 65886,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 241,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:at.EternalStorms.Yoink::Item-0",
+     "bundle": "at.EternalStorms.Yoink",
+     "name": "Yoink",
+     "pid": 72650,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 131,
+     "w": 24,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.grammarly.ProjectLlama::Item-0",
+     "bundle": "com.grammarly.ProjectLlama",
+     "name": "Grammarly Desktop",
+     "pid": 41046,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 356,
+     "w": 26,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.getdropbox.dropbox::Item-0",
+     "bundle": "com.getdropbox.dropbox",
+     "name": "Dropbox",
+     "pid": 30915,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": -1,
+     "w": 30,
+     "join": "none",
+     "desc": "",
+     "title": ""
+    },
+    {
+     "key": "status:com.openai.codex::Item-0",
+     "bundle": "com.openai.codex",
+     "name": "ChatGPT",
+     "pid": 98015,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": 3,
+     "w": 24,
+     "join": "none",
+     "desc": "ChatGPT",
+     "title": ""
+    },
+    {
+     "key": "status:com.google.drivefs::Item-0",
+     "bundle": "com.google.drivefs",
+     "name": "Google Drive",
+     "pid": 4582,
+     "onBar": false,
+     "cc": false,
+     "source": "appExtras",
+     "stale": false,
+     "overflow": false,
+     "x": -1,
+     "w": 26,
+     "join": "none",
+     "desc": "Google Drive",
+     "title": ""
+    }
+   ]
+  }
+ ],
+ "running": [
+  {
+   "pid": 765,
+   "bundle": "com.devon-technologies.think",
+   "name": "DEVONthink",
+   "presented": 1
+  },
+  {
+   "pid": 775,
+   "bundle": "com.1password.1password",
+   "name": "1Password",
+   "presented": 1
+  },
+  {
+   "pid": 812,
+   "bundle": "co.podzim.boltai-mobile",
+   "name": "BoltAI",
+   "presented": 1
+  },
+  {
+   "pid": 825,
+   "bundle": "com.apple.systemuiserver",
+   "name": "SystemUIServer",
+   "presented": 1
+  },
+  {
+   "pid": 1348,
+   "bundle": "85C27NK92C.com.flexibits.fantastical2.mac.helper",
+   "name": "Fantastical Helper",
+   "presented": 1
+  },
+  {
+   "pid": 1562,
+   "bundle": "86Z3GCJ4MF.com.noodlesoft.HazelHelper",
+   "name": "Hazel Helper",
+   "presented": 1
+  },
+  {
+   "pid": 1800,
+   "bundle": "com.houdah.HoudahSpot4.HoudahSpotHelper",
+   "name": "HoudahSpotHelper",
+   "presented": 1
+  },
+  {
+   "pid": 1807,
+   "bundle": "at.obdev.littlesnitch.agent",
+   "name": "Little Snitch Agent",
+   "presented": 1
+  },
+  {
+   "pid": 1836,
+   "bundle": "com.apple.ScriptMenuApp",
+   "name": "Script Menu",
+   "presented": 1
+  },
+  {
+   "pid": 1845,
+   "bundle": "com.king.cto.mcpmaestro",
+   "name": "MCP Maestro",
+   "presented": 1
+  },
+  {
+   "pid": 1863,
+   "bundle": "com.airmail2hookmark.app",
+   "name": "Airmail2Hookmark",
+   "presented": 1
+  },
+  {
+   "pid": 1868,
+   "bundle": "com.pilotmoon.popclip",
+   "name": "PopClip",
+   "presented": 1
+  },
+  {
+   "pid": 1872,
+   "bundle": "com.runningwithcrayons.Alfred",
+   "name": "Alfred",
+   "presented": 1
+  },
+  {
+   "pid": 1878,
+   "bundle": "com.valerijs.boguckis.store.TextSniper",
+   "name": "TextSniper",
+   "presented": 1
+  },
+  {
+   "pid": 1879,
+   "bundle": "com.choosyosx.Choosy",
+   "name": "Choosy",
+   "presented": 1
+  },
+  {
+   "pid": 1889,
+   "bundle": "com.robinlu.mac.Tooth-Fairy",
+   "name": "ToothFairy",
+   "presented": 2
+  },
+  {
+   "pid": 1897,
+   "bundle": "signal",
+   "name": "WiFi Signal",
+   "presented": 1
+  },
+  {
+   "pid": 1912,
+   "bundle": "com.rescuetime.RescueTime",
+   "name": "RescueTime",
+   "presented": 1
+  },
+  {
+   "pid": 1936,
+   "bundle": "ie.boboco.GateOpener",
+   "name": "GateOpener",
+   "presented": 1
+  },
+  {
+   "pid": 1979,
+   "bundle": "com.stairways.keyboardmaestro.engine",
+   "name": "Keyboard Maestro Engine",
+   "presented": 1
+  },
+  {
+   "pid": 1980,
+   "bundle": "info.marcel-dierkes.KeepingYouAwake",
+   "name": "KeepingYouAwake",
+   "presented": 1
+  },
+  {
+   "pid": 1983,
+   "bundle": "at.obdev.MicroSnitch",
+   "name": "Micro Snitch",
+   "presented": 1
+  },
+  {
+   "pid": 1984,
+   "bundle": "com.devon-technologies.sphereexpress",
+   "name": "DEVONsphere Express",
+   "presented": 1
+  },
+  {
+   "pid": 1986,
+   "bundle": "com.crowdcafe.windowmagnet",
+   "name": "Magnet",
+   "presented": 1
+  },
+  {
+   "pid": 4582,
+   "bundle": "com.google.drivefs",
+   "name": "Google Drive",
+   "presented": 1
+  },
+  {
+   "pid": 30915,
+   "bundle": "com.getdropbox.dropbox",
+   "name": "Dropbox",
+   "presented": 1
+  },
+  {
+   "pid": 41046,
+   "bundle": "com.grammarly.ProjectLlama",
+   "name": "Grammarly Desktop",
+   "presented": 1
+  },
+  {
+   "pid": 43316,
+   "bundle": "com.bjango.istatmenus.status",
+   "name": "iStat Menus Menubar",
+   "presented": 9
+  },
+  {
+   "pid": 50159,
+   "bundle": "com.p5sys.jump.connect",
+   "name": "Jump Desktop Connect",
+   "presented": 1
+  },
+  {
+   "pid": 59267,
+   "bundle": "com.corsair.ControlCenter",
+   "name": "ControlCenter",
+   "presented": 1
+  },
+  {
+   "pid": 63901,
+   "bundle": "com.manytricks.Moom",
+   "name": "Moom",
+   "presented": 1
+  },
+  {
+   "pid": 65886,
+   "bundle": "com.iconfactory.Tot",
+   "name": "Tot",
+   "presented": 1
+  },
+  {
+   "pid": 72650,
+   "bundle": "at.EternalStorms.Yoink",
+   "name": "Yoink",
+   "presented": 1
+  },
+  {
+   "pid": 84989,
+   "bundle": "ie.boboco.sommelier",
+   "name": "Sommelier",
+   "presented": 1
+  },
+  {
+   "pid": 86808,
+   "bundle": "ie.boboco.FloTile",
+   "name": "FlöTile",
+   "presented": 1
+  },
+  {
+   "pid": 92664,
+   "bundle": "ie.boboco.vpnswitch",
+   "name": "VPN Switch",
+   "presented": 1
+  },
+  {
+   "pid": 98015,
+   "bundle": "com.openai.codex",
+   "name": "ChatGPT",
+   "presented": 1
+  }
+ ],
+ "families": [
+  [
+   "at.obdev.littlesnitch",
+   "at.obdev.littlesnitch.agent"
+  ],
+  [
+   "com.bjango.istatmenus.status",
+   "iStat Menus Menubar"
+  ],
+  [
+   "com.stairways.keyboardmaestro.editor",
+   "com.stairways.keyboardmaestro.engine"
+  ],
+  [
+   "com.houdah.HoudahSpot4",
+   "com.houdah.HoudahSpot4.HoudahSpotHelper"
+  ],
+  [
+   "ie.boboco.sommelier",
+   "Sommelier"
+  ],
+  [
+   "ie.boboco.mbdummy",
+   "MBDummy"
+  ],
+  [
+   "ie.boboco.GateOpener",
+   "GateOpener"
+  ],
+  [
+   "com.openai.codex",
+   "com.openai.sky.CUAService"
+  ],
+  [
+   "com.openai.sky.CUAService",
+   "SkyComputerUseService"
+  ],
+  [
+   "com.googlecode.iterm2",
+   "Sommelier"
+  ],
+  [
+   "com.flexibits.fantastical2.mac",
+   "85C27NK92C.com.flexibits.fantastical2.mac.helper"
+  ],
+  [
+   "com.github.Squirrel",
+   "com.electron.ollama"
+  ],
+  [
+   "com.macpaw.CleanMyMac5",
+   "com.macpaw.CleanMyMac5.Menu"
+  ],
+  [
+   "ie.boboco.mbdummyy",
+   "MBDummyyexe"
+  ],
+  [
+   "ie.boboco.FloTile",
+   "FloTile"
+  ],
+  [
+   "com.bloombuilt.dayone-mac",
+   "com.bloombuilt.dayone-mac-agent"
+  ],
+  [
+   "com.noodlesoft.Hazel",
+   "86Z3GCJ4MF.com.noodlesoft.HazelHelper"
+  ],
+  [
+   "com.ideasoncanvas.mindnode.macos",
+   "com.ideasoncanvas.mindnode.macos.quickentry"
+  ],
+  [
+   "com.bjango.istatmenus",
+   "iStat Menus"
+  ],
+  [
+   "ie.boboco.mbdummyz",
+   "MBDummyzexe"
+  ]
+ ],
+ "ccEntries": [
+  {
+   "allowed": false,
+   "names": [
+    "com.apple.ScriptMenuApp"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.airmail2hookmark.app"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "at.obdev.littlesnitch",
+    "at.obdev.littlesnitch.agent"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.1password.1password"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.surteesstudios.Bartender"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "co.podzim.boltai-mobile"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "signal"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.manytricks.Moom"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "GateOpener"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.bjango.istatmenus.status",
+    "iStat Menus Menubar"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "info.marcel-dierkes.KeepingYouAwake"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.stairways.keyboardmaestro.editor",
+    "com.stairways.keyboardmaestro.engine"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "Airmail2Hookmark"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.houdah.HoudahSpot4",
+    "com.houdah.HoudahSpot4.HoudahSpotHelper"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.robinlu.mac.Tooth-Fairy"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.hegenberg.BetterSnapTool"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.goodsnooze.MacWhisper"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.sommelier",
+    "Sommelier"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.choosyosx.Choosy"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.mbdummy",
+    "MBDummy"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.GateOpener",
+    "GateOpener"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "io.tailscale.ipn.macsys"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.flodo.app"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.openai.codex",
+    "com.openai.sky.CUAService"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.grammarly.ProjectLlama"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.corsair.ControlCenter"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.openai.sky.CUAService",
+    "SkyComputerUseService"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.googlecode.iterm2",
+    "Sommelier"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.devon-technologies.think"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "GateOpener"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.flexibits.fantastical2.mac",
+    "85C27NK92C.com.flexibits.fantastical2.mac.helper"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.red-sweater.fastscripts3"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "io.tailscale.ipn.macos"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.github.Squirrel",
+    "com.electron.ollama"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "at.EternalStorms.Yoink"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.rescuetime.RescueTime"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.valerijs.boguckis.store.TextSniper"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "org.pqrs.Karabiner-Menu"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.macpaw.CleanMyMac5",
+    "com.macpaw.CleanMyMac5.Menu"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.mbdummyy",
+    "MBDummyyexe"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.pilotmoon.popclip"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.FloTile",
+    "FloTile"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.kamban.elephas"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.freron.MailMate"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.apple.ScriptMonitor"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.anthropic.claudefordesktop"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.memoryvault.MemoryVault"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.electron.ollama"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.runningwithcrayons.Alfred"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.nordvpn.macos"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.fieldy.desktop"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.king.cto.mcpmaestro"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.bloombuilt.dayone-mac",
+    "com.bloombuilt.dayone-mac-agent"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "fr.arievanboxel.FMail2"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.getdropbox.dropbox"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.noodlesoft.Hazel",
+    "86Z3GCJ4MF.com.noodlesoft.HazelHelper"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.crowdcafe.windowmagnet"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.abhishek.Clocker"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "org.videolan.vlc"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.parallels.desktop.console"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.devon-technologies.sphereexpress"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.google.drivefs"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.p5sys.jump.connect"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.friend-app-with-wearable.ios12"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "at.obdev.MicroSnitch"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.cogsciapps.hook"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ChatGPTHelper"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.iconfactory.Tot"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.granola.app"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.vpnswitch"
+   ]
+  },
+  {
+   "allowed": false,
+   "names": [
+    "com.ideasoncanvas.mindnode.macos",
+    "com.ideasoncanvas.mindnode.macos.quickentry"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "GateOpener"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.bjango.istatmenus",
+    "iStat Menus"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "com.linguee.DeepLCopyTranslator"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.mbdummyw"
+   ]
+  },
+  {
+   "allowed": true,
+   "names": [
+    "ie.boboco.mbdummyz",
+    "MBDummyzexe"
+   ]
+  }
+ ]
+}

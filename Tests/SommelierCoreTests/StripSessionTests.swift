@@ -592,3 +592,32 @@ private struct OpenCaps144: CapabilityProvider { func capability(for k: ItemKey)
     for _ in 0..<6 { _ = await e.reconcileOnce() }
     #expect(w.events.filter { $0 == "open" }.count == 1 && w.events.filter { $0 == "drag" }.count == 1, "events=\(w.events)")
 }
+
+// MARK: ejb.13 (assumption 7): setStripAllowed(false) refuses a move that needs the strip, before any click or drag
+
+@Test func aMoveThatNeedsTheStripIsRefusedWhenTheStripIsNotAllowedAndDefaultsToAllowed() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    let a = actuator(w)
+    await a.setChurnZone([key("A")])
+    await a.setStripAllowed(false)
+    let r = await a.move(key("C"), relation: .before(key("A")))
+    #expect(!r.isVerified && r.error?.isStripNotAllowedRefusal == true)
+    #expect(r.error?.isOverflowRefusal == false && r.error?.isStripHoldFailure == false)   // a distinct refusal reason
+    #expect(w.events.isEmpty)                                                              // no click, no drag
+    let pull = await a.move(key("X2"), relation: .after(key("A")))                         // a pull-out needs the strip too
+    #expect(pull.error?.isStripNotAllowedRefusal == true && w.events.isEmpty)
+    let plain = await a.move(key("B"), relation: .after(key("C")))                         // no strip needed: an ordinary drag still runs
+    #expect(plain.isVerified && w.events == ["drag"])
+    // allowed again: the same strip move runs its session
+    await a.setStripAllowed(true)
+    let ok = await a.move(key("C"), relation: .before(key("A")))
+    #expect(ok.isVerified && w.events.suffix(3) == ["open", "drag", "close"])
+}
+
+@Test func stripAllowedDefaultsToTrueSoTodaysBehaviourIsUnchanged() async {
+    let w = StripWorld(pile: ["X1", "X2"], drawn: ["A", "B", "C"])
+    let a = actuator(w)
+    await a.setChurnZone([key("A")])
+    let r = await a.move(key("C"), relation: .before(key("A")))
+    #expect(r.isVerified && w.events == ["open", "drag", "close"])
+}

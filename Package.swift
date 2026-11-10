@@ -2,27 +2,28 @@
 import PackageDescription
 import Foundation
 
-// The proved Lean decision core (LeanCore, DecisionCore and its tests) is part of the package only once scripts/build-lean-core.sh has built
-// build/LeanCore/LeanCore.xcframework (`make build` and `make test` do that first). Without it, a plain `swift build` / `swift test` still works
-// and simply skips them, so a fresh clone needs no Lean. THIS BECOMES MANDATORY AT ejb.7, when SommelierCore depends on DecisionCore:
-// then the xcframework must exist for every build and this condition goes away.
-let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
-let hasLeanCore = FileManager.default.fileExists(atPath: packageDir + "/build/LeanCore/LeanCore.xcframework")
+// The proved Lean decision core (LeanCore, DecisionCore and its tests) needs build/LeanCore/LeanCore.xcframework (`make build` and `make test`
+// run scripts/build-lean-core.sh first). Since sommelier-ejb.13 SommelierCore depends on DecisionCore (ReadAdapter produces its `Read`), so the
+// xcframework is MANDATORY for every build: a clean clone runs `make lean-core` (or `scripts/build-lean-core.sh`) first.
 
-var targets: [Target] = [
-    .target(name: "SommelierCore"),
+// SwiftPM prints the manifest's fatalError text, so a build without the core fails naming the fix.
+let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+if !FileManager.default.fileExists(atPath: packageDir + "/build/LeanCore/LeanCore.xcframework") {
+    fatalError("build/LeanCore/LeanCore.xcframework is missing: the Lean decision core is required for every build. Run `make lean-core` (or `make test`) first.")
+}
+
+let targets: [Target] = [
+    .target(name: "SommelierCore", dependencies: ["DecisionCore"]),
     .executableTarget(name: "Sommelier", dependencies: ["SommelierCore"]),
     .executableTarget(name: "mbprobe", dependencies: ["SommelierCore"]),
     .executableTarget(name: "mbdummy"),
-    .testTarget(name: "SommelierCoreTests", dependencies: ["SommelierCore"]),
+    .testTarget(name: "SommelierCoreTests", dependencies: ["SommelierCore", "DecisionCore"], exclude: ["Fixtures"]),
+    // The heavy ReadAdapter property test: a separate target so `make test` can run it in its own `swift test` invocation (see Makefile).
+    .testTarget(name: "AdapterPropertyTests", dependencies: ["SommelierCore", "DecisionCore"]),
+    .binaryTarget(name: "LeanCore", path: "build/LeanCore/LeanCore.xcframework"),
+    .target(name: "DecisionCore", dependencies: ["LeanCore"], linkerSettings: [.linkedLibrary("c++")]),
+    .testTarget(name: "DecisionCoreTests", dependencies: ["DecisionCore", "SommelierCore"]),
 ]
-if hasLeanCore {
-    targets += [
-        .binaryTarget(name: "LeanCore", path: "build/LeanCore/LeanCore.xcframework"),
-        .target(name: "DecisionCore", dependencies: ["LeanCore"], linkerSettings: [.linkedLibrary("c++")]),
-        .testTarget(name: "DecisionCoreTests", dependencies: ["DecisionCore"]),
-    ]
-}
 
 let package = Package(
     name: "Sommelier",
