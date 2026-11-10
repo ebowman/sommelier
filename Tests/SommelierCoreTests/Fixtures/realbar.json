@@ -421,7 +421,7 @@
      "title": "DEVONthink"
     },
     {
-     "key": "status:com.1password.1password::bb3cc23c-6950-4e96-8b40-850e09f46934",
+     "key": "status:com.1password.1password::00000000-0000-0000-0000-000000000001",
      "bundle": "com.1password.1password",
      "name": "1Password",
      "pid": 775,
@@ -613,7 +613,7 @@
      "title": ""
     },
     {
-     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Eric’s AirPods Pro #2#0",
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Owner’s AirPods#0",
      "bundle": "com.robinlu.mac.Tooth-Fairy",
      "name": "ToothFairy",
      "pid": 1889,
@@ -625,7 +625,7 @@
      "x": 233,
      "w": 29,
      "join": "none",
-     "desc": "Eric’s AirPods Pro #2",
+     "desc": "Owner’s AirPods",
      "title": ""
     },
     {
@@ -1259,7 +1259,7 @@
      "title": "DEVONthink"
     },
     {
-     "key": "status:com.1password.1password::bb3cc23c-6950-4e96-8b40-850e09f46934",
+     "key": "status:com.1password.1password::00000000-0000-0000-0000-000000000001",
      "bundle": "com.1password.1password",
      "name": "1Password",
      "pid": 775,
@@ -1451,7 +1451,7 @@
      "title": ""
     },
     {
-     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Eric’s AirPods Pro #2#0",
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Owner’s AirPods#0",
      "bundle": "com.robinlu.mac.Tooth-Fairy",
      "name": "ToothFairy",
      "pid": 1889,
@@ -1463,7 +1463,7 @@
      "x": 233,
      "w": 29,
      "join": "none",
-     "desc": "Eric’s AirPods Pro #2",
+     "desc": "Owner’s AirPods",
      "title": ""
     },
     {
@@ -2097,7 +2097,7 @@
      "title": "DEVONthink"
     },
     {
-     "key": "status:com.1password.1password::bb3cc23c-6950-4e96-8b40-850e09f46934",
+     "key": "status:com.1password.1password::00000000-0000-0000-0000-000000000001",
      "bundle": "com.1password.1password",
      "name": "1Password",
      "pid": 775,
@@ -2289,7 +2289,7 @@
      "title": ""
     },
     {
-     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Eric’s AirPods Pro #2#0",
+     "key": "heuristic:com.robinlu.mac.Tooth-Fairy::Owner’s AirPods#0",
      "bundle": "com.robinlu.mac.Tooth-Fairy",
      "name": "ToothFairy",
      "pid": 1889,
@@ -2301,7 +2301,7 @@
      "x": 233,
      "w": 29,
      "join": "none",
-     "desc": "Eric’s AirPods Pro #2",
+     "desc": "Owner’s AirPods",
      "title": ""
     },
     {
