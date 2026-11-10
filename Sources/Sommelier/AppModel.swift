@@ -197,7 +197,7 @@ final class AppModel {
         platform.invalidateStrip()
         onDisplayChange()
         guard let engine else { return }
-        Task { await engine.scheduleReconcile(after: .seconds(1), reason: "display change") }
+        Task { await engine.screensChanged() }
     }
 
     private func pollConflict() {

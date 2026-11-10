@@ -1061,12 +1061,29 @@ private struct RvFakeObserver: MenuBarObserver {
         #expect(w.drawn == Self.rec, "converged: \(w.drawn) \(w.events)")
     }
 
-    /// The engine asks for the second read itself: one reconcileOnce on a full bar chains a follow-up pass, so the bar is not left unconverged until a trigger.
-    @Test func theHeldFirstReadChainsAFollowUpPass() async {
+    /// The engine asks for the second read itself: ONE requestReconcile (the real draining path) on a full bar chains a follow-up pass that drags,
+    /// with no poll and no further request. (reconcileOnce never sets `draining`, so it cannot exercise the chain.)
+    @Test func theHeldFirstReadChainsAFollowUpPassThroughTheDrain() async {
         let w = RvWorld(pile: ["P1", "P2"], drawn: Self.swapped); w.mode = .fresh
-        let (e, _, c) = await rvRig(w, record: ["P1", "P2"] + Self.rec)
-        for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
-        #expect(w.drags.count >= 1, "reconcile passes alone reach the drag: \(w.events)")
+        let (e, st, _) = await rvRig(w, record: ["P1", "P2"] + Self.rec)
+        await e.requestReconcile(reason: "launch")
+        await rvSettle(e, ms: 300)
+        #expect(w.drags.count >= 1 && st.passCount >= 2, "the held first read chained a second pass that dragged, unprompted: \(w.events)")
+    }
+
+    /// After a display reconfiguration the pile read before it proves nothing: the first complete read is held, the second agreeing one drags.
+    @Test func afterAScreenChangeTheFirstReadIsHeldAgain() async {
+        let w = RvWorld(pile: ["P1", "P2"], drawn: Self.rec); w.mode = .fresh
+        let (e, st, c) = await rvRig(w, record: ["P1", "P2"] + Self.rec)
+        for _ in 0..<3 { _ = await e.regularPassForTests(); c.adv(120) }
+        #expect(w.drags.isEmpty, "a matching bar needs no drag: \(w.events)")
+        await e.screensChanged()   // schedules a reconcile with the wall clock (1 s): it does not fire in this test
+        w.sync { w.drawn = Self.swapped }
+        let before = st.passCount
+        _ = await e.regularPassForTests(); c.adv(120)
+        #expect(w.drags.isEmpty, "the first complete read after a screen change is held: no drag. \(w.events)")
+        _ = await e.regularPassForTests(); c.adv(120)
+        #expect(w.drags.count >= 1 && st.passCount >= before + 2, "the second agreeing read lets the core drag: \(w.events)")
     }
 
     /// The same after a reset point: the pile from before a sleep proves nothing (didWake clears it), so the first read after the wake is held again.

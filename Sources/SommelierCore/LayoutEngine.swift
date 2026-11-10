@@ -1541,6 +1541,12 @@ public actor LayoutEngine {
         scheduleReconcile(after: settle, reason: "wake")
     }
 
+    /// Display reconfiguration (ejb.27): like a wake, the pile read before it proves nothing, so two agreeing complete reads are needed again.
+    public func screensChanged() {
+        core.lastCompletePile = nil
+        scheduleReconcile(after: .seconds(1), reason: "display change")
+    }
+
     /// Clears a sleep flag whose wake notification was missed (the triggers were stopped in between).
     public func resumeFromSleep() { sleeping = false }
 
@@ -2263,6 +2269,7 @@ public actor LayoutEngine {
     private func runPassBody(scheduled: Bool) async -> PassReport {
         inPass = true
         defer { inPass = false }
+        heldByAdapter = false   // ejb.27: a pass that makes no observation must not reuse the previous pass's value
         let generation = layoutGeneration
         lastStart = config.instant()
         var actionCount = 0
