@@ -49,6 +49,16 @@ final class ArrangeViewModel {
     /// UI-only: the transient callout for the last refused drop (cleared by the tick after `RefusalCallout.duration`).
     private(set) var refusal: RefusalCallout?
     var confirm: Confirm?
+    /// ejb.9: the "Use the bar's current order" sheet (what Save would change). Own sheet, not a `Confirm`: it lists the change.
+    var barOrderSheet: BarOrderSheet?
+    struct BarOrderSheet: Identifiable {
+        var preview: CoreAdoption.Preview
+        /// The engine layout revision the preview was composed on, passed as `setLayout(basedOn:)`.
+        var base: Int
+        /// "Title: position a -> position b" for every key whose place in Visible changes.
+        var lines: [String]
+        var id: Int { base }
+    }
     /// 9o9.4: ids of the drop targets a drag is hovering; non-empty = an Arrange drag is in flight (the engine makes no actuator call).
     @ObservationIgnored private var dragTargets: Set<String> = []
     func dragTargeting(_ id: String, _ on: Bool) {
@@ -451,6 +461,25 @@ final class ArrangeViewModel {
     }
 
     func askAdopt() { confirm = .adopt(ArrangeDrop.adopt(observed: state.observed, current: layout, units: units), base: state.layoutRevision) }
+
+    /// ejb.9: what "Use the bar's current order" would save, or nil (the button is off). Lean decides (`adoptProposal`); the proposal rides on the core's display.
+    var barOrderPreview: CoreAdoption.Preview? { CoreAdoption.preview(proposal: state.coreDisplay?.adoption, layout: layout) }
+
+    func askUseBarOrder() {
+        guard let pv = barOrderPreview else { return }
+        let c = content
+        func t(_ k: ItemKey) -> String { (c.visible.rows + c.hidden.rows + c.alwaysHidden.rows + c.visible.notRunning + c.hidden.notRunning + c.alwaysHidden.notRunning).first { $0.key == k }?.title ?? ArrangeSections.fallbackTitle(k) }
+        barOrderSheet = BarOrderSheet(preview: pv, base: state.layoutRevision,
+                                      lines: pv.changes.map { "\(t($0.key)): \($0.from) \u{2192} \($0.to)" })
+    }
+
+    /// Save: the normal record-saving path (`setLayout`), a user edit that names no moved key, so no drag is owed: the record becomes the bar's own order.
+    func saveBarOrder(_ s: BarOrderSheet) {
+        barOrderSheet = nil
+        AppLog.log(.arrange, "arrange: use the bar's current order; \(s.preview.changes.count) item(s) change place")
+        editTracker { $0.removeAll() }
+        apply(s.preview.layout, basedOn: s.base)
+    }
 
     func askHideNotFitting() {
         let r = ArrangeDrop.hideNotFitting(layout: layout, observed: state.observed, capabilities: cap, units: units)

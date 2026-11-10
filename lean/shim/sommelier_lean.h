@@ -33,6 +33,9 @@ void sm_row_verdict(sm_state_t s, const uint32_t *rd, size_t n, const uint32_t *
 /* The note beside the row of `key` (same inputs and key rule as sm_row_line): after the ok tag one word, 0 = no note, 1 = noMoveHelps, 2 = cantJudge, 3 = noMoveHere. */
 void sm_row_note(sm_state_t s, const uint32_t *rd, size_t n, const uint32_t *key, size_t nkey, sm_result *out);
 
+/* "Use the bar's current order" (ejb.9): the record the read would adopt for state `s`. After the ok tag: [0] = no proposal, or [1, k1, k2, ...] = the proposed record. */
+void sm_adopt(sm_state_t s, const uint32_t *rd, size_t n, sm_result *out);
+
 /* Test support: Lean's reading of an event, as UTF-8 bytes (one per word) after the ok tag. */
 void sm_describe_event(const uint32_t *ev, size_t n, sm_result *out);
 

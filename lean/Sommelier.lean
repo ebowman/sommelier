@@ -8,5 +8,6 @@ import Sommelier.Status
 import Sommelier.Honesty
 import Sommelier.Pins
 import Sommelier.Fast
+import Sommelier.Adopt
 import Sommelier.Verified
 import Sommelier.VerExamples

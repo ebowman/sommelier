@@ -113,6 +113,10 @@ Alpha software (0.1.x). Please expect rough edges.
   "Reset to system default" removes both. Details: [docs/findings-spacing.md](docs/findings-spacing.md).
 - **Hide what does not fit...** A button in the Arrange window toolbar, enabled only when items sit behind the «. It asks first, then hides
   those items so you can reach them from the panel. Sommelier never does this on its own.
+- **Use the bar's current order...** A button in the Arrange window toolbar, enabled only when the bar has been read and differs from your order.
+  It saves the order the menu bar has now as your order, without moving anything: a sheet lists the items that change place, and Save or Cancel
+  decides. Keys behind the « come first, then the drawn ones, in the order they are read; items that are not running, or that Sommelier cannot read,
+  keep their places. Afterwards the status line reads "Menu bar matches" (or "matches except" the items that could not be read).
 - **One setting per app.** macOS hides all status items of one app together, so an app with two items has one visibility setting.
 
 ## Known limitations

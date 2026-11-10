@@ -1,11 +1,12 @@
 import Sommelier.Status
 import Sommelier.Fast
+import Sommelier.Adopt
 
 /-!
 # C boundary: the thin exports the Swift app links
 
 The app holds an opaque `State` and sends flat `Nat` token lists (the C shim turns `UInt32` words into `Nat`s).  Every export only
-DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`, `rowNote`), and ENCODES the answer.
+DECODES its input, calls the PROVED function (`step`, `statusLine`, `rowLine`, `shownVerdict`, `rowVerdict`, `rowNote`, `adoptProposal`), and ENCODES the answer.
 No decision is made here.  This file adds no definition to any other module.
 
 The exports call the FAST versions of `Fast.lean` (`stepF`, `statusLineF`, `shownVerdictF`, `rowLineF`, `rowVerdictF`); each is PROVED EQUAL to the specification
@@ -248,6 +249,15 @@ theorem decNote_enc (n : Option RowNote) : decNote (encNote n) = some n := by
 /-- a word that is not a note code is refused -/
 theorem decNote_malformed : decNote 4 = none ∧ decNote 99 = none := by decide
 
+/-- the adopt proposal (ejb.9): `[0]` = no proposal, `1 :: record` = the proposed record -/
+def encAdopt : Option (List Key) → List Nat
+  | none => [0] | some L => 1 :: L
+
+def decAdopt : List Nat → Option (Option (List Key))
+  | [0] => some none | 1 :: L => some (some L) | _ => none
+
+theorem decAdopt_enc (o : Option (List Key)) : decAdopt (encAdopt o) = some o := by cases o <;> rfl
+
 /-- the answer envelope round-trips, and the error word is never an ok answer -/
 def decAns : List Nat → Option (Option (List Nat))
   | okTag' :: p => if okTag' = okTag then some (some p) else if okTag' = errTag then (if p = [] then some none else none) else none
@@ -285,6 +295,10 @@ def rowNoteTok (s : State) (rd : List Nat) (key : List Nat) : List Nat :=
   match decRead rd, decKey key with
   | some r, some k => okAns [encNote (rowNote s r k)]
   | _, _ => errAns
+
+/-- `adoptProposal s (the read)`: the record "Use the bar's current order" would save, or no proposal (ejb.9). -/
+def adoptTok (s : State) (rd : List Nat) : List Nat :=
+  match decRead rd with | none => errAns | some r => okAns (encAdopt (adoptProposal s r))
 
 /-! ## Wrapper theorems: encoded input gives the encoding of the proved value; undecodable input gives the error word -/
 
@@ -338,6 +352,12 @@ theorem rowNoteTok_bad_read (s : State) (rd key : List Nat) (h : decRead rd = no
 
 theorem rowNoteTok_bad_key (s : State) (rd key : List Nat) (h : decKey key = none) : rowNoteTok s rd key = errAns := by
   simp [rowNoteTok, h]
+
+theorem adoptTok_enc (s : State) (r : Read) : adoptTok s (encRead r) = okAns (encAdopt (adoptProposal s r)) := by
+  simp [adoptTok, decRead_enc]
+
+theorem adoptTok_bad (s : State) (rd : List Nat) (h : decRead rd = none) : adoptTok s rd = errAns := by
+  simp [adoptTok, h]
 
 /-! ## The token functions the exports compute: the fast versions, proved equal to the ones above -/
 
@@ -465,6 +485,10 @@ def exRowVerdict (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (row
 
 @[export sommelier_row_note]
 def exRowNote (s : State) (r : Array Nat) (k : Array Nat) : Array Nat := (rowNoteTokF s r.toList k.toList).toArray
+
+/-- ejb.9: the adopted record, or `[0]` (no proposal). Decides in `adoptProposal` (Adopt.lean); nothing here. -/
+@[export sommelier_adopt]
+def exAdopt (s : State) (r : Array Nat) : Array Nat := (adoptTok s r.toList).toArray
 
 /-- Test support: the name of the event the words decode to, as UTF-8 bytes (`[errTag]` if they do not decode). -/
 @[export sommelier_describe_event]

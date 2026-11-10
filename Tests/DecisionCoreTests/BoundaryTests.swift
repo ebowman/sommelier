@@ -95,3 +95,25 @@ private func sampleRead() -> Read {
         }
     }
 }
+
+/// ejb.9: `sommelier_adopt` (Lean `adoptProposal`): the words are Lean's answer, and a malformed read is refused, never defaulted.
+@Suite struct AdoptBoundaryTests {
+    @Test func adoptAnswersLeansRecordOrNoProposal() throws {
+        // open 3, 1 (trusted); 2 folded behind the chevron. Record [1, 2, 3] has the folded key between the open keys: differs.
+        let r = Read(kind: .pass, chevron: .fresh, level: .complete, settled: true, stripOpen: false, drawn: [3, 1], pile: [2], folded: [], trusted: [3, 1], nearFold: [])
+        let s = try DecisionState(record: [1, 2, 3])
+        #expect(try DecisionCore.shownVerdict(s, r) == .differs)
+        #expect(try DecisionCore.adoptProposal(s, r) == [2, 3, 1])
+        #expect(try Raw.query(.adopt, s, Codec.encode(r)) == [1, 2, 3, 1])
+        // a record that already agrees: no proposal (the single word 0)
+        let agree = try DecisionState(record: [2, 3, 1])
+        #expect(try DecisionCore.adoptProposal(agree, r) == nil)
+        #expect(try Raw.query(.adopt, agree, Codec.encode(r)) == [0])
+        // an unusable read (poll): no proposal
+        var poll = r; poll.kind = .poll
+        #expect(try DecisionCore.adoptProposal(s, poll) == nil)
+        for w in [[], [9], Array(Codec.encode(r).dropLast()), Codec.encode(r) + [7]] as [[UInt32]] {
+            #expect(throws: DecisionError.malformedInput, "read words \(w)") { _ = try Raw.query(.adopt, s, w) }
+        }
+    }
+}

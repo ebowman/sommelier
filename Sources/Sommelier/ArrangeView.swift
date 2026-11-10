@@ -96,6 +96,9 @@ struct ArrangeView: View {
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
         .frame(minWidth: 560, minHeight: 420)
+        .sheet(item: $vm.barOrderSheet) { sheet in
+            BarOrderSheetView(sheet: sheet, save: { vm.saveBarOrder(sheet) }, cancel: { vm.barOrderSheet = nil })
+        }
         .confirmationDialog(confirmTitle, isPresented: Binding(get: { vm.confirm != nil }, set: { if !$0 { vm.confirm = nil } }), presenting: vm.confirm) { c in
             Button(confirmButton(c)) { vm.confirmed(c) }
             Button("Cancel", role: .cancel) { vm.confirm = nil }
@@ -110,6 +113,9 @@ struct ArrangeView: View {
                 .help("Run one reconcile pass now (also retries failed items)")
             Button("Adopt current order…") { vm.askAdopt() }
                 .help("Rebuild the layout from the menu bar as it is now")
+            Button("Use the bar's current order…") { vm.askUseBarOrder() }
+                .disabled(vm.barOrderPreview == nil)
+                .help(vm.barOrderPreview == nil ? "Available when the bar is read and differs from your order" : "Save the order the menu bar has now as your order, without moving anything")
             Button("Hide what does not fit…") { vm.askHideNotFitting() }
                 .disabled(!vm.hasNotFitting)
                 .help(vm.hasNotFitting ? "Move the items macOS pushed behind its chevron into Hidden" : "Nothing is behind the chevron")
@@ -139,6 +145,33 @@ struct ArrangeView: View {
             if !blocked.isEmpty { t += " Cannot be hidden and stay: " + blocked.joined(separator: ", ") + "." }
             return t
         }
+    }
+}
+
+/// ejb.9: lists what "Use the bar's current order" changes (before -> after position in Visible) and asks Save / Cancel. Saving moves nothing:
+/// the new order is the one the bar already has.
+struct BarOrderSheetView: View {
+    let sheet: ArrangeViewModel.BarOrderSheet
+    let save: () -> Void
+    let cancel: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Use the bar's current order?").font(.headline)
+            Text("Your order in Visible becomes the order the menu bar has now. Nothing is moved: the bar already looks like this. Items that are not on the bar keep their places. These items change place (position in Visible, from left):")
+                .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(sheet.lines.enumerated()), id: \.offset) { _, line in Text(line).font(.system(size: 12)) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 80, maxHeight: 260)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
+                Button("Save", action: save).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16).frame(width: 440)
     }
 }
 

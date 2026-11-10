@@ -68,6 +68,13 @@ public enum DecisionCore {
         return v
     }
 
+    /// ejb.9, Lean `adoptProposal s r`: the record "Use the bar's current order" would save, or `nil` (no proposal: the shown verdict of `read` is not `differs`).
+    /// The decision is Lean's: Swift only encodes the read and decodes the record.
+    public static func adoptProposal(_ state: DecisionState, _ read: Read) throws(DecisionError) -> [Key]? {
+        guard let v = Codec.adopt(try Raw.query(.adopt, state, Codec.encode(read))) else { throw .undecodableOutput }
+        return v
+    }
+
     /// `rowVerdict s.record (s.view r) k`
     public static func rowVerdict(_ state: DecisionState, _ read: Read, _ key: Key) throws(DecisionError) -> RowVerdict {
         guard let v = Codec.rowVerdict(try Raw.query(.rowVerdict, state, Codec.encode(read), key: [key])) else { throw .undecodableOutput }
@@ -77,7 +84,7 @@ public enum DecisionCore {
 
 /// The word-level calls (internal; `@testable` tests feed them malformed words to check that the Lean side refuses them).
 enum Raw {
-    enum Query { case status, shownVerdict, rowLine, rowVerdict, rowNote }
+    enum Query { case status, shownVerdict, rowLine, rowVerdict, rowNote, adopt }
 
     /// Returns the payload after the ok tag. Tag 1 (malformed) throws; anything else is undecodable.
     static func payload(_ r: inout sm_result) throws(DecisionError) -> [UInt32] {
@@ -115,6 +122,7 @@ enum Raw {
                 case .status: sm_status(state.handle, rd.baseAddress, rd.count, &r)
                 case .shownVerdict: sm_shown_verdict(state.handle, rd.baseAddress, rd.count, &r)
                 case .rowLine: sm_row_line(state.handle, rd.baseAddress, rd.count, k.baseAddress, k.count, &r)
+                case .adopt: sm_adopt(state.handle, rd.baseAddress, rd.count, &r)
                 case .rowNote: sm_row_note(state.handle, rd.baseAddress, rd.count, k.baseAddress, k.count, &r)
                 case .rowVerdict: sm_row_verdict(state.handle, rd.baseAddress, rd.count, k.baseAddress, k.count, &r)
                 }

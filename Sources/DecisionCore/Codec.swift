@@ -95,6 +95,16 @@ enum Codec {
         }
     }
 
+    /// `[0]` = no proposal (`.some(nil)`), `1 :: record` = the proposed record; anything else is not an answer Lean produces (`nil`).
+    static func adopt(_ w: [UInt32]) -> [Key]?? {
+        guard let h = w.first else { return nil }
+        switch (h, w.count) {
+        case (0, 1): return .some(nil)
+        case (1, _): return .some(Array(w.dropFirst()))
+        default: return nil
+        }
+    }
+
     static func rowVerdict(_ w: [UInt32]) -> RowVerdict? {
         guard w.count == 1 else { return nil }
         switch w[0] {

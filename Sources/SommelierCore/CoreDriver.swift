@@ -144,7 +144,8 @@ struct CoreDriver {
                 reapplyKey = k
                 if rows[k] == .notWherePut { notes[k] = .needsReapply }
             }
-            display = CoreDisplay(status: status, rows: rows, notes: notes, pileCount: r.pile.count, reapplyKey: reapplyKey)
+            let adoption = CoreAdoption.proposal(state: s, read: r, keys: keys)   // ejb.9: asked of the same (state, read) pair as the status; a failed call is "no proposal" (the button stays off), never a default record
+            display = CoreDisplay(status: status, rows: rows, notes: notes, pileCount: r.pile.count, reapplyKey: reapplyKey, adoption: adoption)
             displayError = nil
         } catch {
             display = nil

@@ -10,8 +10,11 @@ public struct CoreDisplay: Equatable, Sendable {
     public var pileCount: Int
     /// ejb.20: the key whose engine move waits for Re-apply (the core status is `differs(needsReapply)`), mapped to the engine's key.
     public var reapplyKey: ItemKey?
-    public init(status: Status, rows: [ItemKey: Row] = [:], notes: [ItemKey: RowNote] = [:], pileCount: Int = 0, reapplyKey: ItemKey? = nil) {
-        self.status = status; self.rows = rows; self.notes = notes; self.pileCount = pileCount; self.reapplyKey = reapplyKey
+    /// ejb.9 (Lean `adoptProposal`): the record "Use the bar's current order" would save, in the core's record order (chevron and immovable keys are not in it).
+    /// Non-nil only when the core's verdict of the last pass read is `differs`. The decision is Lean's; see `CoreAdoption`.
+    public var adoption: [ItemKey]?
+    public init(status: Status, rows: [ItemKey: Row] = [:], notes: [ItemKey: RowNote] = [:], pileCount: Int = 0, reapplyKey: ItemKey? = nil, adoption: [ItemKey]? = nil) {
+        self.status = status; self.rows = rows; self.notes = notes; self.pileCount = pileCount; self.reapplyKey = reapplyKey; self.adoption = adoption
     }
 }
 
