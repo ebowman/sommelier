@@ -315,7 +315,7 @@ private func rows(_ layout: Layout, bar: [ItemKey]? = nil) -> [ArrangeRow] {
     let a1 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "one"), a2 = ItemKey.status(ownerKey: "com.x.app", autosaveName: "two")
     let layout = Layout(visible: [k("a"), a1, a2, clock])
     guard case .move(let l, let moved, _) = ArrangeDrop.outcome(layout: layout, key: a1, to: .hidden, index: nil, capabilities: caps) else { Issue.record("not a move"); return }
-    #expect(moved == [a1, a2] && l.hidden == [a1, a2] && l.visible == [k("a"), clock])
+    #expect(moved == [a1] && l.hidden == [a1, a2] && l.visible == [k("a"), clock])   // gdu.149: the user dropped one key; the sibling follows it, but only a1 is reported as moved
     // dropping next to a capsule of its own unit is its own position
     let r = rows(layout)
     #expect(ArrangeDrop.drop(layout: layout, rows: r, slot: 2, key: a1, section: .visible, capabilities: caps) == .noop)

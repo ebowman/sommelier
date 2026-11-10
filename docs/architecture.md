@@ -944,8 +944,17 @@ engine's published state; it never computes a claim of its own about the bar.
   `.unsupported` is derived afresh every pass. (6) Capabilities are computed on demand from `state.items` (not only while the window
   is open), so the `SOMMELIER_ARRANGE_MOVE` hook resolves them exactly like a UI drop.
 
-- Units: capsules of one hide unit get a link marker and an outline; the tooltip says "Hides together with ...". A move
-  (`Layout.move`) takes the whole unit, and every key it returns shows "⟳" too. Dropping beside a sibling is a no-op.
+- Units: capsules of one hide unit get a link marker and an outline; the tooltip says "Hides together with ...". A
+  MEMBERSHIP move (`Layout.move` into another section) takes the whole unit together, siblings keeping their relative order and landing
+  adjacent to the dropped key. A drop inside the section the key already sits in (a reorder) moves ONLY that key (gdu.149, live
+  incident: dropping iStat Memory inside Visible regrouped all 9 iStat keys and the core owed 4 drags): siblings stay put, the drop
+  index is taken with only the key lifted out, and `ArrangeDrop.index/step` treat siblings as ordinary neighbours. `ArrangeDrop.outcome`
+  reports `moved == [key]` also for a membership move: `moved` feeds the core's `userEdit` owed keys, the tracker's "⟳" marks,
+  `userPlacedVisible` and `applyingDrop`, none of which may name keys the user did not drop; the membership phase works from the
+  layout's sections, so the siblings still change section together, and siblings entering Visible out of bar order are ordinary
+  budgeted engine order work. Backstop: `LayoutEngine.setLayout` passes the core only the NAMED keys that really changed place
+  (`effectiveUserMoved`: section changed, or order flipped against another key; an unchanged layout keeps the set, a parked-key show
+  request) and logs `setLayout: user moved <keys>`.
 
 - Overflow boundary: the chevron (`ObservedOrder.overflowChevron`) is drawn as an orange fold line after the last key the observation reports as overflowed; rows behind it carry the « badge. Dropping left of the fold line is allowed but flagged. Dropping right of the trailing system block clamps to before it (`ArrangeDrop.index`, which also clamps after the LEADING anchors, e.g. Wi-Fi leftmost, so index 0 = first movable slot; the debug hook `SOMMELIER_ARRANGE_MOVE` goes through the same function, 0-based among movable items); dropping on the item's own position is a no-op.
 

@@ -825,7 +825,7 @@ public actor LayoutEngine {
     /// (log `setLayout merged ...`); a key `requested` already places keeps the user's placement. `nil` (mbprobe, `apply`):
     /// `requested` replaces the layout wholesale.
     @discardableResult
-    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil, userPlacement: Bool = true, moved movedKeys: Set<ItemKey> = []) async -> LayoutRevision {
+    public func setLayout(_ requested: Layout, basedOn revision: Int? = nil, userPlacement: Bool = true, moved namedKeys: Set<ItemKey> = []) async -> LayoutRevision {
         noteUserAction()
         var requested = requested
         if let revision {
@@ -856,6 +856,14 @@ public actor LayoutEngine {
             log("setLayout: not writing back \(stale.count) key(s) the gdu.145 migration removed")
         }
         new.handWindowBaseline = layout.handWindowBaseline; new.handWindowDrops = layout.handWindowDrops   // 9o9.27 (refreshed below)
+        // gdu.149 backstop: the keys handed to the core as the user's own placement are the keys the caller NAMED that really changed place
+        // against the previous layout (section, or order relative to some other key). A caller that over-reports (a hide-unit sibling that
+        // merely came along) can therefore never make the core owe a drag the user did not ask for. An unchanged layout keeps the named set:
+        // that is an explicit show request for a parked key (gdu.110).
+        let movedKeys: Set<ItemKey> = userPlacement ? Self.effectiveUserMoved(named: namedKeys, old: layout, new: new) : namedKeys
+        if userPlacement, !namedKeys.isEmpty {
+            log("setLayout: user moved \(movedKeys.map(\.description).sorted().joined(separator: ", "))" + (movedKeys.count < namedKeys.count ? " (caller named \(namedKeys.count))" : ""))
+        }
         var adoptedPendingNow = false
         if layout.pendingAdoption, userPlacement, new.visible != layout.visible {
             guard let bar = lastCleanBar else {
@@ -1360,6 +1368,27 @@ public actor LayoutEngine {
         log("layout: adopted bar order on upgrade (\(n.count) keys)")
         _ = await publishLayout(l)
         coreSyncRecord(site: "adoptBarOrder (upgrade adoption)")   // ejb.15: engine-made record change = userEdit(rec, [])
+    }
+
+    /// Pure (gdu.149): `named` keys that changed place between `old` and `new`: their section differs, they are new, or their order
+    /// relative to some key present in both lists of their section flipped. If neither Visible, Hidden nor Always hidden changed at all,
+    /// `named` is returned unchanged (a show request that edits no list).
+    static func effectiveUserMoved(named: Set<ItemKey>, old: Layout, new: Layout) -> Set<ItemKey> {
+        if named.isEmpty { return named }
+        if old.visible == new.visible, old.hidden == new.hidden, old.alwaysHidden == new.alwaysHidden { return named }
+        var out = Set<ItemKey>()
+        for k in named {
+            guard let ns = new.section(of: k) else { continue }
+            guard old.section(of: k) == ns else { out.insert(k); continue }
+            let o = old.keys(in: ns), n = new.keys(in: ns)
+            guard let oi = o.firstIndex(of: k), let ni = n.firstIndex(of: k) else { out.insert(k); continue }
+            let nIndex = Dictionary(n.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+            for (j, other) in o.enumerated() where other != k {
+                guard let nj = nIndex[other] else { continue }
+                if (j < oi) != (nj < ni) { out.insert(k); break }
+            }
+        }
+        return out
     }
 
     /// Pure (9o9.3): `adopted` (the record adopted from the bar) with the user's drop applied. `requested` is the Visible order the

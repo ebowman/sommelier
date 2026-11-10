@@ -732,7 +732,12 @@ public enum ArrangeDrop {
         guard cap.canMove else { return .rejected(cap.reason ?? "This item cannot be moved.") }
         if section != .visible, !cap.canHide { return .rejected(cap.reason ?? "This item cannot be hidden.") }
         var l = layout
-        let moved = l.move(key, to: section, index: index, units: units)
+        l.move(key, to: section, index: index, units: units)
+        // gdu.149: the user dropped ONE key. `moved` (what the engine/core treat as the user's own placement, and what the window tracks with
+        // "⟳") is that key alone, also for a membership change: the unit's siblings follow it into the section (Control Center hides per app),
+        // but the membership phase works from the layout's sections, not from `moved`. Siblings that come into Visible and sit where the bar
+        // disagrees with the record are ordinary engine order work (budgeted, near-fold withheld), never drags the user is owed.
+        let moved = [key]
         if !showRequest, l.visible == layout.visible, l.hidden == layout.hidden, l.alwaysHidden == layout.alwaysHidden { return .noop }   // placement bookkeeping alone is no drop
         return .move(layout: l, moved: moved, willNotFit: willNotFit && section == .visible)
     }
@@ -743,13 +748,15 @@ public enum ArrangeDrop {
     /// index never exceeds the start of the trailing system block: dropping right of it clamps to before it.
     public static func index(layout: Layout, rows: [ArrangeRow], slot: Int, key: ItemKey, section: LayoutSection, units: HideUnitRule = .ownerKeys) -> Int? {
         let unit = units.unit(of: key)
-        let lifted = layout.keys(in: section).filter { units.unit(of: $0) != unit }
+        let reorder = layout.section(of: key) == section   // gdu.149: a reorder lifts ONLY the key; a membership change lifts the unit
+        func isLifted(_ k: ItemKey) -> Bool { reorder ? k == key : units.unit(of: k) == unit }
+        let lifted = layout.keys(in: section).filter { !isLifted($0) }
         if section == .visible {
             // gdu.101: resolve by NEIGHBOUR KEYS. The nearest fresh, non-boundary row left of the slot that the layout lists
             // (the unit lifted out): insert right after it; else the nearest such row right of the slot: insert right before it.
             // A ghost stands for its key at the layout slot (a legitimate neighbour); the REAL capsule of a ghosted key is skipped.
             func usable(_ r: ArrangeRow) -> Int? {
-                if r.isBoundary || units.unit(of: r.key) == unit { return nil }
+                if r.isBoundary || isLifted(r.key) { return nil }
                 return lifted.firstIndex(of: r.key)
             }
             let at = min(max(0, slot), rows.count)
@@ -795,7 +802,8 @@ public enum ArrangeDrop {
     /// anchors. Used by the `SOMMELIER_ARRANGE_MOVE` hook so it goes through the same clamp as a UI drop.
     public static func index(layout: Layout, movableIndex n: Int, key: ItemKey, section: LayoutSection, units: HideUnitRule = .ownerKeys) -> Int? {
         let unit = units.unit(of: key)
-        let lifted = layout.keys(in: section).filter { units.unit(of: $0) != unit }
+        let reorder = layout.section(of: key) == section   // gdu.149
+        let lifted = layout.keys(in: section).filter { reorder ? $0 != key : units.unit(of: $0) != unit }
         let movable = lifted.indices.filter { if case .module = lifted[$0] { return false } else { return true } }
         guard n >= 0, n < movable.count else { return nil }
         return clamp(movable[n], in: lifted, section: section)
@@ -840,12 +848,11 @@ public enum ArrangeDrop {
                             bar: [ItemKey] = [], displayName: (ItemKey) -> String = { "\($0)" },
                             units: HideUnitRule = .ownerKeys) -> Outcome {
         guard let r = rows.firstIndex(where: { $0.key == key && !$0.isBoundary }), layout.visible.contains(key) else { return .noop }
-        let unit = units.unit(of: key)
-        let lifted = layout.visible.filter { units.unit(of: $0) != unit }
+        let lifted = layout.visible.filter { $0 != key }   // gdu.149: a step is a reorder of this one key; siblings stay put
         let seq: [Int] = dir == .left ? Array(stride(from: r - 1, through: 0, by: -1)) : Array(((r + 1)..<max(r + 1, rows.count)))
         for j in seq {
             let c = rows[j]
-            guard !c.isAnchor, !c.isBoundary, units.unit(of: c.key) != unit, let p = lifted.firstIndex(of: c.key) else { continue }
+            guard !c.isAnchor, !c.isBoundary, c.key != key, let p = lifted.firstIndex(of: c.key) else { continue }
             let notFit = c.notFitting && dir == .left
             return outcome(layout: layout, key: key, to: .visible, index: dir == .left ? p : p + 1, capabilities: capabilities, willNotFit: notFit,
                            bar: bar, displayName: displayName, units: units)

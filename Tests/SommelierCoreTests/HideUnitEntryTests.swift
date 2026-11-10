@@ -101,13 +101,13 @@ private func info(_ key: ItemKey, _ title: String) -> ItemInfo {
     for member in [helper, parent] {
         guard case .move(let l, let moved, _) = ArrangeDrop.outcome(layout: layout, key: member, to: .hidden, index: nil, capabilities: free, units: rule)
         else { Issue.record("no move for \(member)"); continue }
-        #expect(Set(moved) == [helper, parent])
+        #expect(moved == [member])   // gdu.149: only the dropped key is the user's move; the mate follows into Hidden
         #expect(Set(l.hidden) == [helper, parent])
     }
-    // Moving within Visible keeps the unit adjacent and does not treat the mate as a drop target.
-    guard case .move(let l, _, _) = ArrangeDrop.outcome(layout: layout, key: helper, to: .visible, index: 0, capabilities: free, units: rule)
+    // gdu.149: moving within Visible moves ONLY the dropped key; its mate stays where it was.
+    guard case .move(let l, let m, _) = ArrangeDrop.outcome(layout: layout, key: helper, to: .visible, index: 2, capabilities: free, units: rule)
     else { Issue.record("no reorder"); return }
-    #expect(l.visible == [helper, parent, other, clock])
+    #expect(l.visible == [other, parent, helper, clock] && m == [helper])
 }
 
 @Test func overflowPanelGroupsTheUnitAndPinsItAsOne() {

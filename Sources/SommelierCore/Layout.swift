@@ -138,7 +138,7 @@ public struct Layout: Codable, Equatable, Sendable {
         return Array(ks[start...])
     }
 
-    /// Moves (or inserts) the WHOLE hide unit of `key` into `section` and returns every key that moved, `key` first.
+    /// Moves (or inserts) the WHOLE hide unit of `key` into `section` (a cross-section move; a same-section drop moves only `key`, gdu.149) and returns every key that moved, `key` first.
     /// Control Center hides per app (see `HideUnit`), so siblings (all keys of the same unit currently in the layout)
     /// come along: the moved key lands at `index` (clamped to 0...count, evaluated after the unit is lifted out) and
     /// its siblings follow immediately after it, in their previous layout order (visible, hidden, alwaysHidden).
@@ -147,6 +147,13 @@ public struct Layout: Codable, Equatable, Sendable {
     /// otherwise try to drag real items to realize it. With no such run it appends. An explicit index is taken literally.
     @discardableResult
     public mutating func move(_ key: ItemKey, to section: LayoutSection, index: Int? = nil, units: HideUnitRule = .ownerKeys) -> [ItemKey] {
+        // gdu.149: a drop inside the section the key already sits in is a REORDER: exactly that key moves (`index` is taken after only
+        // the key is lifted out); siblings keep their places and relative order. Grouping applies to membership changes only.
+        if self.section(of: key) == section {
+            remove(key)
+            insert([key], into: section, at: index)
+            return [key]
+        }
         let unit = units.unit(of: key)
         let siblings = allKeys.filter { $0 != key && units.unit(of: $0) == unit }
         let group = [key] + siblings
