@@ -470,6 +470,9 @@ public actor LayoutEngine {
     // (`makePlan`, `Reconciler`'s order phase, the gates) still runs for DISPLAY until Wiring 4/5 but its actions never reach the actuator.
 
     private var core = CoreDriver()
+    /// ejb.19: the last pass read was held back (settled:false) by the adapter's pile rule alone; and how many follow-up passes that has asked for in a row.
+    private var heldByAdapter = false
+    private var heldPasses = 0
     private var coreSeeded = false
     private var coreErrorShown = false
     private var publishedDisplay: CoreDisplay?
@@ -606,6 +609,7 @@ public actor LayoutEngine {
             core.note(.error("adapter: \(error)"))
             return []
         }
+        heldByAdapter = kind == .pass && !vetoed && bar.settled && bar.completeness == .complete && !adapted.read.settled   // ejb.19: the adapter alone held this pass read
         if kind == .pass, ctx.settled, !adapted.read.settled { log(SystemOverflowRule.unsettledText(recentReads)) }   // the pile of the last two complete reads disagrees: evidence only
         if bar.completeness == .complete {
             let suspects = Set(o.staleOnBar).union(o.uncorroborated)
@@ -1532,6 +1536,7 @@ public actor LayoutEngine {
     /// Wake: reconcile after `settle` (displays and the agent need a moment).
     public func didWake(settle: Duration = .seconds(3)) {
         sleeping = false
+        core.lastCompletePile = nil   // ejb.19: the pile from before the sleep proves nothing; two agreeing complete reads are needed again
         log("didWake: reconcile in \(settle)")
         scheduleReconcile(after: settle, reason: "wake")
     }
@@ -2439,6 +2444,11 @@ public actor LayoutEngine {
         let coreVeto = plan.phase == .membership || layout.pendingAdoption || handAdopt != nil || !transientReveals.isEmpty || showHidden || showAlways
         var coreAction: Action?
         if let b = lastBarObs { coreAction = coreRead(obs, bar: b, kind: .pass, vetoed: coreVeto, site: "runPassBody (c) pass read").first }
+        // ejb.19: the adapter held a scanner-settled read (no earlier complete pile to agree with, or the pile moved): the core made no move on it, so
+        // one bounded follow-up pass supplies the second read (a stalled engine would wait for a trigger). Bounded by `maxChainedPasses` in a row.
+        if coreAction == nil, heldByAdapter {
+            if heldPasses < config.maxChainedPasses, draining, !stopped { heldPasses += 1; pending = true }
+        } else if lastBarObs != nil { heldPasses = 0 }
 
         // No core move and no membership work: the pass ends. (A pass with membership work goes on to (g); its read was vetoed, so the core made no move.)
         // The core's word decides what is shown (its status); here the pass only reports that it did all it was asked.

@@ -262,10 +262,9 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         await regularPasses(r.engine, r.state)   // the regular pass plans the D3 / D4 mismatch; only the hold keeps it from being dragged
         let n = await moveCalls(r.actuator)
-        // ejb.15 (Wiring 3), CHANGED because the core decides: 2 drags, not 1. The core's FIRST pass (in `holdRig`) already drags the live drawn D4 / D3 mismatch (a
-        // budgeted engine move; the old engine made no drag in its first pass), it fails and holds the bar; the second is the USER's drop of P1, which the hold never
-        // blocks (its one attempt). The assertion that guards safety is kept: nothing is dragged again over the 16 further passes (n stays 2).
-        #expect(n == 2)
+        // ejb.19: back to 1 (the count ejb.15 had raised to 2). The adapter now holds the first complete read of a full bar until a second agrees, so the core
+        // no longer drags the live D4 / D3 mismatch on its first pass (gdu.80); the one drag is the USER's drop of P1. Nothing is dragged again over the 16 passes.
+        #expect(n == 1)
         // sommelier-ejb.7, CHANGED because the core decides: the hold is the core's (`hold`), not `stripOpenHold` / `lastPlan.stripHeld`. The property is kept through
         // what the core shows: the bar differs, no drag is moving, and the move count above did not grow. (The "N folded" text is CoreStatusTextTests'.)
         #expect(r.state.coreStatus != .moving && r.state.coreStatus != .matches)

@@ -71,13 +71,24 @@ private func ints(_ l: [Key]) -> [Int] { l.map(Int.init) }
 
 @Test func settledFollowsTheObservationAndAPileDisagreementOfTwoCompleteReads() throws {
     let o = order([1, 2, 3], pile: [1], chevron: true)
-    #expect(try run(o, ReadContext(kind: .pass, settled: true)).0.settled)
-    #expect(try !run(o, ReadContext(kind: .pass, settled: false)).0.settled)
-    #expect(try run(o, ReadContext(kind: .pass, previousCompletePile: Set([k(1)]))).0.settled)                  // same pile
+    let same = ReadContext(kind: .pass, previousCompletePile: Set([k(1)]))
+    #expect(try run(o, same).0.settled)                                                                          // second read, same pile
+    var scanUnsettled = same; scanUnsettled.settled = false
+    #expect(try !run(o, scanUnsettled).0.settled)
     #expect(try !run(o, ReadContext(kind: .pass, previousCompletePile: Set([k(1), k(2)]))).0.settled)          // pile grew
     #expect(try !run(o, ReadContext(kind: .pass, previousCompletePile: Set<ItemKey>())).0.settled)            // pile appeared
     #expect(try run(o, ReadContext(kind: .pass, level: .incomplete, previousCompletePile: Set<ItemKey>())).0.settled)   // only COMPLETE reads are compared
-    #expect(try run(o, ReadContext(kind: .pass, previousCompletePile: nil)).0.settled)
+}
+
+// ejb.19: the first complete read of a bar with a chevron (after launch or wake) is NOT settled; the second, agreeing one is; a disagreeing one is not.
+@Test func theFirstCompleteReadOfAFullBarIsNotSettledUntilASecondAgrees() throws {
+    let o = order([1, 2, 3], pile: [1], chevron: true)
+    #expect(try !run(o, ReadContext(kind: .pass, settled: true, previousCompletePile: nil)).0.settled)          // first: held although the scanner said settled
+    #expect(try run(o, ReadContext(kind: .pass, settled: true, previousCompletePile: Set([k(1)]))).0.settled)  // second, agreeing
+    #expect(try !run(o, ReadContext(kind: .pass, settled: true, previousCompletePile: Set([k(2)]))).0.settled) // second, disagreeing
+    #expect(try !run(o, ReadContext(kind: .poll, settled: true, previousCompletePile: nil)).0.settled)
+    // a chevronless complete read has no pile to agree on and keeps the scanner's flag (the core moves nothing on it before its own proof)
+    #expect(try run(order([1, 2, 3]), ReadContext(kind: .pass, settled: true, previousCompletePile: nil)).0.settled)
 }
 
 @Test func levelMapsOneToOne() throws {

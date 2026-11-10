@@ -611,7 +611,9 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let rec = (1...6).map { "D\($0)" }
         let w = RvWorld(pile: [], drawn: ["D1", "D2", "D4", "D3", "D5", "D6"]); w.mode = .fresh; w.applyProb = 0
         let (e, st, c) = await rvRig(w, record: rec)
-        _ = await e.regularPassForTests(); c.adv(120)
+        _ = await e.regularPassForTests(); c.adv(120)   // ejb.19: the first complete read of a full bar is held (settled:false); no drag yet
+        #expect(w.drags.isEmpty, "the first complete read of a full bar makes no drag: \(w.events)")
+        _ = await e.regularPassForTests(); c.adv(120)   // the second, agreeing read lets the core drag
         let held = w.drags.count
         #expect(held == 1, "the fresh-chevron bar's one failing drag sets the hold: \(w.events)")
         w.sync { w.mode = .absent }
@@ -1040,3 +1042,45 @@ private struct RvFakeObserver: MenuBarObserver {
 }
 
 @MainActor fileprivate func rowsDump(_ st: EngineState) -> String { rvRowsOf(st).visible.rows.map { "\($0.title.suffix(12)):\($0.barState.map { "\($0)" } ?? "-")" }.joined(separator: " | ") }
+
+// MARK: ejb.19 - the first complete read of a full bar never drags (gdu.80: two agreeing reads)
+
+@MainActor @Suite struct FirstCompleteReadOfAFullBarTests {
+    private static let rec = (1...6).map { "D\($0)" }
+    private static let swapped = ["D1", "D2", "D4", "D3", "D5", "D6"]
+
+    /// Production config (`assumeFullBarAtLaunch`, the live actuator, real adapter). A drag is applied, so the bar converges.
+    @Test func noDragUntilTwoAgreeingCompletePassReadsThenTheDragHappens() async {
+        let w = RvWorld(pile: ["P1", "P2"], drawn: Self.swapped); w.mode = .fresh
+        let (e, _, c) = await rvRig(w, record: ["P1", "P2"] + Self.rec)
+        _ = await e.regularPassForTests(); c.adv(120)
+        #expect(w.drags.isEmpty, "the first complete read after launch is held: no drag. \(w.events)")
+        _ = await e.regularPassForTests(); c.adv(120)
+        #expect(w.drags.count >= 1, "the second agreeing complete read lets the core drag (no stall): \(w.events)")
+        for _ in 0..<4 { _ = await e.regularPassForTests(); c.adv(120) }
+        #expect(w.drawn == Self.rec, "converged: \(w.drawn) \(w.events)")
+    }
+
+    /// The engine asks for the second read itself: one reconcileOnce on a full bar chains a follow-up pass, so the bar is not left unconverged until a trigger.
+    @Test func theHeldFirstReadChainsAFollowUpPass() async {
+        let w = RvWorld(pile: ["P1", "P2"], drawn: Self.swapped); w.mode = .fresh
+        let (e, _, c) = await rvRig(w, record: ["P1", "P2"] + Self.rec)
+        for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
+        #expect(w.drags.count >= 1, "reconcile passes alone reach the drag: \(w.events)")
+    }
+
+    /// The same after a reset point: the pile from before a sleep proves nothing (didWake clears it), so the first read after the wake is held again.
+    @Test func afterAWakeTheFirstReadIsHeldAgain() async {
+        let w = RvWorld(pile: ["P1", "P2"], drawn: Self.rec); w.mode = .fresh
+        let (e, st, c) = await rvRig(w, record: ["P1", "P2"] + Self.rec)
+        for _ in 0..<3 { _ = await e.regularPassForTests(); c.adv(120) }
+        #expect(w.drags.isEmpty, "a matching bar needs no drag: \(w.events)")
+        await e.didWake(settle: .seconds(3600))   // the delayed reconcile uses the wall clock: it does not fire in this test
+        w.sync { w.drawn = Self.swapped }
+        let before = st.passCount
+        _ = await e.regularPassForTests(); c.adv(120)
+        #expect(w.drags.isEmpty, "the first complete read after a wake is held: no drag. \(w.events)")
+        _ = await e.regularPassForTests(); c.adv(120)
+        #expect(w.drags.count >= 1 && st.passCount >= before + 2, "the second agreeing read after the wake lets the core drag: \(w.events)")
+    }
+}

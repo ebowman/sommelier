@@ -16,10 +16,9 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         let r = await holdRig(failCalls: 20, message: ActuationError.stripUnplaceableMessage, record: ["D1", "P1", "D2", "P2", "D4", "P3", "D3"])   // + a live D3/D4 mismatch
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
         await regularPasses(r.engine, r.state)   // the regular pass plans the D3 / D4 mismatch; only the hold keeps it from being dragged
-        // ejb.15 (Wiring 3), CHANGED because the core decides: every count below is one higher than before. The core's first pass (in `holdRig`) already drags
-        // the live drawn D4 / D3 mismatch (one budgeted engine move, which fails and holds the bar); the old engine made no drag in its first pass. The user's
-        // drop of P1 still gets its one attempt, and nothing is dragged again by the hold (the safety assertions are unchanged).
-        #expect(await moveCalls(r.actuator) == 2)
+        // ejb.19: the counts are the gdu.80 ones again (ejb.15 had raised each by one). The adapter holds the first complete read of a full bar until a second
+        // agrees, so the core makes no drag on its first pass; the user's drop of P1 gets its one attempt, and nothing is dragged again by the hold.
+        #expect(await moveCalls(r.actuator) == 1)
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
         #expect(r.bar.lines.contains { $0.contains("could not be pinned down inside it") })
         // sommelier-ejb.7, CHANGED because the core decides: the hold is the core's, so `lastPlan.stripHold*` / `stripHeld` / `moving` are gone. What they
@@ -32,13 +31,13 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         // a changed bar releases the hold; one more session only for the user's next drop; Retry alone drags nothing
         await r.actuator.removeItem(k("D4"))
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 2)
+        #expect(await moveCalls(r.actuator) == 1)
         await r.engine.setLayout(r.layout, moved: [k("P2")])
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 3)
+        #expect(await moveCalls(r.actuator) == 2)
         await r.engine.userRetry()
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await moveCalls(r.actuator) == 3)
+        #expect(await moveCalls(r.actuator) == 2)
     }
 
 }

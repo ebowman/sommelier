@@ -125,21 +125,19 @@ private func flapRig() async -> (LayoutEngine, FakeActuator, ScanMode, HoldBar, 
         for _ in 0..<4 { _ = await engine.reconcileOnce() }                  // big, fresh chevron: the hold is set at 14 folded
         await regularPasses(engine, state, n: 2)                             // gdu.144: the regular pass plans the live D3 / D2 mismatch; only the hold withholds it
         let first = await moveCalls(act)
-        // ejb.15 (Wiring 3), CHANGED because the core decides: 2 drags, not 1 (here and below). The core's first pass already drags the live drawn D3 / D2 mismatch
-        // (a budgeted engine move; it fails and holds the bar) before the USER's pull-out of P1 gets its one attempt. The re-dispatch guard is unchanged: no third.
-        #expect(first == 2)   // (sommelier-ejb.7: the folded count 14 is the core's pileCount, asserted in CoreStatusTextTests)
+        // ejb.19: 1 again (ejb.15 had raised it to 2). The adapter holds the first complete read of a full bar until a second agrees, so the core makes no drag on
+        // its first pass; the one drag is the USER's pull-out of P1. The re-dispatch guard is unchanged: no second.
+        #expect(first == 1)   // (sommelier-ejb.7: the folded count 14 is the core's pileCount, asserted in CoreStatusTextTests)
         // 10 passes: folded 14 -> 11 -> 14, at least two passes with only a carried chevron, X folded now but not in the hold's set
         let script: [(big: Bool, carried: Bool)] = [(false, false), (true, false), (false, true), (true, true), (false, false), (true, true),
                                                     (false, false), (true, true), (false, true), (false, false)]
-        // ejb.15 (Wiring 3), CHANGED because the core decides: the hold is set by the first pass's failing drag, so the user's later drop of P1 releases it once in
-        // setup ("layout edit"); the test's claim is that the SCRIPT below releases nothing more, which is what is compared.
         for m in script {
             mode.value = m
             _ = await engine.reconcileOnce()
             #expect(state.coreStatus != .moving)
         }
         let moves = await moveCalls(act)
-        #expect(moves == 2)   // a re-dispatch would have been a third drag
+        #expect(moves == 1)   // a re-dispatch would have been a second drag
         #expect(state.perItem.values.allSatisfy { st in
             switch st { case .pending, .moving, .unsupported: false; default: true }
         })

@@ -181,9 +181,15 @@ public enum ReadAdapter {
         let zone = c.churnZone.subtracting(rawPileSet)
         let nearFold = dedupe(drawn.filter { zone.contains($0) } + zone.sorted { $0.description < $1.description })
 
-        // ---- settled (A5): the scanner's settled flag, also false when the last two complete reads disagree on the pile.
+        // ---- settled (A5): the scanner's settled flag (two consecutive full scans agreed on the items; a seeded scan needs one), and also false
+        // when the last two complete reads disagree on the pile, or (ejb.19) a COMPLETE read WITH a chevron has no earlier complete pile to agree with
+        // (the first one after launch or wake; gdu.80 waited for two agreeing reads on a full bar). A chevronless read has no pile to disagree on, and
+        // the core moves nothing on one before its own proof that the bar is not full, so it stays as the scanner says.
         var settled = c.settled
-        if c.level == .complete, let prev = c.previousCompletePile, prev != rawPileSet { settled = false }
+        if c.level == .complete {
+            if let prev = c.previousCompletePile { if prev != rawPileSet { settled = false } }
+            else if chevron != .absent { settled = false }
+        }
 
         // Intern last: all lists are final, so a thrown error leaves no half-built Read.
         func ids(_ l: [ItemKey]) throws(CoreKeysError) -> [Key] { var o: [Key] = []; o.reserveCapacity(l.count); for k in l { o.append(try keys.intern(k)) }; return o }
