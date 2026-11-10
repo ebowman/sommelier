@@ -37,18 +37,22 @@ public struct RecordingObserver: MenuBarObserver {
 
 /// Shared live wiring used by the app and `mbprobe apply`. Always drag-only (`allowFallback = false`).
 public enum EngineFactory {
-    /// The agent also lists our own status item as `module:<name>` (our pid is excluded from the app-extras scan, but not
-    /// from MenuBarAgent's hosted children), so drop it by key/bundle id: Sommelier never plans or moves itself.
+    /// gdu.147: Sommelier's own status item (the agent hosts it; our pid is excluded from the app-extras scan) is KEPT: it is an ordinary
+    /// orderable item under the one key `ItemKey.sommelierStatusItem`, never hidden (capability, planner and Arrange refuse). Anything else
+    /// that claims to be us (a `module:Sommelier` look-alike, an item owned by our bundle id or owner key) is still dropped.
     public static func dropSelf(_ items: [ResolvedItem], bundleID: String, moduleName: String) -> [ResolvedItem] {
-        items.filter { r in
-            r.key != .module(name: moduleName) && r.item.ownerBundleID != bundleID && r.ownerKey != bundleID && !isOwnHosted(r)
+        var keptOwn = false   // an out-of-process scan can yield the own item twice (app-extras + hosted): keep exactly one
+        return items.filter { r in
+            if isOwnHosted(r) { if keptOwn { return false }; keptOwn = true; return true }
+            return r.key != .module(name: moduleName) && r.item.ownerBundleID != bundleID && r.ownerKey != bundleID
         }
     }
 
-    /// Our own status item as the agent hosts it: the AX identifier we set on the button (the resolver then keys it
-    /// `module:<identifier>`, owner MenuBarAgent), whatever key it got. Never planned, moved or written into a layout.
+    /// Our own status item as the agent hosts it: the AX identifier we set on the button, whatever key it got (the resolver keys it
+    /// `ItemKey.sommelierStatusItem`; older code keyed it `module:<identifier>`). Orderable, never hidden, never parked.
     public static func isOwnHosted(_ r: ResolvedItem) -> Bool {
         r.item.axIdentifier == MenuBarScanner.ownStatusItemIdentifier || r.key == .module(name: MenuBarScanner.ownStatusItemIdentifier)
+            || r.key.isSommelierStatusItem
     }
 
     public static func makeObserver(platform: LivePlatform, log: @escaping @Sendable (String) -> Void = { _ in }) -> AgreedScanObserver {

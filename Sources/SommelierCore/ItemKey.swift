@@ -64,6 +64,15 @@ extension ItemKey {
     public static let overflowChevron = ItemKey.module(name: MenuBarItem.overflowChevronName)
     public var isOverflowChevron: Bool { self == Self.overflowChevron }
 
+    /// gdu.147: Sommelier's OWN status item. ONE stable key across launches and title changes ("Observe" vs the icon): bundle id + the
+    /// constant autosave name the app sets (`StatusItemController`), i.e. `status:ie.boboco.sommelier::Sommelier`, the same string the
+    /// agent's order store uses for it. The scanner sees the item as agent-hosted (`module:<identifier>`); `IdentityResolver` keys it here.
+    /// It is orderable like any item but is never hidden (`isSommelierStatusItem` is checked by every membership path).
+    public static let sommelierStatusItem = ItemKey.status(ownerKey: "ie.boboco.sommelier", autosaveName: "Sommelier")
+    public var isSommelierStatusItem: Bool { self == Self.sommelierStatusItem }
+    /// The one refusal line for any attempt to hide it.
+    public static let sommelierStaysVisible = "Sommelier stays visible so you can always reach it"
+
     /// The OWNER-KEY unit: the fallback for a key with no tracked entry. Code that groups keys must go through a
     /// `HideUnitRule` instead (the planner and the actuator share one, gdu.75).
     public var hideUnit: HideUnit {

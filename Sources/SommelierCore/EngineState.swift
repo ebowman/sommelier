@@ -121,6 +121,8 @@ public final class EngineState {
     public var orderMoveReasons: [ItemKey: String] = [:]
     /// gdu.78: set when the retries of units left unsettled (stale member) ran out; cleared when they apply or a trigger restarts the back-off.
     public var unsettledNotice: String?
+    /// gdu.147: shown while Sommelier's own item is on the bar but not yet recorded (the proved core did not yet judge a slot harmless). Text only.
+    public var ownItemWaitingNotice: String?
     /// Keys the engine moved to `visible` when it adopted the last layout (`start`, `setLayout`) because their app also had a
     /// visible item: hide units are all-or-nothing (gdu.44). Empty when nothing was moved. Replaced by every adoption, so the
     /// Arrange status line can show "N items moved to Visible with their app" for the latest layout only.
@@ -164,6 +166,11 @@ public enum OrderMoveNotice {
         }
         return "Moving \(name): \(why)"
     }
+}
+
+/// gdu.147: wording of the own-item waiting notice.
+public enum OwnItemNotice {
+    public static let waiting = "Sommelier's own item will appear here once the menu bar matches your saved order around it"
 }
 
 /// 9o9.7: wording of the hand-drag notice.

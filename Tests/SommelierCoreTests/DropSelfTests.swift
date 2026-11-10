@@ -14,12 +14,28 @@ import Testing
         EngineFactory.dropSelf(items, bundleID: "ie.boboco.sommelier", moduleName: "Sommelier")
     }
 
-    @Test func ownItemsAreDroppedByModuleNameBundleIDAndOwnerKey() {
+    @Test func selfLookAlikesAreDroppedByModuleNameBundleIDAndOwnerKey() {
         let byModule = resolved(.module(name: "Sommelier"))
         let byBundle = resolved(.status(ownerKey: "com.other", autosaveName: "a"), bundle: "ie.boboco.sommelier")
         let byOwnerKey = resolved(.status(ownerKey: "ie.boboco.sommelier", autosaveName: "b"))
+        #expect(drop([byModule, byBundle, byOwnerKey]).isEmpty)
+    }
+
+    /// gdu.147: the hosted own item (by identifier, by the legacy module key or by its stable key) is KEPT.
+    @Test func theOwnHostedItemIsKept() {
         let byIdent = resolved(.module(name: "ie.boboco.sommelier.statusitem"), ident: "ie.boboco.sommelier.statusitem")
-        #expect(drop([byModule, byBundle, byOwnerKey, byIdent]).isEmpty)
+        let byKey = resolved(.sommelierStatusItem)
+        let byIdentAndKey = resolved(.sommelierStatusItem, bundle: "com.apple.MenuBarAgent", ident: "ie.boboco.sommelier.statusitem")
+        for x in [byIdent, byKey, byIdentAndKey] { #expect(drop([x]).count == 1) }
+        #expect(drop([byIdent, byKey, byIdentAndKey]).count == 1)   // duplicates collapse to one
+    }
+
+    @Test func duplicateOwnEntriesCollapseToExactlyOne() {
+        let a = resolved(.sommelierStatusItem, ident: "ie.boboco.sommelier.statusitem")
+        let b = resolved(.sommelierStatusItem, bundle: "com.apple.MenuBarAgent", ident: "ie.boboco.sommelier.statusitem")
+        let other = resolved(.module(name: "WiFi"))
+        let out = drop([a, other, b])
+        #expect(out.map(\.key) == [.sommelierStatusItem, .module(name: "WiFi")])
     }
 
     @Test func lookAlikesAreKept() {

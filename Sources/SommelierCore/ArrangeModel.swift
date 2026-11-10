@@ -654,6 +654,7 @@ public enum ArrangeCapabilities {
     /// anchors by kind. Known items get the real `CapabilityRules` answer (with the owning bundle id from `ItemInfo`).
     public static func resolve(_ key: ItemKey, items: [ItemKey: ItemInfo], rules: any CapabilityProvider) -> Capability {
         if case .module = key { return rules.capability(for: key) }
+        if key.isSommelierStatusItem { return rules.capability(for: key) }   // gdu.147: never hideable, even before it is observed
         guard items[key] != nil else { return Capability(canMove: true, canHide: true) }
         return rules.capability(for: key)
     }

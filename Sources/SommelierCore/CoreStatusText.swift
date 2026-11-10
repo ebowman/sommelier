@@ -109,7 +109,7 @@ public enum CoreStatusText {
         c.handDragNotice = state.handDragNotice; c.systemSettingsNotice = state.systemSettingsNotice
         c.failedMembership = state.perItem.values.filter { if case .failed = $0 { return true }; return false }.count
         c.notices = [state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state),
-                     state.inFlight != nil ? state.orderMoveNotice : nil, state.newItemNotice].compactMap { $0 }
+                     state.inFlight != nil ? state.orderMoveNotice : nil, state.newItemNotice, state.ownItemWaitingNotice].compactMap { $0 }
         if let a = state.inFlight {
             let k: ItemKey
             switch a { case .move(let x, _), .hide(let x), .show(let x): k = x }

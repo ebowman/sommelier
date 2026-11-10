@@ -36,39 +36,65 @@ public enum HandDragRule {
     }
 }
 
-/// Live monitor: `NSEvent.addGlobalMonitorForEvents` for left mouse down/up (no Accessibility or Input Monitoring grant is needed
-/// for mouse events). The Command flag is read from the mouse-down event itself, so `.flagsChanged` is not monitored: releasing
-/// Command mid-drag does not end the drag, only the mouse-up does (the engine also treats a drag older than
-/// `Config.arrangeDragMaxAge` as lost).
-public final class LiveHandDragMonitor: HandDragMonitor {
-    private var monitor: Any?
+/// The hand-drag state machine shared by both event sources (gdu.147): a left-down with Command held inside a menu bar rect begins a
+/// drag, the next left-up ends it. A plain click (no Command) never begins one, whichever process the event was delivered to. Pure of
+/// AppKit so it is unit-testable with injected events.
+public final class HandDragTracker: @unchecked Sendable {
+    public enum Phase: Sendable { case down, up }
+    private let lock = NSLock()
     private var dragging = false
+    private let handler: @Sendable (HandDragEvent) -> Void
+    public init(_ handler: @escaping @Sendable (HandDragEvent) -> Void) { self.handler = handler }
+
+    public func handle(_ phase: Phase, commandHeld: Bool, point: CGPoint, rects: [CGRect]) {
+        switch phase {
+        case .down:
+            guard HandDragRule.isHandDragStart(commandHeld: commandHeld, point: point, rects: rects) else { return }
+            lock.lock(); dragging = true; lock.unlock()
+            handler(.began)
+        case .up:
+            lock.lock(); let was = dragging; dragging = false; lock.unlock()
+            if was { handler(.ended) }
+        }
+    }
+    public func reset() { lock.lock(); dragging = false; lock.unlock() }
+}
+
+/// Live monitor: a GLOBAL monitor (events for other processes) plus a LOCAL monitor (events delivered to this process, which the
+/// global one never sees: a hand drag that starts on Sommelier's own status item). Both feed one `HandDragTracker`; the local one
+/// returns the event unchanged. No Accessibility or Input Monitoring grant is needed for mouse events. The Command flag is read from
+/// the mouse-down event itself, so releasing Command mid-drag does not end the drag, only the mouse-up does (the engine also treats a
+/// drag older than `Config.arrangeDragMaxAge` as lost). The engine's own synthetic drags are discarded by the actuator-in-flight flag
+/// in the handler the engine installs, exactly as before.
+public final class LiveHandDragMonitor: HandDragMonitor {
+    private var monitors: [Any] = []
+    private var tracker: HandDragTracker?
     public init() {}
 
     public func start(_ handler: @escaping @Sendable (HandDragEvent) -> Void) {
-        guard monitor == nil else { return }
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            guard let self else { return }
+        guard monitors.isEmpty else { return }
+        let t = HandDragTracker(handler)
+        tracker = t
+        let feed: @Sendable (NSEvent) -> Void = { event in
             switch event.type {
             case .leftMouseDown:
                 let rects = HandDragRule.menuBarRects(
                     screens: NSScreen.screens.map { ($0.frame, $0.safeAreaInsets.top) }, thickness: NSStatusBar.system.thickness)
-                guard HandDragRule.isHandDragStart(commandHeld: event.modifierFlags.contains(.command), point: NSEvent.mouseLocation, rects: rects) else { return }
-                self.dragging = true
-                handler(.began)
+                t.handle(.down, commandHeld: event.modifierFlags.contains(.command), point: NSEvent.mouseLocation, rects: rects)
             case .leftMouseUp:
-                guard self.dragging else { return }
-                self.dragging = false
-                handler(.ended)
+                t.handle(.up, commandHeld: false, point: .zero, rects: [])
             default: break
             }
         }
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp], handler: { feed($0) }) { monitors.append(g) }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp], handler: { feed($0); return $0 }) { monitors.append(l) }
     }
 
     public func stop() {
-        if let m = monitor { NSEvent.removeMonitor(m) }
-        monitor = nil
-        dragging = false
+        for m in monitors { NSEvent.removeMonitor(m) }
+        monitors = []
+        tracker?.reset()
+        tracker = nil
     }
 }
 

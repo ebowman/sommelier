@@ -409,7 +409,8 @@ public actor LayoutEngine {
         // 9o9.17: carried frames keep pile membership, so a read that lacks only self-positioning items is as good as a complete one for
         // the pile set; an incomplete read still says nothing.
         guard completeness != .incomplete else { return }
-        recentReads.append(ChurnRead(resolved: items))
+        // gdu.147: the churn zone feeds the core read (`churnZone`): an unrecorded own item is not part of it (as under `dropSelf`).
+        recentReads.append(ChurnRead(resolved: layout.allKeys.contains(.sommelierStatusItem) ? items : items.filter { !EngineFactory.isOwnHosted($0) }))
         if recentReads.count > 2 { recentReads.removeFirst(recentReads.count - 2) }
     }
     /// gdu.72: units the actuator refused to write (key -> reason; not tracked, Apple app...). Kept across passes so they are not
@@ -597,18 +598,35 @@ public actor LayoutEngine {
         (resolverSnapshot?.entries ?? []).filter { !$0.menuItemKeys.isEmpty }.map { [$0.key] + $0.menuItemKeys }
     }
 
+    /// The adapter's context for one read (shared by the core feed and the own-item placement, so both judge trust alike).
+    private func readContext(_ o: ObservedOrder, bar: BarObservation, kind: ReadKind, vetoed: Bool, record: [ItemKey], quiet: Bool = false) -> ReadContext {
+        let caps = activeCapabilities ?? capabilities
+        let immovable = Set((record + o.onBar + o.parked).filter { !caps.capability(for: $0).canMove })
+        var ctx = ReadContext(observation: bar, kind: kind, previousCompletePile: core.lastCompletePile, handDragUnverified: handDragUnverified,
+                              immovable: immovable, churnZone: SystemOverflowRule.churnZone(recentReads), selfPositioningOwners: config.selfPositioningOwners,
+                              log: quiet ? nil : log, itemInfo: itemInfo, ownerFamilies: coreOwnerFamilies())
+        if vetoed { ctx.settled = false }
+        return ctx
+    }
+
+    /// gdu.147 (the ONE place): what the core's read derives from. While the record lacks Sommelier's own key, the own item is NOT part of
+    /// the scan the core sees (drawn, pile, fold neighbourhood, unread, geometry), exactly as `dropSelf` made it: every decision about every
+    /// other item is the old build's. The scan keeps the item for the candidate/judge, the waiting notice and the never-hidden guards.
+    private func coreView(_ o: ObservedOrder, _ bar: BarObservation) -> (ObservedOrder, BarObservation) {
+        guard !layout.allKeys.contains(.sommelierStatusItem) else { return (o, bar) }
+        var b = bar
+        b.items.removeAll { EngineFactory.isOwnHosted($0) }
+        return (o.without(.sommelierStatusItem), b)
+    }
+
     /// Feeds ONE read to the core: adapts it (`ReadAdapter`), syncs the record, then `step(.read)`.
     /// `vetoed` = a Swift-only veto known BEFORE the step (pause, conflict, sleep, not ready, membership batch this pass, pending adoption,
     /// hand-drag adoption, transient reveal, reveal pass, post-move evidence): the read is downgraded to `settled: false`, which is the ONLY
     /// edit a veto may make. A vetoed read is still fed, and never decides anything. Returns the emitted actions of a pass read.
     @discardableResult
-    private func coreRead(_ o: ObservedOrder, bar: BarObservation, kind: ReadKind, vetoed: Bool, site: String) -> [Action] {
-        let caps = activeCapabilities ?? capabilities
-        let immovable = Set((layout.visible + o.onBar + o.parked).filter { !caps.capability(for: $0).canMove })
-        var ctx = ReadContext(observation: bar, kind: kind, previousCompletePile: core.lastCompletePile, handDragUnverified: handDragUnverified,
-                              immovable: immovable, churnZone: SystemOverflowRule.churnZone(recentReads), selfPositioningOwners: config.selfPositioningOwners,
-                              log: log, itemInfo: itemInfo, ownerFamilies: coreOwnerFamilies())
-        if vetoed { ctx.settled = false }
+    private func coreRead(_ rawO: ObservedOrder, bar rawBar: BarObservation, kind: ReadKind, vetoed: Bool, site: String) -> [Action] {
+        let (o, bar) = coreView(rawO, rawBar)
+        let ctx = readContext(o, bar: bar, kind: kind, vetoed: vetoed, record: layout.visible)
         let adapted: AdaptedRead
         let adaptT0 = ContinuousClock.now
         do {
@@ -820,6 +838,9 @@ public actor LayoutEngine {
         if !moved.isEmpty {
             log("layout: all items governed by one Control Center entry hide or show at once; moved to visible: \(moved.map(\.description).joined(separator: ", "))")
         }
+        // gdu.147: Sommelier's own item is never hidden, whoever composed the layout.
+        let own = new.healingSommelierItem()
+        if own.healed { new = own.layout; log("layout: Sommelier's own status item is never hidden; kept in Visible") }
         // 9o9.2/9o9.3: the pending-adoption flag is engine state: a scan-built layout never changes it. A user placement that changes
         // Visible while the adoption is pending FIRST adopts the record from the last clean observation and then applies the drop on
         // top of it (it must not enforce the legacy saved order, which could reorder unrelated items). With no clean observation yet
@@ -1396,7 +1417,10 @@ public actor LayoutEngine {
     @discardableResult
     private func publishLayout(_ l: Layout, normalized: [ItemKey]? = nil) async -> LayoutRevision {
         let s = state, hu = rule   // gdu.76: the rule setLayout just refreshed is published with the layout, not at the next observation
+        let clearOwn = ownWaitingShown && l.allKeys.contains(.sommelierStatusItem)   // gdu.147: any path that records the own key ends the waiting notice
+        if clearOwn { ownWaitingShown = false }
         return await MainActor.run {
+            if clearOwn { s.ownItemWaitingNotice = nil }
             s.layout = l
             s.hideUnits = hu
             if let normalized { s.lastNormalization = normalized }
@@ -1757,12 +1781,89 @@ public actor LayoutEngine {
     static let fullBarSkipReason = "cannot be shown: the bar is full; macOS would keep it behind the chevron. It is in the panel."
     /// Number of keys withheld by the last pass's full-bar rule (log once per change, not once per pass).
     private var fullBarLogged = 0
+    /// gdu.147 J4: the "own item will appear here" notice is currently published.
+    private var ownWaitingShown = false
 
     /// 9o9.25: parked keys the layout lists Visible that Control Center hides (`isAllowed == false`) and the user did not place through
     /// Sommelier. Placement-unknown keys never qualify (nothing proves they are hidden).
+    /// gdu.147 CANDIDATE slot for Sommelier's own key (J1). `layout` is the record AFTER this pass's other admissions. The own key is put
+    /// between its nearest recorded neighbours that the scan shows ON THE BAR, by drawn position, counting every such key whatever its
+    /// trust (trusted, stale, unread-but-shown, folded behind the chevron). Order convention of the core: folded (pile) keys first, then the
+    /// drawn ones by x. The slot is right after the nearest left neighbour, else right before the nearest right one, else at the start of the
+    /// trailing system block; never after that block's start. nil (wait) when the own item is not drawn on a fresh, corroborated frame
+    /// (folded/pile, parked-only, stale). This is only a candidate: `coreJudgesOwnInsertion` decides whether it is recorded.
+    static func ownCandidateSlot(_ obs: ObservedOrder, layout: Layout) -> Int? {
+        let own = ItemKey.sommelierStatusItem
+        guard obs.onBar.contains(own), !obs.staleOnBar.contains(own), !obs.uncorroborated.contains(own), !obs.systemOverflow.contains(own) else { return nil }
+        let folded = obs.onBar.filter { $0 != own && obs.systemOverflow.contains($0) }
+        let drawn = obs.onBar.filter { !obs.systemOverflow.contains($0) }
+        let seq = folded + drawn
+        guard let i = seq.firstIndex(of: own) else { return nil }
+        let vis = layout.visible
+        func idx(_ k: ItemKey) -> Int? { vis.firstIndex(of: k) }
+        let limit = layout.trailingSystemBlockStart
+        if let l = seq[..<i].reversed().lazy.compactMap(idx).first { return min(l + 1, limit) }
+        if let r = seq[(i + 1)...].lazy.compactMap(idx).first { return min(r, limit) }
+        return limit
+    }
+
+    /// gdu.147 JUDGE (J2): the PROVED core decides whether the candidate may be recorded; no order logic of its own. On SCRATCH copies of
+    /// the key table and of the state (the engine's core is never touched), the read of this scan is adapted against (a) the record and
+    /// (b) the candidate record, with the same context. INSERT ONLY IF the scan is a usable settled complete pass read, and
+    /// `DecisionCore.shownVerdict` says (a) and (b) are both `matches`, or both `matchesExcept U` with the same U, no key of U shown on the
+    /// bar in this scan (U are keys whose items are not on the bar at all; never the own key), and `DecisionCore.step(.read)` on the candidate
+    /// emits NO move, from a copy of the engine's state (after the same record edit) and from a fresh state. Any throw: do not insert.
+    /// Consequence: while a recorded key shown on the bar is stale/unread on the scan, or the bar differs from the record, the own key waits.
+    static let ownJudgeHorizon = 8
+    private func coreJudgesOwnInsertion(_ obs: ObservedOrder, probe: Layout, slot: Int) -> Bool {
+        guard let bar = lastBarObs else { return false }
+        var cand = probe
+        cand.insertObserved(.sommelierStatusItem, atVisibleSlot: slot)
+        var scratch = core.keys
+        do {
+            // (a) is what the core sees NOW (the own item absent, `coreView`); (b) is the candidate record, WITH the own item.
+            let (oa, bara) = coreView(obs, bar)
+            let a = try ReadAdapter.adapt(oa, context: readContext(oa, bar: bara, kind: .pass, vetoed: false, record: probe.visible, quiet: true),
+                                          record: probe.visible, keys: &scratch)
+            let b = try ReadAdapter.adapt(obs, context: readContext(obs, bar: bar, kind: .pass, vetoed: false, record: cand.visible, quiet: true),
+                                          record: cand.visible, keys: &scratch)
+            for r in [a.read, b.read] where !(r.kind == .pass && r.observed && r.settled && r.level == .complete) { return false }
+            // The engine's state has learned from the earlier reads (a chevronless read is `cannotTell` on a state that never proved the bar
+            // not full), so both records are judged on COPIES of it (immutable states: `step` returns a new one) after the same record edit
+            // the real pass would make (`coreRead`: userEdit(record), then the read judged against that state).
+            let base: DecisionState
+            if let st = core.state { base = st } else { base = try DecisionState(record: []) }
+            let (sa, _) = try DecisionCore.step(base, .userEdit(record: a.record, moved: []))
+            let (sb, _) = try DecisionCore.step(base, .userEdit(record: b.record, moved: []))
+            let va = try DecisionCore.shownVerdict(sa, a.read), vb = try DecisionCore.shownVerdict(sb, b.read)   // judge calls 1 and 2
+            switch (va, vb) {
+            case (.matches, .matches): break
+            case (.matchesExcept(let ua), .matchesExcept(let ub)):
+                guard Set(ua) == Set(ub) else { return false }
+                let shown = Set(obs.onBar).union(obs.staleOnBar)
+                for id in ua {
+                    guard let k = scratch.key(for: id), k != .sommelierStatusItem, !shown.contains(k) else { return false }
+                }
+            default: return false
+            }
+            // Judge call 3: with the bar unchanged, NEITHER world (without the own item / with it) ever emits a move on the following reads
+            // (stale counters, near-fold windows): recording the key can never unlock a move that the old build withholds.
+            var xa = sa, xb = sb
+            for _ in 0..<Self.ownJudgeHorizon {
+                let (na, aa) = try DecisionCore.step(xa, .read(a.read))
+                let (nb, ab) = try DecisionCore.step(xb, .read(b.read))
+                if !aa.isEmpty || !ab.isEmpty { return false }
+                xa = na; xb = nb
+            }
+            let fresh = try DecisionState(record: b.record)   // and none from a fresh state either
+            if !(try DecisionCore.step(fresh, .read(b.read))).1.isEmpty { return false }
+            return true
+        } catch { return false }
+    }
+
     private func systemHiddenVisible(_ obs: ObservedOrder) -> [(key: ItemKey, tracked: String)] {
         var out: [(key: ItemKey, tracked: String)] = []
-        for k in obs.parked where layout.section(of: k) == .visible && !userPlacedVisible.contains(k) && !obs.placementUnknown.contains(k) {
+        for k in obs.parked where layout.section(of: k) == .visible && !userPlacedVisible.contains(k) && !obs.placementUnknown.contains(k) && !k.isSommelierStatusItem {   // gdu.147: never adopted into Hidden
             guard let tk = resolverSnapshot?.trackedKey(for: k, bundleID: itemInfo[k]?.ownerBundleID), config.trackedAllowed(tk) == false else { continue }
             out.append((k, tk))
         }
@@ -2527,10 +2628,34 @@ public actor LayoutEngine {
             for (n, why) in held where heldNewItemLogged.insert(n.key).inserted { log("layout: not recording heuristic key \(n.key.description): \(why)") }
             plan.newItems = admitted
         }
+        // gdu.147: Sommelier's own item is recorded at a candidate slot (`ownCandidateSlot`) only when the proved core judges it harmless
+        // (`coreJudgesOwnInsertion`: same verdict with and without it, no move). Otherwise nothing is inserted (no row, no drag) and a later
+        // pass retries. The judge runs only while the key is unrecorded and the read is a complete, settled pass read.
+        var ownSlot: Int?
+        if plan.newItems.contains(where: { $0.key.isSommelierStatusItem }) {
+            var probe = layout
+            for n in plan.newItems where !n.key.isSommelierStatusItem { probe.append(n.key, to: n.section) }
+            if completeRead, let c = Self.ownCandidateSlot(obs, layout: probe), coreJudgesOwnInsertion(obs, probe: probe, slot: c) { ownSlot = c }
+            if ownSlot == nil {
+                plan.newItems.removeAll { $0.key.isSommelierStatusItem }
+                if heldNewItemLogged.insert(.sommelierStatusItem).inserted { log("layout: Sommelier's own item is not placed yet: the bar differs from your saved order around it") }
+            }
+        }
+        let ownWaiting = ownSlot == nil && obs.onBar.contains(.sommelierStatusItem) && !layout.allKeys.contains(.sommelierStatusItem)
+        if ownWaiting != ownWaitingShown {
+            ownWaitingShown = ownWaiting
+            await publish { $0.ownItemWaitingNotice = ownWaiting ? OwnItemNotice.waiting : nil }
+        }
         // (d) persist new items, once per pass
         if !plan.newItems.isEmpty {
-            for n in plan.newItems { layout.append(n.key, to: n.section) }
-            await noteNewItems(plan.newItems)
+            for n in plan.newItems where !n.key.isSommelierStatusItem { layout.append(n.key, to: n.section) }
+            if let s = ownSlot { layout.insertObserved(.sommelierStatusItem, atVisibleSlot: s) }
+            // gdu.147: Sommelier's own item joins the record once, at its observed slot, as an engine record change (below:
+            // `coreSyncRecord` = userEdit(rec, [])), not a user drop. Under observe-only the save is only logged.
+            if plan.newItems.contains(where: { $0.key.isSommelierStatusItem }) {
+                log("layout: \(observing ? "would add" : "adding") Sommelier's own status item at its observed position")
+            }
+            await noteNewItems(plan.newItems.filter { !$0.key.isSommelierStatusItem })
             do { try store.save(layout) } catch { log("cannot save layout: \(error)") }
             let stamp = await publishLayout(layout)   // a new revision: the engine itself changed the layout (gdu.48)
             coreSyncRecord(site: "runPassBody (d) new items")   // ejb.15: engine-made record change = userEdit(rec, [])

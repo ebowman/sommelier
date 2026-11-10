@@ -41,7 +41,7 @@ public enum OverflowEntries {
     public static let minWidth: CGFloat = 28
 
     public static func make(layout: Layout, items: [ItemKey: ItemInfo], includeAlwaysHidden: Bool = false, units: HideUnitRule = .ownerKeys) -> [OverflowEntry] {
-        let keys = layout.hidden + (includeAlwaysHidden ? layout.alwaysHidden : [])
+        let keys = (layout.hidden + (includeAlwaysHidden ? layout.alwaysHidden : [])).filter { !$0.isSommelierStatusItem }   // gdu.147: never offered
         var seen = Set<ItemKey>()
         var out: [OverflowEntry] = []
         let namer = RowNameRule.Namer(layout: layout, items: items)
@@ -55,7 +55,7 @@ public enum OverflowEntries {
         // Items macOS pushed into its own overflow are "the rest" too: after the ones we hid, in bar (layout) order.
         let hiddenKeys = Set(out.map(\.key))
         var rest: [OverflowEntry] = []
-        for k in layout.visible where !hiddenKeys.contains(k) && seen.insert(k).inserted {
+        for k in layout.visible where !hiddenKeys.contains(k) && !k.isSommelierStatusItem && seen.insert(k).inserted {
             guard let i = items[k], i.systemOverflow else { continue }
             rest.append(OverflowEntry(key: k, displayName: namer.name(k), ownerBundleID: i.ownerBundleID,
                                       ownerPID: i.ownerPID, width: max(minWidth, i.width), isOnBar: i.isOnBar, kind: .notFitting, detail: namer.detail(k)))

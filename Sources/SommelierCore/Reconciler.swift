@@ -60,6 +60,16 @@ public struct ObservedOrder: Equatable, Sendable {
         self.overflowChevron = overflowChevron
     }
 
+    /// gdu.147: this observation as if `key`'s item were absent from the scan (what `EngineFactory.dropSelf` used to produce). Every per-key
+    /// flag and list loses the key; the rest is untouched (each other item's pile flag is its own, from the scan).
+    public func without(_ key: ItemKey) -> ObservedOrder {
+        var o = self
+        o.onBar.removeAll { $0 == key }; o.parked.removeAll { $0 == key }
+        o.systemOverflow.remove(key); o.placementUnknown.remove(key); o.uncorroborated.remove(key); o.staleOnBar.remove(key)
+        o.carriedRecently.remove(key); o.foldedParked.remove(key); o.staleOff.remove(key); o.parkedUnreadable.remove(key)
+        return o
+    }
+
     /// Builds the observed order from a resolved scan. Fresh on-bar items (width > 1) in frame order become `onBar`;
     /// other items with width > 1 become `parked`. Items with width <= 1 (main-menu entries, not status items) are
     /// ignored. STALE items (carried forward from an earlier scan): a stale ON-BAR item is kept in `onBar` at its last-known x and
@@ -253,6 +263,13 @@ public struct Reconciler: Sendable {
             // 9o9.21: the chevron is the agent's own control, never a record key: it is neither a NEW item (no placement, no notice)
             // nor ever hidden or shown by the plan, whatever its unit or the policy says.
             if Self.isChevron(k, observed) { if onBarSet.contains(k) { wantOnBar.insert(k) }; continue }
+            // gdu.147: Sommelier's own item is never hidden or shown by the plan: it is always a Visible record key (a new one is recorded
+            // in Visible whatever `newItemPolicy` says), so it takes part in the order only.
+            if k.isSommelierStatusItem {
+                if onBarSet.contains(k) { wantOnBar.insert(k) }
+                if layout.section(of: k) == nil { newItems.append(NewItem(k, .visible)) }
+                continue
+            }
             let wants = unitWantsBar[rule.unit(of: k)] ?? false
             if wants { wantOnBar.insert(k) }
             if layout.section(of: k) == nil {

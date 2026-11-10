@@ -195,6 +195,19 @@ public struct Layout: Codable, Equatable, Sendable {
         insert([key], into: section, at: nil)
     }
 
+    /// gdu.147: records `key` in Visible at `slot` (an insertion index, clamped; the engine chooses it by `LayoutEngine.ownCandidateSlot`, judged by the proved core).
+    public mutating func insertObserved(_ key: ItemKey, atVisibleSlot slot: Int) {
+        remove(key)
+        insert([key], into: .visible, at: slot)
+    }
+
+    /// Index where the trailing run of `.module` keys starts in Visible (the first slot of the system block; `visible.count` when none).
+    public var trailingSystemBlockStart: Int {
+        var s = visible.count
+        while s > 0, case .module = visible[s - 1] { s -= 1 }
+        return s
+    }
+
     public mutating func reorder(_ key: ItemKey, in section: LayoutSection, toIndex: Int) {
         remove(key)
         insert([key], into: section, at: toIndex)
@@ -211,6 +224,18 @@ public struct Layout: Codable, Equatable, Sendable {
     public func validatedReportingNormalization(units: HideUnitRule = .ownerKeys) -> (Layout, moved: [ItemKey]) {
         let n = dedup().layout.normalizedHideUnits(units: units)
         return (n.layout, n.moved)
+    }
+
+    /// gdu.147: Sommelier's own item is never hidden. A layout that lists it in Hidden / Always hidden (an old or hand-edited file) gets it
+    /// back in Visible, before the trailing system block (the right-most Visible slot). `healed` is true when something moved.
+    public func healingSommelierItem() -> (layout: Layout, healed: Bool) {
+        let k = ItemKey.sommelierStatusItem
+        guard hidden.contains(k) || alwaysHidden.contains(k) else { return (self, false) }
+        var out = self
+        out.hidden.removeAll { $0 == k }
+        out.alwaysHidden.removeAll { $0 == k }
+        if !out.visible.contains(k) { out.insert([k], into: .visible, at: nil) }
+        return (out, true)
     }
 
     /// Hide units are all-or-nothing. A unit with keys in `visible` AND in a hidden section (`hidden`/`alwaysHidden`)
@@ -285,7 +310,7 @@ public struct Layout: Codable, Equatable, Sendable {
             handWindowBaseline: try (c.decodeIfPresent([String].self, forKey: .handWindowBaseline) ?? []).compactMap { ItemKey(storeKey: $0) },
             handWindowDrops: Self.windowDrops(try c.decodeIfPresent([WindowDropCoding].self, forKey: .handWindowDrops)),
             migrations: try c.decodeIfPresent([String].self, forKey: .migrations) ?? [])
-        var l = raw.dedup().layout
+        var l = raw.dedup().layout.healingSommelierItem().layout
         l.visible.removeAll(where: \.isOverflowChevron)   // 9o9.14 (the warning is reported by `decode`)
         l.hidden.removeAll(where: \.isOverflowChevron)
         l.alwaysHidden.removeAll(where: \.isOverflowChevron)
@@ -363,7 +388,8 @@ public struct Layout: Codable, Equatable, Sendable {
             }
         }
         let d = stripped.dedup()
-        let n = d.layout.normalizedHideUnits()
+        let healedOwn = d.layout.healingSommelierItem()
+        let n = healedOwn.layout.normalizedHideUnits()
         var warnings: [String] = []
         if r.legacyOrderMode { warnings.append("ignored legacy field orderMode") }
         if r.legacyPlaced { warnings.append("ignored legacy field placed") }
@@ -376,6 +402,7 @@ public struct Layout: Codable, Equatable, Sendable {
         layout.handWindowBaseline = (r.handWindowBaseline ?? []).compactMap { ItemKey(storeKey: $0) }
         layout.handWindowDrops = windowDrops(r.handWindowDrops)
         layout.migrations = r.migrations ?? []
+        if healedOwn.healed { warnings.append("Sommelier's own status item was outside Visible; moved back to visible (it is never hidden)") }
         warnings += chevronSections.map { "ignored chevron key in \($0.rawValue)" }
         warnings += d.dropped.map { "duplicate key \($0.0) dropped from \($0.1.rawValue)" }
         if !n.moved.isEmpty {

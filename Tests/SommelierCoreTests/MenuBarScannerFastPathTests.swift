@@ -483,7 +483,7 @@ private func itemB(_ s: MenuBarSnapshot) -> MenuBarItem? { s.items.first { $0.ow
                      AXElementInfo(axDescription: "Clock", identifier: "clock", frame: bar(900))])]
     let snap = MenuBarScanner(source: s).scan()
     #expect(snap.hostedLayout?.first { $0.minX == 200 }?.ownerPID == nil)
-    #expect(!snap.items.contains { $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier })   // not reported (still in hostedLayout)
+    #expect(snap.items.filter { $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier }.count == 1)   // gdu.147: reported once, like any item
     #expect(snap.hostedLayout?.contains { $0.sig == MenuBarScanner.ownStatusItemIdentifier } == true)
     #expect(MenuBarScanner(source: s, includeSelf: true).scan().items.contains { $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier })
     // Without the identifier the same frame IS joined (the old behaviour for ordinary items).
@@ -597,21 +597,60 @@ private final class Locked: @unchecked Sendable {
     var value: Bool { get { l.lock(); defer { l.unlock() }; return v } set { l.lock(); v = newValue; l.unlock() } }
 }
 
-@Test func ownHostedStatusItemNeverReachesTheEngineOrALayout() {
+@Test func ownHostedStatusItemIsAnOrdinaryOrderableVisibleItem() {
     let own = MenuBarScanner.ownStatusItemIdentifier
     var item = MenuBarItem(ownerPID: 99, ownerBundleID: menuBarAgentBundleID, ownerName: "System item", title: "", axDescription: "",
                            axIdentifier: own, frame: bar(1081), source: .agentHostedOnly, isOnMenuBar: true)
-    let ownR = ResolvedItem(item: item, key: .module(name: own), confidence: .inferred)
+    let ownR = ResolvedItem(item: item, key: .sommelierStatusItem, confidence: .exact)
     item.axIdentifier = "other"; item.frame = bar(1000)
     let other = ResolvedItem(item: item, key: .module(name: "Other"), confidence: .inferred)
-    // Even under a heuristic key the identifier identifies it.
+    // Even under a heuristic key the identifier identifies it (and it is kept).
     var heur = ownR; heur.key = .heuristic(bundleID: menuBarAgentBundleID, fingerprint: "", ordinal: 0)
     let kept = EngineFactory.dropSelf([ownR, heur, other], bundleID: "ie.boboco.sommelier", moduleName: "Sommelier")
-    #expect(kept.map(\.key) == [.module(name: "Other")])
-    let built = LayoutBuilder.build(from: [ownR, heur, other]).layout
-    #expect(built.visible == [.module(name: "Other")] && built.hidden.isEmpty)
-    // The planner sees no new item for it.
-    let obs = ObservedOrder(onBar: kept.map(\.key), parked: [])
-    let plan = Reconciler().plan(observed: obs, layout: Layout(visible: [.module(name: "Other")]), capabilities: { _ in Capability(canMove: true, canHide: true) }, showHiddenSection: false)
-    #expect(!plan.newItems.contains { $0.key == .module(name: own) })
+    #expect(kept.count == 2 && kept.first?.key == .sommelierStatusItem)   // the duplicate own entry collapses to one
+    let built = LayoutBuilder.build(from: [other, ownR, heur]).layout
+    #expect(built.visible == [.module(name: "Other"), .sommelierStatusItem] && built.hidden.isEmpty)
+    // Parked or not, a layout built from a scan puts it in Visible only.
+    var parkedOwn = ownR; parkedOwn.item.isOnMenuBar = false
+    let b2 = LayoutBuilder.build(from: [other, parkedOwn]).layout
+    #expect(b2.visible.contains(.sommelierStatusItem) && b2.hidden.isEmpty && b2.alwaysHidden.isEmpty)
+}
+
+// MARK: gdu.147 - Sommelier's own status item is an ordinary scanned item
+
+private func ownWorld(width: CGFloat) -> ScriptedSource {
+    var s = world()
+    s.trees = [tree([AXElementInfo(axDescription: "A one", identifier: "a1", frame: bar(300)),
+                     AXElementInfo(axDescription: "Sommelier", identifier: MenuBarScanner.ownStatusItemIdentifier, frame: bar(200, w: width)),
+                     AXElementInfo(axDescription: "Clock", identifier: "clock", frame: bar(900))])]
+    return s
+}
+
+@Test func theScanIncludesTheOwnItemExactlyOnce() {
+    let snap = MenuBarScanner(source: ownWorld(width: 24)).scan()
+    let own = snap.items.filter { $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier }
+    #expect(own.count == 1 && own[0].isOnMenuBar && !own[0].stale && own[0].source == .agentHostedOnly)
+    // Resolved, it carries the one stable key.
+    let resolved = IdentityResolver(prefs: FixturePrefs(), ownerInfo: { _ in nil }).resolve(snapshot: snap)
+    #expect(resolved.filter { $0.key == .sommelierStatusItem }.count == 1)
+    #expect(resolved.first { $0.key == .sommelierStatusItem }?.confidence == .exact)
+    #expect(ItemKey.sommelierStatusItem.description == "status:ie.boboco.sommelier::Sommelier")
+}
+
+/// The title changes between the icon and "Observe", so the width differs between scans. Identity is the AX identifier: the second
+/// scan sees the same item, fresh (not stale), under the same key, and the scan is not made incomplete by it.
+@Test func aWidthChangeOfTheOwnTitleDoesNotMakeItStale() {
+    var scanner = MenuBarScanner(source: ownWorld(width: 24))
+    let a = scanner.scan()
+    scanner.source = ownWorld(width: 78)
+    let b = scanner.scan()
+    let fast = scanner.scanVisible()
+    for snap in [a, b, fast] {
+        let own = snap.items.filter { $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier }
+        #expect(own.count == 1 && !own[0].stale && own[0].isOnMenuBar && !own[0].placementUnknown)
+    }
+    #expect(b.items.first { $0.axIdentifier == MenuBarScanner.ownStatusItemIdentifier }?.frame.width == 78)
+    #expect(b.completeness == .complete)
+    let keys = [a, b].map { IdentityResolver(prefs: FixturePrefs(), ownerInfo: { _ in nil }).resolve(snapshot: $0).first { $0.item.axIdentifier == MenuBarScanner.ownStatusItemIdentifier }?.key }
+    #expect(keys[0] == .sommelierStatusItem && keys[1] == .sommelierStatusItem)
 }

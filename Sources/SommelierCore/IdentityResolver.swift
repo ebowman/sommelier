@@ -113,6 +113,10 @@ public struct IdentityResolver: Sendable {
                 results[i] = ResolvedItem(item: it, key: .module(name: MenuBarItem.overflowChevronName), confidence: .inferred)
                 continue
             }
+            if it.axIdentifier == MenuBarScanner.ownStatusItemIdentifier {   // gdu.147: our own item has one stable key, whatever its title
+                results[i] = ResolvedItem(item: it, key: .sommelierStatusItem, confidence: .exact)
+                continue
+            }
             let ident = it.axIdentifier.hasPrefix("_NS:") ? "" : it.axIdentifier
             let name = !ident.isEmpty ? ident : it.axDescription
             if !name.isEmpty {

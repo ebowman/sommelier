@@ -1083,8 +1083,9 @@ public struct MenuBarScanner {
         let off = indexed.filter { !$0.element.isOnMenuBar }
         // Apple's own overflow (gdu.45): items left of the chevron, or stacked on one another, are reported on the bar but
         // not drawn. Flagged here, once, so every consumer (resolver, planner, verifier, UI) reads the same truth.
-        // Our own hosted status item is counted in `hostedLayout` (evidence) but is not an item to report (unless asked for).
-        var reported = (on + off).map(\.element).filter { includeSelf || $0.axIdentifier != Self.ownStatusItemIdentifier }
+        // gdu.147: our own hosted status item is reported like any other (it is orderable; `includeSelf` only concerns the app-extras
+        // scan of our own pid). Its identity is the AX identifier, not its width, so a title change ("Observe" vs the icon) never makes it stale.
+        var reported = (on + off).map(\.element)
         // gdu.120: carried-frame tolerance (display and agreement only; `stale` is untouched and the engine never actuates on it).
         // An item read fresh remembers its frame; a full scan that carries it stale with that SAME frame, within
         // `recentlyVerifiedMaxScans` consecutive stale scans and `recentlyVerifiedMaxAge` seconds of the fresh read, is `recentlyVerified`.

@@ -53,7 +53,10 @@ public enum LayoutBuilder {
         var excluded: [String] = []
         var seen = Set<ItemKey>()
         for r in resolved {
-            if EngineFactory.isOwnHosted(r) { continue }   // our own status item is never part of a layout
+            if EngineFactory.isOwnHosted(r) {   // gdu.147: our own status item is an ordinary Visible record key; it is never hidden
+                if !isNonItem(r), seen.insert(.sommelierStatusItem).inserted { layout.visible.append(.sommelierStatusItem) }
+                continue
+            }
             if isNonItem(r) {
                 excluded.append("\(r.key) (\(r.item.title))")
                 continue

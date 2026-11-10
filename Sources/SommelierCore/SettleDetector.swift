@@ -75,7 +75,7 @@ public struct SettleDetector: Sendable {
     /// compared (only the order). Parked/hidden set: required only when the fast scan reports parked items (every such key,
     /// same exclusions, must be parked in the verdict too); a fast scan that reports none says nothing about hiding.
     /// An `.incomplete` fast read is compared like any other (it is common during self-positioning streaks).
-    /// Our own status item is never in scanner output (`includeSelf` is false), so there is nothing to exclude.
+    /// Our own status item (gdu.147) is in scanner output like any item; only the order is compared here, so a width change of its title is no disagreement.
     public static func verdictAgrees(fast: MenuBarSnapshot, verdict: MenuBarSnapshot) -> Bool {
         let owners = SelfPositioning.defaultOwners
         let excluded = Set((fast.items + verdict.items).filter { $0.stale }.map(key))

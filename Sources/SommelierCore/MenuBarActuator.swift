@@ -162,6 +162,8 @@ public struct CapabilityRules: CapabilityProvider {
     public init(hasTrackedEntry: @escaping @Sendable (ItemKey) -> Bool) { self.hasTrackedEntry = hasTrackedEntry }
 
     public func capability(for key: ItemKey) -> Capability {
+        // gdu.147: Sommelier's own item is orderable and can NEVER be hidden (whatever Control Center says about it).
+        if key.isSommelierStatusItem { return Capability(canMove: true, canHide: false, reason: ItemKey.sommelierStaysVisible) }
         switch key {
         case .module(let name):
             return Capability(canMove: false, canHide: false,

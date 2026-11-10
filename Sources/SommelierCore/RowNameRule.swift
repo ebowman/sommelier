@@ -129,6 +129,7 @@ public enum RowNameRule {
         }
 
         public func name(_ k: ItemKey) -> String {
+            if k.isSommelierStatusItem { return "Sommelier" }   // gdu.147: not the live title ("Observe") nor the agent's "System item"
             if case .module(let m) = k { return RowNameRule.clip(RowNameRule.moduleName(m)) }
             if let m = RowNameRule.appleModuleName(k) { return RowNameRule.clip(m) }
             guard let i = items[k] else {
