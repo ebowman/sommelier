@@ -1,5 +1,12 @@
 # Plan: drive LayoutEngine order moves from DecisionCore (sommelier-ejb.7)
 
+**Status (ejb.7, Wiring 5 done).** The plan below is executed: every order move comes from `DecisionCore.step` (ejb.15), rows and status from the core (ejb.16), and
+the replaced decision code is deleted (section 3). The file:line references are as of d64b567 and are history. `scripts/check-single-decider.sh` (run by `make test` and
+`make verify-core`) fails if a second `actuator.move(` call site or any deleted symbol comes back. Kept, as planned: the scanner, membership planning (`Reconciler.plan`
+is membership only), adoption, the actuator and `LiveActuator`'s refusals as a backstop, the D5 position timeout, and a membership-only fold memory (`LayoutEngine.foldMemory`,
+the `effective` foldedParked union) so a folded item is never shown. Known gaps left for ejb.17 / follow-ups: relaunching an app no longer clears a give-up (the core has no
+such event), and the "Done: X. Next: Y" announcement after a user edit is gone (the core does not report the deferred moves).
+
 ## 1. Adapter: today's Swift to Lean inputs
 
 New pure files in SommelierCore: `CoreKeys` (ItemKey ↔ UInt32, interned, never reused, chevron never interned) and `ReadAdapter` (ObservedOrder + context → `Read`).

@@ -20,16 +20,14 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         // the live drawn D4 / D3 mismatch (one budgeted engine move, which fails and holds the bar); the old engine made no drag in its first pass. The user's
         // drop of P1 still gets its one attempt, and nothing is dragged again by the hold (the safety assertions are unchanged).
         #expect(await moveCalls(r.actuator) == 2)
-        #expect(await r.engine.stripOpenHold != nil)
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
         #expect(r.bar.lines.contains { $0.contains("could not be pinned down inside it") })
-        let plan = r.state.lastPlan
-        // gdu.144: P2/P3 were never asked for: nothing planned, nothing held; the hold itself reports N folded
-        #expect(plan.stripHoldFolded == 3 && plan.stripHoldUnplaceable && !plan.stripHeld.isEmpty)   // the live drawn mismatch is held, not dragged
-        for key in plan.stripHeld {
-            switch r.state.perItem[key] { case .pending?, .moving?, .unsupported?, .failed?: Issue.record("held \(key) reads \(String(describing: r.state.perItem[key]))"); default: break }
+        // sommelier-ejb.7, CHANGED because the core decides: the hold is the core's, so `lastPlan.stripHold*` / `stripHeld` / `moving` are gone. What they
+        // asserted stays asserted through the core's display: the bar differs and nothing is moving, and no row is pending / moving / a warning.
+        #expect(r.state.coreStatus != .moving && r.state.coreStatus != .matches)
+        for key in r.state.perItem.keys {
+            switch r.state.perItem[key] { case .pending?, .moving?, .unsupported?: Issue.record("held \(key) reads \(String(describing: r.state.perItem[key]))"); default: break }
         }
-        #expect(plan.moving.isEmpty)
         #expect(!r.bar.lines.contains { $0.contains("phase=membership") || $0.contains("membership") && $0.contains("phase") })
         // a changed bar releases the hold; one more session only for the user's next drop; Retry alone drags nothing
         await r.actuator.removeItem(k("D4"))
@@ -43,11 +41,6 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         #expect(await moveCalls(r.actuator) == 3)
     }
 
-    @Test func theOpenFailureHoldKeepsItsOwnFlag() async {
-        let r = await holdRig(failCalls: 20)
-        for _ in 0..<3 { _ = await r.engine.reconcileOnce() }
-        #expect(!r.state.lastPlan.stripHoldUnplaceable && r.state.lastPlan.stripHoldFolded == 3)
-    }
 }
 
 // MARK: b. refusal text
@@ -91,17 +84,6 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
 // MARK: c. status line
 
 @Suite struct StripHoldStatusTests {
-    @Test func everyHoldReadsTheSameBarFullText() {
-        let (p1, d1) = (k("P1"), k("D1"))
-        let o = ObservedOrder(onBar: [p1, d1], parked: [], systemOverflow: [p1], overflowChevron: .module(name: MenuBarItem.overflowChevronName))
-        let c = ArrangeSections.make(observed: o, layout: Layout(visible: [d1, p1]), items: [:], perItem: [:], capabilities: { _ in Capability(canMove: true, canHide: true) }, lastPlan: PlanSummary())
-        var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 5; ctx.stripHoldUnplaceable = true
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx)
-                == "The bar is full: macOS folds 5 items behind «. Hide items to make room.")
-        ctx.stripHoldUnplaceable = false
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx)
-                == "The bar is full: macOS folds 5 items behind «. Hide items to make room.")   // gdu.144: one text for every hold
-    }
 }
 
 // MARK: d. ObservedOrder through carried chevrons
@@ -133,11 +115,10 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         #expect(o.foldedParked.isEmpty && !o.chevronRecent && o.overflowChevron == nil)
     }
 
-    @Test func theCarriedChevronNeverPlansAFoldMoveAndTheFingerprintIsStable() {
+    @Test func theCarriedChevronNeverPlansAFoldMove() {
         let o = scan(stale: true, recent: true)
         #expect(o.systemOverflow.isEmpty && o.overflowChevron == nil)
-        let plan = Reconciler().plan(observed: o, layout: Layout(visible: [k("D")]), capabilities: { _ in Capability(canMove: true, canHide: true) }, held: [])
+        let plan = Reconciler().plan(observed: o, layout: Layout(visible: [k("D")]), capabilities: { _ in Capability(canMove: true, canHide: true) })
         #expect(plan.actions.isEmpty)
-        #expect(BarFingerprint(o) == BarFingerprint(scan(stale: false, recent: false)))
     }
 }

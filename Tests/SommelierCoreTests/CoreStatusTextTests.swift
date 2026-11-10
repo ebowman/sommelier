@@ -135,19 +135,18 @@ private func allContexts() -> [CoreStatusContext] {
         #expect(d.display != shown)
     }
 
-    // MARK: rows in Arrange come from the core; the old plan feeds nothing displayed
+    // MARK: rows in Arrange come from the core (sommelier-ejb.7: the old plan is gone)
 
-    @Test func arrangeRowsFollowTheCoreRowsAndIgnoreTheOldPlan() {
+    @Test func arrangeRowsFollowTheCoreRows() {
         let a = key("a"), b = key("b"), c = key("c")
         let layout = Layout.placedAll(visible: [a, b, c])
         let obs = ObservedOrder(onBar: [a, b, c], parked: [])
-        var plan = PlanSummary(); plan.moving = [b]; plan.blocked = [c: a]   // the OLD plan says b moves and c waits: ignored
         let rows = ArrangeSections.make(observed: obs, layout: layout, items: [:], perItem: [a: .inPlace, b: .inPlace, c: .inPlace],
-                                        capabilities: { _ in Capability(canMove: true, canHide: true) }, lastPlan: plan,
+                                        capabilities: { _ in Capability(canMove: true, canHide: true) },
                                         coreRows: [a: .moving, b: .tick, c: .notWherePut], coreNotes: [c: .noMoveHelps]).visible.rows
         func state(_ k: ItemKey) -> ArrangeBarState? { rows.first { $0.key == k }?.barState }
         #expect(state(a) == .moving)          // the core upgrade of an ok-looking Swift row to "not ok" stands
-        #expect(state(b) == .matches)         // the old plan's "moving" does not reach the display
+        #expect(state(b) == .matches)         // (no plan feeds the display any more)
         #expect(state(c) == .notConfirmed)
         #expect(rows.first { $0.key == c }?.stateNote == "No single move of this item would improve the order")
         // no core claim for a key: nothing may be shown as ok

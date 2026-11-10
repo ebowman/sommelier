@@ -28,7 +28,6 @@ private func info(_ key: ItemKey) -> ItemInfo {
         let parked = Set(o.parked)
         let content = ArrangeSections.make(observed: o, layout: layout, items: Dictionary(uniqueKeysWithValues: keys.map { ($0, info($0)) }),
                                            perItem: [:], capabilities: caps,
-                                           lastPlan: PlanSummary(plan: Reconciler().plan(observed: o, layout: layout, capabilities: caps), held: []),
                                            filter: filter)
         return (content, layout, o, parked)
     }

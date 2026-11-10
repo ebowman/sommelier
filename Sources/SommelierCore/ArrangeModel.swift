@@ -93,7 +93,6 @@ public enum ArrangeBarState: Equatable, Sendable {
     public static let notOnBarText = "Not on the menu bar right now: this is where it is going, not where it is."
     public static let behindChevronText = "Behind «: macOS hides it because the bar is full. Drag it right of the fold line to bring it out."
     /// gdu.126: the note of a fold move the engine holds because the « strip would not open.
-    public static let stripHeldText = Reconciler.stripUnavailableSkipReason
     public static let unreadAfterHandDragText = "Moved by you in the menu bar; waiting to read its new position"
     public static let matchesText = "In place (verified against the real menu bar)"
     public static let movingText = "Waiting for the menu bar to change"
@@ -307,25 +306,17 @@ public enum ArrangeSections {
     public static let uncorroboratedText = "Sommelier can't pin down where this item is on the bar"
     public static let pinnedDownTimeoutText = uncorroboratedText + " (it looks in place) — right-click to try again"
     public static let uncorroboratedTimeoutText = uncorroboratedText + " for a minute — right-click to try again"
-    public static let noSafeMoveText = "No safe move found; the bar hasn't settled"
     /// The prefix of the engine's `.unsupported` reason once the position wait has timed out (LayoutEngine.statuses).
     static let positionTimeoutPrefix = "could not corroborate its position on the bar for"
 
     /// Plain words for an engine reason (9o9.5): the technical wording stays in the log.
     public static func plainReason(_ raw: String) -> String {
-        // 9o9.24: the 60 s timeout wraps the original skip reason ("could not corroborate its position ... 60 s: <reason>"). A no-safe-move
-        // skip is a known position on a bar that has not settled, so it is matched BEFORE the generic "corroborate" mapping.
-        if raw == Reconciler.noSafeMoveSkipReason || (raw.hasPrefix(Self.positionTimeoutPrefix) && raw.hasSuffix(Reconciler.noSafeMoveSkipReason)) {
-            return noSafeMoveText
-        }
         if raw.hasPrefix(Self.positionTimeoutPrefix) { return uncorroboratedTimeoutText }
         if raw.contains("corroborate") { return uncorroboratedText }
-        if raw == Reconciler.staleSkipReason || raw == Reconciler.staleFrameSkipReason || raw.contains("not refreshed") || raw.contains("stale") {
+        if raw == Reconciler.staleSkipReason || raw.contains("not refreshed") || raw.contains("stale") {
             return ArrangeBarState.staleText
         }
         if raw == ActuationError.stripMoveDidNotHoldMessage { return ArrangeBarState.putBackText }   // gdu.144 rule 5
-        if raw == Reconciler.noCrossingSkipReason { return "Behind «; the item it should follow can't be located on the bar yet" }
-        if raw == Reconciler.noCrossingOwnPositionSkipReason { return "Behind «; its position hasn't been read yet" }
         if raw == Reconciler.overflowSkipReason || raw == SystemOverflowRule.churnSkipReason || raw.contains("macOS decides what fits") { return "Behind «; macOS decides what fits" }
         return raw
     }
@@ -336,28 +327,24 @@ public enum ArrangeSections {
     public static func make(observed: ObservedOrder, layout: Layout, items: [ItemKey: ItemInfo], perItem: [ItemKey: ItemStatus],
                             capabilities: (ItemKey) -> Capability, showHiddenSection: Bool = false,
                             awaiting: Set<ItemKey> = [], timedOut: Set<ItemKey> = [], suppressedStatus: Set<ItemKey> = [],
-                            pendingConfirmation: Set<ItemKey> = [], unverifiedAfterHandDrag: Set<ItemKey> = [], lastPlan lastPlanArg: PlanSummary = PlanSummary(),
+                            pendingConfirmation: Set<ItemKey> = [], unverifiedAfterHandDrag: Set<ItemKey> = [],
                             coreRows: [ItemKey: Row]? = nil, coreNotes: [ItemKey: RowNote] = [:],
                             observationProblem: String? = nil, filter: String = "", units: HideUnitRule = .ownerKeys,
                             unitAppName: (String) -> String? = { _ in nil }, moveReasons: [ItemKey: String] = [:]) -> ArrangeContent {
-        // ejb.16: with the core's rows the OLD plan feeds nothing displayed (rows come from the Lean row, D9); `lastPlanArg` is honoured only
-        // when no core rows are given (legacy callers/tests, until the old planner is deleted in Wiring 5).
-        let lastPlan = coreRows == nil ? lastPlanArg : PlanSummary()
         // A real bar always has items: an empty observation (or a failed one) means we know nothing about the bar.
         let hasObs = !observed.onBar.isEmpty && observationProblem == nil
         let onBar = Set(observed.onBar)
         let parked = Set(observed.parked)
         let pile = observed.systemOverflow.intersection(onBar).union(observed.foldedParked)   // gdu.121: folded parked keys are overflowed too
 
-        // 9o9.5: Arrange DISPLAYS the engine's last plan (`lastPlan`) and never re-derives what the planner would do. The only thing it
+        // Arrange never re-derives what the engine would do (rows come from the core, D9). The only thing it
         // computes itself is whether a drawn key's immediate observed neighbours are the ones the record has (the check's evidence).
         let drawn = observed.onBar.filter { !pile.contains($0) && !$0.isOverflowChevron && $0 != observed.overflowChevron }
-        let recordDrawn = layout.visible.filter { !$0.isOverflowChevron && drawn.contains($0) && !lastPlan.held.contains($0) }
-        let barRecordKeys = drawn.filter { layout.visible.contains($0) && !lastPlan.held.contains($0) }
+        let recordDrawn = layout.visible.filter { !$0.isOverflowChevron && drawn.contains($0) }
+        let barRecordKeys = drawn.filter { layout.visible.contains($0) }
         /// Whether the key's immediate neighbours on the bar (leaving out the engine's held keys, which it does not move) are the record's.
         // gdu.144 D7: on EVERY bar a drawn row is a check only if ALL drawn trusted keys are in record order among themselves AND its own neighbours
         // are the record's; a hosted pile key (any chevron) is never a check.
-        let chevronBar = observed.hasChevron
         let trusted: (ItemKey) -> Bool = { !observed.uncorroborated.contains($0) && !observed.staleOnBar.contains($0) }
         // (held / given-up keys count: a key the engine gave up on is still a drawn key, and the others are not "in order" around it)
         let drawnAllInOrder = layout.visible.filter { !$0.isOverflowChevron && drawn.contains($0) && trusted($0) } == drawn.filter { layout.visible.contains($0) && trusted($0) }
@@ -409,7 +396,6 @@ public enum ArrangeSections {
             let status = suppressed ? nil : perItem[k]
             let isAwaiting = awaiting.contains(k)
             let engineMoving: Bool = {
-                if !suppressed, lastPlan.moving.contains(k) { return true }
                 switch status { case .pending?, .moving?: return true; default: return false }
             }()
             var state: ArrangeBarState
@@ -419,10 +405,6 @@ public enum ArrangeSections {
             var waitName: String?
             if timedOut.contains(k) {
                 state = .cannotPlace(ArrangeTracker.timeoutText)
-            } else if !suppressed, lastPlan.stripHeld.contains(k), pile.contains(k) {
-                // gdu.126: the engine could not open the « strip on this bar state and holds the fold move: « with the reason, never "moving".
-                state = .behindChevron
-                note = ArrangeBarState.behindChevronText + "\n" + ArrangeBarState.stripHeldText
             } else if observed.foldedParked.contains(k), !(status.map { if case .failed = $0 { true } else { false } } ?? false) {
                 // gdu.121: parked, allowed, running while « is fresh: folded for width. Never moving / waiting / not on the bar.
                 state = .behindChevron
@@ -442,7 +424,7 @@ public enum ArrangeSections {
                 } else if observed.uncorroborated.contains(k) {
                     note = ArrangeBarState.behindChevronText + "\n" + uncorroboratedText
                 }
-            } else if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix), !reason.hasSuffix(Reconciler.noSafeMoveSkipReason),
+            } else if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix),
                       onBar.contains(k), !pile.contains(k), neighboursAgree(k) {
                 // 9o9.29: the scan never corroborated this key's frame, but its observed neighbours are the record's: not a warning.
                 state = .staleFrame
@@ -452,24 +434,6 @@ public enum ArrangeSections {
                 state = .cannotPlace(plainReason(reason))
             } else if case .cannotPlace(let reason, _)? = status {
                 state = .cannotPlace(plainReason(reason))
-            } else if !suppressed, let wall = lastPlan.blocked[k] {
-                // 9o9.5: a wall the engine gave up on (or failed / cannot support) never settles by itself: say so. A wall that is only
-                // unverified after a hand drag (or merely untrusted) does settle: wait for it.
-                var wallGivenUp = false
-                if lastPlan.held.contains(wall) {
-                    switch perItem[wall] { case .cannotPlace?, .failed?, .unsupported?: wallGivenUp = true; default: break }
-                }
-                if wallGivenUp {
-                    state = .cannotPlace(blockedByGivenUpText(title(wall)))
-                } else {
-                    state = .moving
-                    waitName = title(wall)
-                    why = "Waiting for \(waitName!) to settle"
-                }
-            } else if !suppressed, lastPlan.blockedNoWall.contains(k) {
-                state = .moving
-                waitName = "the bar"
-                why = "Waiting for the bar to settle"
             } else if ghost {
                 state = engineMoving ? .moving : .notOnBar
             } else if unverifiedAfterHandDrag.contains(k) {
@@ -485,7 +449,7 @@ public enum ArrangeSections {
                 note = uncorroboratedNote(k)
             } else if engineMoving {
                 state = .moving
-            } else if onBar.contains(k), neighboursAgree(k), !lastPlan.checkingBar {   // gdu.144: no check while the bar is assumed full on a chevronless read
+            } else if onBar.contains(k), neighboursAgree(k) {
                 state = .matches
             } else {
                 state = .notConfirmed
@@ -494,7 +458,7 @@ public enum ArrangeSections {
             if let coreRows {   // D9: the Lean row first; Swift refines only within the same ok-class; a D5 timeout may only downgrade
                 let core = coreRows[k]
                 var positionTimedOut = false   // the position timeout (9o9.29) is a Swift timeout too: it may only downgrade
-                if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix), !reason.hasSuffix(Reconciler.noSafeMoveSkipReason) { positionTimedOut = true }
+                if case .unsupported(let reason)? = status, reason.hasPrefix(Self.positionTimeoutPrefix) { positionTimedOut = true }
                 let reconciled = CoreRowRule.reconcile(core: core, swift: state, timedOut: timedOut.contains(k) || positionTimedOut)
                 if reconciled != state {
                     state = reconciled; note = nil; why = nil; waitName = nil; pinTimedOut = false
@@ -605,137 +569,16 @@ public enum ArrangeSections {
         revealSkipNotice(perItem: state.perItem, showHiddenSection: state.showHiddenSection, showAlwaysHidden: state.showAlwaysHidden)
     }
 
-    /// What the status line needs besides the engine's per-item statuses (9o9.5).
-    public struct StatusContext: Equatable, Sendable {
-        public var userPaused = false
-        public var pauseReason: String?
-        /// The per-minute order-move cap is active right now.
-        public var orderCapActive = false
-        /// The upgrade adoption of the bar order has not completed.
-        public var adoptionPending = false
-        /// The transient "Adopted your menu bar drag" notice.
-        public var handDragNotice: String?
-        /// 9o9.25: the transient "Moved X to Hidden: it is hidden in System Settings" notice.
-        public var systemSettingsNotice: String?
-        /// Display name of the item the engine is moving right now, when known.
-        public var movingName: String?
-        /// gdu.126: the bar-level strip hold is active: how many items are folded behind « (nil = no hold).
-        public var stripHoldFolded: Int?
-        /// gdu.129: the hold is for a strip that opened but could not place an item.
-        public var stripHoldUnplaceable = false
-        /// gdu.134: the hold is for a move across the fold that did not hold.
-        public var stripHoldDidNotHold = false
-        /// gdu.136: titles of the keys the user's edit moved (done) and of the order moves now deferred to the next pass (next, in plan order).
-        public var userEditDone: [String] = []
-        public var userEditNext: [String] = []
-        /// gdu.144 D8: the engine withheld moves while the bar differs from the record (`PlanSummary.stoppedWhileDiffering`).
-        public var stoppedWhileDiffering = false
-        /// gdu.144: the bar is assumed full and the read has no chevron (`PlanSummary.checkingBar`): "Checking the menu bar…".
-        public var checkingBar = false
-        public init(userPaused: Bool = false, pauseReason: String? = nil, orderCapActive: Bool = false, adoptionPending: Bool = false,
-                    handDragNotice: String? = nil, movingName: String? = nil, systemSettingsNotice: String? = nil) {
-            self.userPaused = userPaused; self.pauseReason = pauseReason; self.orderCapActive = orderCapActive
-            self.adoptionPending = adoptionPending; self.handDragNotice = handDragNotice; self.movingName = movingName; self.systemSettingsNotice = systemSettingsNotice
-        }
-    }
-
     /// gdu.144 rule 5: the status line while the bar-level hold is active (one text; it replaces the three "too narrow" variants).
     public static func barFullText(_ n: Int) -> String {
         if n <= 0 { return "The bar may be full: macOS did not accept the move. Press Re-apply layout to try again, or hide items to make room." }
         return "The bar is full: macOS folds \(n) item\(n == 1 ? "" : "s") behind «. Hide items to make room."
     }
-    /// gdu.144 D8: ONE text for the Arrange status line and the menu: moves are withheld while the bar differs; the hold text (if a hold is active) follows.
-    public static func stoppedText(holdFolded: Int?) -> String {
-        ArrangeBarState.stoppedWhileDifferingText + (holdFolded.map { " · " + barFullText($0) } ?? "")
-    }
-    /// gdu.136: one surprise at a time: what the user's edit did, and the first move that follows on the next pass.
-    public static func userEditDeferredText(done: [String], next: [String]) -> String {
-        let more = next.count - 1
-        return "Done: \(done.joined(separator: ", ")). Next: \(next[0])" + (more > 0 ? " (\(more) more to match your order)" : "")
-    }
-    public static func blockedByGivenUpText(_ wall: String) -> String { "Blocked by \(wall), which Sommelier can't place — right-click it to try again" }
     public static let checkingMenuBar = "Checking the menu bar…"
     public static let menuBarMatches = "Menu bar matches"
     public static let readingOrder = "Reading your menu bar order…"
-    public static let orderCapText = "Pausing order moves for a minute"
-    public static func cannotPlaceText(_ n: Int) -> String { "\(n) item\(n == 1 ? "" : "s") can't be placed — right-click one for why" }
     /// 9o9.29: drawn keys whose position the scan could not corroborate for a minute but whose neighbours agree with the record.
     public static func cannotPinDownText(_ n: Int) -> String { "\(n) item\(n == 1 ? "" : "s") can't be pinned down — right-click one to try again" }
-    public static func waitingToSettleText(_ name: String) -> String { "Waiting for \(name) to settle" }
-    public static func waitingToReadText(_ n: Int) -> String { "Waiting to read \(n) item\(n == 1 ? "" : "s")" }
-
-    /// Bottom line (9o9.5). Precedence, in order of honesty: errors first, then paused > adoption pending > cannotPlace > moving > waiting >
-    /// adopted notice > "Menu bar matches". "Menu bar matches" needs a converged, settled engine, no error, and every Visible row
-    /// matches / behind « / not on the bar; it is never printed on a guess. `content` nil = no per-row claims (only counts and the base text).
-    public static func statusLine(perItem: [ItemKey: ItemStatus], lastError: EngineError?, isConverged: Bool, inFlight: Bool,
-                                  pendingAwaiting: Int = 0, observationSettled: Bool = true,
-                                  notice: String? = nil, pollPausedNames: [String]? = nil,
-                                  content: ArrangeContent? = nil, context: StatusContext = StatusContext()) -> String {
-        let visibleKeys = Set(content?.visible.rows.map(\.key) ?? []).union(content?.visible.notRunning.map(\.key) ?? [])
-        let vStates = (content?.visible.rows ?? []).compactMap(\.barState)
-        let others = perItem.filter { !visibleKeys.contains($0.key) }
-        let failedOther = others.values.filter { if case .failed = $0 { return true }; return false }.count
-        let waitingOther = others.values.filter { if case .waitingForPosition = $0 { return true }; return false }.count
-        let pendingAll = perItem.values.filter { if case .pending = $0 { return true }; if case .moving = $0 { return true }; return false }.count
-        let base = StatusLine.text(lastError: lastError, isConverged: isConverged, inFlight: inFlight, trusted: true, conflicting: nil,
-                                  observationSettled: observationSettled)
-        let cannotPlace = vStates.filter { if case .cannotPlace = $0 { return true }; return false }.count
-        let pinnedDown = (content?.visible.rows ?? []).filter(\.pinDownTimedOut).count
-        let waiting = vStates.filter { $0 == .staleFrame || $0 == .unreadAfterHandDrag }.count + waitingOther - pinnedDown
-        // The rows the ENGINE is moving: its last plan's subjects and the pending / in-flight ones. A row waiting for an untrusted key
-        // ("Waiting for X to settle") is not being moved.
-        let rows = content?.visible.rows ?? []
-        let movingCandidates = rows.filter { $0.barState == .moving && $0.waitingOn == nil }
-        let blockedRows = rows.filter { $0.barState == .moving && $0.waitingOn != nil }
-        let movingCount = max(pendingAll, movingCandidates.count)
-        let moving = movingCount > 0 || pendingAwaiting > 0 || inFlight
-
-        var primary: String?
-        if context.userPaused { primary = "Paused" }
-        else if let why = context.pauseReason { primary = "Paused: \(why)" }
-        else if context.orderCapActive { primary = orderCapText }
-        else if context.adoptionPending { primary = readingOrder }
-        // gdu.134 rule 5: an active bar-level hold LEADS (it explains the rest); gdu.133 item 1: the pinned-down count follows it.
-        // gdu.144 D8: when moves are withheld while the bar differs, the honest "stopped" text leads (the hold text may follow it after " · ")
-        else if context.stoppedWhileDiffering, !inFlight { primary = stoppedText(holdFolded: context.stripHoldFolded)
-            if pinnedDown > 0 { primary! += " · \(pinnedDown) item\(pinnedDown == 1 ? "" : "s") can't be pinned down" }
-        }
-        else if let n = context.stripHoldFolded {
-            primary = barFullText(n)
-            if pinnedDown > 0 { primary! += " · \(pinnedDown) item\(pinnedDown == 1 ? "" : "s") can't be pinned down" }
-        }
-        else if context.stoppedWhileDiffering, !inFlight { primary = ArrangeBarState.stoppedWhileDifferingText }
-        else if !context.userEditNext.isEmpty, !context.userEditDone.isEmpty, !inFlight {
-            primary = userEditDeferredText(done: context.userEditDone, next: context.userEditNext)
-        }
-        else if cannotPlace > 0 { primary = cannotPlaceText(cannotPlace) }
-        else if pinnedDown > 0 { primary = cannotPinDownText(pinnedDown) }
-        else if moving {
-            if let name = context.movingName { primary = "Moving \(name)…" }
-            else if movingCandidates.count == movingCount, (1...2).contains(movingCount) { primary = "Moving \(movingCandidates.map(\.title).joined(separator: ", "))…" }
-            else { primary = movingCount > 1 ? "Moving \(movingCount) items…" : "Moving…" }
-        }
-        else if waiting > 0 { primary = waitingToReadText(waiting) }
-        else if let w = blockedRows.first?.waitingOn { primary = waitingToSettleText(w) }
-        else if let n = context.handDragNotice { primary = n }
-        else if let n = context.systemSettingsNotice { primary = n }
-        else if context.checkingBar { primary = checkingMenuBar }
-        else if lastError == nil, base == "Converged", content?.observedAvailable == true,
-                vStates.allSatisfy({ $0 == .matches || $0 == .behindChevron || $0 == .notOnBar }) {
-            primary = menuBarMatches
-        }
-
-        var parts: [String] = []
-        if lastError != nil { parts.append(base) }
-        if let primary { parts.append(primary) }
-        if failedOther > 0 { parts.append("\(failedOther) failed") }
-        if parts.isEmpty {   // never the bare engine word: a notice or pause text alone says enough
-            if base != "Converged" { parts.append(base) } else if notice == nil, pollPausedNames == nil { parts.append(checkingMenuBar) }
-        }
-        if let notice { parts.insert(notice, at: 0) }
-        if let n = pollPausedNames { parts.append(pollPausedText(n)) }
-        return parts.joined(separator: " · ")
-    }
 }
 
 // MARK: - Drops, steps and toolbar actions

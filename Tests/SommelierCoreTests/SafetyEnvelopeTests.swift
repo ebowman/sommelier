@@ -84,8 +84,6 @@ private func thrashA(_ r: R, passes: Int = 3) async {
 
     @Test func defaults() {
         let c = LayoutEngine.Config.plain()
-        #expect(c.maxAttemptsPerItem == 3 && c.attemptWindow == .seconds(600))
-        #expect(c.maxOrderMovesPerMinute == 6 && c.orderCapWindow == .seconds(60))
         #expect(c.busyWait == .seconds(3))
     }
 
@@ -130,25 +128,38 @@ private func thrashA(_ r: R, passes: Int = 3) async {
         if case .cannotPlace? = r.state.perItem[k("A")] { Issue.record("the core has no per-key give-up for verified moves") }
     }
 
-    @Test func aFailedActuatorCallCountsAsAnAttempt() async {
-        let r = await rig(order: names, layout: layoutABCDE(), configure: { $0.maxAttemptsPerItem = 1 })
-        await r.actuator.failOnCall(1, .mechanismFailed("boom"))
+    // sommelier-ejb.7, replaces `aFailedActuatorCallCountsAsAnAttempt` (the attempt counter and its "giving up" log are deleted): the safety property (a key whose
+    // drag keeps FAILING is not dragged forever) is asserted through the core's strikes: three failed posted drags on a bar known not full, then no more.
+    @Test func aKeyWhoseDragKeepsFailingIsDraggedAtMostThreeTimes() async {
+        // two misplaced keys (A and B put at the end), every drag fails: the core's strikes stop EACH key at exactly three posted drags (plain config: a bar known not full)
+        let r = await rig(order: names, layout: layoutABCDE())
+        for n in 1...60 { await r.actuator.failOnCall(n, .mechanismFailed("boom")) }
         await r.actuator.displace(k("A"), toIndex: 4)
-        _ = await r.engine.reconcileOnce()
-        // the per-pass strike shows the failure itself as the row status; the give-up is logged with the cause either way
-        #expect(r.sink.lines.contains { $0.hasPrefix("engine: giving up on ") && $0.contains("after 1 attempts: ") && $0.contains("boom") })
+        await r.actuator.displace(k("B"), toIndex: 4)
+        for _ in 0..<30 { _ = await r.engine.reconcileOnce() }
+        let per = await dragsPerKey(r)
+        // Observed core behaviour (deterministic across repeated runs): the core works ONE misplaced key at a time (A, the first) and its three failed posted drags put the
+        // bar on hold, so B (also misplaced) is never dragged. Pinned exactly: the key set is {A}, with exactly 3 drags.
+        #expect(per == [k("A"): 3], "only A, dragged exactly 3 times; got \(per)")
+        #expect(per.values.reduce(0, +) <= 20, "total within the not-full budget; got \(per)")
     }
 
-    @Test func movesOutsideTheWindowDoNotAccumulate() async {
-        let r = await rig(order: names, layout: layoutABCDE())
-        for spot in [4, 3, 2, 4] {
-            await r.actuator.displace(k("A"), toIndex: spot)
-            _ = await r.engine.reconcileOnce()
-            _ = await r.engine.reconcileOnce(); _ = await r.engine.reconcileOnce()
-            r.clock.advance(400)    // each attempt is 400 s after the last: at most 2 fall inside 600 s
-        }
-        #expect(await r.actuator.calls.count == 4)
-        #expect(!r.sink.lines.contains { $0.contains("giving up on") })
+    @Test func aKeyWhoseDragKeepsFailingIsDraggedAtMostThreeTimesAssumingAFullBar() async {
+        // the same two failing keys on a bar assumed full: still at most three per key, and the whole run within the (smaller) full-bar budget of 3
+        let r = await rig(order: names, layout: layoutABCDE(), configure: { $0.assumeFullBarAtLaunch = true })
+        for n in 1...60 { await r.actuator.failOnCall(n, .mechanismFailed("boom")) }
+        await r.actuator.displace(k("A"), toIndex: 4)
+        await r.actuator.displace(k("B"), toIndex: 4)
+        for _ in 0..<30 { _ = await r.engine.reconcileOnce() }
+        let per = await dragsPerKey(r)
+        #expect(!per.isEmpty && Set(per.keys).isSubset(of: [k("A"), k("B")]) && per.values.allSatisfy { $0 <= 3 }, "at least one drag, only A/B, per key at most 3; got \(per)")
+        #expect(per.values.reduce(0, +) <= 3, "total within the full-bar budget; got \(per)")
+    }
+
+    private func dragsPerKey(_ r: R) async -> [ItemKey: Int] {
+        var out: [ItemKey: Int] = [:]
+        for c in await r.actuator.calls { if case .move(let key, _) = c { out[key, default: 0] += 1 } }
+        return out
     }
 
     @Test func retryKeyClearsTheGiveUpAndPlansAgain() async {
@@ -180,18 +191,8 @@ private func thrashA(_ r: R, passes: Int = 3) async {
         #expect(await r.actuator.order.last == k("A"))
     }
 
-    @Test func theOwningAppRelaunchingClearsTheGiveUp() async {
-        let r = await rig(order: names, layout: layoutABCDE())
-        await thrashA(r)
-        await r.actuator.displace(k("A"), toIndex: 4)
-        // (ejb.15, CHANGED because the core decides: no per-key give-up, so no "A stays last" step here)
-        await r.engine.appsChanged(bundleIDs: ["com.x.A"], pids: [])
-        _ = await r.engine.reconcileOnce()
-        #expect(await r.actuator.order.first == k("A"))
-    }
-
     @Test func aRetryDragsOnItsFirstPlanAfterClearFailures() async {
-        let r = await rig(order: names, layout: layoutABCDE(), configure: { $0.maxAttemptsPerItem = 99; $0.maxOrderMovesPerMinute = 99 })
+        let r = await rig(order: names, layout: layoutABCDE())
         await r.actuator.displace(k("A"), toIndex: 4)
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 1)
@@ -244,14 +245,13 @@ private func thrashA(_ r: R, passes: Int = 3) async {
     // MARK: per-minute cap
 
     @Test func theCapSkipsOnlyTheOrderPhase() async {
-        // ejb.15 (Wiring 3), CHANGED because the core decides: the per-minute cap (`maxOrderMovesPerMinute`, `orderCapUntil`) no longer gates an order move; the
+        // ejb.15 (Wiring 3), CHANGED because the core decides: the per-minute cap (`maxOrderMovesPerMinute`, `orderCapUntil`; both deleted in ejb.7) no longer gates an order move; the
         // core's budget (3 on a full bar, 20 on one known not full) does (see `aKeyMacOSKeepsDisplacingIsDraggedAtMostTheCoreBudgetTimes`). Kept: membership
         // runs while no order move is made, and an order move is made only from a core Action.
-        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k)), configure: { $0.maxOrderMovesPerMinute = 2; $0.maxAttemptsPerItem = 99 })
+        let r = await rig(order: names, layout: Layout(visible: names.reversed().map(k)))
         let a = await r.engine.reconcileOnce()
         #expect(a.outcome == .converged)
         #expect(await r.actuator.calls.count == 4)          // the core sorts the reversed bar of 5 in 4 moves, however many the old cap allowed
-        #expect(r.state.orderCapUntil == nil)
         var l = r.state.layout
         l.visible.removeAll { $0 == k("E") }
         l.hidden = [k("E")]

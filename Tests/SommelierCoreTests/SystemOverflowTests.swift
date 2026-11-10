@@ -140,34 +140,13 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
 
 // MARK: planner
 
-@Test func plannerNeverMovesAnOverflowedItemOrTargetsItOrLandsLeftOfTheChevron() {
-    // Overflow o1 o2 | chevron | drawn a b c. The layout keeps the overflow first and wants c first of the drawn items.
-    let o = obs(["o1", "o2", "ch", "a", "b", "c"], ovf: ["o1", "o2"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["o1", "o2", "c", "a", "b"]), capabilities: anchorCh)
-    #expect(p.actions == [.move(k("c"), .before(k("a")))])               // never .leftmost, never relative to ch/o1/o2
-    #expect(p.skipped.isEmpty)
-    #expect(Reconciler.overflowViolations(p.actions, forbidden: [k("o1"), k("o2"), k("ch")], boundary: true).isEmpty)
-    // a rightmost-style rearrangement stays clear of the boundary too
-    let q = Reconciler().plan(observed: o, layout: lay(v: ["o1", "o2", "c", "b", "a"]), capabilities: anchorCh)
-    #expect(Reconciler.overflowViolations(q.actions, forbidden: [k("o1"), k("o2"), k("ch")], boundary: true).isEmpty)
-    #expect(!q.actions.isEmpty)
-}
-
-@Test func theBoundaryPostConditionCatchesBadActions() {
-    let bad: [PlannedAction] = [.move(k("a"), .before(k("ch"))), .move(k("o1"), .rightmost), .move(k("a"), .leftmost), .move(k("a"), .after(k("b")))]
-    let v = Reconciler.overflowViolations(bad, forbidden: [k("o1"), k("ch")], boundary: true)
-    #expect(v == Array(bad.prefix(3)))
-}
-
 @Test func planWithTheTailInSystemOverflowIsConvergedAndSilent() {
     let o = obs(["o1", "o2", "ch", "a", "b"], ovf: ["o1", "o2"])
     let p = Reconciler().plan(observed: o, layout: lay(v: ["o1", "o2", "ch", "a", "b"]), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
-    #expect(p.desiredOnBar == ["o1", "o2", "ch", "a", "b"].map(k))
-    // 9o9.11: the order among overflowed items carries no information (stacked frames): swapping them is never planned, only reported
+    // 9o9.11: the order among overflowed items carries no information (stacked frames): swapping them is never planned
     let q = Reconciler().plan(observed: o, layout: lay(v: ["o2", "o1", "ch", "a", "b"]), capabilities: anchorCh)
     #expect(q.phase == .converged && q.actions.isEmpty)
-    #expect(q.skipped.count == 1 && q.skipped.allSatisfy { $0.reason == Reconciler.overflowSkipReason })
 }
 
 @Test func aWantedButParkedKeyFirstInTheLayoutCausesNoSpuriousSkips() {
@@ -175,14 +154,6 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     let p = Reconciler().plan(observed: o, layout: lay(v: ["p", "o1", "o2", "ch", "a", "b"]), capabilities: anchorCh)
     #expect(p.skipped.isEmpty)
     #expect(p.actions == [.show(k("p"))])
-}
-
-@Test func aDrawnKeyPlacedLeftOfTheOverflowRunIsOrderedAmongDrawnKeysOnly() {
-    let o = obs(["o1", "ch", "a", "b", "c"], ovf: ["o1"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["c", "o1", "ch", "a", "b"]), capabilities: anchorCh)
-    #expect(p.skipped.map(\.key) == [k("o1")] && p.skipped.first?.reason == Reconciler.overflowSkipReason)   // gdu.69: o1 is wanted after c
-    #expect(p.actions == [.move(k("c"), .before(k("a")))])              // never a slot left of the first drawn item
-    #expect(Reconciler.overflowViolations(p.actions, forbidden: [k("o1"), k("ch")], boundary: true).isEmpty)
 }
 
 @Test func anOverflowedItemMayStillBeHidden() {
@@ -227,20 +198,9 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     #expect(!warnings.isEmpty && l.visible.last == kk("o"))              // normalization ran
     let o = ObservedOrder(onBar: [kk("o"), k("ch"), kk("a"), .status(ownerKey: "com.x.z", autosaveName: "z"), kk("b")], parked: [],
                           systemOverflow: [kk("o")], overflowChevron: k("ch"))
-    // gdu.144: the pull-out happens only when the user dropped o (foldDropRequest); without it nothing is planned
-    #expect(Reconciler().plan(observed: o, layout: l, capabilities: anchorCh).actions.isEmpty)
-    let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh, foldDropRequest: [kk("o")])
-    // 9o9.11: the record places o after b, a drawn key: a pull-out across the fold (the order among drawn keys is already right)
-    #expect(p.skipped.isEmpty && p.actions == [.move(kk("o"), .after(kk("b")))] && p.phase == .order)
-}
-
-@Test func churnInWhichItemsOverflowPlansTheRecordedPullOutWithNoSkips() {
-    // At init O was overflowed and 28 drawn; later O is drawn and 28 overflowed.
-    let o = obs(["28", "ch", "O", "M", "N"], ovf: ["28"])
-    #expect(Reconciler().plan(observed: o, layout: lay(v: ["O", "28", "ch", "M", "N"]), capabilities: anchorCh).actions.isEmpty)   // gdu.144: not unless the user dropped 28
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["O", "28", "ch", "M", "N"]), capabilities: anchorCh, foldDropRequest: [k("28")])
-    // 9o9.11: the record puts O before 28, so 28 must be pulled out after O (one cross-fold move), not skipped
-    #expect(p.phase == .order && p.skipped.isEmpty && p.actions == [.move(k("28"), .after(k("O")))])
+    // membership only (sommelier-ejb.7): the Reconciler plans no move; a pull-out is the core's, and only when the user dropped o
+    let p = Reconciler().plan(observed: o, layout: l, capabilities: anchorCh)
+    #expect(p.actions.isEmpty && p.skipped.isEmpty && p.phase == .converged)
 }
 
 @Test func aRealBarShapedFixtureWithTheLayoutEqualToTheObservedOrderIsConverged() {
@@ -248,18 +208,6 @@ private func fullBarSource(chevronDescription: String = "Ausgeblendete Menüleis
     let o = obs(ovf + ["ch"] + drawn, ovf: ovf)
     let p = Reconciler().plan(observed: o, layout: lay(v: ovf + ["ch"] + drawn), capabilities: anchorCh)
     #expect(p.phase == .converged && p.actions.isEmpty && p.skipped.isEmpty)
-}
-
-@Test func swappingTwoDrawnKeysWithTheOverflowPresentIsExactlyOneDrawnMove() {
-    let ovf = ["o1", "o2", "o3"], drawn = ["a", "b", "c", "d"]
-    let o = obs(ovf + ["ch"] + drawn, ovf: ovf)
-    let p = Reconciler().plan(observed: o, layout: lay(v: ovf + ["ch", "a", "c", "b", "d"]), capabilities: anchorCh)
-    #expect(p.skipped.isEmpty)
-    #expect(p.actions.count == 1)
-    if case .move(let s, let rel)? = p.actions.first {
-        #expect([k("b"), k("c")].contains(s))
-        switch rel { case .before(let t), .after(let t): #expect(drawn.map(k).contains(t)); default: Issue.record("unexpected \(rel)") }
-    } else { Issue.record("expected a move") }
 }
 
 
@@ -312,12 +260,4 @@ private func fr(_ x: CGFloat, _ w: CGFloat) -> CGRect { CGRect(x: x, y: 3, width
     let snap = MenuBarScanner(source: s).scan()
     #expect(snap.items.filter(\.isOverflowChevron).count == 1)
     #expect(snap.items.first { $0.axIdentifier == "A" }?.systemOverflow == true)
-}
-
-@Test func plannerPullsOutOneOverflowedItemTheLayoutMovesAndSkipsTheOtherWithTheFoldWording() {
-    let o = obs(["o1", "o2", "ch", "a", "b"], ovf: ["o1", "o2"])
-    let p = Reconciler().plan(observed: o, layout: lay(v: ["a", "o1", "b", "o2"]), capabilities: anchorCh, foldDropRequest: [k("o1")])   // gdu.144: the user dropped o1
-    // 9o9.11: o1 is pulled out after a (one move per pass); o2 waits its turn behind the chevron with the new wording
-    #expect(p.actions == [.move(k("o1"), .after(k("a")))] && p.phase == .order)
-    #expect(p.skipped.map(\.key) == [k("o2")] && p.skipped.allSatisfy { $0.reason == "behind the « chevron; its order there is set when the strip is next opened" })
 }

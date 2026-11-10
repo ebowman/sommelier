@@ -180,14 +180,14 @@ private func guardRig(layout: Layout, flagFalse: Set<String> = ["com.x.A"], line
     @Test func systemSettingsNoticeTextAndStatusLine() {
         #expect(SystemSettingsNotice.text(["Foo"]) == "Moved Foo to Hidden: it is hidden in System Settings")
         #expect(SystemSettingsNotice.text(["Foo", "Bar"]) == "Moved Foo, Bar to Hidden: they are hidden in System Settings")
-        var ctx = ArrangeSections.StatusContext()
+        var ctx = CoreStatusContext()   // sommelier-ejb.7: the line is `CoreStatusText` (notices lead, and "matches" is never said under them)
         ctx.systemSettingsNotice = SystemSettingsNotice.text(["Foo"])
-        let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx)
-        #expect(line.contains("Moved Foo to Hidden: it is hidden in System Settings"))
+        let line = CoreStatusText.render(.matches, ctx)
+        #expect(line.contains("Moved Foo to Hidden: it is hidden in System Settings") && !line.contains(CoreStatusText.matches))
         ctx.systemSettingsNotice = nil
-        #expect(!ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx).contains("Moved Foo"))
+        #expect(!CoreStatusText.render(.matches, ctx).contains("Moved Foo"))
         ctx.handDragNotice = "Adopted your menu bar drag"; ctx.systemSettingsNotice = "SS"
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx).contains("Adopted your menu bar drag"))
+        #expect(CoreStatusText.render(.matches, ctx).contains("Adopted your menu bar drag"))
     }
 
     @Test func theNoticeClearsAfterItsLifetime() async {

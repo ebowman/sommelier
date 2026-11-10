@@ -118,11 +118,11 @@ fileprivate final class RvWorld: ActuatorPlatform, MenuBarObserver, @unchecked S
 private struct RvCapsX: CapabilityProvider { func capability(for key: ItemKey) -> Capability { Capability(canMove: true, canHide: true) } }
 private final class RvClock: @unchecked Sendable { private let l = NSLock(); private var t = Date(timeIntervalSince1970: 5000); func read() -> Date { l.lock(); defer { l.unlock() }; return t }; func adv(_ s: TimeInterval) { l.lock(); t = t.addingTimeInterval(s); l.unlock() } }
 
-@MainActor fileprivate func rvRig(_ w: RvWorld, record: [String], assumeFull: Bool = true, logs: RvLogs? = nil, skipGate: Bool = false, followUp: Duration = .seconds(3)) async -> (LayoutEngine, EngineState, RvClock) {
+@MainActor fileprivate func rvRig(_ w: RvWorld, record: [String], assumeFull: Bool = true, logs: RvLogs? = nil, followUp: Duration = .seconds(3)) async -> (LayoutEngine, EngineState, RvClock) {
     var lc = LiveActuator.Config(); lc.allowFallback = false   // production (EngineFactory.makeLive)
     let a = LiveActuator(platform: w, config: lc)
     let st = EngineState(); let clock = RvClock()
-    var c = LayoutEngine.Config(); c.now = { clock.read() }; c.layoutCoalesce = .zero; c.userEditFollowUp = followUp; c.assumeFullBarAtLaunch = assumeFull; c.skipPlanningGateForTests = skipGate
+    var c = LayoutEngine.Config(); c.now = { clock.read() }; c.layoutCoalesce = .zero; c.userEditFollowUp = followUp; c.assumeFullBarAtLaunch = assumeFull
     let e = LayoutEngine(observer: w, actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: record.map(k))), capabilities: RvCapsX(), state: st,
                          resolveSnapshot: { w.res($0) }, sleep: { _ in }, log: { logs?.add($0) }, config: c)
     await e.start(); return (e, st, clock)
@@ -131,7 +131,13 @@ fileprivate final class RvLogs: @unchecked Sendable { private let l = NSLock(); 
 private func rvInfo(_ key: ItemKey) -> ItemInfo { ItemInfo(key: key, title: "\(key)", axDescription: "", ownerPID: 1, ownerBundleID: nil, ownerName: "x", width: 24, isOnBar: true) }
 @MainActor fileprivate func rvRowsOf(_ st: EngineState) -> ArrangeContent {
     ArrangeSections.make(observed: st.observed, layout: st.layout, items: Dictionary(uniqueKeysWithValues: (st.observed.onBar + st.observed.parked).map { ($0, rvInfo($0)) }),
-                         perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) }, lastPlan: st.lastPlan)
+                         perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) })   // Swift's own rows (no core rows): the stricter legacy invariant
+}
+/// The rows the window really shows: the core's rows lead (as ArrangeViewModel passes them). sommelier-ejb.7: the legacy rows had `lastPlan.checkingBar` to suppress checks.
+@MainActor fileprivate func rvCoreRowsOf(_ st: EngineState) -> ArrangeContent {
+    ArrangeSections.make(observed: st.observed, layout: st.layout, items: Dictionary(uniqueKeysWithValues: (st.observed.onBar + st.observed.parked).map { ($0, rvInfo($0)) }),
+                         perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) },
+                         coreRows: st.coreDisplay == nil ? nil : st.coreRows, coreNotes: st.coreNotes)
 }
 private let rvP = ["P1", "P2", "P3"], rvD: [String] = ["D1", "D2", "D3", "D4", "D5", "D6"]
 
@@ -160,7 +166,6 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         // the proof (three complete chevronless reads) says what it is; the old engine dragged once on the assumed-full bar, failed, and held. No drag means no
         // hold either (the old assertion `stripOpenHold != nil` is gone with it). The safety bound below (<= 3 physical drags, no chevron click) is unchanged.
         #expect(w.drags.count == 0)
-        #expect(await e.stripOpenHold == nil)
         w.sync { w.mode = .fresh }
         for _ in 0..<30 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags.count <= 3 && w.clicks == 0, "physical=\(w.drags.count) clicks=\(w.clicks)")
@@ -220,8 +225,10 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         for _ in 0..<80 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags.count == 20 && w.clicks == 0)
         #expect(!st.isConverged && rvMenu(st) == ArrangeBarState.stoppedWhileDifferingText && rvArrangeLine(st) == ArrangeBarState.stoppedWhileDifferingText)
-        #expect(rvFalseChecks(rvRowsOf(st).visible.rows, record: rec, bar: w.drawn).isEmpty)
-        #expect(rvRowsOf(st).visible.rows.filter { $0.barState == .matches }.isEmpty)   // and with the drawn order wrong, NO row is a check at all
+        #expect(rvFalseChecks(rvRowsOf(st).visible.rows, record: rec, bar: w.drawn).isEmpty)   // Swift's own fallback rows (the stricter legacy invariant)
+        #expect(rvFalseChecks(rvCoreRowsOf(st).visible.rows, record: rec, bar: w.drawn).isEmpty)   // the rows the window really shows (the core's lead)
+        // sommelier-ejb.7, CHANGED: the window's rows come from the core (only rvCoreRowsOf passes them, as ArrangeViewModel does; rvRowsOf is Swift's fallback rows), and the
+        // core ticks a key that is in record order; the property is no FALSE check in either, not 'no tick at all' as under the old plan-led fallback rows.
     }
     // the cap of 20 spent on the reviewer's exact bar: D40 ... D22 D1 ... D21
     @Test func theTwentySpentBarHasNoFalseChecks() async {
@@ -242,7 +249,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for _ in 0..<8 { w.drawn = bar; _ = await e.reconcileOnce(); c.adv(120) }
         #expect(rvFalseChecks(rvRowsOf(st).visible.rows, record: rvP + rvD, bar: bar).isEmpty)
-        #expect(rvRowsOf(st).visible.rows.filter { $0.barState == .matches }.isEmpty)
+        // (sommelier-ejb.7, CHANGED: see aNotFullBarNeedingMoreThanTwenty...: rvFalseChecks above is the property)
         #expect(!st.isConverged && rvMenu(st) != ArrangeSections.menuBarMatches)
     }
     // the 10:29 Time Machine drop through the REAL actuator: the DROP (not the engine) opens the strip: open, one drag of TM, close
@@ -256,7 +263,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         for _ in 0..<10 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(w.drags == ["TM"] && w.events == ["open", "drag:TM", "close"], "events=\(w.events)")
 // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core says `differs plain` (the record puts TM left of the folded keys, which macOS cannot do): never matches.
-        #expect(st.isConverged && rvMenu(st) == CoreStatusText.noMoveToMake)
+        #expect(!st.isConverged && rvMenu(st) == CoreStatusText.noMoveToMake)   // sommelier-ejb.7, CHANGED: `isConverged` follows the core, which says `differs` (never matches)
     }
     // D7: a drawn key dropped (beside the fold AND mid-bar) whose drag does not land is ONE physical drag
     @Test func aFailingDrawnDropIsOnePhysicalDrag() async {
@@ -402,7 +409,6 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let (e, st, c) = await rvRig(w, record: rvD)
         for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
         #expect(!st.isConverged)
-        #expect(st.lastPlan.unreadDrawn == 1 && st.lastPlan.orderDiffers)
         // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core says checking (unread key, no proof); menu and Arrange agree.
         #expect(rvMenu(st) == ArrangeSections.checkingMenuBar && rvArrangeLine(st) == ArrangeSections.checkingMenuBar, "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")
     }
@@ -412,7 +418,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         let (e, st, c) = await rvRig(w, record: rvD)
         for _ in 0..<4 { _ = await e.reconcileOnce(); c.adv(120) }
         // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core has not proven the bar not full after 4 passes: checking, never matches.
-        #expect(st.isConverged && rvMenu(st) == ArrangeSections.checkingMenuBar, "menu=\(rvMenu(st))")
+        #expect(!st.isConverged && rvMenu(st) == ArrangeSections.checkingMenuBar, "menu=\(rvMenu(st))")   // sommelier-ejb.7, CHANGED: `isConverged` follows the core, which is still checking (no proof of a not-full bar)
     }
     // launch replay of live-136 on the real actuator: failing and landing drags with alternating incomplete reads and stale iStat items
     @Test func theLaunchReplayNeverClicksAndNeverExceedsThreePhysicalDrags() async {
@@ -464,7 +470,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
     // while held: the menu says what Arrange says (the hold text may follow after " · "), the user's own actions still work, one drag each
     @Test func whileHeldTheMenuMatchesArrangeAndUserActionsStillWork() async {
         var (w, e, st, c) = await held(["D1", "D2", "D4", "D3", "D5", "D6"])
-        #expect(w.drags.count >= 1 && w.drags.count <= 3 && st.lastPlan.stripHoldFolded != nil)
+        #expect(w.drags.count >= 1 && w.drags.count <= 3)
         // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core's bar-full text (no separate hold text).
         #expect(rvMenu(st) == rvArrangeLine(st) && rvMenu(st) == ArrangeSections.barFullText(3))
         // a drawn drop while held: its own single drag
@@ -545,8 +551,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
             for _ in 0..<3 { _ = await e.reconcileOnce(); c.adv(120) }   // the user's pass and its chained passes
             #expect(w.events.filter { $0 == "open" }.count <= 1, "one edit, one strip session: \(w.events)")
             _ = await e.regularPassForTests(); c.adv(120)                // the first regular pass ends every owed attempt
-            let (owedKeys, owedFold) = (await e.userDropPending, await e.foldDropRequest)
-            #expect(owedKeys.isEmpty && owedFold.isEmpty, "prob=\(prob): owed attempts outlived the user's pass")
+            // (sommelier-ejb.7: the owed-attempt state is the core's, `owedExpires`; what is asserted here is its effect, below: nothing acts on a quiet poll)
             let quiet = w.events.count
             for _ in 0..<40 { _ = await e.regularPassForTests(); c.adv(120) }
             #expect(w.events.count == quiet, "prob=\(prob): a quiet poll acted: \(w.events.dropFirst(quiet))")
@@ -597,7 +602,6 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         for _ in 0..<3 { _ = await e.reconcileOnce(); c.adv(120) }
         for _ in 0..<10 { _ = await e.regularPassForTests(); c.adv(120) }
         #expect(w.drags == ["D5"] && w.clicks == 0, "events=\(w.events)")
-        #expect(await e.stripOpenHold != nil)
         _ = st
     }
     // item 2: the hold is released by the proof that the bar is not full
@@ -606,12 +610,21 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         // yet proven not full), by a failing drag of the one swapped pair; then the chevron goes and three chevronless complete reads release it.
         let rec = (1...6).map { "D\($0)" }
         let w = RvWorld(pile: [], drawn: ["D1", "D2", "D4", "D3", "D5", "D6"]); w.mode = .fresh; w.applyProb = 0
-        let (e, _, c) = await rvRig(w, record: rec)
+        let (e, st, c) = await rvRig(w, record: rec)
         _ = await e.regularPassForTests(); c.adv(120)
-        #expect(await e.stripOpenHold != nil)
+        let held = w.drags.count
+        #expect(held == 1, "the fresh-chevron bar's one failing drag sets the hold: \(w.events)")
         w.sync { w.mode = .absent }
+        // chevronless reads 1 and 2: the proof is not complete, so the core still cannot tell (checking); no move
+        for _ in 0..<2 { _ = await e.regularPassForTests(); c.adv(120) }
+        #expect(st.coreStatus != .differs(.plain) && w.drags.count == held, "before the proof: status=\(String(describing: st.coreStatus)) \(w.events)")
+        // the third read arms the proof and the next settled one gains it: the hold is released, the bar is known not full, and the core now says plainly that it has no
+        // move to make (the failed key is given up, so no further drag is expected: the release is seen through the status, which stays 'checking' while the hold holds)
         for _ in 0..<6 { _ = await e.regularPassForTests(); c.adv(120) }
-        #expect(await e.stripOpenHold == nil)
+        #expect(st.coreStatus == .differs(.plain) && rvMenu(st) == CoreStatusText.noMoveToMake,
+                "three chevronless reads (the proof of a not-full bar) released the hold: status=\(String(describing: st.coreStatus)) menu=\(rvMenu(st))")
+        #expect(w.drags.count == held, "the released hold makes no drag of the given-up key: \(w.events)")
+        #expect(w.clicks == 0, "\(w.events)")
     }
     // item 3: ONE strip session per edit across all moved keys: the folded P2 is pulled out (session), and D3, dropped before the first drawn key (churn zone),
     // would need a second one: it is not made
@@ -645,7 +658,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         #expect(w.drags.isEmpty && w.clicks == 0, "events=\(w.events)")
         #expect(!lg.v.contains { $0.contains("not dragged") }, "the planner let a move through to the dispatch gate")
         let w2 = RvWorld(pile: rvP, drawn: ["D2", "D1", "D3", "D4", "D6", "D5"]); w2.expanded = true
-        let (e2, _, c2) = await rvRig(w2, record: rvP + rvD, skipGate: true)
+        let (e2, _, c2) = await rvRig(w2, record: rvP + rvD)
         for _ in 0..<12 { _ = await e2.regularPassForTests(); c2.adv(120) }
         #expect(w2.drags.isEmpty && w2.clicks == 0, "the dispatch gate alone let a move through while the strip is open: \(w2.events)")
     }
@@ -675,7 +688,7 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
         w.sync { w.mode = .absent }
         for i in 0..<2 {
             _ = await e.regularPassForTests(); c.adv(120)
-            for key in rvP.map(k) { #expect(rvRowsOf(st).visible.rows.first { $0.key == key }?.barState == .behindChevron && st.perItem[key] == .notFitting, "read \(i)") }
+            for key in rvP.map(k) { #expect(rvRowsOf(st).visible.rows.first { $0.key == key }?.barState == .behindChevron && st.perItem[key] == .notFitting, "read \(i)") }   // the fold memory (membership-only) keeps the pile as «; the core's own row for it is cannotTell (not a check either)
         }
     }
     // item 9: a chevron in an UNSETTLED read (one the pass does not act on) still restarts the proof
@@ -699,7 +712,6 @@ private func rvFalseChecks(_ rows: [ArrangeRow], record: [String], bar: [String]
                              capabilities: RvImmovable(), state: st, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, config: .multiMove)
         await e.start()
         for _ in 0..<6 { _ = await e.reconcileOnce() }
-        #expect(!st.lastPlan.orderDiffers)   // A and B (movable) are in order: the two immovable keys swapped against the record are not progress
         #expect(rvMenu(st) != "Working…" && rvArrangeLine(st) != "Working…", "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")
         #expect((rvMenu(st) == ArrangeSections.menuBarMatches) == (rvArrangeLine(st) == ArrangeSections.menuBarMatches), "menu=\(rvMenu(st)) arrange=\(rvArrangeLine(st))")   // the same verdict in both
     }
@@ -795,7 +807,7 @@ private struct RvFakeObserver: MenuBarObserver {
         }
         #expect(w.drags.count <= 3, "physical drags=\(w.drags.count)")
         #expect(w.everyWindowHasChevronOrIncomplete())
-        #expect(st.lastPlan.checkingBar && !st.isConverged)   // never proven: still assumed full
+        #expect(st.coreStatus == .checking && !st.isConverged)   // never proven: still assumed full
     }
 
     // item 3: a chevronless read while the bar is still ASSUMED full confirms nothing: no check, not converged, "Checking the menu bar…"
@@ -804,7 +816,7 @@ private struct RvFakeObserver: MenuBarObserver {
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for i in 0..<2 {
             _ = await e.regularPassForTests(); c.adv(120)
-            let rows = rvRowsOf(st).visible.rows
+            let rows = rvCoreRowsOf(st).visible.rows
             #expect(rows.filter { $0.barState == .matches }.isEmpty, "pass \(i): \(rowsDump(st))")
             #expect(rows.filter { $0.barState == .moving }.isEmpty, "pass \(i): \(rowsDump(st))")
             #expect(!st.isConverged)
@@ -816,7 +828,7 @@ private struct RvFakeObserver: MenuBarObserver {
         let w = RvWorld(pile: rvP, drawn: rvD); w.mode = .stale
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         _ = await e.regularPassForTests(); c.adv(120)
-        #expect(rvRowsOf(st).visible.rows.filter { r in rvP.map(k).contains(r.key) && r.barState == .matches }.isEmpty)
+        #expect(rvCoreRowsOf(st).visible.rows.filter { r in rvP.map(k).contains(r.key) && r.barState == .matches }.isEmpty)
     }
     // item 3: a key that macOS newly folded, read without a chevron: not a check, and the bar is not converged
     @Test func aFoldShiftReadWithoutAChevronIsNoCheck() async {
@@ -825,7 +837,7 @@ private struct RvFakeObserver: MenuBarObserver {
         _ = await e.regularPassForTests(); c.adv(120)
         w.sync { w.mode = .absent; w.pile = rvP + ["D1"]; w.drawn = Array(rvD.dropFirst()) }
         _ = await e.regularPassForTests(); c.adv(120)
-        let rows = rvRowsOf(st).visible.rows
+        let rows = rvCoreRowsOf(st).visible.rows
         #expect(rows.first { $0.key == k("D1") }?.barState != .matches, "\(rowsDump(st))")
         #expect(rows.filter { $0.barState == .matches }.isEmpty, "\(rowsDump(st))")
         #expect(!st.isConverged && rvMenu(st) == ArrangeSections.checkingMenuBar)
@@ -865,13 +877,11 @@ private struct RvFakeObserver: MenuBarObserver {
         let w = RvWorld(pile: rvP, drawn: ["D1", "D2", "D4", "D3", "D5", "D6"]); w.applyProb = 0
         let (e, st, c) = await rvRig(w, record: rvP + rvD)
         for _ in 0..<3 { _ = await e.regularPassForTests(); c.adv(120) }
-        #expect(await e.stripOpenHold != nil)
         w.sync { w.applyProb = 1; w.pile = []; w.drawn = rvP + rvD; w.mode = .absent }   // the display grew: nothing folds any more
         let t = EngineTriggers(engine: e, state: st, scanner: w, resolve: { w.res($0) }, trigger: {}, sleep: { _ in }, now: { c.read() })
         var polls = 0
-        while await e.stripOpenHold != nil, polls < 6 { polls += 1; c.adv(10); await t.poll(); await rvSettle(e, ms: 100) }
+        while rvMenu(st) != ArrangeSections.menuBarMatches, polls < 6 { polls += 1; c.adv(10); await t.poll(); await rvSettle(e, ms: 100) }
         #expect(polls <= 3, "polls=\(polls)")
-        #expect(await e.stripOpenHold == nil)
         #expect(st.isConverged && rvMenu(st) == ArrangeSections.menuBarMatches, "menu=\(rvMenu(st))")
     }
     // the zero-folded hold text never says "folds 0 items" and names the way out
@@ -888,7 +898,6 @@ private struct RvFakeObserver: MenuBarObserver {
     @Test func resumeAfterTheChainEndedMakesNoMove() async {
         let w = RvWorld(pile: rvP, drawn: rvD)
         let (e, _, c) = await rvBigEdit(w)
-        #expect(await e.userDropPending.isEmpty); #expect(await e.foldDropRequest.isEmpty)   // however the chain ended, nothing is owed
         let n0 = w.events.count
         for _ in 0..<3 { c.adv(3600); await e.setUserPaused(true); await e.setUserPaused(false); await rvSettle(e, ms: 200) }
         #expect(Array(w.events.dropFirst(n0)).isEmpty, "\(w.events.dropFirst(n0))")
@@ -899,7 +908,6 @@ private struct RvFakeObserver: MenuBarObserver {
         let n0 = w.events.count
         for _ in 0..<5 { c.adv(3600); await e.setReveal(hidden: false, alwaysHidden: false); await rvSettle(e, ms: 300) }
         #expect(Array(w.events.dropFirst(n0)).isEmpty, "\(w.events.dropFirst(n0))")
-        #expect(await e.userDropPending.isEmpty)
     }
     // ...also with failing drags (the chain ended on a failure)
     @Test func aRevealToggleAfterAFailedChainMakesNoMove() async {
@@ -918,7 +926,6 @@ private struct RvFakeObserver: MenuBarObserver {
             #expect(st.inFlight == nil, "\(tag)")
             #expect(rvMenu(st) != "Working…", "\(tag): menu=\(rvMenu(st))")
             #expect(!rvArrangeLine(st).contains("Moving") && rvArrangeLine(st) != "Working…", "\(tag): arrange=\(rvArrangeLine(st))")
-            #expect(await e.userDropPending.isEmpty, "\(tag)")
         }
     }
     // however the chain ENDS (here: the dropped key's neighbour is unread, so its move is blocked and never dispatched), nothing stays owed
@@ -928,14 +935,26 @@ private struct RvFakeObserver: MenuBarObserver {
         await e.setLayout(Layout.placedAll(visible: (rvP + ["D2", "D1", "D3", "D4", "D5", "D6"]).map(k)), moved: [k("D1")])
         await rvSettle(e, ms: 300)
         #expect(w.drags.isEmpty)
-        #expect(await e.userDropPending.isEmpty)
     }
     // an owed attempt is the user's pass and its chain ONLY: a quiet poll right after also leaves nothing behind
     @Test func aPollEndsTheOwedAttempts() async {
         let w = RvWorld(pile: rvP, drawn: rvD)
         let (e, _, c) = await rvBigEdit(w)
+        let n0 = w.events.count
         c.adv(3600); await e.requestReconcile(reason: "poll"); await rvSettle(e, ms: 300)
-        #expect(await e.userDropPending.isEmpty); #expect(await e.foldDropRequest.isEmpty)
+        for _ in 0..<2 { c.adv(3600); await e.requestReconcile(reason: "poll"); await rvSettle(e, ms: 150) }
+        #expect(w.events.count == n0, "polls after the chain made a move: \(w.events.dropFirst(n0))")
+        // ...and an attempt the user's pass could NOT make (the dropped key's neighbour is unread, so the move is blocked and not dispatched) is not kept owed: once the
+        // neighbour reads again, a poll makes no drag of it (the user's pass was the only chance; the engine has no licence for that key)
+        let w2 = RvWorld(pile: rvP, drawn: rvD); w2.staleKeys = ["D2"]
+        let (e2, _, c2) = await rvRig(w2, record: rvP + rvD, followUp: .milliseconds(30))
+        for _ in 0..<2 { _ = await e2.regularPassForTests(); c2.adv(120) }
+        await e2.setLayout(Layout.placedAll(visible: (rvP + ["D2", "D1", "D3", "D4", "D5", "D6"]).map(k)), moved: [k("D1")])
+        await rvSettle(e2, ms: 300)
+        #expect(w2.drags.isEmpty, "the blocked move was not dispatched: \(w2.events)")
+        w2.sync { w2.staleKeys = [] }
+        for _ in 0..<3 { c2.adv(3600); await e2.requestReconcile(reason: "poll"); await rvSettle(e2, ms: 150) }
+        #expect(w2.drags.isEmpty, "a poll after the blocked chain dragged what was owed: \(w2.events)")
     }
 }
 

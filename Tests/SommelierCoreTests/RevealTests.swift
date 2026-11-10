@@ -16,17 +16,16 @@ struct RevealPlannerTests {
     @Test func hiddenSectionShownAppendedInLayoutOrderAlwaysHiddenStays() {
         let p = Reconciler().plan(observed: obs(on: [v], parked: [h2, h1, a]), layout: layout, capabilities: allCaps, showHiddenSection: true)
         #expect(Set(p.actions.compactMap { if case .show(let x) = $0 { x } else { nil } }) == [h1, h2])
-        #expect(p.desiredOnBar == [v, h1, h2])
     }
 
     @Test func alwaysHiddenOnlyWithSecondFlag() {
         let o = obs(on: [v], parked: [h1, h2, a])
         let only = Reconciler().plan(observed: o, layout: layout, capabilities: allCaps, showAlwaysHidden: true)
-        #expect(only.desiredOnBar == [v, a])
+        #expect(Set(only.actions.compactMap { if case .show(let x) = $0 { x } else { nil } }) == [a])
         let both = Reconciler().plan(observed: o, layout: layout, capabilities: allCaps, showHiddenSection: true, showAlwaysHidden: true)
-        #expect(both.desiredOnBar == [v, h1, h2, a])
+        #expect(Set(both.actions.compactMap { if case .show(let x) = $0 { x } else { nil } }) == [h1, h2, a])
         let none = Reconciler().plan(observed: o, layout: layout, capabilities: allCaps)
-        #expect(none.desiredOnBar == [v])
+        #expect(none.actions.isEmpty)
     }
 
     @Test func clearingTheFlagsRehides() {
@@ -43,9 +42,9 @@ struct RevealPlannerTests {
         let l = Layout(visible: [v], hidden: [h1], alwaysHidden: [a1])
         let o = obs(on: [v], parked: [h1, a1])
         let hid = Reconciler().plan(observed: o, layout: l, capabilities: allCaps, showHiddenSection: true)
-        #expect(hid.desiredOnBar == [v])
+        #expect(hid.actions.isEmpty)
         let both = Reconciler().plan(observed: o, layout: l, capabilities: allCaps, showAlwaysHidden: true)
-        #expect(Set(both.desiredOnBar) == [v, h1, a1])
+        #expect(Set(both.actions.compactMap { if case .show(let x) = $0 { x } else { nil } }) == [h1, a1])
     }
 }
 
@@ -62,7 +61,6 @@ struct RevealUntrackedTests {
         #expect(p.actions.compactMap { if case .show(let x) = $0 { x } else { nil } } == [h1])
         #expect(p.skipped.map(\.key) == [h2])
         #expect(p.skipped.first?.reason == "cannot be shown: no Control Center entry")
-        #expect(p.desiredOnBar == [v, h1])
         // After the show the plan is converged; the skip does not keep the reveal pending.
         let done = Reconciler().plan(observed: obs(on: [v, h1], parked: [h2]), layout: l, capabilities: caps, showHiddenSection: true)
         #expect(done.phase == .converged && done.actions.isEmpty)

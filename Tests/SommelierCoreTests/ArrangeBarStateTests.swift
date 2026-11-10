@@ -17,17 +17,11 @@ private func info(_ key: ItemKey) -> ItemInfo {
     ItemInfo(key: key, title: "", axDescription: "\(key)".split(separator: ":").last.map(String.init) ?? "", ownerPID: 1, ownerBundleID: "com.x",
              ownerName: "Owner", width: 30, isOnBar: true, systemOverflow: false)
 }
-/// What the engine would publish after planning `o` against `layout`: the REAL planner's partition (the tests never hand-write one).
-private func summary(_ o: ObservedOrder, _ layout: Layout, held: Set<ItemKey> = [], unsteady: Set<ItemKey> = []) -> PlanSummary {
-    PlanSummary(plan: Reconciler().plan(observed: o, layout: layout, capabilities: caps, held: held, unsteady: unsteady), held: held)
-}
 private func make(_ o: ObservedOrder, _ layout: Layout, status: [ItemKey: ItemStatus] = [:], awaiting: Set<ItemKey> = [], suppressed: Set<ItemKey> = [],
-                  timedOut: Set<ItemKey> = [], unverified: Set<ItemKey> = [], extra: [ItemKey] = [], held: Set<ItemKey> = [],
-                  unsteady: Set<ItemKey> = [], plan: PlanSummary? = nil) -> ArrangeContent {
+                  timedOut: Set<ItemKey> = [], unverified: Set<ItemKey> = [], extra: [ItemKey] = []) -> ArrangeContent {
     ArrangeSections.make(observed: o, layout: layout, items: Dictionary(uniqueKeysWithValues: (o.onBar + o.parked + extra).map { ($0, info($0)) }),
                          perItem: status, capabilities: caps, awaiting: awaiting, timedOut: timedOut, suppressedStatus: suppressed,
-                         unverifiedAfterHandDrag: unverified,
-                         lastPlan: plan ?? summary(o, layout, held: held.union(unverified), unsteady: unsteady))
+                         unverifiedAfterHandDrag: unverified)
 }
 private func row(_ c: ArrangeContent, _ key: ItemKey) -> ArrangeRow { c.visible.rows.first { $0.key == key }! }
 private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary(uniqueKeysWithValues: keys.map { ($0, ItemStatus.inPlace) }) }
@@ -66,24 +60,6 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         #expect(row(c, clock).barState != .moving)     // an anchor never shows arrows
     }
 
-    @Test func aSingleMisplacedKeyIsTheOnlyMovingRow() {
-        let (a, b, cK, d, e) = (k("a"), k("b"), k("c"), k("d"), k("e"))
-        let rec = Layout(visible: [a, b, cK, d, e, clock])
-        let o = ObservedOrder(onBar: [a, cK, b, d, e, clock], parked: [])
-        let st = allInPlace(o.onBar)
-        let c = make(o, rec, status: st)
-        // the planner plans exactly one move; the rows around it disagree with the record but are not planned: no check, no arrows
-        let plan = Reconciler().plan(observed: o, layout: rec, capabilities: caps)
-        #expect(plan.actions.count == 1)
-        let moved: Set<ItemKey> = Set(plan.actions.compactMap { if case .move(let key, _) = $0 { key } else { nil } })
-        let moving = Set(c.visible.rows.filter { $0.barState == .moving }.map(\.key))
-        #expect(moving == moved && moving.count == 1)
-        #expect(row(c, e).barState == .notConfirmed && row(c, clock).barState == .notConfirmed)   // gdu.144 D7: no check anywhere while the drawn order differs from the record
-        for key in [a, b, cK, d] where !moving.contains(key) { #expect(row(c, key).barState == .notConfirmed && row(c, key).badge != .inPlace, "\(key)") }
-        let text = line(c, perItem: st)
-        #expect(text.hasPrefix("Moving ") && !text.contains("6 items"))
-    }
-
     @Test func cannotPlaceShowsTheWarningWithThePlainReason() {
         let bar = [k("a"), k("b"), k("c"), clock]
         let layout = Layout(visible: bar)
@@ -104,17 +80,14 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
     @Test func plainReasonsAreMappedAndOtherReasonsPassThrough() {
         #expect(ArrangeSections.plainReason(Reconciler.uncorroboratedSkipReason) == "Sommelier can't pin down where this item is on the bar")
         #expect(ArrangeSections.plainReason("could not corroborate its position on the bar for 60 s: x") == ArrangeSections.uncorroboratedTimeoutText)
-        #expect(ArrangeSections.plainReason(Reconciler.staleFrameSkipReason) == "Position being re-read")
         #expect(ArrangeSections.plainReason(Reconciler.staleSkipReason) == "Position being re-read")
-        #expect(ArrangeSections.plainReason(Reconciler.noCrossingSkipReason) == "Behind «; the item it should follow can't be located on the bar yet")
-        #expect(ArrangeSections.plainReason(Reconciler.noCrossingOwnPositionSkipReason) == "Behind «; its position hasn't been read yet")
         #expect(ArrangeSections.plainReason(Reconciler.overflowSkipReason) == "Behind «; macOS decides what fits")
         #expect(ArrangeSections.plainReason(SystemOverflowRule.churnSkipReason) == "Behind «; macOS decides what fits")
     }
 
     @Test func notOnBarIsAGhostAtItsRecordSlot() {
         let layout = Layout(visible: [k("a"), k("h"), k("b"), clock])
-        let c = make(ObservedOrder(onBar: [k("a"), k("b"), clock], parked: [k("h")]), layout, status: [k("h"): .inPlace], plan: PlanSummary())   // the engine skipped it (e.g. hidden in Control Center)
+        let c = make(ObservedOrder(onBar: [k("a"), k("b"), clock], parked: [k("h")]), layout, status: [k("h"): .inPlace])   // the engine skipped it (e.g. hidden in Control Center)
         #expect(c.visible.rows.map(\.key) == [k("a"), k("h"), k("b"), clock])
         let r = row(c, k("h"))
         #expect(r.isGhost && r.barState == .notOnBar && r.badge == .ghost && r.badge.glyph == "◌" && r.badgeTooltip == ArrangeBarState.notOnBarText)
@@ -266,249 +239,16 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
 
     // MARK: the status line
 
-    private func line(_ c: ArrangeContent?, perItem: [ItemKey: ItemStatus] = [:], converged: Bool = true, inFlight: Bool = false, err: EngineError? = nil,
-                      settled: Bool = true, awaiting: Int = 0, ctx: ArrangeSections.StatusContext = .init()) -> String {
-        ArrangeSections.statusLine(perItem: perItem, lastError: err, isConverged: converged, inFlight: inFlight, pendingAwaiting: awaiting,
-                                   observationSettled: settled, content: c, context: ctx)
-    }
     private let bar = [ItemKey.status(ownerKey: "com.x.a", autosaveName: "a"), ItemKey.status(ownerKey: "com.x.b", autosaveName: "b"), clock]
     private var good: ArrangeContent { make(ObservedOrder(onBar: bar, parked: []), Layout(visible: bar), status: allInPlace(bar)) }
 
-    @Test func menuBarMatchesOnlyWhenEveryRowMatches() {
-        #expect(line(good, perItem: allInPlace(bar)) == "Menu bar matches")
-        #expect(line(good, converged: false) == "Working…")
-        #expect(line(good, settled: false) == "Observing (unsettled)")
-        #expect(line(nil) == ArrangeSections.checkingMenuBar)
-        // behind « and not-on-bar rows still count as matching
-        let o = ObservedOrder(onBar: [k("p"), chev, k("a"), clock], parked: [k("h")], systemOverflow: [k("p")], overflowChevron: chev)
-        let c = make(o, Layout(visible: [k("p"), k("h"), k("a"), clock]), status: [k("p"): .notFitting, k("a"): .inPlace, k("h"): .inPlace], plan: PlanSummary())
-        #expect(line(c) == "Menu bar matches")
-        // an error is never "matches"
-        #expect(line(good, err: .observe("boom")) == "Error: boom")
-    }
-
-    @Test func movingWhileAMoveIsInFlightOrPlanned() {
-        let o = ObservedOrder(onBar: bar, parked: []), rec = Layout(visible: [bar[1], bar[0], clock])
-        let mover = summary(o, rec).moving.first!
-        let c = make(o, rec, status: [mover: .pending])
-        #expect(line(c, perItem: [mover: .pending], converged: false) == "Moving \(row(c, mover).title)…")
-        var ctx = ArrangeSections.StatusContext(); ctx.movingName = "Shield"
-        #expect(line(c, converged: false, inFlight: true, ctx: ctx) == "Moving Shield…")
-        #expect(line(good, inFlight: true) == "Moving…")
-        #expect(line(good, awaiting: 2) == "Moving…")
-    }
-
-    @Test func cannotPlaceCountsAndPluralises() {
-        let one = make(ObservedOrder(onBar: bar, parked: []), Layout(visible: bar), status: [bar[0]: .unsupported("x"), bar[1]: .inPlace])
-        #expect(line(one) == "1 item can't be placed — right-click one for why")
-        let two = make(ObservedOrder(onBar: bar, parked: []), Layout(visible: bar), status: [bar[0]: .unsupported("x"), bar[1]: .failed(.timeout)])
-        #expect(line(two) == "2 items can't be placed — right-click one for why")
-    }
-
-    @Test func waitingToReadCountsStaleAndHandDraggedRows() {
-        let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: [bar[0]], staleOnBar: [bar[0]])
-        let c = make(o, Layout(visible: bar), status: allInPlace(bar), unverified: [bar[1]])
-        #expect(line(c) == "Waiting to read 2 items")
-        let c1 = make(o, Layout(visible: bar), status: allInPlace(bar))
-        #expect(line(c1) == "Waiting to read 1 item")
-    }
-
-    @Test func pausedAndCapAndAdoptionAndHandDragTexts() {
-        var ctx = ArrangeSections.StatusContext(); ctx.userPaused = true
-        #expect(line(good, ctx: ctx) == "Paused")
-        ctx = .init(); ctx.pauseReason = "a menu is open"
-        #expect(line(good, ctx: ctx) == "Paused: a menu is open")
-        ctx = .init(); ctx.orderCapActive = true
-        #expect(line(good, ctx: ctx) == "Pausing order moves for a minute")
-        ctx = .init(); ctx.adoptionPending = true
-        #expect(line(good, ctx: ctx) == "Reading your menu bar order…")
-        ctx = .init(); ctx.handDragNotice = "Adopted your menu bar drag"
-        #expect(line(good, ctx: ctx) == "Adopted your menu bar drag")
-    }
-
-    @Test func precedenceIsPausedThenCannotPlaceThenMovingThenWaitingThenAdoptedThenMatches() {
-        let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: [bar[0]], staleOnBar: [bar[0]])
-        let all = make(o, Layout(visible: [bar[1], bar[0], clock]), status: [bar[1]: .unsupported("x"), bar[0]: .pending])      // cannotPlace + moving + (stale)
-        var ctx = ArrangeSections.StatusContext(); ctx.handDragNotice = "Adopted your menu bar drag"
-        #expect(line(all, perItem: [bar[0]: .pending], converged: false, ctx: ctx) == "1 item can't be placed — right-click one for why")
-        ctx.userPaused = true
-        #expect(line(all, converged: false, ctx: ctx) == "Paused")
-        let moving = make(ObservedOrder(onBar: bar, parked: []), Layout(visible: [bar[1], bar[0], clock]), status: [bar[1]: .pending])
-        ctx = .init(); ctx.handDragNotice = "Adopted your menu bar drag"
-        #expect(line(moving, converged: false, ctx: ctx).hasPrefix("Moving"))
-        let waiting = make(o, Layout(visible: bar), status: allInPlace(bar))
-        #expect(line(waiting, ctx: ctx) == "Waiting to read 1 item")
-        #expect(line(good, ctx: ctx) == "Adopted your menu bar drag")
-        #expect(line(good) == "Menu bar matches")
-    }
-
-    @Test func aPrefixNoticeAndThePollPauseStillCompose() {
-        let s = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, notice: "New item: X placed in Visible",
-                                           pollPausedNames: ["Y"], content: good)
-        #expect(s == "New item: X placed in Visible · Menu bar matches · Poll paused 5 min: Y flapping")
-    }
-
     // MARK: the live shape (2026-11-07 build 282): Corsair unsupported while the bar does NOT match
-
-    @Test func theLiveCorsairShapeSaysOneItemCannotBePlacedNeverMatches() {
-        let shield = k("shield"), corsair = k("corsair"), mcp = k("mcp")
-        // record: Shield Corsair MCP; the bar still has Corsair elsewhere
-        let layout = Layout(visible: [shield, corsair, mcp, clock])
-        let o = ObservedOrder(onBar: [corsair, shield, mcp, clock], parked: [])
-        let st: [ItemKey: ItemStatus] = [shield: .inPlace, mcp: .inPlace, clock: .inPlace,
-                                         corsair: .unsupported("could not corroborate its position on the bar for 60 s: " + Reconciler.uncorroboratedSkipReason)]
-        let c = make(o, layout, status: st)
-        let r = row(c, corsair)
-        #expect(r.barState == .cannotPlace(ArrangeSections.uncorroboratedTimeoutText) && r.badge.glyph == "⚠")
-        #expect(r.badge != .inPlace)
-        let text = line(c, perItem: st)
-        #expect(text == "1 item can't be placed — right-click one for why")
-        #expect(!text.contains("matches"))
-        // the rows the planner keeps in place show the check
-        for key in [shield, mcp, clock] { #expect(row(c, key).badge != .inPlace || row(c, key).barState == .matches) }
-        #expect(ArrangeMenuRules.showsTryAgain(r))
-    }
 
     // MARK: 9o9.29 an in-place key the scan cannot corroborate is "can't be pinned down", not "can't be placed"
 
-    @Test func aDrawnKeyWhoseNeighboursAgreeAfterTheMinuteReadsTildeNotWarning() {
-        let bar = [k("a"), k("b"), k("c"), clock]
-        let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: [k("b")])
-        let st: [ItemKey: ItemStatus] = [k("b"): .unsupported("could not corroborate its position on the bar for 60 s: " + Reconciler.uncorroboratedSkipReason)]
-        let c = make(o, Layout(visible: bar), status: st)
-        let r = row(c, k("b"))
-        #expect(r.barState == .staleFrame && r.badge.glyph == "~")
-        #expect(r.badgeTooltip == "Sommelier can't pin down where this item is on the bar (it looks in place) — right-click to try again")
-        #expect(r.pinDownTimedOut && ArrangeMenuRules.showsTryAgain(r))
-        let text = ArrangeSections.statusLine(perItem: st, lastError: nil, isConverged: true, inFlight: false, content: c)
-        #expect(text == "1 item can't be pinned down — right-click one to try again")
-        #expect(!text.contains("can't be placed") && !text.contains("matches"))
-    }
-
-    @Test func twoPinnedDownKeysArePluralAndAKeyTheRecordWantsElsewhereStillCountsAsCannotPlace() {
-        let bar = [k("a"), k("b"), k("c"), clock]
-        let timeout = ItemStatus.unsupported("could not corroborate its position on the bar for 60 s: " + Reconciler.uncorroboratedSkipReason)
-        let o = ObservedOrder(onBar: bar, parked: [], uncorroborated: [k("a"), k("c")])
-        let st: [ItemKey: ItemStatus] = [k("a"): timeout, k("c"): timeout]
-        let c = make(o, Layout(visible: bar), status: st)
-        #expect(ArrangeSections.statusLine(perItem: st, lastError: nil, isConverged: true, inFlight: false, content: c) == "2 items can't be pinned down — right-click one to try again")
-        // the record wants b before a: a's neighbours disagree, so its timeout stays a warning and "can't be placed" wins the line
-        let c2 = make(ObservedOrder(onBar: bar, parked: [], uncorroborated: [k("a")]), Layout(visible: [k("b"), k("a"), k("c"), clock]), status: [k("a"): timeout])
-        #expect(row(c2, k("a")).barState == .cannotPlace(ArrangeSections.uncorroboratedTimeoutText))
-        #expect(ArrangeSections.statusLine(perItem: [k("a"): timeout], lastError: nil, isConverged: true, inFlight: false, content: c2) == "1 item can't be placed — right-click one for why")
-    }
-
-    @Test func aHeldKeyOutOfOrderLeavesItsNeighbourWithoutTheCheck() {   // gdu.144 D7: a given-up key is still a drawn key out of order: no row is a check
-        let a = k("a"), b = k("b"), c = k("c"), d = k("d")
-        let rec = Layout(visible: [a, b, c, d, clock])
-        let o = ObservedOrder(onBar: [a, c, b, d, clock], parked: [])
-        let sum = summary(o, rec, held: [b])
-        #expect(sum.moving.isEmpty && sum.held == [b])
-        let st: [ItemKey: ItemStatus] = [a: .inPlace, c: .inPlace, d: .inPlace, b: .cannotPlace(reason: "gave up", attempts: 3)]
-        let cnt = make(o, rec, status: st, plan: sum)
-        #expect(row(cnt, c).barState == .notConfirmed && row(cnt, c).badge != .inPlace)
-        #expect(row(cnt, b).badge.glyph == "⚠")
-    }
-
-    @Test func aKeyBothGivenUpAndFailedAtTheLimitShowsWarningAndItsNeighbourGetsNoFalseCheck() {
-        let a = k("a"), b = k("b"), c = k("c"), d = k("d")
-        let rec = Layout(visible: [a, b, c, d, clock])
-        let o = ObservedOrder(onBar: [a, c, b, d, clock], parked: [])
-        let sum = summary(o, rec, held: [b])
-        let st: [ItemKey: ItemStatus] = [a: .inPlace, c: .inPlace, d: .inPlace, b: .failed(.timeout)]
-        let cnt = make(o, rec, status: st, plan: sum)
-        #expect(row(cnt, b).badge.glyph == "⚠")
-        #expect(row(cnt, c).barState == .notConfirmed && row(cnt, c).badge != .inPlace)   // gdu.144 D7: no false check; and not a stuck arrows row
-        #expect(!cnt.visible.rows.contains { $0.barState == .moving })
-        #expect(line(cnt, perItem: st) == "1 item can't be placed — right-click one for why")
-    }
-
     // MARK: Arrange displays the engine's plan (it never re-derives it)
 
-    @Test func theEngineMovesOneKeyAndOnlyThatRowShowsArrows() {
-        let (a, b, cK, d, e) = (k("a"), k("b"), k("c"), k("d"), k("e"))
-        let rec = Layout(visible: [a, b, cK, d, e, clock])
-        let o = ObservedOrder(onBar: [a, cK, b, d, e, clock], parked: [])
-        let sum = summary(o, rec)
-        #expect(sum.moving.count == 1)
-        var st = allInPlace(o.onBar)
-        for key in sum.moving { st[key] = .pending }
-        let c = make(o, rec, status: st, plan: sum)
-        #expect(Set(c.visible.rows.filter { $0.barState == .moving }.map(\.key)) == sum.moving)
-        let text = line(c, perItem: st)
-        #expect(text == "Moving \(row(c, sum.moving.first!).title)…")
-    }
-
-    @Test func aWallOfAnUncorroboratedKeyShowsWaitingForItToSettleNeverMoving() {
-        // record p0 p1 p2 p3 Clock, bar p3 p2 p1 p0 Clock, p3 uncorroborated: the engine plans nothing and skips only p3.
-        let ks = (0..<4).map { k("p\($0)") }
-        let rec = Layout(visible: ks + [clock])
-        let o = ObservedOrder(onBar: [ks[3], ks[2], ks[1], ks[0], clock], parked: [], uncorroborated: [ks[3]])
-        let plan = Reconciler().plan(observed: o, layout: rec, capabilities: caps)
-        #expect(plan.actions.isEmpty)
-        let sum = summary(o, rec)
-        #expect(sum.moving.isEmpty)
-        #expect(Set(sum.blocked.keys) == [ks[0], ks[1], ks[2]] && Set(sum.blocked.values) == [ks[3]])
-        var st = allInPlace(o.onBar)
-        st[ks[3]] = .waitingForPosition(Reconciler.uncorroboratedSkipReason)
-        let c = make(o, rec, status: st, plan: sum)
-        let wall = row(c, ks[3]).title
-        for key in ks[0..<3] {
-            #expect(row(c, key).barState == .moving && row(c, key).badge.glyph == "⟳", "\(key)")
-            #expect(row(c, key).badgeTooltip == "Waiting for \(wall) to settle")
-        }
-        #expect(row(c, ks[3]).badge.glyph == "~")
-        let text = line(c, perItem: st)
-        #expect(!text.contains("Moving") && text == "Waiting to read 1 item")
-    }
-
-    @Test func aMovingNeighbourHoldIsWaitingNotReRead() {
-        let a = k("a"), b = k("b")
-        let rec = Layout(visible: [b, a, clock])
-        let o = ObservedOrder(onBar: [a, b, clock], parked: [], uncorroborated: [a])
-        let sum = summary(o, rec, unsteady: [a])
-        #expect(sum.blocked[b] == a)
-        let r = row(make(o, rec, status: [b: .waitingForPosition("r"), a: .waitingForPosition("r")], plan: sum), b)
-        #expect(r.barState == .moving && r.badge.glyph == "⟳")
-        #expect(r.badgeTooltip == "Waiting for \(OverflowEntries.displayName(info(a))) to settle")
-        #expect(r.badgeTooltip != ArrangeBarState.staleText)
-    }
-
-    @Test func aRowNeitherPlannedNorAgreeingWithTheRecordIsNeverTheCheck() {
-        // The engine moves c (or b); the other one disagrees with the record but is not planned: no check, no arrows.
-        let (a, b, cK, d) = (k("a"), k("b"), k("c"), k("d"))
-        let rec = Layout(visible: [a, b, cK, d, clock])
-        let o = ObservedOrder(onBar: [a, cK, b, d, clock], parked: [])
-        let sum = summary(o, rec)
-        let c = make(o, rec, status: allInPlace(o.onBar), plan: sum)
-        for key in [a, b, cK, d] where !sum.moving.contains(key) && row(c, key).barState != .matches {
-            #expect(row(c, key).badge.glyph != "✓" && row(c, key).barState == .notConfirmed)
-        }
-        #expect(c.visible.rows.filter { $0.barState == .moving }.count == 1)
-    }
-
     // MARK: right after a drop the tracker speaks, then the engine takes over
-
-    @Test func afterADropTheDroppedKeyShowsArrowsFromTheTrackerThenTheEngineTakesOver() {
-        let a = k("a"), b = k("b"), c = k("c")
-        let bar = [a, b, c, clock]
-        let o = ObservedOrder(onBar: bar, parked: [])
-        let old = Layout(visible: bar), new = Layout(visible: [c, a, b, clock])
-        // before any pass: the last plan is the old one (empty); the tracker marks c
-        let oldPlan = summary(o, old)
-        let during = make(o, new, status: allInPlace(bar), awaiting: [c], suppressed: [c], plan: oldPlan)
-        #expect(row(during, c).barState == .moving && row(during, c).badge.glyph == "⟳")
-        #expect(row(during, a).badge == .none || row(during, a).barState != .moving)
-        #expect(!during.visible.rows.contains { $0.barState == .moving && $0.key != c })
-        // a pass has judged it: the engine's partition (c moves) is shown, not the tracker's
-        let newPlan = summary(o, new)
-        var st = allInPlace(bar); for key in newPlan.moving { st[key] = .pending }
-        let after = make(o, new, status: st, awaiting: [c], suppressed: [], plan: newPlan)
-        #expect(Set(after.visible.rows.filter { $0.barState == .moving }.map(\.key)) == newPlan.moving)
-        // and when the engine judged it already in place the awaiting key is not shown moving on the tracker's word
-        let settled = make(o, old, status: allInPlace(bar), awaiting: [c], suppressed: [], plan: oldPlan)
-        #expect(row(settled, c).barState == .matches)
-    }
 
     @Test func anUncorroboratedKeyNeverShowsTheCheck() {
         let a = k("a"), b = k("b"), c = k("c")
@@ -528,54 +268,6 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
 
     // MARK: 9o9.5 fourth corrective pass
 
-    @Test func aWallThatIsGivenUpMakesTheBlockedRowAWarningNotAWait() {
-        let ks = (0..<5).map { k("p\($0)") }
-        let rec = Layout(visible: ks + [clock])
-        let o = ObservedOrder(onBar: [ks[1], ks[2], ks[0], ks[3], ks[4], clock], parked: [])
-        let status: [ItemKey: ItemStatus] = [ks[2]: .cannotPlace(reason: "tried", attempts: 3)]
-        let plan = summary(o, rec, held: [ks[2]])
-        let c = make(o, rec, status: status, plan: plan)
-        let blocked = plan.blocked.filter { $0.value == ks[2] }.keys
-        #expect(!blocked.isEmpty)
-        let name = OverflowEntries.displayName(info(ks[2]))
-        for key in blocked {
-            #expect(row(c, key).badge.glyph == "⚠" && row(c, key).barState == .cannotPlace(ArrangeSections.blockedByGivenUpText(name)))
-            #expect(row(c, key).badgeTooltip == "Blocked by \(name), which Sommelier can't place — right-click it to try again")
-        }
-        #expect(row(c, ks[2]).badge.glyph == "⚠")
-        let n = blocked.count + 1
-        #expect(ArrangeSections.statusLine(perItem: status, lastError: nil, isConverged: true, inFlight: false, content: c) == "\(n) items can't be placed — right-click one for why")
-    }
-
-    @Test func aWallThatIsOnlyUnverifiedAfterAHandDragStillWaits() {
-        let ks = (0..<5).map { k("p\($0)") }
-        let rec = Layout(visible: ks + [clock])
-        let o = ObservedOrder(onBar: [ks[1], ks[2], ks[0], ks[3], ks[4], clock], parked: [])
-        let plan = summary(o, rec, held: [ks[2]])
-        let c = make(o, rec, plan: plan)
-        for key in plan.blocked.filter({ $0.value == ks[2] }).keys { #expect(row(c, key).badge.glyph == "⟳" && row(c, key).waitingOn != nil) }
-    }
-
-    @Test func aBlockedKeyWithNoWallWaitsForTheBarAndIsNotCountedAsUnread() {
-        let ks = (0..<5).map { k("p\($0)") }
-        let rec = Layout(visible: ks + [clock])
-        let o = ObservedOrder(onBar: [ks[1], ks[3], ks[4], ks[2], ks[0], clock], parked: [], uncorroborated: [ks[0], ks[4]])
-        let plan = summary(o, rec)
-        #expect(plan.blockedNoWall.contains(ks[2]))
-        let status: [ItemKey: ItemStatus] = [ks[0]: .waitingForPosition("x"), ks[4]: .waitingForPosition("x"), ks[2]: .waitingForPosition(Reconciler.noSafeMoveSkipReason)]
-        let c = make(o, rec, status: status, plan: plan)
-        let r = row(c, ks[2])
-        #expect(r.badge.glyph == "⟳" && r.badgeTooltip == "Waiting for the bar to settle" && r.badge != .stale)
-        #expect(ArrangeSections.statusLine(perItem: status, lastError: nil, isConverged: true, inFlight: false, content: c) == "Waiting to read 2 items")
-    }
-
-    @Test func theReconcilerGivesNoWallBlockedKeysTheHonestSkipReason() {
-        let ks = (0..<5).map { k("p\($0)") }
-        let o = ObservedOrder(onBar: [ks[1], ks[3], ks[4], ks[2], ks[0], clock], parked: [], uncorroborated: [ks[0], ks[4]])
-        let p = Reconciler().plan(observed: o, layout: Layout(visible: ks + [clock]), capabilities: caps)
-        #expect(p.skipped.first { $0.key == ks[2] }?.reason == "no safe move this pass; waiting for the bar to settle")
-    }
-
     @Test func aBusySkippedPassDoesNotReleaseADroppedRow() {
         var t = ArrangeTracker()
         let a = k("a")
@@ -594,51 +286,7 @@ private func allInPlace(_ keys: [ItemKey]) -> [ItemKey: ItemStatus] { Dictionary
         #expect(t.awaiting.isEmpty)
     }
 
-    @Test func aBlankRowCarriesTheNotConfirmedTooltipAndStatusNeverSaysConverged() {
-        let a = k("a"), b = k("b")
-        let o = ObservedOrder(onBar: [b, a, clock], parked: [])
-        let rec = Layout(visible: [a, b, clock])
-        let c = make(o, rec, status: allInPlace([a, b, clock]), plan: PlanSummary(held: [a]))
-        let blank = c.visible.rows.filter { $0.barState == .notConfirmed }
-        #expect(!blank.isEmpty)
-        for r in blank { #expect(r.badge == .none && ArrangeMenuRules.whyText(r) == ArrangeBarState.differsFromYourOrderText) }   // gdu.144 D7: a drawn row on a differing bar says why
-        let text = ArrangeSections.statusLine(perItem: allInPlace([a, b, clock]), lastError: nil, isConverged: true, inFlight: false, content: c)
-        #expect(text != "Converged" && text == ArrangeSections.checkingMenuBar)
-    }
-
     // MARK: 9o9.24 wording follow-ups
-
-    @Test func theNoSafeMoveTimeoutReadsNoSafeMoveWithTryAgainNotCantPinDown() {
-        let timeout = "could not corroborate its position on the bar for 60 s: " + Reconciler.noSafeMoveSkipReason
-        #expect(ArrangeSections.plainReason(timeout) == "No safe move found; the bar hasn't settled")
-        #expect(ArrangeSections.plainReason(Reconciler.noSafeMoveSkipReason) == "No safe move found; the bar hasn't settled")
-        let bar = [k("a"), k("b"), k("c"), clock]
-        let o = ObservedOrder(onBar: bar, parked: [])
-        let c = make(o, Layout(visible: bar), status: [k("b"): .unsupported(timeout)])
-        let r = row(c, k("b"))
-        #expect(r.barState == .cannotPlace("No safe move found; the bar hasn't settled") && r.badge.glyph == "⚠")
-        #expect(ArrangeMenuRules.showsTryAgain(r))
-    }
-
-    @Test func uncorroboratedRowsReadTheSameTextWithOrWithoutASkipOfTheirOwn() {
-        let a = k("a"), b = k("b"), c = k("c")
-        let rec = Layout(visible: [a, b, c, clock])
-        let o = ObservedOrder(onBar: [a, b, c, clock], parked: [], uncorroborated: [b])
-        let plain = make(o, rec, status: allInPlace([a, b, c, clock]))
-        let waiting = make(o, rec, status: { var s = allInPlace([a, b, c, clock]); s[b] = .waitingForPosition(Reconciler.uncorroboratedSkipReason); return s }())
-        for content in [plain, waiting] {
-            #expect(row(content, b).badge.glyph == "~")
-            #expect(row(content, b).badgeTooltip == "Sommelier can't pin down where this item is on the bar (it looks in place)")
-        }
-        // neighbours disagree
-        let o2 = ObservedOrder(onBar: [b, a, c, clock], parked: [], uncorroborated: [a])
-        let w2 = make(o2, rec, status: { var s = allInPlace([a, b, c, clock]); s[a] = .waitingForPosition(Reconciler.uncorroboratedSkipReason); return s }())
-        #expect(row(w2, a).badgeTooltip == "Sommelier can't pin down where this item is on the bar")
-        // "Position being re-read" stays for STALE frames
-        let o3 = ObservedOrder(onBar: [a, b, c, clock], parked: [], uncorroborated: [b], staleOnBar: [b])
-        let w3 = make(o3, rec, status: { var s = allInPlace([a, b, c, clock]); s[b] = .waitingForPosition(Reconciler.staleFrameSkipReason); return s }())
-        #expect(row(w3, b).badgeTooltip == "Position being re-read")
-    }
 
     @Test func aStaleOrUncorroboratedPileKeyShowsTheChevronNotTheTilde() {
         let p1 = k("p1"), p2 = k("p2"), d = k("d")

@@ -216,7 +216,7 @@ private struct HoldObserver: MenuBarObserver {
 struct HoldRig { let engine: LayoutEngine; let state: EngineState; let actuator: FakeActuator; let bar: HoldBar; let layout: Layout }
 
 @MainActor
-func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMessage, drop: [String] = ["P1"], record: [String]? = nil) async -> HoldRig {
+func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMessage, drop: [String] = ["P1"], record: [String]? = nil, configure: (inout LayoutEngine.Config) -> Void = { _ in }) async -> HoldRig {
     // P1..P3 folded behind «; the record wants each of them out between the drawn keys. gdu.144: nothing is pulled out on the engine's own
     // initiative; `drop` lists the folded keys the USER drops (after one observing pass), each of which gets exactly one pull-out attempt.
     let (p1, p2, p3, d1, d2, d3, d4) = (k("P1"), k("P2"), k("P3"), k("D1"), k("D2"), k("D3"), k("D4"))
@@ -227,10 +227,12 @@ func holdRig(failCalls: Int, message: String = ActuationError.stripOpenFailureMe
     for n in 0..<failCalls { await act.failOnCall(n + 1, .mechanismFailed(message)) }
     let state = EngineState()
     let bar = HoldBar()
+    var cfg = LayoutEngine.Config.multiMove
+    configure(&cfg)
     let engine = LayoutEngine(observer: HoldObserver(actuator: act), actuator: act, store: InMemoryLayoutStore(layout), capabilities: HoldCaps(),
                               state: state, resolveSnapshot: { s in
                                   s.items.compactMap { i in ItemKey(storeKey: i.axIdentifier.isEmpty ? i.title : i.axIdentifier).map { ResolvedItem(item: i, key: $0, confidence: .exact) } } },
-                              sleep: { _ in }, log: { bar.add($0) }, config: .multiMove)
+                              sleep: { _ in }, log: { bar.add($0) }, config: cfg)
     await engine.start()
     _ = await engine.reconcileOnce()   // observes the bar (the folded set), plans nothing: the drawn order is the record's
     if !drop.isEmpty { await engine.setLayout(layout, moved: Set(drop.map(k))) }
@@ -264,11 +266,11 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         // budgeted engine move; the old engine made no drag in its first pass), it fails and holds the bar; the second is the USER's drop of P1, which the hold never
         // blocks (its one attempt). The assertion that guards safety is kept: nothing is dragged again over the 16 further passes (n stays 2).
         #expect(n == 2)
-        #expect(await r.engine.stripOpenHold != nil)
-        // gdu.144: P2/P3 were never asked for, so nothing is planned for them (nothing to hold); the hold still reports N folded
-        #expect(r.state.lastPlan.stripHoldFolded == 3 && !r.state.lastPlan.stripHeld.isEmpty)   // the drawn mismatch is held, not dragged
-        for key in r.state.lastPlan.stripHeld {   // held: a neutral row, never pending / moving / a warning
-            switch r.state.perItem[key] { case .pending?, .moving?, .unsupported?, .failed?: Issue.record("held \(key) reads \(String(describing: r.state.perItem[key]))"); default: break }
+        // sommelier-ejb.7, CHANGED because the core decides: the hold is the core's (`hold`), not `stripOpenHold` / `lastPlan.stripHeld`. The property is kept through
+        // what the core shows: the bar differs, no drag is moving, and the move count above did not grow. (The "N folded" text is CoreStatusTextTests'.)
+        #expect(r.state.coreStatus != .moving && r.state.coreStatus != .matches)
+        for key in r.state.perItem.keys {   // held: a neutral row, never pending / moving / unsupported (the user's own failed pull-out reads failed, display only)
+            switch r.state.perItem[key] { case .pending?, .moving?, .unsupported?: Issue.record("held \(key) reads \(String(describing: r.state.perItem[key]))"); default: break }
         }
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
     }
@@ -280,14 +282,12 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         #expect(await moveCalls(r.actuator) == 1)
         await r.actuator.removeItem(k("D4"))        // the drawn count changes, on every one of these passes
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
-        #expect(await r.engine.stripOpenHold != nil)   // NOT released
-        #expect(await moveCalls(r.actuator) == 1)
+        #expect(await moveCalls(r.actuator) == 1)   // NOT released (sommelier-ejb.7: asserted through the move count; the hold is the core's)
         await r.engine.setLayout(r.layout, moved: [k("P2")])   // the user drops the next folded key: its one attempt
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 2)
         await r.engine.userRetry()               // Retry releases the hold; the folded requests are spent, so only the engine's budgeted moves may follow
-        let (released, calls) = (await r.engine.stripOpenHold == nil, await moveCalls(r.actuator))
-        #expect(released && calls == 2)
+        #expect(await moveCalls(r.actuator) == 2)
     }
 
     @Test func withoutTheHoldTheSameWorldWouldDragAgainEveryPass() async {
@@ -295,7 +295,6 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         let r = await holdRig(failCalls: 0)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }   // the full-bar gate needs two agreeing reads before the first drag
         #expect(await moveCalls(r.actuator) >= 1)
-        #expect(await r.engine.stripOpenHold == nil)
     }
 }
 
@@ -307,22 +306,4 @@ func moveCalls(_ a: FakeActuator) async -> Int {
         ItemInfo(key: key, title: "", axDescription: "\(key)", ownerPID: 1, ownerBundleID: "com.x", ownerName: "Owner", width: 30, isOnBar: true, systemOverflow: false)
     }
 
-    @Test func aHeldFoldRowShowsTheChevronAndTheReasonNeverMoving() {
-        let (p1, d1, d2) = (k("P1"), k("D1"), k("D2"))
-        let o = ObservedOrder(onBar: [p1, d1, d2, chevKey], parked: [], systemOverflow: [p1], overflowChevron: chevKey)
-        let layout = Layout(visible: [d1, p1, d2])
-        var plan = PlanSummary(plan: Reconciler().plan(observed: o, layout: layout, capabilities: caps, held: []), held: [])
-        plan.stripHeld = [p1]; plan.stripHoldFolded = 1
-        let c = ArrangeSections.make(observed: o, layout: layout, items: Dictionary(uniqueKeysWithValues: [p1, d1, d2].map { ($0, info($0)) }),
-                                     perItem: [p1: .notFitting, d1: .inPlace, d2: .inPlace], capabilities: caps, lastPlan: plan)
-        let r = c.visible.rows.first { $0.key == p1 }!
-        #expect(r.barState == .behindChevron && r.badge == .behindChevron && r.badge.glyph == "«")
-        #expect(r.stateNote?.contains(Reconciler.stripUnavailableSkipReason) == true)
-        var ctx = ArrangeSections.StatusContext(); ctx.stripHoldFolded = 1
-        let line = ArrangeSections.statusLine(perItem: [p1: .notFitting, d1: .inPlace, d2: .inPlace], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx)
-        #expect(line == "The bar is full: macOS folds 1 item behind «. Hide items to make room.")
-        ctx.stripHoldFolded = 31
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, content: c, context: ctx).contains("folds 31 items behind «"))
-        #expect(!line.contains("Moving") && !line.contains("Waiting"))
-    }
 }

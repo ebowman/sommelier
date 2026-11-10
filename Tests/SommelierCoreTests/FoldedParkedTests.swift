@@ -144,11 +144,10 @@ private func incident(chevron: Bool = true) -> Incident {
         let l = layout ?? inc.layout
         var st: [ItemKey: ItemStatus] = [:]
         for key in o.onBar + o.parked { st[key] = ArrangeSections.foldBaseStatus(key, layout: l, observed: o) }
-        let plan = Reconciler().plan(observed: o, layout: l, capabilities: caps)
         let items = Dictionary(uniqueKeysWithValues: (o.onBar + o.parked).map {
             ($0, ItemInfo(key: $0, title: "", axDescription: "\($0)", ownerPID: 1, ownerBundleID: "com.x", ownerName: "Owner", width: 24, isOnBar: o.onBar.contains($0), systemOverflow: false))
         })
-        let c = ArrangeSections.make(observed: o, layout: l, items: items, perItem: st, capabilities: caps, lastPlan: PlanSummary(plan: plan, held: []))
+        let c = ArrangeSections.make(observed: o, layout: l, items: items, perItem: st, capabilities: caps)
         return (c, o, st)
     }
 
@@ -165,13 +164,6 @@ private func incident(chevron: Bool = true) -> Incident {
         let line = try #require(c.visible.rows.firstIndex { $0.isBoundary })
         let lastOverflowed = try #require(c.visible.rows.lastIndex { Set(inc.folded + inc.pile).contains($0.key) })
         #expect(line == lastOverflowed + 1)
-    }
-
-    @Test func foldedKeysDoNotMakeTheStatusLineWaitOrMove() {
-        let inc = incident()
-        let (c, _, st) = content(inc)
-        let line = ArrangeSections.statusLine(perItem: st, lastError: nil, isConverged: true, inFlight: false, content: c)
-        #expect(!line.contains("Waiting") && !line.contains("Moving"))
     }
 
     @Test func whereTheFoldFallsNeverMakesAKeyPendingWhateverTheRecord() {

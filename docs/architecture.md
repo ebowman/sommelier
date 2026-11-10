@@ -265,6 +265,11 @@ Exact-frame tie-break (gdu.84, `SystemOverflowRule.exactFrameMatch`, the `exactF
 
 ## (c) The reconciler
 
+> **Update (sommelier-ejb.7).** `Reconciler.plan` is MEMBERSHIP-ONLY now (hide, show, new items and their skips). Its order phase, `crossFoldMove`, the gates, the strip hold, the engine
+> budget, the attempt/strike memory and the fold request described in this section and in "Plan details", "Crossing the « fold", "Overfull bars" and "The safety envelope" are
+> DELETED. Every order move is decided by the proved core (`DecisionCore.step`, docs/verified-core.md) and made at the single `actuator.move(` site in `LayoutEngine`;
+> `scripts/check-single-decider.sh` enforces that. Read those passages as the history of the rules the core now implements.
+
 `Reconciler.plan(observed:layout:capabilities:showHiddenSection:held:...)` (`Reconciler.swift`) is pure: an `ObservedOrder` (on-bar
 left to right plus parked; width <= 1 items excluded; stale on-bar items kept at their last-known x and listed in `staleOnBar`;
 stale parked items excluded) and a `Layout` in, a `Plan` out. The engine loops observe -> plan -> act -> verify.
@@ -963,6 +968,11 @@ engine's published state; it never computes a claim of its own about the bar.
 ## Reference: the engine and the platform
 
 ### LayoutEngine (the loop)
+
+> **Update (sommelier-ejb.7).** In the loop below, step (c) plans membership only; the order phase (h) performs the ONE action the core emitted (`coreAction`), after the Swift-only
+> vetoes (pause, conflict, sleep, user interaction, superseded layout), and answers it with exactly one `moveResult`. Everything the text says about `userEditMoved`, `stripOpenHold`,
+> `lastFreshChevronObs`, `engineMoveCount`, `cannotPlace`, `foldDropRequest` etc. is the deleted mechanism; the kept flags are `userEditPassOwed`, `userEditChain` (they schedule passes and
+> send `passBoundary`) and `foldMemory`.
 
 `LayoutEngine` (actor, `LayoutEngine.swift`) runs the observe -> plan -> act -> verify loop; `EngineState` (`@MainActor @Observable`) is the only thing the UI binds to.
 

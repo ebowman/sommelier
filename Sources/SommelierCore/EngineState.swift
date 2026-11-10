@@ -26,45 +26,13 @@ public enum ItemStatus: Equatable, Sendable {
     case cannotPlace(reason: String, attempts: Int)
 }
 
-/// 9o9.5: what the engine's last plan decided, published after every pass so Arrange DISPLAYS the plan instead of re-deriving it.
+/// 9o9.5 / sommelier-ejb.7: the pass that last published a plan. The Arrange drop tracker hands a drop over only to a plan published by a pass that
+/// started AFTER the drop (a busy-skipped pass publishes none and so never counts). The order planner is gone: rows and status come from the core
+/// (`EngineState.coreDisplay`), so this carries nothing else.
 public struct PlanSummary: Equatable, Sendable {
-    /// Subjects of every action in the last plan (including the ones the one-move-at-a-time cap defers).
-    public var moving: Set<ItemKey> = []
-    /// Keys the planner would move but cannot spell safely: subject -> the untrusted / unsteady key ("wall") in the way.
-    public var blocked: [ItemKey: ItemKey] = [:]
-    /// The engine's held set: given up on (cannotPlace) or unverified after a hand drag or failed at the strike limit. Out of the record
-    /// for planning purposes; Arrange leaves them out when judging whether a neighbour sits where the record says.
-    public var held: Set<ItemKey> = []
-    /// 9o9.5: trusted keys blocked because none of their candidate moves lands safely, with no untrusted key to name as the wall.
-    public var blockedNoWall: Set<ItemKey> = []
-    /// 9o9.5: `passesStarted` of the pass that PUBLISHED this plan (0 = never). A drop is handed over to this plan only when it was
-    /// published by a pass that started after the drop; a busy-skipped pass publishes no plan and so never counts.
+    /// `passesStarted` of the pass that PUBLISHED this plan (0 = never).
     public var passStarted: Int = 0
-    /// gdu.126: fold-move subjects withheld by the bar-level strip hold, and the folded count while the hold is active.
-    public var stripHeld: Set<ItemKey> = []
-    public var stripHoldFolded: Int?
-    public var stripHoldUnplaceable = false
-    public var stripHoldDidNotHold = false   // gdu.134
-    /// gdu.136: moves withheld after the user's edit, and the keys the edit moved (the status line's "Done: X. Next: Y").
-    public var deferredAfterUserEdit: [ItemKey] = []
-    public var userEditMoved: [ItemKey] = []
-    /// gdu.144 D8: moves were withheld (gate / hold / spent budget) while the bar differs from the record: the engine has stopped moving items on its own.
-    public var stoppedWhileDiffering = false
-    /// gdu.144 D8: the trusted drawn keys differ from the record, and the number of drawn Visible keys whose order cannot be judged (unread).
-    public var orderDiffers = false
-    public var unreadDrawn = 0
-    /// gdu.144: the bar is assumed full and this read has no chevron: no row is a check, not converged ("Checking the menu bar…").
-    public var checkingBar = false
-    public init(moving: Set<ItemKey> = [], blocked: [ItemKey: ItemKey] = [:], held: Set<ItemKey> = [], blockedNoWall: Set<ItemKey> = [], passStarted: Int = 0) {
-        self.moving = moving; self.blocked = blocked; self.held = held; self.blockedNoWall = blockedNoWall; self.passStarted = passStarted
-    }
-    public init(plan: Plan, held: Set<ItemKey>) {
-        self.init(moving: Set(plan.actions.map { a -> ItemKey in switch a { case .move(let k, _), .hide(let k), .show(let k): return k } }),
-                  blocked: plan.blockedBy, held: held, blockedNoWall: plan.blockedNoWall)
-        stripHeld = plan.stripHeld; stripHoldFolded = plan.stripHoldFolded; stripHoldUnplaceable = plan.stripHoldUnplaceable; stripHoldDidNotHold = plan.stripHoldDidNotHold
-        deferredAfterUserEdit = plan.deferredAfterUserEdit; userEditMoved = plan.userEditMoved
-        checkingBar = plan.checkingBar; stoppedWhileDiffering = plan.gatedDiffers; orderDiffers = plan.orderDiffers; unreadDrawn = plan.unreadDrawn
-    }
+    public init(passStarted: Int = 0) { self.passStarted = passStarted }
 }
 
 public enum EngineError: Equatable, Sendable {
@@ -147,9 +115,6 @@ public final class EngineState {
     /// 9o9.5: keys the user moved by hand in the menu bar whose new position is still unread (stale or ambiguous): held out of planning
     /// by the engine, shown by Arrange as "Moved by you in the menu bar; waiting to read its new position". Never a check.
     public var unverifiedAfterHandDrag: Set<ItemKey> = []
-    /// gdu.80: set by a reveal pass on a full bar whose layout order differs from the bar: membership was applied, the order was
-    /// not (macOS decides what fits). Cleared at the start of every pass.
-    public var orderNotAppliedNotice: String?
     /// gdu.89: why the move in flight happens ("Moving X: you placed it after Y"); set before each planned drag, cleared when the order
     /// phase ends and at the start of every pass. `orderMoveReasons` is the same text per moving key (the row badge tooltip).
     public var orderMoveNotice: String?
@@ -164,8 +129,6 @@ public final class EngineState {
     public var pollSuppression: PollSuppression?
     /// 9o9.4: the user chose "Pause Sommelier": observation continues, no actuator call is made. Never persisted.
     public var userPaused: Bool = false
-    /// 9o9.4: the per-minute order-move cap is active until this time (order phase skipped, membership still runs); nil when not capped.
-    public var orderCapUntil: Date?
     /// 9o9.4: why the last pass ended without actuating (a menu open, the mouse down, a modifier held, an Arrange drag, a locked screen);
     /// nil once a pass is allowed to actuate again.
     public var pauseReason: String?

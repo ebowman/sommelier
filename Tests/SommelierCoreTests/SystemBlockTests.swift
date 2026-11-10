@@ -50,48 +50,4 @@ struct TrailingSystemBlockPlanTests {
         return (last, o)
     }
 
-    @Test func itemAfterClockIsSkippedAndRelocated() {
-        let bar: [ItemKey] = [k("d"), k("x"), k("y"), wifi, k("z"), bento, clock]
-        let layout = Layout(visible: [k("x"), k("y"), wifi, k("z"), bento, clock, k("d")])
-        let p = Reconciler().plan(observed: ObservedOrder(onBar: bar, parked: []), layout: layout, capabilities: caps)
-        #expect(p.skipped.contains { $0.key == k("d") && $0.reason.contains("cannot be placed right of the system items") })
-        #expect(p.actions.count == 1)
-        for a in p.actions {
-            guard case .move(let s, let rel) = a else { Issue.record("non-move"); continue }
-            #expect(s == k("d"))
-            if case .after(let t) = rel { #expect(t != bento && t != clock) }
-            if case .rightmost = rel { Issue.record("rightmost") }
-        }
-        var o = ObservedOrder(onBar: bar, parked: [])
-        for a in p.actions { o = PlanSimulator.apply(a, to: o) }
-        let i = o.onBar.firstIndex(of: bento)!
-        #expect(o.onBar[i - 1] == k("d"))
-        #expect(o.onBar.suffix(2) == [bento, clock])
-        #expect(p.desiredOnBar == o.onBar)
-        #expect(settle(ObservedOrder(onBar: bar, parked: []), layout).0.actions.isEmpty)
-    }
-
-    @Test func itemBetweenNonTrailingAnchorsPlansNormally() {
-        let bar: [ItemKey] = [k("d"), k("x"), wifi, k("z"), bento, clock]
-        let layout = Layout(visible: [k("x"), wifi, k("d"), k("z"), bento, clock])
-        let p = Reconciler().plan(observed: ObservedOrder(onBar: bar, parked: []), layout: layout, capabilities: caps)
-        #expect(p.skipped.isEmpty)
-        #expect(p.actions.count == 1)
-        #expect(p.desiredOnBar == layout.visible)
-    }
-
-    @Test func movesPostCondition() {
-        let base: [ItemKey] = [k("d"), k("e"), k("x"), wifi, bento, clock]
-        let target: [ItemKey] = [k("x"), k("e"), k("d"), wifi, bento, clock]
-        let anchors: Set<ItemKey> = [wifi, bento, clock]
-        let start = Reconciler.trailingBlockStart(base: base, anchors: anchors)
-        #expect(start == 3)
-        let acts = Reconciler.moves(from: base, to: target, anchors: anchors)
-        #expect(!acts.isEmpty)
-        #expect(Reconciler.violations(acts, target: target, anchors: anchors, blockStart: start).isEmpty)
-        // A target that places a movable inside the block does violate.
-        let bad: [ItemKey] = [k("x"), k("e"), wifi, bento, clock, k("d")]
-        let badActs = Reconciler.moves(from: base, to: bad, anchors: anchors)
-        #expect(!Reconciler.violations(badActs, target: bad, anchors: anchors, blockStart: start).isEmpty)
-    }
 }

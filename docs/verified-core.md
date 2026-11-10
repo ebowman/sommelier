@@ -6,8 +6,10 @@ The model is `lean/Sommelier/Model.lean` (types), the decision function is `lean
 `#eval` examples that are also `decide`-checked, including every counterexample a reviewer found. macOS is an adversary: the safety theorems
 quantify over ALL event lists, and `Model.lean` alone never says what a read means; `Truth.lean` says it, from stated assumptions.
 
-**Status.** The Swift app does NOT yet run this model. `step`, `statusLine` and `rowLine` are a specification written beside the app; the mapping in
-this document is a reading of the Swift code, to be tested on a device at ejb.8. The theorems are proved about the model. The assumptions they rest on
+**Status (ejb.7).** The Swift app RUNS this model: `LayoutEngine` feeds real reads, user events and actuator results to `DecisionCore.step`, performs the one action it
+emits, and shows `statusLine` / `rowLine`. The old Swift order planner, holds, budget, strikes, grants and fold requests are DELETED (`scripts/check-single-decider.sh` keeps them
+gone); the "Lean to rule" table below names the Swift mechanism each Lean field replaced, for traceability only. The mapping in
+this document is a reading of the former Swift code, to be tested on a device at ejb.8. The theorems are proved about the model. The assumptions they rest on
 (A1, A2, A3, A6, A7 and leftmost folding, see `Truth.lean`) are unproved facts about macOS and the adapter, believed from observation: if one is false
 on a device, the theorems that use it say nothing about that device.
 
@@ -19,9 +21,11 @@ on a device, the theorems that use it say nothing about that device.
   (evidence rules below apply to all of them).
 - A user's pass is the span from a user event to the next `passBoundary`. After `userEdit` (non-empty moved) and `retryKey` only owed keys move; `userRetry` (Re-apply) starts an UNRESTRICTED pass (the engine may move, with one strip grant).
 - Owed user moves (the fold request first) are planned before the engine's, never both in one read.
-- The planner is a stub (first inversion); `ejb.4` replaces it.
+- The planner is a stub (first inversion); `ejb.4` replaces it. The old Swift planner (`Reconciler` order phase) is deleted (ejb.7): this stub is the only order planner.
 
 ## Lean to rule
+
+*Historical (sommelier-ejb.7): the right-hand column names the Swift mechanisms that these Lean fields replaced. They no longer exist; only `LayoutEngine.foldMemory` (membership-only, never decides a move) remains of the fold memory.*
 
 | Lean | Swift / rule |
 |---|---|

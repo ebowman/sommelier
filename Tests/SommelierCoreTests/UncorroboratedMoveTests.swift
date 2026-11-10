@@ -24,26 +24,6 @@ struct UncorroboratedMoveTests {
         [mi("a", x: 100), mi("l", x: 140), mi("z", x: 180), airmail]
     }
 
-    @Test func corroboratedJoinMoves() {
-        let p = plan(bar(mi("airmail", x: 220)))
-        #expect(p.actions == [.move(k("airmail"), .after(k("a")))])
-        #expect(p.skipped.isEmpty)
-    }
-
-    @Test func noJoinPlansNoMoveAndSkips() {
-        let p = plan(bar(mi("airmail", x: 220, join: .none)))
-        #expect(p.actions.isEmpty)
-        #expect(p.skipped.filter { $0.key == k("airmail") }.map(\.reason) == [Reconciler.uncorroboratedSkipReason])
-    }
-
-    @Test func ambiguousJoinAndControlCenterFlagsPlanNoMove() {
-        for airmail in [mi("airmail", x: 220, join: .frameAmbiguous), mi("airmail", x: 220, ccAllowed: false), mi("airmail", x: 220, ccHidden: true)] {
-            let p = plan(bar(airmail))
-            #expect(p.actions.isEmpty)
-            #expect(p.skipped.filter { $0.reason == Reconciler.uncorroboratedSkipReason }.count == 1)
-        }
-    }
-
     @Test func alreadyPlacedUncorroboratedKeyIsSilent() {
         let items = [mi("a", x: 100), mi("airmail", x: 140, join: .none), mi("l", x: 180), mi("z", x: 220)]
         let p = plan(items)

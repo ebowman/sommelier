@@ -674,7 +674,6 @@ func runPlan(_ a: [String]) async {
             "newItems": plan.newItems.map { "\($0.key) -> \($0.section.rawValue)" },
             "absent": plan.absent.map(\.description),
             "skipped": plan.skipped.map { "\($0.key): \($0.reason)" },
-            "desiredOnBar": plan.desiredOnBar.map(\.description),
         ]
         let d = try! JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
         print(String(decoding: d, as: UTF8.self))
@@ -689,8 +688,7 @@ func runPlan(_ a: [String]) async {
     print("absent: \(plan.absent.count)" + (plan.absent.isEmpty ? "" : " (first 5: " + plan.absent.prefix(5).map(\.description).joined(separator: ", ") + ")"))
     print("skipped (\(plan.skipped.count)):")
     for s in plan.skipped { print("  \(s.key): \(s.reason)") }
-    print("desiredOnBar (\(plan.desiredOnBar.count)):")
-    for (n, k) in plan.desiredOnBar.enumerated() { print("  \(n + 1). \(k)") }
+    // (membership only: the order is the proved core's, `Reconciler` has no order planner)
 }
 
 @MainActor
@@ -752,10 +750,8 @@ func runApply(_ a: [String]) async {
     if let e = state.lastError { fail("\(e)") }
     let t0 = Date()
     let report = await engine.reconcileOnce()
-    let view = Reconciler().plan(observed: state.observed, layout: state.layout, capabilities: { rules.capability(for: $0) },
-                                 showHiddenSection: showHidden, units: state.hideUnits)
     var shown = Set<ItemKey>()
-    for k in view.desiredOnBar + state.observed.onBar + state.observed.parked where shown.insert(k).inserted {
+    for k in state.observed.onBar + state.observed.parked where shown.insert(k).inserted {
         switch state.perItem[k] ?? .inPlace {
         case .inPlace: print("= \(k)")
         case .pending: print("~ \(k)")

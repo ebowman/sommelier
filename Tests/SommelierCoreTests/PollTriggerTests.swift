@@ -357,9 +357,10 @@ private func rig(_ initial: [MenuBarItem] = base, config: PollConfig = PollConfi
     }
 
     @Test func suppressionStatusLineIsNotAnErrorAndNamesTheItems() {
-        let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, pollPausedNames: ["Foo", "Bar"])
-        #expect(line == "Poll paused 5 min: Foo, Bar flapping")
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == ArrangeSections.checkingMenuBar)
+        // sommelier-ejb.7: `ArrangeSections.statusLine` is gone; the bottom line is `CoreStatusText` (the poll-paused text is a trailer, never a leader)
+        var c = CoreStatusContext(); c.pollPaused = ArrangeSections.pollPausedText(["Foo", "Bar"])
+        #expect(CoreStatusText.render(.matches, c) == "Menu bar matches · Poll paused 5 min: Foo, Bar flapping")
+        #expect(CoreStatusText.render(nil, CoreStatusContext()) == ArrangeSections.checkingMenuBar)
     }
 
     // gdu.60: the e7t confirm pass of a steady disagreement is free; flappers stay capped.

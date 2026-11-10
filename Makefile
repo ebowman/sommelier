@@ -23,6 +23,7 @@ build: lean-core
 # The ReadAdapter property test (AdapterPropertyTests, ~1 s of CPU) runs in its OWN invocation after the main suite, never concurrently with the
 # timing-sensitive engine tests (it starved Gdu126 / Gdu144Adversarial when they shared a run). Plain `swift test` runs both targets, one after the other.
 test: lean-core
+	scripts/check-single-decider.sh
 	swift test --skip AdapterPropertyTests
 	swift test --filter AdapterPropertyTests
 

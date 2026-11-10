@@ -36,6 +36,7 @@ swift_decision_tests() {
   swift test --filter DecisionCoreTests
 }
 
+step "single decider"      scripts/check-single-decider.sh
 step "lake build"          bash -c 'cd lean && lake build'
 step "check-lean-axioms"   scripts/check-lean-axioms.sh
 step "lake exe fuzz"       bash -c 'cd lean && lake exe fuzz'

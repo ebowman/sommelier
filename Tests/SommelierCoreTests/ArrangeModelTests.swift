@@ -413,29 +413,12 @@ private func crossName(_ key: ItemKey) -> String { key == istat67 ? "CPU" : "\(k
     #expect(l.newItemPolicy == .hidden && l.isValid)
 }
 
-@Test func unsettledObservationIsShownAsObservedButUnsettled() {
-    #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: false, inFlight: false, observationSettled: false) == "Observing (unsettled)")
-    #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, observationSettled: true) == ArrangeSections.checkingMenuBar)
-    // An error still wins over the unsettled note.
-    #expect(ArrangeSections.statusLine(perItem: [:], lastError: .permissionDenied, isConverged: false, inFlight: false, observationSettled: false) == "Accessibility required")
-    // With no lastError (an unsettled observation clears it) the capsules render instead of the placeholder.
+@Test func anObservationWithoutAnErrorRendersTheCapsulesNotThePlaceholder() {
+    // (the status-line half of the former `unsettledObservationIsShownAsObservedButUnsettled` went with `ArrangeSections.statusLine`, sommelier-ejb.7)
     let o = ObservedOrder(onBar: [k("a"), k("b")], parked: [])
     let c = ArrangeSections.make(observed: o, layout: Layout(visible: [k("a"), k("b")]), items: [:], perItem: [:], capabilities: { _ in Capability(canMove: true, canHide: true) },
                                  observationProblem: ArrangeSections.observationProblem(lastError: nil))
     #expect(c.observedAvailable && c.visiblePlaceholder == nil)
-}
-
-@Test func statusLineCountsPendingAndFailures() {
-    func s(_ p: [ItemKey: ItemStatus], err: EngineError? = nil, conv: Bool = true, await n: Int = 0) -> String {
-        ArrangeSections.statusLine(perItem: p, lastError: err, isConverged: conv, inFlight: false, pendingAwaiting: n)
-    }
-    #expect(s([k("a"): .inPlace]) == ArrangeSections.checkingMenuBar)
-    #expect(s([k("a"): .pending, k("b"): .moving], conv: false) == "Moving 2 items…")
-    #expect(s([:], conv: false) == "Working…")
-    #expect(s([:], await: 1) == "Moving…")
-    #expect(s([k("a"): .failed(.timeout)]) == "1 failed")
-    #expect(s([:], err: .stoppedAfterFailures(3)) == "Error: stopped after 3 failures")
-    #expect(s([k("a"): .pending], err: .observe("boom")) == "Error: boom · Moving…")
 }
 
 // MARK: the waiting state machine

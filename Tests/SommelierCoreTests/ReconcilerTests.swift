@@ -18,11 +18,6 @@ struct ReconcilerTests {
     @Test func converged() {
         let p = rec.plan(observed: obs(["a", "b"], ["c"]), layout: lay(v: ["a", "b"], h: ["c"]), capabilities: free)
         #expect(p.phase == .converged); #expect(p.actions.isEmpty)
-        #expect(p.desiredOnBar == [k("a"), k("b")])
-    }
-    @Test func oneSwapIsOneMove() {
-        let p = rec.plan(observed: obs(["a", "b", "c"]), layout: lay(v: ["b", "a", "c"]), capabilities: free)
-        #expect(p.phase == .order); #expect(p.actions.count == 1)
     }
     @Test func hiddenOnBarGetsHide() {
         let p = rec.plan(observed: obs(["a", "b"]), layout: lay(v: ["a"], h: ["b"]), capabilities: free)
@@ -31,7 +26,6 @@ struct ReconcilerTests {
     @Test func parkedVisibleGetsShow() {
         let p = rec.plan(observed: obs(["a"], ["b"]), layout: lay(v: ["a", "b"]), capabilities: free)
         #expect(p.phase == .membership); #expect(p.actions == [.show(k("b"))])
-        #expect(p.desiredOnBar == [k("a"), k("b")])
     }
     @Test func hidesPrecedeShows() {
         let p = rec.plan(observed: obs(["a", "b"], ["c"]), layout: lay(v: ["a", "c"], h: ["b"]), capabilities: free)
@@ -42,18 +36,16 @@ struct ReconcilerTests {
                          capabilities: free, showHiddenSection: true)
         #expect(p.phase == .membership)
         #expect(p.actions == [.hide(k("x")), .show(k("h2"))])
-        // After applying, order phase puts hidden after visible.
+        // After applying, membership is done (the order of what is shown is the core's, sommelier-ejb.7).
         var o = obs(["h", "v", "x"], ["h2"])
         for a in p.actions { o = PlanSimulator.apply(a, to: o) }
         let p2 = rec.plan(observed: o, layout: lay(v: ["v"], h: ["h", "h2"], a: ["x"]), capabilities: free, showHiddenSection: true)
-        #expect(p2.phase == .order)
-        #expect(p2.desiredOnBar == [k("v"), k("h"), k("h2")])
+        #expect(p2.phase == .converged && p2.actions.isEmpty)
     }
     @Test func unknownOnBarVisibleAtEnd() {
         let p = rec.plan(observed: obs(["n2", "a", "n1"]), layout: lay(v: ["a"]), capabilities: free)
-        #expect(p.desiredOnBar == [k("a"), k("n2"), k("n1")])
         #expect(p.newItems == [NewItem(k("n2"), .visible), NewItem(k("n1"), .visible)])
-        #expect(p.phase == .order)
+        #expect(p.phase == .converged)
     }
     @Test func unknownOnBarHiddenPolicy() {
         let p = rec.plan(observed: obs(["a", "n"]), layout: lay(v: ["a"], policy: .hidden), capabilities: free)
@@ -63,67 +55,13 @@ struct ReconcilerTests {
         let p = rec.plan(observed: obs(["a"], ["n"]), layout: lay(v: ["a"]), capabilities: free)
         #expect(p.phase == .converged); #expect(p.newItems == [NewItem(k("n"), .hidden)])
     }
-    @Test func immovableAnchorInMiddle() {
-        let anchor = k("m")
-        let caps = { (key: ItemKey) in key == anchor ? Capability(canMove: false, canHide: false, reason: "r") : Capability(canMove: true, canHide: true) }
-        let layout = lay(v: ["d", "c", "m", "b", "a"])
-        var o = obs(["a", "b", "m", "c", "d"])
-        var moved: [ItemKey] = []
-        for _ in 0..<3 {
-            let p = rec.plan(observed: o, layout: layout, capabilities: caps)
-            if p.phase == .converged { break }
-            for a in p.actions { if case .move(let key, _) = a { moved.append(key) }; o = PlanSimulator.apply(a, to: o) }
-        }
-        #expect(!moved.contains(anchor))
-        #expect(rec.plan(observed: o, layout: layout, capabilities: caps).phase == .converged)
-        #expect(o.onBar.firstIndex(of: anchor) == 2)
-    }
-    /// Regression (gdu.12 live): the agent re-showed two items at the left end, next to immovable modules. The planner
-    /// must move those two right, not drag every other item left past the modules.
-    @Test func anchorsArePartOfTheTarget() {
-        let mods: Set<ItemKey> = [k("wifi"), k("focus"), k("av")]
-        let caps = { (key: ItemKey) in mods.contains(key) ? Capability(canMove: false, canHide: false, reason: "module") : Capability(canMove: true, canHide: true) }
-        let target = ["wifi", "tm", "focus", "av", "x", "y", "z", "a", "b"]
-        let layout = lay(v: target)
-        var o = obs(["wifi", "a", "b", "tm", "focus", "av", "x", "y", "z"])
-        let p = rec.plan(observed: o, layout: layout, capabilities: caps)
-        #expect(p.phase == .order)
-        #expect(p.actions.count == 2)
-        #expect(p.skipped.isEmpty)
-        #expect(p.desiredOnBar == target.map(k))
-        for a in p.actions { o = PlanSimulator.apply(a, to: o) }
-        #expect(o.onBar == target.map(k))
-        #expect(rec.plan(observed: o, layout: layout, capabilities: caps).phase == .converged)
-    }
-
-    @Test func anchorsInWrongRelativeOrderAreReportedAndRestConverges() {
-        let mods: Set<ItemKey> = [k("m1"), k("m2")]
-        let caps = { (key: ItemKey) in mods.contains(key) ? Capability(canMove: false, canHide: false, reason: "module") : Capability(canMove: true, canHide: true) }
-        // Layout wants m2 before m1; the bar has m1 before m2 and cannot be changed.
-        let layout = lay(v: ["c", "m2", "a", "m1", "b"])
-        var o = obs(["a", "m1", "b", "m2", "c"])
-        let p = rec.plan(observed: o, layout: layout, capabilities: caps)
-        #expect(!p.skipped.isEmpty)
-        #expect(p.skipped.allSatisfy { $0.reason == "immovable item is out of layout order" && mods.contains($0.key) })
-        for _ in 0..<3 {
-            let q = rec.plan(observed: o, layout: layout, capabilities: caps)
-            for a in q.actions { if case .move(let key, _) = a { #expect(!mods.contains(key)) }; o = PlanSimulator.apply(a, to: o) }
-        }
-        #expect(rec.plan(observed: o, layout: layout, capabilities: caps).phase == .converged)
-        #expect(o.onBar.firstIndex(of: k("m1"))! < o.onBar.firstIndex(of: k("m2"))!)
-        // Movables keep their desired relative order: c, a, b.
-        #expect(o.onBar.filter { !mods.contains($0) } == ["c", "a", "b"].map(k))
-    }
-
     @Test func unhideableHiddenIsSkippedAndAnchored() {
         let u = k("u")
         let caps = { (key: ItemKey) in key == u ? Capability(canMove: true, canHide: false, reason: "no entry") : Capability(canMove: true, canHide: true) }
         let layout = lay(v: ["b", "a"], h: ["u"])
         let p = rec.plan(observed: obs(["a", "u", "b"]), layout: layout, capabilities: caps)
         #expect(p.skipped == [SkippedAction(u, "no entry")])
-        #expect(p.phase == .order)
-        #expect(!p.actions.contains { if case .move(u, _) = $0 { true } else { false } })
-        #expect(p.desiredOnBar == [k("b"), u, k("a")])
+        #expect(p.phase == .converged && p.actions.isEmpty)
     }
     @Test func absentReportedAndIgnored() {
         let p = rec.plan(observed: obs(["a"]), layout: lay(v: ["a", "gone"], a: ["gone2"]), capabilities: free)
@@ -147,15 +85,6 @@ struct ReconcilerTests {
         #expect(o.staleOnBar == [k("s")])
         #expect(o.uncorroborated == [k("a"), k("s"), k("b")])
     }
-    @Test func staleOnBarIsNeverMoved() {
-        let o = ObservedOrder(onBar: [k("a"), k("s"), k("b")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
-        let l = Layout(visible: [k("s"), k("a"), k("b")])
-        let p = rec.plan(observed: o, layout: l, capabilities: free)
-        // 9o9.9 (was: no actions): the stale s is still never moved nor named, but the record puts a after s, and a (trusted) can cross s
-        // when spelled against the trusted b on the far side: one safe move reaches the record.
-        #expect(p.actions == [.move(k("a"), .before(k("b")))])
-        #expect(p.actions.reduce(o) { PlanSimulator.apply($1, to: $0) }.onBar == [k("s"), k("a"), k("b")])
-    }
     @Test func staleOnBarHideIsSkipped() {
         let o = ObservedOrder(onBar: [k("a"), k("s")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
         let p = rec.plan(observed: o, layout: lay(v: ["a"], h: ["s"]), capabilities: free)
@@ -176,34 +105,6 @@ struct ReconcilerTests {
         #expect(o.systemOverflow.isEmpty && o.overflowChevron == nil)
         let f = ObservedOrder(resolved: [item("chev", x: 0, chevron: true, stale: false), item("o", x: 10, ovf: true, stale: false)])
         #expect(f.overflowChevron == k("chev") && f.systemOverflow == [k("o")])
-    }
-    @Test func placedNeverHangsOnAStaleNeighbour() {
-        let a = k("A"), b = k("B"), pp = k("P")
-        let o = ObservedOrder(onBar: [a, b, pp], parked: [], uncorroborated: [a], staleOnBar: [a])
-        let l = Layout(visible: [a, b, pp])
-        // P is layout-after B; move it before... put it in a place that needs a move: observed has P last, layout wants A, P, B.
-        let l2 = Layout(visible: [a, pp, b])
-        let p = rec.plan(observed: o, layout: l2, capabilities: free)
-        for case .move(_, let rel) in p.actions { switch rel { case .before(let t), .after(let t): #expect(t != a); default: break } }
-        #expect(p.actions.reduce(o) { PlanSimulator.apply($1, to: $0) }.onBar == [a, pp, b])
-        _ = l
-    }
-    @Test func staleKeyDoesNotExtendTheSystemBlock() {
-        let x = k("X"), s = k("S"), pp = k("P"), cc = ItemKey.module(name: "CC"), clock = ItemKey.module(name: "Clock")
-        let o = ObservedOrder(onBar: [pp, x, s, cc, clock], parked: [], uncorroborated: [s], staleOnBar: [s])
-        let l = Layout(visible: [x, s, pp])
-        let p = rec.plan(observed: o, layout: l, capabilities: { $0 == cc || $0 == clock ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) })
-        // 9o9.9 (was [x, pp, s, cc, clock]): the stale s now sits at its record slot; P crosses it, spelled against the system block's first key.
-        #expect(p.desiredOnBar == [x, s, pp, cc, clock])
-        #expect(p.actions == [.move(pp, .before(cc))])
-        #expect(!p.skipped.contains { $0.reason.hasPrefix("cannot be placed right of the system items") })
-    }
-    @Test func layoutModeIgnoresStaleAnchorOrder() {
-        let a = k("a"), s1 = k("s1"), s2 = k("s2")
-        let o = ObservedOrder(onBar: [s2, s1, a], parked: [], uncorroborated: [s1, s2], staleOnBar: [s1, s2])
-        let p = rec.plan(observed: o, layout: lay(v: ["s1", "s2", "a"]), capabilities: free)
-        #expect(!p.skipped.contains { $0.reason.contains("out of layout order") })
-        #expect(p.actions.isEmpty)
     }
 }
 
@@ -239,20 +140,6 @@ struct SplitMix64: RandomNumberGenerator {
         z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
         return z ^ (z >> 31)
     }
-}
-
-/// Independent bound: N - (max chain through all anchors, by target index), O(n^2) DP with anchor weight 1000.
-private func bound(current: [ItemKey], target: [ItemKey], anchors: Set<ItemKey>) -> Int {
-    let t = Dictionary(uniqueKeysWithValues: target.enumerated().map { ($1, $0) })
-    let n = current.count
-    var best = [Int](repeating: 0, count: n)
-    for i in 0..<n {
-        let w = anchors.contains(current[i]) ? 1000 : 1
-        best[i] = w
-        for j in 0..<i where t[current[j]]! < t[current[i]]! { best[i] = max(best[i], best[j] + w) }
-    }
-    let m = best.max() ?? 0
-    return n - (m % 1000 + m / 1000)   // kept movables + kept anchors (all anchors are on every max chain)
 }
 
 struct ReconcilerRandomTests {
@@ -298,20 +185,11 @@ struct ReconcilerRandomTests {
 
             var converged = false
             var plans = 0
-            var orderStart: [ItemKey]?   // the bar when the first ORDER plan ran: unknown keys keep this relative order
             for _ in 0..<3 {
                 let p = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
                 plans += 1
                 if p.phase == .converged { converged = true; break }
-                if p.phase == .order {
-                    if orderStart == nil { orderStart = o.onBar }
-                    // Anchors for the bound: immovable, or unhideable-but-should-be-hidden (unknown under .hidden policy too).
-                    var a2 = Set(o.onBar.filter { anchorSet.contains($0) })
-                    let blocked = Set(o.onBar.filter { noHide.contains($0) && !want0.contains($0) }.map(\.hideUnit))
-                    for key in o.onBar where blocked.contains(key.hideUnit) && !want0.contains(key) { a2.insert(key) }
-                    let b = bound(current: o.onBar, target: p.desiredOnBar, anchors: a2)
-                    #expect(p.actions.count <= b, fail("moves \(p.actions.count) > bound \(b)"))
-                }
+                #expect(p.phase == .membership, fail("a non-converged plan is a membership plan"))
                 // A plan never hides a subset of an app: per unit, either no on-bar key or all of them.
                 let hiddenNow = Set(p.actions.compactMap { a -> ItemKey? in if case .hide(let x) = a { x } else { nil } })
                 for (unit, ks) in hideUnits(o.onBar) {
@@ -321,19 +199,7 @@ struct ReconcilerRandomTests {
                 var shown = Int.random(in: 0...1000, using: &g)
                 for a in p.actions {
                     switch a {
-                    case .move(let key, let rel):
-                        if case .before(let t) = rel, case let idx = p.actions.firstIndex(of: a)!, p.actions[(idx + 1)...].contains(where: { if case .move(t, _) = $0 { true } else { false } }) {
-                            Issue.record(fail("relation target \(t) is not yet in its final place"))
-                        }
-                        if case .after(let t) = rel, case let idx = p.actions.firstIndex(of: a)!, p.actions[(idx + 1)...].contains(where: { if case .move(t, _) = $0 { true } else { false } }) {
-                            Issue.record(fail("relation target \(t) is not yet in its final place"))
-                        }
-                        #expect(caps(key).canMove, fail("moved immovable \(key)"))
-                        #expect(p.phase == .order, fail("move outside order phase"))
-                        switch rel {
-                        case .before(let t), .after(let t): #expect(o.onBar.contains(t), fail("relation target \(t) not on bar"))
-                        default: break
-                        }
+                    case .move: Issue.record(fail("the Reconciler plans no order move (sommelier-ejb.7)"))
                     case .hide(let key): #expect(caps(key).canHide, fail("hid unhideable \(key)"))
                     case .show: break
                     }
@@ -347,49 +213,13 @@ struct ReconcilerRandomTests {
                 converged = fp.phase == .converged
                 #expect(plans <= 3 && converged, fail("not converged within 3 plans"))
             }
-            do {   // oracle runs after the final plan whether or not the planner declared convergence
-                // Independent oracle: the layout-derived order of the keys now on the bar.
-                var want = layout.visible + (showHidden ? layout.hidden : []) + layout.hidden + layout.alwaysHidden
-                want = want.filter { want0.contains($0) && layout.section(of: $0) != nil }
-                var seenW = Set<ItemKey>(); want = want.filter { seenW.insert($0).inserted }
-                let unknownWanted = Set(observedKeys.filter { layout.section(of: $0) == nil && want0.contains($0) })
-                let onFinal = Set(o.onBar)
-                want = want.filter { onFinal.contains($0) } + o.onBar.filter { unknownWanted.contains($0) }
-                let last = rec.plan(observed: o, layout: layout, capabilities: caps, showHiddenSection: showHidden)
-                let reachable = last.skipped.allSatisfy { $0.reason != "immovable item is out of layout order" && !$0.reason.hasPrefix("cannot be placed right of the system items") }
-                let movables = o.onBar.filter { !anchorSet.contains($0) && Set(want).contains($0) }
-                #expect(movables == want.filter { !anchorSet.contains($0) }, fail("movable order differs from layout"))
-                if reachable {
-                    // Everything the layout places (anchors included) is in layout order; unplaced anchors sit in between.
-                    #expect(o.onBar.filter { Set(want).contains($0) } == want, fail("final order differs from layout"))
-                }
-                // Unknown wanted movable keys keep their observed relative order (bar left to right, then parked), appended per policy.
-                // Shown items land at arbitrary slots in the membership pass, so the reference is the bar the order pass started from.
-                let unknownOrder = (orderStart ?? o.onBar).filter { unknownWanted.contains($0) && !anchorSet.contains($0) }
-                if reachable {
-                    #expect(o.onBar.filter { unknownWanted.contains($0) && !anchorSet.contains($0) } == unknownOrder,
-                        fail("unknown wanted keys lost their observed relative order"))
-                }
-                #expect(last.desiredOnBar == o.onBar, fail("final order differs from the planner's target"))
-            }
+            // Independent oracle: every unit the layout wants shown that can be shown is on the bar at the end.
+            let onFinal = Set(o.onBar)
+            for key in want0 where !noHide.contains(key) && observedKeys.contains(key) { #expect(onFinal.contains(key), fail("wanted \(key) is not on the bar")) }
         }
     }
 }
 
 // gdu.61: iStat (an anchor) at the start of the trailing block must not be named as "the system items" in the skip message.
 struct TrailingBlockNameTests {
-    @Test func skipMessageNamesTheFirstModuleNotASelfPositioningItem() {
-        let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
-        let cc = ItemKey.module(name: "Clock")
-        let a = k("a"), b = k("b")
-        let caps: (ItemKey) -> Capability = { key in
-            if case .module = key { return Capability(canMove: false, canHide: false) }
-            return Capability(canMove: true, canHide: true)
-        }
-        let p = rec.plan(observed: ObservedOrder(onBar: [a, b, istat, cc], parked: []),
-                         layout: Layout(visible: [b, istat, cc, a]), capabilities: caps)
-        let skip = p.skipped.first { $0.key == a }
-        #expect(skip?.reason == "cannot be placed right of the system items (\(cc))")
-        #expect(!p.actions.contains { if case .move(let m, _) = $0 { m == istat } else { false } })
-    }
 }

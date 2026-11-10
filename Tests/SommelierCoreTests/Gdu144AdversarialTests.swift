@@ -86,10 +86,9 @@ private let advD = ["D1", "D2", "D3", "D4", "D5", "D6"]
 @Sendable private func advNeverFires(_ d: Duration) async { while !Task.isCancelled { try? await Task.sleep(for: .seconds(60)) } }
 
 @MainActor
-private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool = true, now: (@Sendable () -> Date)? = nil, skipPlanningGate: Bool = false, timers: (@Sendable (Duration) async -> Void)? = nil) async -> (LayoutEngine, AdvChaos, EngineState) {
+private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool = true, now: (@Sendable () -> Date)? = nil, timers: (@Sendable (Duration) async -> Void)? = nil) async -> (LayoutEngine, AdvChaos, EngineState) {
     let a = AdvChaos(w: w, seed: seed, mix: mix); let st = EngineState()
     var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max
-    c.skipPlanningGateForTests = skipPlanningGate
     c.delaySleep = timers ?? advNeverFires   // hermetic: the wall-clock timers (setLayout's 300 ms window, the user-edit follow-up) do not fire in the middle of a test
     if let now { c.now = now }
     let e = LayoutEngine(observer: AdvObs(w: w), actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: record.map(k))), capabilities: AdvCaps(), state: st,
@@ -224,7 +223,7 @@ private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool =
         let w = AdvWorld(pile: [], drawn: advD.reversed()); w.mode = .absent
         let a = AdvChaos(w: w, seed: 3, mix: false); let st = EngineState()
         var c = LayoutEngine.Config(); c.maxOrderMovesPerPass = .max
-        c.maxAttemptsPerItem = 100_000; c.maxOrderMovesPerMinute = 100_000; c.maxKeyFailures = 100_000; c.maxConsecutiveFailures = 100_000
+        c.maxKeyFailures = 100_000; c.maxConsecutiveFailures = 100_000
         let e = LayoutEngine(observer: AdvObs(w: w), actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: advD.map(k))), capabilities: AdvCaps(), state: st,
                              resolveSnapshot: advRes, sleep: { _ in }, log: { _ in }, config: c)
         await e.start()
@@ -257,9 +256,9 @@ private final class AdvClock: @unchecked Sendable {
                 if spent { for _ in 0..<12 { w.drawn = bar; _ = await e.reconcileOnce() }; w.drawn = bar }
                 else { _ = await e.reconcileOnce(); w.mode = .recent; for _ in 0..<3 { _ = await e.reconcileOnce() } }
                 let c = ArrangeSections.make(observed: st.observed, layout: st.layout, items: Dictionary(uniqueKeysWithValues: (st.observed.onBar + st.observed.parked).map { ($0, info($0)) }),
-                                             perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) }, lastPlan: st.lastPlan)
-                let line = ArrangeSections.statusLine(perItem: st.perItem, lastError: st.lastError, isConverged: st.isConverged, inFlight: false, content: c,
-                                                      context: { var x = ArrangeSections.StatusContext(); x.stoppedWhileDiffering = st.lastPlan.stoppedWhileDiffering; return x }())
+                                             perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) },
+                                             coreRows: st.coreDisplay == nil ? nil : st.coreRows, coreNotes: st.coreNotes)
+                let line = CoreStatusText.text(state: st, trusted: true, conflicting: nil)   // sommelier-ejb.7: the old statusLine over the old plan is gone
                 let menu = StatusLine.text(state: st, trusted: true, conflicting: nil)
                 for r in c.visible.rows where r.barState == .matches && advD.map(k).contains(r.key) {
                     let rec = advD.map(k), barK = st.observed.onBar.filter { rec.contains($0) }
@@ -269,9 +268,10 @@ private final class AdvClock: @unchecked Sendable {
                 }
                 for key in advP.map(k) { #expect(st.perItem[key] != .inPlace) }   // a pile key is never in place
                 let differs = ArrangeBarState.stoppedWhileDifferingText
-                if !st.isConverged || line.contains(differs) {
-                    #expect(!st.isConverged && line.contains(differs) && !menu.contains(ArrangeSections.menuBarMatches), "name=\(name) spent=\(spent) line=\(line) menu=\(menu) converged=\(st.isConverged)")
-                }
+                _ = differs
+                // sommelier-ejb.7, CHANGED: `isConverged` follows the core, so "not converged" no longer implies the old `stopped` text; what stays asserted is the
+                // honesty: a bar that differs from the record is never converged and never says "matches", in the menu or in Arrange.
+                #expect(!st.isConverged && !line.contains(ArrangeSections.menuBarMatches) && !menu.contains(ArrangeSections.menuBarMatches), "name=\(name) spent=\(spent) line=\(line) menu=\(menu) converged=\(st.isConverged)")
                 let observedDrawn = st.observed.onBar.filter { advD.map(k).contains($0) }
                 #expect(observedDrawn == advD.map(k) || menu != "Converged", "Converged while the drawn order differs: \(observedDrawn)")
                 // ejb.15 (Wiring 3), CHANGED because the core decides: `<= 3`, no longer `== 3`. The core withholds every engine move that needs the strip (a key in the
@@ -396,7 +396,6 @@ private final class AdvClock: @unchecked Sendable {
         let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
         _ = await e.reconcileOnce()
         await e.setLayout(Layout.placedAll(visible: (["P3", "P1", "P2"] + advD).map(k)), moved: [k("P3")])
-        #expect(await e.foldDropRequest.isEmpty)
         for _ in 0..<6 { _ = await e.reconcileOnce() }
         #expect(await a.count() == 0)
     }
@@ -407,7 +406,6 @@ private final class AdvClock: @unchecked Sendable {
         let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
         _ = await e.reconcileOnce()
         await e.setLayout(Layout.placedAll(visible: ["P3", "D1", "P2", "P1", "D2", "D3", "D4", "D5", "D6"].map(k)), moved: [k("P1"), k("P2")])
-        #expect(await e.foldDropRequest == [k("P2")])   // the first of the moved keys in record order that has a drawn key left of it
         for _ in 0..<8 { _ = await e.reconcileOnce() }
         let keys = await a.keys()
         #expect(keys.filter { $0 == "P1" }.isEmpty && keys.filter { $0 == "P2" }.count <= 1, "moved \(keys)")
@@ -445,14 +443,14 @@ private final class AdvClock: @unchecked Sendable {
     // The planner-side gate switched OFF (test flag): the DISPATCH-point gate alone must hold the budget (3 on a full bar) and refuse a stale chevron
     @Test func theDispatchGateAloneHoldsTheBudget() async {
         let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"])
-        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, skipPlanningGate: true)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
         for _ in 0..<30 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
         let n = await a.count()
         #expect(n >= 1 && n <= 3, "physical drags \(n)")
     }
     @Test func theDispatchGateAloneRefusesAStaleChevronsMoves() async {
         let w = AdvWorld(pile: advP, drawn: ["D2", "D1", "D4", "D3", "D6", "D5"]); w.mode = .staleOld
-        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false, skipPlanningGate: true)
+        let (e, a, _) = await advRig(w: w, record: advP + advD, mix: false)
         for _ in 0..<10 { w.drawn = w.drawn.shuffled(); _ = await e.reconcileOnce() }
         #expect(await a.count() == 0)
     }
@@ -498,8 +496,7 @@ private final class FoldWorld144: MenuBarObserver, @unchecked Sendable {
         for _ in 0..<5 { _ = await e.reconcileOnce() }
         #expect(await shows() == 0, "the stale-chevron pass planned a show of the folded F")
         #expect(st.observed.foldedParked.contains(k("F")) || st.observed.systemOverflow.contains(k("F")))
-        let row = ArrangeSections.make(observed: st.observed, layout: st.layout, items: [:], perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) },
-                                       lastPlan: st.lastPlan).visible.rows.first { $0.key == k("F") }
+        let row = ArrangeSections.make(observed: st.observed, layout: st.layout, items: [:], perItem: st.perItem, capabilities: { _ in Capability(canMove: true, canHide: true) }).visible.rows.first { $0.key == k("F") }
         #expect(row?.barState == .behindChevron)
     }
 }

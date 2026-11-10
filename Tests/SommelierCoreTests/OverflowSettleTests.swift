@@ -172,15 +172,8 @@ struct StackedPileStatusTests {
                                   capabilities: Caps(), state: state, busy: { false }, resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in }, log: { _ in }, config: .plain())
         await engine.start()
         _ = await engine.reconcileOnce()
-        let resolved = (try? await PileObserver().observe()) ?? []
-        let plan = Reconciler().plan(observed: ObservedOrder(resolved: resolved), layout: Layout(visible: [k("P1"), k("P2"), chevKey, k("D1"), k("P3"), k("D2")]),
-                                     capabilities: { _ in Capability(canMove: true, canHide: true) }, foldDropRequest: [k("P3")])   // gdu.144: the user dropped P3
-        // 9o9.22: an unread pile position does not block the crossing (the strip session re-scans with real frames); only a HELD key does.
-        #expect(plan.actions == [.move(k("P3"), .after(k("D1")))], "actions=\(plan.actions) skipped=\(plan.skipped)")
-        let heldPlan = Reconciler().plan(observed: ObservedOrder(resolved: resolved), layout: Layout(visible: [k("P1"), k("P2"), chevKey, k("D1"), k("P3"), k("D2")]),
-                                         capabilities: { _ in Capability(canMove: true, canHide: true) }, held: [k("P3")], foldDropRequest: [k("P3")])
-        #expect(heldPlan.actions.isEmpty)
-        #expect(heldPlan.skipped.first { $0.key == k("P3") }?.reason == Reconciler.noCrossingOwnPositionSkipReason, "skipped=\(heldPlan.skipped)")
+        // sommelier-ejb.7, CHANGED because the core decides: the planner-level halves (the pull-out the Reconciler would plan, and the held-key skip reason) are
+        // gone with the order planner; the engine-level claim stays: the pile key reads behind « and is never unsupported.
         #expect(state.perItem[k("P3")] == .notFitting, "got \(String(describing: state.perItem[k("P3")]))")
         if case .unsupported = state.perItem[k("P3")] { Issue.record("P3 unsupported") }
     }

@@ -205,9 +205,6 @@ private final class PIDBox: @unchecked Sendable {
         #expect(NewItemNotice.text([("Foo", .visible)]) == "New item: Foo placed in Visible")
         #expect(NewItemNotice.text([("Foo", .hidden)]) == "New item: Foo placed in Hidden")
         #expect(NewItemNotice.text([("A", .visible), ("B", .hidden), ("C", .visible)]) == "New items: A, C placed in Visible; B placed in Hidden")
-        let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, notice: "New item: Foo placed in Visible")
-        #expect(line == "New item: Foo placed in Visible")
-        #expect(ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false) == ArrangeSections.checkingMenuBar)
     }
 }
 
@@ -320,7 +317,7 @@ private struct PidChangingObserver: MenuBarObserver {
                                   resolveSnapshot: { FakeMenuBar.resolve($0) }, sleep: { _ in },
                                   config: .plain(), agentPID: { pid.value }, isOwnAgentPID: { $0 == 200 })
         await engine.start()
-        #expect(await engine.reconcileOnce().outcome == .converged)
+        #expect(await engine.reconcileOnce().outcome == .incomplete)   // sommelier-ejb.7, CHANGED: a pass that moved an item is `.incomplete`; the core judges the moved bar on the next pass
         #expect(await inner.order == ["B", "A"].map(k))
     }
 

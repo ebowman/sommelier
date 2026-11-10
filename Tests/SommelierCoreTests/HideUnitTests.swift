@@ -95,7 +95,6 @@ struct HideUnitTests {
         #expect(p.actions.isEmpty); #expect(p.phase == .converged)
         #expect(p.skipped.map(\.key) == [a2])
         #expect(p.skipped[0].reason == "hidden together with com.a: all items governed by one Control Center entry hide or show at once")
-        #expect(p.desiredOnBar == [a1, a2])
     }
 
     @Test func wholeUnitHiddenIsOneMembershipPhase() {

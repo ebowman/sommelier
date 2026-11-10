@@ -87,7 +87,7 @@ private final class SteerableBox: @unchecked Sendable {
     @Test func everyVisibleKeyIsEnforced() async {
         let r = await rig(order: ["A", "B", "C", "D"], layout: Layout(visible: ["A", "C", "B", "D"].map(k)))
         let rep = await r.engine.reconcileOnce()
-        #expect(rep.outcome == .converged)
+        #expect(rep.outcome == .incomplete)   // sommelier-ejb.7, CHANGED: a pass that made a move is `.incomplete`; the core judges the moved bar on the next pass
         #expect(await r.actuator.calls.count == 1)
         #expect(await r.actuator.order == ["A", "C", "B", "D"].map(k))
     }
@@ -99,9 +99,8 @@ private final class SteerableBox: @unchecked Sendable {
         let first = await r.engine.reconcileOnce()
         #expect(first.outcome == .incomplete && first.actionCount == 1)
         #expect(await r.actuator.calls.count == 1)
-        #expect(r.sink.lines.contains { $0.contains("plan: phase=order actions=") && $0.contains(" skipped=") })
         let second = await r.engine.reconcileOnce()
-        #expect(second.outcome == .converged && second.actionCount == 1)
+        #expect(second.outcome == .incomplete && second.actionCount == 1)   // sommelier-ejb.7, CHANGED: see everyVisibleKeyIsEnforced; the "plan: phase=order" log line is gone
         #expect(await r.actuator.order == ["C", "B", "A"].map(k))
         // one request only: the cap ends the first pass and the engine chains the second by itself
         var c = LayoutEngine.Config.plain(); c.minPassInterval = .zero; c.layoutCoalesce = .zero
@@ -141,7 +140,6 @@ private final class SteerableBox: @unchecked Sendable {
         box.obs.set(level: .complete, stale: k("B"))
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.isEmpty)
-        #expect(r.sink.lines.contains { $0.contains("order: skipped \(k("B")): stale frame") })
         box.obs.set(level: .complete, stale: nil)
         // ejb.15 (Wiring 3), CHANGED because the core decides: ONE move per pass (the first inversion), so the bar reaches the record in three passes
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }

@@ -141,8 +141,6 @@ public enum PlannedAction: Equatable, Sendable {
 public enum PlanPhase: Equatable, Sendable {
     /// Hide/show actions only; apply as one batch, re-observe, then plan again.
     case membership
-    /// Move actions only.
-    case order
     case converged
 }
 
@@ -160,7 +158,7 @@ public struct SkippedAction: Equatable, Sendable {
 
 public struct Plan: Equatable, Sendable {
     public var phase: PlanPhase
-    /// Empty iff `phase == .converged`.
+    /// Hide / show actions only (never a move). Empty iff `phase == .converged`.
     public var actions: [PlannedAction]
     /// Observed keys absent from the layout, with the section the policy assigns. The engine persists these.
     public var newItems: [NewItem]
@@ -168,35 +166,6 @@ public struct Plan: Equatable, Sendable {
     public var absent: [ItemKey]
     /// Actions suppressed by capabilities.
     public var skipped: [SkippedAction]
-    /// The left-to-right on-bar order this plan converges to (in the membership phase, shown items are assumed to be
-    /// appended at the end, since MenuBarAgent picks the real slot).
-    public var desiredOnBar: [ItemKey]
-    /// 9o9.5: keys the planner would move but could not spell safely, or holds back this pass, because an untrusted / unsteady key (the
-    /// "wall", the value) stands between them and their target. Whether or not the subject also got a skip of its own. Arrange shows
-    /// "Waiting for <wall> to settle" for them; it never re-derives this.
-    public var blockedBy: [ItemKey: ItemKey] = [:]
-    /// 9o9.5: trusted keys the planner would move but for which no candidate move lands safely and no untrusted wall is to blame.
-    public var blockedNoWall: Set<ItemKey> = []
-    /// gdu.126: subjects of fold moves withheld because the « strip could not be opened on this bar state (the bar-level hold).
-    public var stripHeld: Set<ItemKey> = []
-    /// gdu.126: while the hold is active, how many items are folded behind « (pile ∪ folded-parked); nil otherwise.
-    public var stripHoldFolded: Int?
-    /// gdu.129: the hold was set because the strip opened but could not place the subject (status text differs).
-    public var stripHoldUnplaceable = false
-    /// gdu.134: the hold was set because a move across the fold did not hold (verified elsewhere / moved back).
-    public var stripHoldDidNotHold = false
-    /// gdu.136: order moves withheld because they follow the user's own edit (one surprise at a time), in plan order.
-    public var deferredAfterUserEdit: [ItemKey] = []
-    /// gdu.144 D8: an engine-initiated order move was withheld (gate, hold or spent budget): the bar differs from the record and the engine will not move it by itself.
-    public var gatedDiffers = false
-    /// gdu.144: the bar is still ASSUMED full (no proof yet) and this read shows no chevron: nothing is confirmed in place, nothing converged.
-    public var checkingBar = false
-    /// gdu.144 D8: the trusted drawn keys are NOT in record order (the engine is not converged), and how many drawn Visible keys are unread (stale /
-    /// uncorroborated), which is why their order cannot be judged.
-    public var orderDiffers = false
-    public var unreadDrawn = 0
-    /// gdu.136: the keys the user's edit moved while `deferredAfterUserEdit` is non-empty (the status line's "Done:").
-    public var userEditMoved: [ItemKey] = []
 }
 
 /// Pure planner: observed snapshot + desired layout -> ordered actions. See docs/architecture.md (Reconciler).
@@ -206,23 +175,11 @@ public struct Reconciler: Sendable {
     /// 9o9.21: true for the overflow chevron, by key or by the observation's flag. Such a key is never a new item.
     static func isChevron(_ k: ItemKey, _ observed: ObservedOrder) -> Bool { k.isOverflowChevron || k == observed.overflowChevron }
 
+    /// Membership planning ONLY (hide / show, new items, skips for membership). Order is decided by `DecisionCore.step` (sommelier-ejb.7): no order
+    /// planner lives here. `scripts/check-single-decider.sh` keeps it that way.
     public func plan(observed: ObservedOrder, layout: Layout, capabilities rawCapabilities: (ItemKey) -> Capability,
                      showHiddenSection: Bool = false, showAlwaysHidden: Bool = false,
-                     units rule: HideUnitRule = .ownerKeys, held: Set<ItemKey> = [],
-                     unsteady: Set<ItemKey> = [], foldDropRequest: Set<ItemKey> = [], fullBar: Bool = false, onlyMove: Set<ItemKey>? = nil) -> Plan {
-        // gdu.144 D5: `onlyMove` (a user's pass): the keys the user moved are the only drawn keys that may move; every other key is a FIXED anchor, so
-        // the minimal-move computation moves the dropped key and nothing else.
-        // gdu.144 B6: on a full bar (`fullBar`) trusted keys are planned among themselves: a stale / uncorroborated / held key is dropped from the
-        // order base and target, so no trusted key is moved because of where the record puts an untrusted one.
-        // gdu.144 rule 1: `foldDropRequest` = the folded keys the USER just dropped (engine memory only). A pull-out across the fold is planned
-        // for those keys and no others; what folds is macOS's decision, the engine orders drawn items only.
-        // 9o9.3 / 9o9.9: `Layout.visible` is the ordered record and every Visible key carries the obligation. The order-phase target is
-        // the record over ALL keys observed on the bar, trusted or not; only the keys the capabilities pin (the system block, unhideable
-        // items) and the held ones are anchors that keep their observed slot. Keys whose frame is not trusted are never a move subject
-        // or relation target, but trusted keys are moved so the record holds among them AND relative to the untrusted ones.
-        // `unsteady`: untrusted keys whose slot differs from the previous settled observation; no move crosses one this pass.
-        // gdu.120: iStat Menus items are ordinary orderable items (verified live: a Command-drag takes effect and holds); there is
-        // no anchor treatment by owner. Only the capability the caller reports (and stale/uncorroborated slots, below) pins a key.
+                     units rule: HideUnitRule = .ownerKeys) -> Plan {
         func capabilities(_ k: ItemKey) -> Capability { rawCapabilities(k) }
         // Defensive dedup: first occurrence wins; a key on the bar is never also parked.
         var seen = Set<ItemKey>()
@@ -292,7 +249,6 @@ public struct Reconciler: Sendable {
         }
         var newItems: [NewItem] = []
         var wantOnBar = Set<ItemKey>()
-        var unknownVisible: [ItemKey] = []
         for k in onBar + parked {
             // 9o9.21: the chevron is the agent's own control, never a record key: it is neither a NEW item (no placement, no notice)
             // nor ever hidden or shown by the plan, whatever its unit or the policy says.
@@ -300,7 +256,6 @@ public struct Reconciler: Sendable {
             let wants = unitWantsBar[rule.unit(of: k)] ?? false
             if wants { wantOnBar.insert(k) }
             if layout.section(of: k) == nil {
-                if wants { unknownVisible.append(k) }
                 newItems.append(NewItem(k, unitJoinSection[rule.unit(of: k)] ?? (wants ? .visible : .hidden)))
             }
         }
@@ -308,14 +263,12 @@ public struct Reconciler: Sendable {
 
         // Membership actions. A unit that must hide but has an unhideable item on the bar is not hidden at all.
         var hides: [ItemKey] = [], shows: [ItemKey] = []
-        var unhideable = Set<ItemKey>()
         var blocker: [HideUnit: ItemKey] = [:]
         for k in onBar where !wantOnBar.contains(k) && !capabilities(k).canHide {
             if blocker[rule.unit(of: k)] == nil { blocker[rule.unit(of: k)] = k }
         }
         for k in onBar where !wantOnBar.contains(k) {
             if let b = blocker[rule.unit(of: k)] {
-                unhideable.insert(k)
                 skipped.append(SkippedAction(k, k == b ? (capabilities(k).reason ?? "cannot be hidden")
                                                        : "cannot be hidden: \(b) in the same app cannot be hidden"))
             } else if observed.staleOnBar.contains(k) {
@@ -330,276 +283,12 @@ public struct Reconciler: Sendable {
             if observed.foldedParked.contains(k) { skipped.append(SkippedAction(k, Reconciler.foldedParkedSkipReason)) } else { shows.append(k) }
         }
 
-        // Desired order of everything that may sit on the bar. Hidden-listed keys pulled onto the bar by their unit
-        // follow the visible ones, in layout order.
-        var desired: [ItemKey] = layout.visible.filter { wantOnBar.contains($0) }
-        if showHiddenSection { desired += layout.hidden.filter { wantOnBar.contains($0) } }
-        if showAlwaysHidden { desired += layout.alwaysHidden.filter { wantOnBar.contains($0) } }
-        let alreadyDesired = Set(desired)
-        desired += (layout.hidden + layout.alwaysHidden).filter { wantOnBar.contains($0) && !alreadyDesired.contains($0) }
-        desired += unknownVisible
-
-        // Base sequence the order is planned on: the bar after the hides, shown items appended.
-        let hideSet = Set(hides)
-        // Items in macOS's own overflow are not drawn and cannot be dragged, and the chevron is the hard left boundary of
-        // the drawn bar: the order is planned on the drawn items right of it only, so no move has an overflowed item or the
-        // chevron as subject or relation target, and none lands left of the chevron (`.leftmost` is rewritten, see `moves`).
-        // gdu.80 / 9o9.12: the churn zone (the first drawn key and its neighbours on a full bar, whose frames shift when macOS re-folds)
-        // does NOT exclude anything here any more. A move touching it is performed by the actuator inside a strip session (the « strip
-        // open after a fresh re-scan: every frame real, nothing re-folds until it closes), exactly like a move across the fold.
-        // The zone still guards the COLLAPSED-bar actuator (`LiveActuator.stripNeed`).
-        let ovf = observed.systemOverflow.intersection(onBarSet)
-        let chevron = observed.overflowChevron.flatMap { onBarSet.contains($0) ? $0 : nil }   // the FRESH chevron: the only fold boundary (9o9.17)
-        // 9o9.21: the chevron's KEY (also a stale one, flag nil) is still dropped from desired/base: never moved, never a target.
-        let chevronKey = chevron ?? onBar.first(where: { $0.isOverflowChevron })
-        let ovfKept = onBar.filter { ovf.contains($0) && wantOnBar.contains($0) && !hideSet.contains($0) }
-        // macOS decides what overflows (total width); a layout's order across the overflow boundary is not a request we can
-        // act on. Overflowed keys and the chevron are therefore dropped from `desired` and `base` before the ORDER planning:
-        // no drawn key is anchored or reported because of them, whatever the layout lists (unknown, pulled-in, normalized,
-        // churned). Membership (hiding an overflowed key) was decided above and is unchanged.
-        // Self-positioning keys are not placed by the layout either: they keep their observed slot (like any unplaced anchor),
-        // so their order never yields a move or an "out of order" finding.
-        // gdu.69: an overflowed key the layout places differently relative to the DRAWN keys than where it sits (a move of it, or
-        // around it, would have been planned) is reported as one skip with the honest reason. The order among overflowed keys
-        // carries no information, and a layout that agrees with the observed order stays silent (gdu.45).
-        do {
-            let all = Set(onBar)
-            let want = desired.filter { all.contains($0) && !hideSet.contains($0) && $0 != chevronKey }
-            let have = onBar.filter { wantOnBar.contains($0) && !hideSet.contains($0) && $0 != chevronKey }
-            func drawnBefore(_ k: ItemKey, _ list: [ItemKey]) -> Set<ItemKey>? {
-                guard let i = list.firstIndex(of: k) else { return nil }
-                return Set(list[..<i].filter { !ovf.contains($0) })
-            }
-            let listed = Set(layout.visible + layout.hidden + layout.alwaysHidden)
-            for k in ovfKept where listed.contains(k) && want.contains(k) && drawnBefore(k, want) != drawnBefore(k, have) {
-                skipped.append(SkippedAction(k, Reconciler.overflowSkipReason))
-            }
-        }
-        // 9o9.11: the record over every on-bar Visible key, overflowed ones included. Keys the layout does not list yet (new items placed
-        // by the policy) and revealed hidden-section keys are not in the record: nothing is pulled out or pushed in because of them.
-        let visibleRecord = Set(layout.visible)
-        let fullRecord = desired.filter { onBarSet.contains($0) && visibleRecord.contains($0) }
-        let untrustedOnFullBar: Set<ItemKey> = fullBar ? observed.uncorroborated.union(observed.staleOnBar).union(held).intersection(onBarSet) : []
-        desired = desired.filter { !ovf.contains($0) && $0 != chevronKey && !observed.foldedParked.contains($0) && !untrustedOnFullBar.contains($0) }
-        let kept = onBar.filter { !hideSet.contains($0) && !ovf.contains($0) && $0 != chevronKey && !untrustedOnFullBar.contains($0) }
-        let base = kept + shows
-        // gdu.94 / 9o9.3: an on-bar key whose frame is not trusted (slot not corroborated by a hosted element, or a stale frame) keeps its
-        // observed slot: it is never the subject of a move, never a relation target while a fresh neighbour exists, and it is NOT part of
-        // the trailing system block (one such key at the right end must not make every other key "unplaceable right of the system items").
-        // 9o9.4: `held` keys (the engine gave up on them) are pinned the same way, silently: they keep their observed slot.
-        let unfresh = observed.uncorroborated.union(observed.staleOnBar).union(held).intersection(onBarSet).intersection(Set(base))
-        let pinned = Set(base.filter { !capabilities($0).canMove || unhideable.contains($0) })
-        let frozen: Set<ItemKey> = onlyMove.map { m in Set(base.filter { !m.contains($0) && !pinned.contains($0) }) } ?? []
-        let anchors = pinned.union(held.intersection(unfresh)).union(frozen)   // 9o9.9: untrusted keys are NOT anchors of the target
-        if !unfresh.isEmpty, hides.isEmpty, shows.isEmpty {
-            // What the order step would have done had these keys been movable: report each key it would have dragged (once).
-            let baseSet = Set(base)
-            let full = desired.filter { baseSet.contains($0) }
-            if full.contains(where: unfresh.contains) {
-                let t = Self.layoutTarget(base: base, desired: full, anchors: pinned)
-                let would = Self.moves(from: base, to: t, anchors: pinned, boundary: chevron != nil)
-                var seenSubjects = Set<ItemKey>()
-                for case .move(let k, _) in would where unfresh.contains(k) && !held.contains(k) && seenSubjects.insert(k).inserted {
-                    skipped.append(SkippedAction(k, observed.staleOnBar.contains(k) ? Reconciler.staleFrameSkipReason : Reconciler.uncorroboratedSkipReason))
-                }
-            }
-        }
-        let untrusted = unfresh.subtracting(held)   // 9o9.9: stay in the target at their record slot, but are never moved or targeted
-        desired = desired.filter { !held.contains($0) }
-        var target = Self.layoutTarget(base: base, desired: desired, anchors: anchors)
-        // Anchors never move, so the target is reachable only if they appear in the same relative order in the layout
-        // as on the bar. Offending anchors are reported; the rest is planned with every anchor in its observed slot.
-        let anchorsInBase = base.filter { anchors.contains($0) && !unfresh.contains($0) }   // gdu.101: a stale frame proves no order
-        let tIdx = Dictionary(uniqueKeysWithValues: target.enumerated().map { ($1, $0) })
-        let seq = anchorsInBase.map { tIdx[$0]! }
-        var anchorsOutOfOrder = false
-        if zip(seq, seq.dropFirst()).contains(where: { $0 >= $1 }) {
-            anchorsOutOfOrder = true
-            let keep = Set(Self.lis(seq))
-            // Not reported in a membership phase (gdu.44): the bar is about to change, a transient or churned bar can show
-            // anchors out of order that the next (order) pass finds fine. The order pass re-evaluates and reports them.
-            if shows.isEmpty && hides.isEmpty {
-                for k in anchorsInBase where !keep.contains(tIdx[k]!) && !frozen.contains(k) {
-                    skipped.append(SkippedAction(k, "immovable item is out of layout order"))
-                }
-            }
-            var fill = desired.filter { !anchors.contains($0) }.makeIterator()
-            target = base.map { anchors.contains($0) ? $0 : (fill.next() ?? $0) }
-        }
-
-        // gdu.144 D5: in a user's pass the dropped keys are placed RELATIVE to the fixed keys: the fixed keys keep their observed order, and each movable
-        // key goes right after its nearest record predecessor already placed (or first). Nothing else moves.
-        if onlyMove != nil {
-            let fixedKeys = anchors.union(untrusted)
-            var placed = base.filter { fixedKeys.contains($0) }
-            let movable = base.filter { !fixedKeys.contains($0) }
-            let movableSet = Set(movable)
-            for m in desired.filter({ movableSet.contains($0) }) {
-                let at = desired.firstIndex(of: m) ?? 0
-                var pred: ItemKey?
-                for j in stride(from: at - 1, through: 0, by: -1) where placed.contains(desired[j]) { pred = desired[j]; break }
-                if let pred, let pi = placed.firstIndex(of: pred) { placed.insert(m, at: pi + 1) } else { placed.insert(m, at: 0) }
-            }
-            for m in movable where !placed.contains(m) {   // a movable key the layout does not place keeps its observed neighbour
-                let bi = base.firstIndex(of: m) ?? 0
-                var pred: ItemKey?
-                for j in stride(from: bi - 1, through: 0, by: -1) where placed.contains(base[j]) { pred = base[j]; break }
-                if let pred, let pi = placed.firstIndex(of: pred) { placed.insert(m, at: pi + 1) } else { placed.insert(m, at: 0) }
-            }
-            if placed.count == base.count { target = placed }
-        }
-
-        // Trailing system block: the maximal suffix of the bar made only of anchors (Control Center modules, clock).
-        // Nothing movable can be placed right of its first item, so such targets are reported and relocated to the last
-        // slot before the block (relative order kept); no drag ever targets the block.
-        // The block is taken from the observed bar BEFORE shown items are appended (`kept`): in a membership pass the shows
-        // would otherwise hide it, and `skipped`/`desiredOnBar` would put a key right of the clock until the order pass (gdu.44).
-        let blockStart = Self.trailingBlockStart(base: kept, anchors: anchors.subtracting(unfresh).subtracting(frozen))   // gdu.101 / 9o9.3: an untrusted key does not extend the system block
-        if blockStart < kept.count {
-            let blockSet = Set(kept[blockStart...])
-            // Name the first MODULE of the block in skip messages: a self-positioning item (iStat, an anchor) can sit at its start
-            // (gdu.61). The block itself is unchanged, so the `violations` post-condition is unaffected.
-            let blockName = kept[blockStart...].first { if case .module = $0 { true } else { false } } ?? kept[blockStart]
-            let systemBlock = blockSet.contains { if case .module = $0 { true } else { false } }
-            if anchorsOutOfOrder, systemBlock, let first = desired.firstIndex(where: { blockSet.contains($0) }) {
-                // Out-of-order anchors keep their slots, so the movable keys the layout puts right of the block land left of
-                // it without being "beyond" in `target`: they still get their own skip entry (gdu.44). Only for a block that
-                // really holds system items (modules); a trailing run of merely immovable/failed third-party items is not one.
-                for k in desired[(first + 1)...] where !anchors.contains(k) && !blockSet.contains(k) {
-                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(blockName))"))
-                }
-            }
-            let firstBlockInTarget = target.firstIndex { blockSet.contains($0) } ?? target.count
-            let limit = min(blockStart, firstBlockInTarget)
-            // With shows pending, target slots are displaced by the appended shown keys (a shown key sits in the last slot and the
-            // block moves earlier), so "beyond" is judged by the layout's own order: a key is right of the block only if
-            // `desired` puts it after the block's first key.
-            let beyond: [ItemKey]
-            if shows.isEmpty {
-                beyond = target.enumerated().filter { $0.offset >= limit && !anchors.contains($0.element) }.map(\.element)
-            } else if let first = desired.firstIndex(where: { blockSet.contains($0) }) {
-                let inTarget = Set(target)
-                beyond = desired[(first + 1)...].filter { !anchors.contains($0) && inTarget.contains($0) }
-            } else { beyond = [] }
-            if !beyond.isEmpty || !shows.isEmpty {
-                for k in beyond where !skipped.contains(where: { $0.key == k && $0.reason.hasPrefix("cannot be placed right of the system items") }) {
-                    skipped.append(SkippedAction(k, "cannot be placed right of the system items (\(blockName))"))
-                }
-                target = target.filter { !blockSet.contains($0) } + kept[blockStart...]
-            }
-        }
-
-        var actions: [PlannedAction] = hides.map { .hide($0) } + shows.map { .show($0) }
-        var walls: [ItemKey: ItemKey] = [:]
-        var noWall = Set<ItemKey>()
-        let phase: PlanPhase
-        if !actions.isEmpty {
-            phase = .membership
-        } else {
-            // Anchors are fixed points of the minimal-move computation. A move whose relation target is a key without a trusted frame
-            // (no fresh neighbour was available) is not planned: it is skipped as a stale frame and retried when the frame is fresh.
-            let fixed = anchors.union(untrusted)
-            let planned = Self.movesReporting(from: base, to: target, anchors: fixed, boundary: chevron != nil, avoid: unfresh, unsteady: unsteady.intersection(untrusted))
-            actions = planned.actions
-            walls = planned.blockedBy
-            for (k, u) in planned.moving { walls[k] = u }
-            // gdu.144 rule 1: with the drawn order settled, one move across the fold (a pull-out; gdu.134: never a push-in) ONLY for a folded
-            // key the user dropped (`foldDropRequest`). Nothing else is ever pulled out; the other folded keys get no plan.
-            var foldKeys = Set<ItemKey>()
-            // gdu.144 B2: the user's requested pull-out goes FIRST, ahead of any pending drawn move (which waits for a later pass).
-            let askedFold = !foldDropRequest.isEmpty && chevron != nil && !observed.stripExpanded
-            if (actions.isEmpty || askedFold), chevron != nil, !observed.stripExpanded {
-                let pile = ovfKept.filter { observed.systemOverflow.contains($0) }
-                // The actuator performs a crossing with the strip OPEN after a fresh re-scan (real frames, nothing re-folds until it closes),
-                // so churn-zone drawn keys may be the pull-out target.
-                // 9o9.22: a pile key is excluded only when HELD. Stacked pile frames are frameAmbiguous by construction, so requiring
-                // them to be corroborated on the collapsed read would refuse nearly every crossing; the strip session re-scans with the
-                // strip open (every frame real) and LiveActuator.prepare() applies the normal trust rules there. Drawn keys keep full trust.
-                let pileSet = Set(pile)
-                let cannot = observed.uncorroborated.union(observed.staleOnBar).union(held).subtracting(pileSet.subtracting(held))
-                let drawnAll = onBar.filter { !hideSet.contains($0) && !observed.systemOverflow.contains($0) && $0 != chevron && wantOnBar.contains($0) }
-                let foldBlockStart = blockStart < kept.count ? (drawnAll.firstIndex(of: kept[blockStart]) ?? drawnAll.count) : drawnAll.count
-                let fold = foldDropRequest.isEmpty ? nil : Self.crossFoldMove(record: fullRecord, drawn: drawnAll, pile: pile, requested: foldDropRequest,
-                                                                              excluded: cannot, canMove: { capabilities($0).canMove }, blockStart: foldBlockStart)
-                if let f = fold {
-                    actions = [f]
-                    if case .move(let k, let rel) = f {
-                        foldKeys.insert(k)
-                        switch rel { case .before(let t), .after(let t): foldKeys.insert(t); default: break }
-                    }
-                }
-                // The order among keys behind the chevron carries no information while the strip is collapsed (their stacked frames
-                // are noise): a pile key the record orders differently from the stacked order is never moved, only reported.
-                let rec = Dictionary(uniqueKeysWithValues: fullRecord.enumerated().map { ($1, $0) })
-                let listedPile = pile.filter { rec[$0] != nil && !held.contains($0) }
-                let keep = Set(Self.lis(listedPile.map { rec[$0]! }))
-                for k in listedPile where !keep.contains(rec[k]!) && !foldKeys.contains(k) && !skipped.contains(where: { $0.key == k }) {
-                    skipped.append(SkippedAction(k, Reconciler.overflowSkipReason))
-                }
-                if fold == nil {
-                    let drawnRec = drawnAll.compactMap { rec[$0] }
-                    for k in pile where foldDropRequest.contains(k) && !skipped.contains(where: { $0.key == k && $0.reason != Reconciler.overflowSkipReason }) {
-                        guard let ik = rec[k], drawnRec.contains(where: { $0 < ik }) else { continue }
-                        // The gdu.69 wording promises the strip will be opened for this key; here nothing will, so the truer reason replaces it.
-                        skipped.removeAll { $0.key == k }
-                        skipped.append(SkippedAction(k, held.contains(k) ? Reconciler.noCrossingOwnPositionSkipReason
-                                                   : !capabilities(k).canMove ? Reconciler.foldedSystemItemSkipReason : Reconciler.noCrossingSkipReason))
-                    }
-                }
-            }
-            if !foldKeys.isEmpty { skipped.removeAll { foldKeys.contains($0.key) && $0.reason == Reconciler.overflowSkipReason } }
-            // 9o9.9: a trusted subject blocked only by an untrusted wall is already explained by the untrusted key's own skip; not repeated.
-            for k in planned.blocked where !skipped.contains(where: { $0.key == k })
-                && !(planned.blockedBy[k].map { w in untrusted.contains(w) && skipped.contains { $0.key == w } } ?? false) {
-                // 9o9.5: with a wall, the stale-frame wording stands; with none, say the true thing and remember the key for Arrange.
-                if planned.blockedBy[k] == nil { skipped.append(SkippedAction(k, Reconciler.noSafeMoveSkipReason)); noWall.insert(k) }
-                else { skipped.append(SkippedAction(k, Reconciler.staleFrameSkipReason)) }
-            }
-            for (k, u) in planned.moving where !skipped.contains(where: { $0.key == k }) { skipped.append(SkippedAction(k, Reconciler.movingNeighbourSkipReason(u))) }
-            let realPile = observed.systemOverflow.intersection(onBarSet)   // a crossing is judged against macOS's real pile, not the churn zone
-            let foldActions = actions.filter { Self.crossesFold($0, overflow: realPile) }
-            assert(Self.overflowViolations(actions.filter { !Self.crossesFold($0, overflow: realPile) }, forbidden: ovf.union(chevron.map { [$0] } ?? []),
-                                           boundary: chevron != nil && !observed.stripExpanded).isEmpty,
-                   "planned a move of or into macOS's overflow area")
-            assert(foldActions.allSatisfy { Self.isLegalFoldMove($0, overflow: realPile, chevron: chevron) },
-                   "planned a move inside macOS's overflow pile or onto the chevron")
-            assert(Self.violations(actions.filter { !Self.crossesFold($0, overflow: realPile) }, target: target, anchors: fixed, blockStart: blockStart).isEmpty,
-                   "planned a move of or into the trailing system block")
-            phase = actions.isEmpty ? .converged : .order
-        }
-        return Plan(phase: phase, actions: actions, newItems: newItems, absent: absent, skipped: skipped,
-                    desiredOnBar: ovfKept + (chevron.map { [$0] } ?? []) + target, blockedBy: walls, blockedNoWall: noWall)
+        let actions: [PlannedAction] = hides.map { .hide($0) } + shows.map { .show($0) }
+        return Plan(phase: actions.isEmpty ? .converged : .membership, actions: actions, newItems: newItems, absent: absent, skipped: skipped)
     }
 
     /// gdu.101: why a hide of an on-bar key with a stale frame is not planned.
     public static let staleSkipReason = "position not refreshed; waiting for a fresh read"
-
-    /// 9o9.3: why an order move is not planned: its subject, or the neighbour it would be dropped next to, has no trusted frame.
-    public static let staleFrameSkipReason = "stale frame; waiting for a fresh read"
-
-    /// 9o9.5: why a trusted key's move is not planned this pass: none of its candidate moves lands safely (no untrusted key to blame).
-    public static let noSafeMoveSkipReason = "no safe move this pass; waiting for the bar to settle"
-
-    /// 9o9.9: why a trusted key's move is held back: it would cross an untrusted key whose slot changed since the last settled observation.
-    public static func movingNeighbourSkipReason(_ untrusted: ItemKey) -> String { "neighbour \(untrusted) is moving" }
-
-    /// 9o9.9: whether a skip reason is the "neighbour … is moving" hold (transient, like a stale frame).
-    public static func isMovingNeighbourSkip(_ reason: String) -> Bool { reason.hasPrefix("neighbour ") && reason.hasSuffix(" is moving") }
-
-    /// 9o9.9: untrusted keys among `among` whose slot differs between two observations: the set of other keys left of the key
-    /// (restricted to keys present in both) changed. No previous observation: none.
-    public static func unsteadyKeys(previous: [ItemKey]?, current: [ItemKey], among: Set<ItemKey>) -> Set<ItemKey> {
-        guard let previous else { return [] }
-        let common = Set(previous).intersection(current)
-        func left(_ bar: [ItemKey], _ k: ItemKey) -> Set<ItemKey>? {
-            guard let i = bar.firstIndex(of: k) else { return nil }
-            return Set(bar[..<i]).intersection(common)
-        }
-        return Set(among.filter { k in
-            guard let a = left(previous, k), let b = left(current, k) else { return false }
-            return a != b
-        })
-    }
 
     /// gdu.94: why a placed key whose bar position is not corroborated is not dragged.
     public static let uncorroboratedSkipReason = "its position on the bar is not corroborated by a hosted element (stale app-side frame or hidden in Control Center); no drag"
@@ -607,255 +296,6 @@ public struct Reconciler: Sendable {
     /// gdu.121: why a parked, allowed key is not shown while the chevron is fresh.
     public static let foldedParkedSkipReason = "behind « (the bar is full; macOS folds it for width)"
 
-    /// gdu.136: why an order move that is not the user's own is withheld right after the user's edit: it waits for the next regular pass.
-    public static let deferredAfterUserEditReason = "waiting a moment after your change"
-
-    /// gdu.144 B1/B4/B5: why an engine-initiated order move is withheld on a full bar. Neutral: the row keeps its real state (never moving / waiting / warning).
-    public static let carriedBarSkipReason = "waiting for a fresh read of the bar (the « chevron is not read this pass)"
-    public static let noStripSkipReason = "next to the « fold; Sommelier moves that only when you drop it there"
-    public static let budgetSkipReason = "the bar is full and Sommelier has made its automatic moves; change the order yourself or press Retry"
-    public static let stripOpenSkipReason = "the « strip is open; Sommelier moves nothing while it is"
-    public static func isEngineWithheld(_ reason: String) -> Bool { [carriedBarSkipReason, noStripSkipReason, budgetSkipReason, stripOpenSkipReason].contains(reason) }
-
-    /// gdu.126: why a fold move (pull-out / push-in) is not dispatched: opening the « strip failed on this bar state and is held.
-    public static let stripUnavailableSkipReason = "the bar is full; moves wait until Retry or your next edit (or the bar is proven not full) (hide items to make room)"
-
-    /// Why an item in macOS's own overflow area is not planned (gdu.69).
+    /// Why an item in macOS's own overflow area is not shown or moved by the engine (gdu.69).
     public static let overflowSkipReason = "behind the « chevron; its order there is set when the strip is next opened"
-
-    /// gdu.134: a folded key that cannot be moved (a system item) and so cannot be pulled out.
-    public static let foldedSystemItemSkipReason = "folded behind « with the system items; macOS places it"
-
-    /// 9o9.11: why a key behind the chevron that the record places right of a drawn key is not pulled out.
-    public static let noCrossingSkipReason = "behind the « chevron; cannot be brought out yet: the item it should follow is not trusted on the bar"
-    /// Same, when the pile key ITSELF is the one whose position is unread (carried / uncorroborated / held).
-    public static let noCrossingOwnPositionSkipReason = "behind the « chevron; cannot be brought out yet: its own position has not been read"
-
-    /// 9o9.11: whether a move crosses the fold: exactly one of its subject and relation target is behind the chevron (in `overflow`).
-    /// The actuator opens the « strip for such a move (derived from the observation, never carried on the action).
-    public static func crossesFold(_ a: PlannedAction, overflow: Set<ItemKey>) -> Bool {
-        guard case .move(let k, let rel) = a else { return false }
-        switch rel {
-        case .before(let t), .after(let t): return overflow.contains(k) != overflow.contains(t)
-        case .leftmost, .rightmost: return false
-        }
-    }
-
-    /// 9o9.11: a cross-fold move is legal when it crosses the fold and never involves the chevron. The planner emits only pull-outs
-    /// (gdu.134: no push-in); the actuator refuses a move whose target is behind the chevron.
-    static func isLegalFoldMove(_ a: PlannedAction, overflow: Set<ItemKey>, chevron: ItemKey?) -> Bool {
-        guard case .move(let k, let rel) = a else { return false }
-        switch rel {
-        case .before(let t), .after(let t): return k != chevron && t != chevron && overflow.contains(k) != overflow.contains(t)
-        case .leftmost, .rightmost: return false
-        }
-    }
-
-    /// gdu.144: the one pull-out the USER asked for (a folded key in `requested` that the record places right of a drawn key), or nil.
-    /// No other folded key is ever a subject (the former "the fold is a prefix of the record" convergence is gone). The pull-out is (9o9.22): `X .after(A)` (X behind the chevron and movable, A the nearest trusted
-    /// drawn key left of X in the record, not in the trailing block); else (9o9.28) `X .before(B)` with B the nearest trusted drawn key RIGHT of X when none exists on the left; (gdu.134: no push-in). `excluded`: keys never chosen as subject or target (drawn keys that are untrusted
-    /// (uncorroborated / stale / held) and pile keys that are held; churn-zone keys are allowed, the strip session covers them). A stale pile key is NOT excluded: the actuator
-    /// opens the strip and the fresh read taken with it open decides (9o9.23). The order among pile keys is never touched.
-    static func crossFoldMove(record: [ItemKey], drawn: [ItemKey], pile: [ItemKey], requested: Set<ItemKey>, excluded: Set<ItemKey>, canMove: (ItemKey) -> Bool,
-                              blockStart: Int) -> PlannedAction? {
-        let rec = Dictionary(uniqueKeysWithValues: record.enumerated().map { ($1, $0) })
-        let pileSet = Set(pile)
-        let drawnInRecord = drawn.filter { rec[$0] != nil && !pileSet.contains($0) }
-        // Pull-out candidates: trusted pile keys with a drawn key left of them in the record.
-        let xs = pile.filter { x in
-            guard requested.contains(x), let ix = rec[x], !excluded.contains(x), canMove(x) else { return false }
-            return drawnInRecord.contains { rec[$0]! < ix }
-        }.sorted { rec[$0]! < rec[$1]! }
-        func pullOut() -> PlannedAction? {
-            for x in xs {
-                let ix = rec[x]!
-                let a = drawn.enumerated().filter { (i, d) in
-                    guard let id = rec[d], id < ix, i < blockStart, !excluded.contains(d), !pileSet.contains(d) else { return false }
-                    return true
-                }.max { rec[$0.element]! < rec[$1.element]! }
-                if let a { return .move(x, .after(a.element)) }
-                // 9o9.28: no trusted drawn key left of X: the nearest trusted drawn key RIGHT of X in the record (outside the trailing block)
-                // works as `X .before(B)`: X lands left of B, and everything the record puts left of X is already left or in the pile.
-                let b = drawn.enumerated().filter { (i, d) in
-                    guard let id = rec[d], id > ix, i < blockStart, !excluded.contains(d), !pileSet.contains(d) else { return false }
-                    return true
-                }.min { rec[$0.element]! < rec[$1.element]! }
-                if let b { return .move(x, .before(b.element)) }
-            }
-            return nil
-        }
-        // gdu.134 rule 1: a pull-out is the ONLY cross-fold move, and its target is always a DRAWN trusted key. The former push-in
-        // (`Y .before(X)` with X a pile key) aimed across the fold at a folded target; it is gone (see `foldedNeighbourSubject`).
-        return pullOut()
-    }
-
-    /// Post-condition (gdu.45): a move whose subject or relation target is overflowed or the chevron, or (with a chevron)
-    /// that drops at the far left of the bar, i.e. left of the chevron.
-    static func overflowViolations(_ actions: [PlannedAction], forbidden: Set<ItemKey>, boundary: Bool) -> [PlannedAction] {
-        actions.filter {
-            guard case .move(let k, let rel) = $0 else { return false }
-            if forbidden.contains(k) { return true }
-            switch rel {
-            case .before(let t), .after(let t): return forbidden.contains(t)
-            case .leftmost: return boundary
-            case .rightmost: return false
-            }
-        }
-    }
-
-    /// Index in `base` where the trailing run of anchors starts (`base.count` when the last item is movable).
-    static func trailingBlockStart(base: [ItemKey], anchors: Set<ItemKey>) -> Int {
-        var i = base.count
-        while i > 0, anchors.contains(base[i - 1]) { i -= 1 }
-        return i
-    }
-
-    /// Post-condition: actions whose subject is an anchor, or whose destination slot in `target` is at/after `blockStart`.
-    static func violations(_ actions: [PlannedAction], target: [ItemKey], anchors: Set<ItemKey>, blockStart: Int) -> [PlannedAction] {
-        actions.filter {
-            guard case .move(let k, _) = $0 else { return false }
-            return anchors.contains(k) || (target.firstIndex(of: k) ?? Int.max) >= blockStart
-        }
-    }
-
-    /// The full left-to-right order the layout asks for, anchors included. Anchors the layout does not place (not in
-    /// `desired`, e.g. an unhideable item the layout wants hidden) keep their observed slot; every other slot is filled
-    /// with `desired` in order.
-    static func layoutTarget(base: [ItemKey], desired: [ItemKey], anchors: Set<ItemKey>) -> [ItemKey] {
-        let placed = Set(desired)
-        var fill = desired.makeIterator()
-        return base.map { (anchors.contains($0) && !placed.contains($0)) ? $0 : (fill.next() ?? $0) }
-    }
-
-    /// Minimal moves turning `current` into `target` (same key set) with `anchors` never moved.
-    /// `avoid`: keys never used as a relation target when another in-place neighbour exists (gdu.101: stale frames).
-    static func moves(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>, boundary: Bool = false, avoid: Set<ItemKey> = []) -> [PlannedAction] {
-        movesReporting(from: current, to: target, anchors: anchors, boundary: boundary, avoid: avoid).actions
-    }
-
-    /// `moves`, plus the subjects that could not be spelled against a trusted neighbour (`blocked`) and the ones held back because the
-    /// move would cross an `unsteady` untrusted key (`moving`: subject, key).
-    /// With `avoid` (untrusted keys) the relation target is a neighbour in `target` that is trusted and already in place, nearest first,
-    /// left side before right. The search passes over keys still waiting to be moved (later moves into the same gap are spelled against
-    /// the same or a nearer in-place key and land in target order) and over untrusted keys (9o9.9): a trusted subject may cross an
-    /// untrusted key when it is spelled against a trusted neighbour on the far side. A candidate is accepted only if, simulated on the
-    /// physical bar, it leaves the subject on the target's side of every untrusted and every in-place key. No trusted neighbour at all:
-    /// an edge drop (leftmost / rightmost) is used only if the search met no untrusted key; otherwise the subject is blocked. Never
-    /// spelled against an untrusted key and never counted as in place.
-    static func movesReporting(from current: [ItemKey], to target: [ItemKey], anchors: Set<ItemKey>, boundary: Bool = false,
-                               avoid: Set<ItemKey> = [], unsteady: Set<ItemKey> = [])
-        -> (actions: [PlannedAction], blocked: [ItemKey], moving: [(ItemKey, ItemKey)], blockedBy: [ItemKey: ItemKey]) {
-        guard current != target, current.count == target.count else { return ([], [], [], [:]) }
-        var tIndex: [ItemKey: Int] = [:]
-        for (i, k) in target.enumerated() { tIndex[k] = i }
-        let keep = keptSet(current: current, tIndex: tIndex, anchors: anchors)
-
-        var inPlace = keep
-        var out: [PlannedAction] = []
-        var blocked: [ItemKey] = []
-        var moving: [(ItemKey, ItemKey)] = []
-        var blockedBy: [ItemKey: ItemKey] = [:]   // subject -> the untrusted key whose wall blocked it
-        var cur = current   // the physical bar as the planned moves so far leave it (only tracked with `avoid`)
-        func idx(_ k: ItemKey, in bar: [ItemKey]) -> Int { bar.firstIndex(of: k) ?? Int.max }
-        func apply(_ k: ItemKey, _ r: Relation, to bar: [ItemKey]) -> [ItemKey] {
-            var b = bar; b.removeAll { $0 == k }
-            switch r {
-            case .after(let t): if let i = b.firstIndex(of: t) { b.insert(k, at: i + 1) }
-            case .before(let t): if let i = b.firstIndex(of: t) { b.insert(k, at: i) }
-            case .leftmost: b.insert(k, at: 0)
-            case .rightmost: b.append(k)
-            }
-            return b
-        }
-        /// `k` ends on the target's side of every untrusted and every in-place key.
-        func lands(_ k: ItemKey, _ r: Relation) -> Bool {
-            let after = apply(k, r, to: cur)
-            for z in avoid.union(inPlace) where z != k {
-                if (tIndex[k]! < tIndex[z]!) != (idx(k, in: after) < idx(z, in: after)) { return false }
-            }
-            return true
-        }
-        for (i, k) in target.enumerated() where !keep.contains(k) {
-            let left = i > 0 ? target[i - 1] : nil
-            let right = i + 1 < target.count ? target[i + 1] : nil
-            var relation: Relation?
-            if avoid.isEmpty {
-                if let l = left, inPlace.contains(l) { relation = .after(l) }
-                else if let r = right, inPlace.contains(r) { relation = .before(r) }
-            } else {
-                // Oscillation guard: a move that has to cross an untrusted key whose slot just changed waits for the bar to settle.
-                if let u = unsteady.first(where: { (idx(k, in: cur) < idx($0, in: cur)) != (i < tIndex[$0]!) }) { moving.append((k, u)); continue }
-                var hitUntrusted = false
-                var wall: ItemKey?
-                var candidates: [Relation] = []
-                var j = i - 1
-                while j >= 0 {
-                    if avoid.contains(target[j]) { hitUntrusted = true; wall = wall ?? target[j] }
-                    else if inPlace.contains(target[j]) { candidates.append(.after(target[j])); break }
-                    j -= 1
-                }
-                j = i + 1
-                while j < target.count {
-                    if avoid.contains(target[j]) { hitUntrusted = true; wall = wall ?? target[j] }
-                    else if inPlace.contains(target[j]) { candidates.append(.before(target[j])); break }
-                    j += 1
-                }
-                relation = candidates.first { lands(k, $0) }
-                if relation == nil, !candidates.isEmpty || hitUntrusted { blocked.append(k); if let w = wall { blockedBy[k] = w }; continue }   // no safe trusted in-place spelling
-            }
-            if relation == nil {
-                if i == 0 {
-                    // With a chevron, "leftmost" would drop the item left of it (inside the overflow area): drop before the
-                    // first other drawn item instead (nothing has been moved yet at index 0).
-                    if boundary {
-                        guard let f = current.first(where: { $0 != k }) else { inPlace.insert(k); continue }
-                        if avoid.contains(f) { blocked.append(k); blockedBy[k] = f; continue }
-                        relation = .before(f)
-                    } else { relation = .leftmost }
-                }
-                else { relation = .rightmost }   // only reachable for the last index; left is always placed before it
-            }
-            out.append(.move(k, relation!))
-            if !avoid.isEmpty { cur = apply(k, relation!, to: cur) }
-            inPlace.insert(k)
-        }
-        return (out, blocked, moving, blockedBy)
-    }
-
-    /// Keys that stay put: all anchors plus, per gap between consecutive anchors, the longest increasing subsequence
-    /// (by target index) of movable keys whose target index lies inside the gap's anchor bounds.
-    private static func keptSet(current: [ItemKey], tIndex: [ItemKey: Int], anchors: Set<ItemKey>) -> Set<ItemKey> {
-        var keep = anchors
-        var segment: [Int] = []          // target indices of candidate movables in the current gap
-        var lower = -1
-        var byIndex: [Int: ItemKey] = [:]
-        for (k, i) in tIndex { byIndex[i] = k }
-        func flush(upper: Int) {
-            let cands = segment.filter { $0 > lower && $0 < upper }
-            for t in lis(cands) { keep.insert(byIndex[t]!) }
-            segment.removeAll()
-        }
-        for k in current {
-            let t = tIndex[k]!
-            if anchors.contains(k) { flush(upper: t); lower = t } else { segment.append(t) }
-        }
-        flush(upper: Int.max)
-        return keep
-    }
-
-    /// Longest strictly increasing subsequence (patience sorting with back-pointers); returns its values.
-    static func lis(_ a: [Int]) -> [Int] {
-        var tails: [Int] = []          // indices into a
-        var prev = [Int](repeating: -1, count: a.count)
-        for (i, v) in a.enumerated() {
-            var lo = 0, hi = tails.count
-            while lo < hi { let m = (lo + hi) / 2; if a[tails[m]] < v { lo = m + 1 } else { hi = m } }
-            if lo > 0 { prev[i] = tails[lo - 1] }
-            if lo == tails.count { tails.append(i) } else { tails[lo] = i }
-        }
-        var out: [Int] = []
-        var i = tails.last ?? -1
-        while i >= 0 { out.append(a[i]); i = prev[i] }
-        return out.reversed()
-    }
 }

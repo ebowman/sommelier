@@ -137,8 +137,7 @@ private func waitUntil(_ cond: @escaping @Sendable () async -> Bool) async -> Bo
         let b = ArrangeSections.badge(status: .waitingForPosition("r"), running: true, pendingPlacement: false, isAnchor: false)
         #expect(b == .waitingForPosition && b.glyph == "⟳")
         #expect(b.tooltip == "Waiting for a trustworthy read of its position (the last scan could not corroborate where it is)")
-        let line = ArrangeSections.statusLine(perItem: [k("c"): .waitingForPosition("r")], lastError: nil, isConverged: false, inFlight: false)
-        #expect(line == "Waiting to read 1 item")
+        // (sommelier-ejb.7: the status-line half is gone with `ArrangeSections.statusLine`; the bottom line is the core's)
     }
 
     // MARK: 9o9.24 an uncorroborated key with no skip of its own is on the 60 s timer too

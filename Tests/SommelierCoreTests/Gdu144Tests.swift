@@ -25,9 +25,7 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
             for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
             #expect(await moveCalls(r.actuator) == 0)
             #expect(await r.actuator.stripEvents.isEmpty)
-            #expect(await r.engine.stripOpenHold == nil)
-            #expect(await r.engine.foldDropRequest.isEmpty)
-            #expect(r.state.isConverged)
+            #expect(!r.state.isConverged && r.state.coreStatus != .moving)   // sommelier-ejb.7, CHANGED: `isConverged` follows the core, which says `differs(plain)` here (the record disagrees with the fold); nothing is dragged
             for key in [k("P1"), k("P2"), k("P3")] { #expect(r.state.perItem[key] == .notFitting) }   // « , never pending / unsupported
             for key in [k("D1"), k("D2"), k("D3"), k("D4")] { #expect(r.state.perItem[key] == .inPlace) }
         }
@@ -51,8 +49,6 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         let r = await holdRig(failCalls: 20, message: "the drag did not land", drop: [], record: ["P1", "P2", "P3", "D1", "D2", "D4", "D3"])
         for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
-        #expect(await r.engine.stripOpenHold != nil)
-        #expect(r.state.lastPlan.stripHoldFolded == 3)
         #expect(!r.bar.lines.contains { $0.contains("giving up") })
         let line = ArrangeSections.barFullText(3)
         #expect(line == "The bar is full: macOS folds 3 items behind «. Hide items to make room.")
@@ -72,7 +68,6 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         let r = await holdRig(failCalls: 1, message: "the drag did not land", drop: [], record: ["P1", "P2", "P3", "D1", "D2", "D4", "D3"])
         for _ in 0..<6 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
-        #expect(await r.engine.stripOpenHold != nil)
         // the user drops D4 first of the drawn keys (a drawn-only edit: the hold is kept, the move is the user's own)
         let edited = Layout.placedAll(visible: ["P1", "P2", "P3", "D4", "D1", "D2", "D3"].map(k))
         await r.engine.setLayout(edited, moved: [k("D4")])
@@ -80,7 +75,6 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         #expect(await moveCalls(r.actuator) == 2)
         let flags = await r.actuator.moveSingleDrag
         #expect(flags.count == 2 && flags[0].1 && flags[1].1)   // gdu.144 D7: the user's own drop is a single drag too on a full bar
-        #expect(await r.engine.stripOpenHold != nil)
     }
 }
 
@@ -88,18 +82,14 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
 @Suite struct UserFoldDropTests {
     @Test func aFoldedKeyDroppedRightOfTheFoldLineIsExactlyOneSessionAndIsConsumed() async {
         let r = await holdRig(failCalls: 0)   // the user dropped P1 after D1
-        #expect(await r.engine.foldDropRequest == [k("P1")])
         for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
-        #expect(await r.engine.foldDropRequest.isEmpty)
-        #expect(await r.engine.stripOpenHold == nil)
     }
 
     @Test func aFailedFoldDropIsNotRetriedAndAFreshEngineNeverPullsAnything() async {
         let r = await holdRig(failCalls: 20, message: ActuationError.stripMoveDidNotHoldMessage)
         for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 1)
-        #expect(await r.engine.foldDropRequest.isEmpty)
         // restart: a new engine over the same record
         let again = await holdRig(failCalls: 0, drop: [])
         for _ in 0..<10 { _ = await again.engine.reconcileOnce() }
@@ -109,10 +99,8 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
     @Test func aFoldedKeyDroppedLeftOfTheFoldLineIsNoDragAtAllAndTheRowSaysSo() async {
         let record = ["P1", "D1", "D2", "P2", "D3", "P3", "D4"]
         let r = await holdRig(failCalls: 0, drop: ["P1"], record: record)
-        #expect(await r.engine.foldDropRequest.isEmpty)   // gdu.144 B3: cleared at once, no request is ever pending
         for _ in 0..<10 { _ = await r.engine.reconcileOnce() }
         #expect(await moveCalls(r.actuator) == 0)
-        #expect(await r.engine.foldDropRequest.isEmpty)
         #expect(r.state.perItem[k("P1")] == .notFitting)
         let text = ArrangeBarState.stayBehindText("P1")
         #expect(text == "P1 is in your order, but macOS folds from the left, so it stays behind « until there is room")
@@ -129,7 +117,7 @@ private func k(_ n: String) -> ItemKey { .status(ownerKey: "com.x.\(n)", autosav
         let o = ObservedOrder(onBar: [p1, p2, chev, d1], parked: [], systemOverflow: [p1, p2], overflowChevron: chev, uncorroborated: [p1, p2])
         let layout = Layout(visible: [d1, p1, p2])
         let status: [ItemKey: ItemStatus] = [p1: .unsupported("could not corroborate its position on the bar for 60 s: x"), p2: .waitingForPosition("stale"), d1: .inPlace]
-        let c = ArrangeSections.make(observed: o, layout: layout, items: [:], perItem: status, capabilities: caps, lastPlan: PlanSummary())
+        let c = ArrangeSections.make(observed: o, layout: layout, items: [:], perItem: status, capabilities: caps)
         for key in [p1, p2] {
             let r = c.visible.rows.first { $0.key == key }!
             #expect(r.barState == .behindChevron && r.badge == .behindChevron, "\(key)")
@@ -216,7 +204,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
             let (e, a, _, _) = await rig144(["D1", "P1", "D2", "P2", "D4", "P3", "D3"], fail: 0, m: m)
             for _ in 0..<10 { _ = await e.reconcileOnce() }
             #expect(await a.moveSingleDrag.isEmpty, "ambiguous=\(ambiguous)")
-            #expect(await e.stripOpenHold == nil)
         }
     }
 
@@ -256,14 +243,11 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         let (e, a, _, _) = await rig144(["P1", "P2", "P3", "D1", "D2", "D4", "D3"], fail: 50, m: m)
         for _ in 0..<6 { _ = await e.reconcileOnce() }
         let before = await movedKeys144(a)
-        let heldNow = await e.stripOpenHold != nil
-        #expect(before.count == 1 && heldNow)
+        #expect(before.count == 1)   // (sommelier-ejb.7: the hold is the core's; one failed drag, asserted by the count)
         await e.setLayout(Layout.placedAll(visible: ["P1", "P3", "D1", "P2", "D2", "D4", "D3"].map(k)), moved: [k("P2")])
-        #expect(await e.foldDropRequest == [k("P2")])
         for _ in 0..<10 { _ = await e.reconcileOnce() }
         let after = await movedKeys144(a)
         #expect(after.count == before.count + 1 && after.last == "P2")   // exactly one more drag, and it is the folded key's
-        #expect(await e.foldDropRequest.isEmpty)
     }
 
     @Test func aFoldDropWithAVerifyingDrawnMismatchPullsTheFoldedKeyBeforeTheDrawnOne() async {
@@ -277,7 +261,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         let moves = await movedKeys144(a)
         #expect(moves.first == "P2")
         #expect(moves.filter { $0 == "P2" }.count == 1)
-        #expect(await e.foldDropRequest.isEmpty)
     }
 
     // the same through the real request path (regular passes), as live
@@ -291,7 +274,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         let after = await movedKeys144(a)
         #expect(after.count > before && after[before] == "P2" && after.filter { $0 == "P2" }.count == 1, "before=\(before) after=\(after)")   // first, once
         #expect(after.count <= before + 1 + 3)   // then at most the engine's budget of drawn moves
-        #expect(await e.foldDropRequest.isEmpty)
     }
 }
 
@@ -305,7 +287,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
             let (e, a, st, _) = await rig144(rec, fail: 0, m: m)
             for _ in 0..<3 { _ = await e.reconcileOnce() }
             await e.setLayout(Layout.placedAll(visible: rec.map(k)), moved: [k("P1")])
-            #expect(await e.foldDropRequest.isEmpty)   // at once, before any pass
             if regularPasses { await regular144(e, st) } else { for _ in 0..<10 { _ = await e.reconcileOnce() } }
             #expect(!(await movedKeys144(a)).contains("P1"))
             // ejb.15 (Wiring 3), CHANGED because the core decides: the user's first edit leaves P1 OWED in the core until the user's chain ends (`passBoundary`: the
@@ -315,7 +296,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
             if regularPasses { await regular144(e, st) } else { for _ in 0..<10 { _ = await e.reconcileOnce() } }
             let moved = await movedKeys144(a)
             #expect(!moved.contains("P1") && !moved.contains("P2") && !moved.contains("P3"), "regular=\(regularPasses) moved=\(moved)")
-            #expect(await e.foldDropRequest.isEmpty)
         }
     }
 
@@ -329,7 +309,7 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         await e.setLayout(Layout.placedAll(visible: ["P1", "P3", "D1", "P2", "D2", "D3", "D4"].map(k)), moved: [k("P2")])
         _ = await e.reconcileOnce()
         // the user's pull-out was withheld (carried scan): the drawn keys are in order, so ONLY the gate flag says the bar still differs from the record
-        #expect(st.lastPlan.stoppedWhileDiffering && !st.lastPlan.orderDiffers && !st.lastPlan.checkingBar)
+        // (sommelier-ejb.7: `lastPlan.stoppedWhileDiffering` etc. are gone; the core's status below is the display)
         // ejb.16 CHANGED (display source): the menu/Arrange text is the core's status, not the old plan's. The core has not proven the bar not full, so it says "checking"; it never says matches.
         #expect(!st.isConverged && StatusLine.text(state: st, trusted: true, conflicting: nil) == ArrangeSections.checkingMenuBar)
         for _ in 0..<2 { _ = await e.reconcileOnce() }
@@ -339,7 +319,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         m.carried = false
         for _ in 0..<10 { _ = await e.reconcileOnce() }
         #expect(!(await movedKeys144(a)).contains("P2"))
-        #expect(await e.foldDropRequest.isEmpty)
     }
 
     // a key merely dropped NEXT to is not the user's: only the subject (or a flipped-pair neighbour move) is exempt from the hold
@@ -347,8 +326,8 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         let m = Mode144()
         let (e, a, _, _) = await rig144(["P1", "P2", "P3", "D1", "D2", "D4", "D3"], fail: 1, m: m)
         for _ in 0..<6 { _ = await e.reconcileOnce() }
-        let (calls1, held1) = (await a.moveSingleDrag.count, await e.stripOpenHold != nil)
-        #expect(calls1 == 1 && held1)
+        let calls1 = await a.moveSingleDrag.count
+        #expect(calls1 == 1)
         // the user drops D1 (already first) beside the still-mismatched D4/D3 pair: D4 / D3 are not D1
         await e.setLayout(Layout.placedAll(visible: ["P1", "P2", "P3", "D1", "D2", "D4", "D3"].map(k)), moved: [k("D1")])
         for _ in 0..<10 { _ = await e.reconcileOnce() }
@@ -364,8 +343,7 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         let (e, a, _, bar) = await rig144(["P1", "P2", "P3", "D1", "D3", "D2", "D4"], fail: 200, m: m)
         for i in 0..<60 { m.d3 = (i / 3) % 2 == 0; _ = await e.reconcileOnce() }
         #expect(await a.moveSingleDrag.count <= 3)
-        let held = await e.stripOpenHold != nil
-        #expect(held && bar.lines.filter { $0.contains("strip hold cleared") }.isEmpty)   // gdu.144 item 2: the flap releases NOTHING (the hold, then the budget, stop it)
+        _ = bar   // gdu.144 item 2: the flap releases NOTHING (the core's hold, then its budget, stop it): the count above
     }
 
     // every engine drag counts, verified or failed; exhausted means quiet; a user edit gives the budget back
@@ -377,7 +355,7 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         let act = ScramblingActuator144(inner)
         let st = EngineState(), bar = HoldBar()
         var cfg = LayoutEngine.Config.multiMove
-        cfg.maxAttemptsPerItem = 1000; cfg.maxOrderMovesPerMinute = 100_000; cfg.maxKeyFailures = 1000; cfg.maxConsecutiveFailures = 1000
+        cfg.maxKeyFailures = 1000; cfg.maxConsecutiveFailures = 1000
         let e = LayoutEngine(observer: BudgetObserver144(inner: inner), actuator: act, store: InMemoryLayoutStore(record), capabilities: Caps144(), state: st,
                              resolveSnapshot: { s in s.items.compactMap { i in ItemKey(storeKey: i.axIdentifier.isEmpty ? i.title : i.axIdentifier).map { ResolvedItem(item: i, key: $0, confidence: .exact) } } },
                              sleep: { _ in }, log: { bar.add($0) }, config: cfg)
@@ -385,7 +363,6 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
         for _ in 0..<50 { _ = await e.reconcileOnce() }
         let first = await act.moveCalls
         #expect(first == 3)
-        #expect(bar.lines.filter { $0.contains("automatic order moves made") }.count == 1)   // one line when exhausted
         for key in order { if case .moving? = st.perItem[key] { Issue.record("\(key) reads moving") } }
         // a user edit gives the budget back: the user's own move, then (on the regular passes that follow) up to three more engine drags
         await e.setLayout(Layout.placedAll(visible: ["P1", "P2", "P3", "D2", "D1", "D3", "D4", "D5", "D6"].map(k)), moved: [k("D2")])
@@ -412,7 +389,7 @@ private func movedKeys144(_ a: FakeActuator) async -> [String] {
             await act.setFailEvery(failEvery)
             let st = EngineState(), bar = HoldBar()
             var cfg = LayoutEngine.Config.multiMove
-            cfg.maxAttemptsPerItem = 1000; cfg.maxOrderMovesPerMinute = 100_000; cfg.maxKeyFailures = 1000; cfg.maxConsecutiveFailures = 1000
+            cfg.maxKeyFailures = 1000; cfg.maxConsecutiveFailures = 1000
             let e = LayoutEngine(observer: BudgetObserver144(inner: inner), actuator: act, store: InMemoryLayoutStore(Layout.placedAll(visible: order)), capabilities: Caps144(),
                                  state: st, resolveSnapshot: { s in s.items.compactMap { i in ItemKey(storeKey: i.axIdentifier.isEmpty ? i.title : i.axIdentifier).map { ResolvedItem(item: i, key: $0, confidence: .exact) } } },
                                  sleep: { _ in }, log: { bar.add($0) }, config: cfg)
@@ -466,38 +443,4 @@ private actor ScramblingActuator144: MenuBarActuator {
     var lastBatchUnconfirmed: Set<ItemKey> { get async { await inner.lastBatchUnconfirmed } }
     var lastBatchRefused: [ItemKey: String] { get async { await inner.lastBatchRefused } }
     var lastBatchUnsettled: [ItemKey: String] { get async { await inner.lastBatchUnsettled } }
-}
-
-// MARK: B6: on a full bar trusted keys are planned among themselves
-
-@Suite struct FullBarIgnoresUntrustedKeysTests {
-    private let ch = k("ch")
-    private let anchorCh: @Sendable (ItemKey) -> Capability = { $0 == k("ch") ? Capability(canMove: false, canHide: false) : Capability(canMove: true, canHide: true) }
-
-    // the 10:25:50 shape: FloTile (F) had a stale iStat Time (S) between it and its target (T)
-    @Test func aTrustedMoveIsNotAimedAtOrAroundAStaleKeyOnAFullBar() {
-        let o = ObservedOrder(onBar: [k("P1"), ch, k("F"), k("S"), k("T")], parked: [], systemOverflow: [k("P1")], overflowChevron: ch,
-                              uncorroborated: [k("S")], staleOnBar: [k("S")])
-        let layout = Layout(visible: [k("P1"), k("T"), k("S"), k("F")], hidden: [], alwaysHidden: [])
-        let plain = Reconciler().plan(observed: o, layout: layout, capabilities: anchorCh)
-        let full = Reconciler().plan(observed: o, layout: layout, capabilities: anchorCh, fullBar: true)
-        // full bar: S is not part of the plan at all; F and T are ordered between themselves
-        for a in full.actions {
-            guard case .move(let s, let rel) = a else { continue }
-            #expect(s != k("S"))
-            switch rel { case .before(let t), .after(let t): #expect(t != k("S")); default: break }
-        }
-        #expect(full.actions.count == 1)
-        #expect(!full.skipped.contains { $0.key == k("S") })
-        // the ordinary planner reports / works around S (unchanged behaviour off a full bar)
-        #expect(plain.actions != full.actions || plain.skipped != full.skipped)
-    }
-
-    @Test func aTrustedKeyIsNotMovedBecauseOfAnUntrustedKeysRecordSlot() {
-        // the record puts the stale S first; the trusted A, B already agree with each other: nothing to do on a full bar
-        let o = ObservedOrder(onBar: [k("P1"), ch, k("A"), k("S"), k("B")], parked: [], systemOverflow: [k("P1")], overflowChevron: ch,
-                              uncorroborated: [k("S")], staleOnBar: [k("S")])
-        let layout = Layout(visible: [k("P1"), k("S"), k("A"), k("B")], hidden: [], alwaysHidden: [])
-        #expect(Reconciler().plan(observed: o, layout: layout, capabilities: anchorCh, fullBar: true).actions.isEmpty)
-    }
 }

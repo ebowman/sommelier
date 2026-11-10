@@ -60,21 +60,18 @@ private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state:
         let r = await dropRig()
         _ = await r.engine.setLayout(Layout.placedAll(visible: ["A", "F", "B", "D", "C", "E"].map(k)), moved: [k("F")])
         // pass 1 (the drop's) moves F and plans the C/D swap too, but defers it; the chained pass 2 only reports the deferral
-        #expect(await waitUntil136 { r.state.passesStarted >= 2 && !r.state.lastPlan.deferredAfterUserEdit.isEmpty && !(r.state.perItem[k("F")] == .pending) })
+        // sommelier-ejb.7, CHANGED because the core decides: `lastPlan.deferredAfterUserEdit` / `userEditMoved` and the "deferred after your change" log are gone with the order planner; the
+        // property (the user's pass moves only its own key, the next regular pass performs the rest) is asserted through the actuator's moves and the pass count.
+        #expect(await waitUntil136 { r.state.passesStarted >= 2 && !(r.state.perItem[k("F")] == .pending) })
         for _ in 0..<30 { try? await Task.sleep(for: .milliseconds(5)) }
         #expect(await moves136(r.act) == [k("F")])
         #expect(r.state.passesStarted == 2)
-        #expect(r.state.lastPlan.userEditMoved == [k("F")])
-        let deferred = r.state.lastPlan.deferredAfterUserEdit
-        #expect(deferred.count == 1 && [k("C"), k("D")].contains(deferred[0]))
-        #expect(r.lines.all.contains { $0.contains("deferred after your change") })
         // the next REGULAR pass (a trigger: not chained, not the user's) performs it
         await r.engine.requestReconcile(reason: "trigger")
         #expect(await waitUntil136 { await moves136(r.act).count == 2 })
         let after = await moves136(r.act)
         #expect(after[0] == k("F") && [k("C"), k("D")].contains(after[1]))
         #expect(r.lines.all.contains { $0.contains("user-edit restriction ended") })
-        #expect(r.state.lastPlan.deferredAfterUserEdit.isEmpty)
     }
 
     /// The user shows a hidden key X while a swap of C and D is pending: pass 1 writes the membership, the CHAINED pass 2 (no request of its own)
@@ -92,48 +89,24 @@ private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state:
                                   sleep: { _ in }, log: { lines.add($0) }, config: cfg)
         await engine.start()
         _ = await engine.setLayout(Layout.placedAll(visible: ["X", "A", "B", "D", "C"].map(k)), moved: [k("X")])
-        #expect(await waitUntil136 { state.passesStarted >= 2 && !state.lastPlan.deferredAfterUserEdit.isEmpty })
+        #expect(await waitUntil136 { state.passesStarted >= 2 })
         for _ in 0..<30 { try? await Task.sleep(for: .milliseconds(5)) }
         #expect(await act.calls.contains { if case .applyHiddenBatch = $0 { true } else { false } })   // pass 1: the user's membership change
         #expect(await moves136(act).isEmpty)                                                             // the chained pass: no other move
         #expect(state.passesStarted == 2)
-        #expect(lines.all.contains { $0.contains("deferred after your change") })
         await engine.requestReconcile(reason: "trigger")
         #expect(await waitUntil136 { await moves136(act).count == 1 })
         let after = await moves136(act)
         #expect([k("C"), k("D")].contains(after[0]))
     }
 
-    @Test func theDeferredMoveIsReportedSkippedWithTheReasonNotUnsupported() async {
-        let r = await dropRig()
-        _ = await r.engine.setLayout(Layout.placedAll(visible: ["A", "F", "B", "D", "C", "E"].map(k)), moved: [k("F")])
-        #expect(await waitUntil136 { r.state.passesStarted >= 1 && !r.state.lastPlan.deferredAfterUserEdit.isEmpty })
-        for key in r.state.lastPlan.deferredAfterUserEdit {
-            if case .unsupported? = r.state.perItem[key] { Issue.record("deferred \(key) must not read unsupported") }
-        }
-        #expect(Reconciler.deferredAfterUserEditReason == "waiting a moment after your change")
-    }
-
     @Test func aPlanWithoutAUserEditDefersNothing() async {
         let r = await dropRig()   // the record's C/D swap is pending, nobody edited anything
         _ = await r.engine.reconcileOnce()
         #expect(await moves136(r.act).count == 1)
-        #expect(r.state.lastPlan.deferredAfterUserEdit.isEmpty)
         #expect(!r.lines.all.contains { $0.contains("deferred after your change") })
     }
 
-    @Test func theStatusLineAnnouncesDoneAndNextBetweenThePasses() {
-        #expect(ArrangeSections.userEditDeferredText(done: ["GateOpener"], next: ["WiFi Signal"]) == "Done: GateOpener. Next: WiFi Signal")
-        #expect(ArrangeSections.userEditDeferredText(done: ["GateOpener"], next: ["WiFi Signal", "B", "C"])
-                == "Done: GateOpener. Next: WiFi Signal (2 more to match your order)")
-        var ctx = ArrangeSections.StatusContext()
-        ctx.userEditDone = ["GateOpener"]; ctx.userEditNext = ["WiFi Signal", "B"]
-        let line = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: true, inFlight: false, context: ctx)
-        #expect(line.contains("Done: GateOpener. Next: WiFi Signal (1 more to match your order)"))
-        // while the engine is dragging, the Moving text wins
-        let moving = ArrangeSections.statusLine(perItem: [:], lastError: nil, isConverged: false, inFlight: true, context: ctx)
-        #expect(!moving.contains("Done:"))
-    }
 }
 
 @MainActor
@@ -141,12 +114,8 @@ private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state:
     @Test func aDrawnOnlyEditKeepsTheHoldAndDispatchesNoNewFoldMove() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        #expect(await r.engine.stripOpenHold != nil)
         let before = await moveCalls(r.actuator)
         _ = await r.engine.setLayout(Layout.placedAll(visible: [k("D1"), k("P1"), k("D3"), k("D2"), k("P2"), k("P3"), k("D4")]), moved: [k("D2")])
-        #expect(await r.engine.stripOpenHold != nil)
-        #expect(r.bar.lines.contains { $0.contains("strip hold kept: the edit did not touch folded items") })
-        #expect(!r.bar.lines.contains { $0.contains("strip hold cleared") })
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
         // any further move is a drawn key's (no strip session: nothing was dispatched across the fold)
         let later = await moves136(r.actuator).dropFirst(before)
@@ -156,22 +125,19 @@ private func dropRig() async -> (engine: LayoutEngine, act: FakeActuator, state:
     @Test func anEditWithoutMovedKeysKeepsTheHoldToo() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        let before = await moveCalls(r.actuator)
         _ = await r.engine.setLayout(Layout.placedAll(visible: [k("P1"), k("D1"), k("D2"), k("P2"), k("D3"), k("P3"), k("D4")]))
-        #expect(await r.engine.stripOpenHold != nil)
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(await moveCalls(r.actuator) == before)   // the hold (the core's) is kept: nothing is dragged again
     }
 
     @Test func anEditOfAFoldedKeyReleasesTheHold() async {
         let r = await holdRig(failCalls: 10)
         for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        let before = await moveCalls(r.actuator)
         _ = await r.engine.setLayout(Layout.placedAll(visible: [k("D1"), k("P2"), k("D2"), k("P1"), k("D3"), k("P3"), k("D4")]), moved: [k("P2")])
-        #expect(await r.engine.stripOpenHold == nil)
-        #expect(r.bar.lines.contains { $0.contains("strip hold cleared (layout edit)") })
+        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
+        #expect(await moveCalls(r.actuator) > before)   // the edit touched a folded key: the core lets the user's own move through
     }
 
-    @Test func retryStillReleasesTheHold() async {
-        let r = await holdRig(failCalls: 10)
-        for _ in 0..<4 { _ = await r.engine.reconcileOnce() }
-        await r.engine.userRetry()
-        #expect(await r.engine.stripOpenHold == nil)
-    }
 }

@@ -79,42 +79,17 @@ struct NormalizationReportingTests {
 }
 
 struct TrailingBlockHonestyTests {
-    @Test func outOfOrderAnchorsStillSkipTheKeyForcedLeftOfTheBlock() {
-        let bar: [ItemKey] = [k("d"), wifi, bento, clock]
-        let layout = Layout(visible: [bento, wifi, clock, k("d")])   // anchors wifi/bento swapped; d wanted right of Clock
-        let p = rec.plan(observed: obs(bar), layout: layout, capabilities: caps)
-        #expect(p.skipped.contains { $0.key == k("d") && $0.reason.hasPrefix("cannot be placed right of the system items") })
-        #expect(p.skipped.contains { $0.reason == "immovable item is out of layout order" })
-        #expect(p.desiredOnBar.suffix(3) == [wifi, bento, clock])
-    }
     @Test func membershipPassShowLeftOfTheClockIsNotSkipped() {
         let layout = Layout(visible: [k("a"), k("b"), clock])
         let p = rec.plan(observed: obs([k("a"), clock], [k("b")]), layout: layout, capabilities: caps)
         #expect(p.phase == .membership)
         #expect(p.actions == [.show(k("b"))])
         #expect(p.skipped.isEmpty)
-        #expect(p.desiredOnBar == [k("a"), k("b"), clock])
-    }
-    @Test func orderPhaseLeftOfTheClockPlansNormally() {
-        let layout = Layout(visible: [k("b"), k("a"), clock])
-        let p = rec.plan(observed: obs([k("a"), k("b"), clock]), layout: layout, capabilities: caps)
-        #expect(p.phase == .order)
-        #expect(p.skipped.isEmpty)
-        #expect(p.desiredOnBar == [k("b"), k("a"), clock])
-    }
-    @Test func membershipPassAlreadyKeepsShownKeysLeftOfTheClock() {
-        let layout = Layout(visible: [k("a"), clock, k("b")])
-        let p = rec.plan(observed: obs([k("a"), clock], [k("b")]), layout: layout, capabilities: caps)
-        #expect(p.phase == .membership)
-        #expect(p.actions == [.show(k("b"))])
-        #expect(p.skipped.contains { $0.key == k("b") && $0.reason.hasPrefix("cannot be placed right of the system items") })
-        #expect(p.desiredOnBar == [k("a"), k("b"), clock])
     }
     @Test func membershipPassWithoutABlockIsUnchanged() {
         let layout = Layout(visible: [k("a"), k("b")])
         let p = rec.plan(observed: obs([k("a")], [k("b")]), layout: layout, capabilities: caps)
         #expect(p.skipped.isEmpty)
-        #expect(p.desiredOnBar == [k("a"), k("b")])
     }
 }
 
@@ -124,10 +99,5 @@ struct TransientAnchorSkipTests {
         let p = rec.plan(observed: obs([wifi, bento, clock], [k("p")]), layout: layout, capabilities: caps)
         #expect(p.phase == .membership)
         #expect(!p.skipped.contains { $0.reason == "immovable item is out of layout order" })
-    }
-    @Test func orderPhaseStillReportsThem() {
-        let p = rec.plan(observed: obs([k("p"), wifi, bento, clock]), layout: layout, capabilities: caps)
-        #expect(p.phase != .membership)
-        #expect(p.skipped.contains { $0.reason == "immovable item is out of layout order" })
     }
 }

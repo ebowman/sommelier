@@ -58,7 +58,7 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         let (e, st, rec) = await rig(config: cfg())
         await e.requestReconcile()                               // trigger pass: nothing to reuse yet
         #expect(await settle(st, passes: 1))
-        await e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(st, passes: 2))
         #expect(rec.seeds == [false, true])
         #expect(st.lastObserveReused)
@@ -70,7 +70,7 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         let (e, st, rec) = await rig(config: c)
         await e.requestReconcile()
         #expect(await settle(st, passes: 1))
-        await e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(st, passes: 2))
         #expect(rec.seeds == [false, true])
     }
@@ -89,7 +89,7 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         await e.requestReconcile()
         #expect(await settle(st, passes: 1))
         try? await Task.sleep(for: .milliseconds(120))
-        await e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(st, passes: 2))
         #expect(rec.seeds == [false, false])
         #expect(!st.lastObserveReused)
@@ -99,7 +99,7 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         let (e, st, rec) = await rig(config: cfg(window: .zero))
         await e.requestReconcile()
         #expect(await settle(st, passes: 1))
-        await e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(st, passes: 2))
         #expect(rec.seeds == [false, false])
     }
@@ -122,7 +122,7 @@ private func cfg(window: Duration = .seconds(2)) -> LayoutEngine.Config {
         await e.agentRestarted(settle: .zero)
         #expect(await settle(st, passes: 2))
         let before = rec.seeds.count
-        await e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(st, passes: 3))
         // The restart's pass re-adopted a fresh observation (or ended unsettled); either way the first seed after the restart
         // is never the pre-restart observation: the restart pass itself offered none.

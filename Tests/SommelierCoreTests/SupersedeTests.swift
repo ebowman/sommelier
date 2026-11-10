@@ -94,7 +94,9 @@ private func rig(layout: Layout, window: Duration, slowFirst: Bool = false,
         await r.engine.setLayout(Layout.placedAll(visible: [B, A, C]))   // the user changed their mind
         #expect(await waitUntil { await MainActor.run { r.state.isConverged && r.state.passesStarted >= 1 } })
         try? await Task.sleep(for: .milliseconds(100))
-        #expect(await MainActor.run { r.state.passesStarted } == 1)
+        // sommelier-ejb.7, CHANGED: the pass for the final layout moves A; one chained pass then reads the moved bar (the core judges it): 2 passes, not 1. Still ONE move, no pass per layout.
+        #expect(await MainActor.run { r.state.passesStarted } == 2)
+        #expect(await r.actuator.calls.filter { if case .move = $0 { return true } else { return false } }.count == 1)
         #expect(await r.actuator.order == [B, A, C])
         #expect(await r.actuator.hidden.isEmpty)
         #expect(await r.actuator.calls.filter { if case .applyHiddenBatch = $0 { return true } else { return false } }.isEmpty)

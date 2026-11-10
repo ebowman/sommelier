@@ -83,7 +83,7 @@ public enum CoreStatusText {
         c.userPaused = state.userPaused; c.pauseReason = state.pauseReason; c.adoptionPending = state.layout.pendingAdoption
         c.handDragNotice = state.handDragNotice; c.systemSettingsNotice = state.systemSettingsNotice
         c.failedMembership = state.perItem.values.filter { if case .failed = $0 { return true }; return false }.count
-        c.notices = [state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state), state.orderNotAppliedNotice,
+        c.notices = [state.revealNotice ?? ArrangeSections.revealSkipNotice(state: state),
                      state.inFlight != nil ? state.orderMoveNotice : nil, state.newItemNotice].compactMap { $0 }
         if let a = state.inFlight {
             let k: ItemKey

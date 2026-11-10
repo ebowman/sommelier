@@ -82,7 +82,7 @@ private func idle() async { try? await Task.sleep(for: .milliseconds(120)) }
         let r = await rig()
         await idle()
         await r.t.poll()                                          // the bar still reads as the engine's observation
-        await r.e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await r.e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(r.st, passes: 2))
         #expect(r.rec.seeds == [false, true])
         #expect(r.st.lastObserveReused)
@@ -91,7 +91,7 @@ private func idle() async { try? await Task.sleep(for: .milliseconds(120)) }
     @Test func withoutAPollTheIdleObservationIsNotOffered() async {
         let r = await rig()
         await idle()
-        await r.e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await r.e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(r.st, passes: 2))
         #expect(r.rec.seeds == [false, false])
     }
@@ -101,7 +101,7 @@ private func idle() async { try? await Task.sleep(for: .milliseconds(120)) }
         await idle()
         r.scanner.set(["B", "A", "C"])                            // changed (trigger is a no-op here)
         await r.t.poll()
-        await r.e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await r.e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(r.st, passes: 2))
         #expect(r.rec.seeds == [false, false])
     }
@@ -111,7 +111,7 @@ private func idle() async { try? await Task.sleep(for: .milliseconds(120)) }
         await idle()
         let serial = await r.e.pollGate().engineSignatureSerial
         await r.e.notePollUnchanged(serial: serial - 1)
-        await r.e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await r.e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(r.st, passes: 2))
         #expect(r.rec.seeds == [false, false])
     }
@@ -124,7 +124,7 @@ private func idle() async { try? await Task.sleep(for: .milliseconds(120)) }
         await r.t.poll()                                          // confirmed change over the cap: suppression starts
         r.scanner.set(nil)                                        // the bar reads as the engine's observation again
         await r.t.poll()                                          // suppressed: scans, triggers and refreshes nothing
-        await r.e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await r.e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(r.st, passes: 2))
         #expect(r.rec.seeds == [false, false])
     }
@@ -136,7 +136,7 @@ private func idle() async { try? await Task.sleep(for: .milliseconds(120)) }
         await r.e.agentRestarted(settle: .milliseconds(20))
         #expect(await settle(r.st, passes: 2))                    // the restart pass adopts a fresh observation
         await idle()
-        await r.e.setLayout(Layout(visible: ["B", "A", "C"].map(k)))
+        await r.e.setLayout(Layout(visible: ["A", "B", "C"].map(k)))   // sommelier-ejb.7: the same order (no move, hence no chained pass to count); the user pass is what is tested
         #expect(await settle(r.st, passes: 3))
         #expect(r.rec.seeds.last == false)                        // not the refreshed (polled) window
     }

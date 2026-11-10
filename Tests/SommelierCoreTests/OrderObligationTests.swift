@@ -24,71 +24,9 @@ struct OrderObligationPlannerTests {
     }
     private func final(_ p: Plan, _ o: ObservedOrder) -> [ItemKey] { p.actions.reduce(o) { PlanSimulator.apply($1, to: $0) }.onBar }
 
-    // Every Visible key carries the obligation: the planned moves, applied, reach the record's order on the bar.
-    @Test func plannedMovesReachTheRecordForRandomBars() {
-        for seed in 1...300 {
-            var g = SplitMix64(seed: UInt64(seed))
-            let n = Int.random(in: 2...15, using: &g)
-            let keys = (0..<n).map { k("i\($0)") }
-            let o = ObservedOrder(onBar: keys.shuffled(using: &g), parked: [])
-            let layout = Layout(visible: keys.shuffled(using: &g))
-            let p = rec.plan(observed: o, layout: layout, capabilities: free)
-            #expect(final(p, o) == layout.visible, "seed \(seed)")
-            let q = rec.plan(observed: ObservedOrder(onBar: layout.visible, parked: []), layout: layout, capabilities: free)
-            #expect(q.phase == .converged && q.actions.isEmpty, "seed \(seed)")
-        }
-    }
-
-    // With a pinned trailing system block and 1-2 stale keys: trusted keys converge in order, no move names a stale key (subject or target),
-    // and the block never moves.
-    @Test func randomBarsWithASystemBlockAndStaleKeysConverge() {
-        for seed in 1...400 {
-            var g = SplitMix64(seed: UInt64(seed))
-            let n = Int.random(in: 4...12, using: &g)
-            let keys = (0..<n).map { k("i\($0)") }
-            let stale = Set(keys.shuffled(using: &g).prefix(Int.random(in: 1...2, using: &g)))
-            let block = [Self.cc, Self.clock]
-            let bar = keys.shuffled(using: &g)
-            let o = ObservedOrder(onBar: bar + block, parked: [], uncorroborated: stale, staleOnBar: stale)
-            let layout = Layout(visible: keys.shuffled(using: &g) + block)
-            let p = rec.plan(observed: o, layout: layout, capabilities: Self.sysCaps)
-            for case .move(let subject, let rel) in p.actions {
-                #expect(!stale.contains(subject) && subject != Self.cc && subject != Self.clock, "seed \(seed)")
-                switch rel {
-                case .before(let t): #expect(!stale.contains(t) && t != Self.clock, "seed \(seed) target")   // before the first block key is how a key goes last
-                case .after(let t): #expect(!stale.contains(t) && t != Self.cc && t != Self.clock, "seed \(seed) target")
-                default: break
-                }
-            }
-            // simulate: each move must name a key that is on the bar now; the end keeps the block last and the stale keys in their slots
-            let end = final(p, o)
-            #expect(Array(end.suffix(2)) == block, "seed \(seed)")
-            let trusted = keys.filter { !stale.contains($0) }
-            let skippedKeys = Set(p.skipped.map(\.key))
-            if skippedKeys.isEmpty {
-                #expect(end.filter { !stale.contains($0) && !block.contains($0) } == layout.visible.filter { trusted.contains($0) }, "seed \(seed) trusted order")
-            }
-        }
-    }
-
     @Test func aLayoutEqualToTheBarYieldsZeroActions() {
         let p = rec.plan(observed: obs(["a", "b", "c"]), layout: lay(v: ["a", "b", "c"]), capabilities: free)
         #expect(p.phase == .converged && p.actions.isEmpty)
-    }
-
-    @Test func anAdjacentSwapIsExactlyOneMove() {
-        let p = rec.plan(observed: obs(["a", "b", "c", "d"]), layout: lay(v: ["a", "c", "b", "d"]), capabilities: free)
-        #expect(p.phase == .order)
-        #expect(moves(p).count == 1)
-        #expect(final(p, obs(["a", "b", "c", "d"])) == ["a", "c", "b", "d"].map(k))
-    }
-
-    @Test func layoutKeysAbsentFromTheBarAreIgnored() {
-        let p = rec.plan(observed: obs(["a", "b", "c"]), layout: lay(v: ["gone", "c", "ghost", "a", "b"]), capabilities: free)
-        #expect(p.absent.contains(k("gone")) && p.absent.contains(k("ghost")))
-        #expect(final(p, obs(["a", "b", "c"])) == ["c", "a", "b"].map(k))
-        #expect(moves(p).count == 1)
-        #expect(rec.plan(observed: obs(["a", "b"]), layout: lay(v: ["gone", "a", "ghost", "b"]), capabilities: free).actions.isEmpty)
     }
 
     @Test func theTrailingSystemBlockIsNeverMovedAndNothingLandsRightOfIt() {
@@ -104,90 +42,11 @@ struct OrderObligationPlannerTests {
         #expect(Array(end.suffix(2)) == [Self.cc, Self.clock])
     }
 
-    @Test func aFreshIStatItemIsOrderedLikeAnyOther() {
-        let istat = ItemKey.status(ownerKey: "com.bjango.istatmenus.status", autosaveName: "cpu")
-        let o = ObservedOrder(onBar: [k("a"), k("b"), istat], parked: [])
-        let p = rec.plan(observed: o, layout: Layout(visible: [istat, k("a"), k("b")]), capabilities: free)
-        #expect(p.actions == [.move(istat, .before(k("a")))])
-    }
-
-    // 9o9.3: a stale subject is skipped with the stale-frame reason, never dragged.
-    @Test func aStaleSubjectIsSkippedWithTheStaleFrameReason() {
-        let o = ObservedOrder(onBar: [k("a"), k("b"), k("s")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
-        let p = rec.plan(observed: o, layout: lay(v: ["s", "a", "b"]), capabilities: free)
-        #expect(p.actions.isEmpty)
-        #expect(p.skipped.contains(SkippedAction(k("s"), Reconciler.staleFrameSkipReason)))
-    }
-
-    // A stale neighbour is not used as the relation target: the chosen neighbour is fresh and already in place (never a key that moves).
-    @Test func aStaleTargetNeighbourGivesWayToTheNextFreshNeighbour() {
-        let o = ObservedOrder(onBar: [k("a"), k("s"), k("b"), k("c")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
-        let p = rec.plan(observed: o, layout: lay(v: ["a", "s", "c", "b"]), capabilities: free)
-        #expect(p.actions.count == 1)
-        guard case .move(let subject, let rel)? = p.actions.first else { Issue.record("no move"); return }
-        let moving = Set(p.actions.compactMap { a -> ItemKey? in if case .move(let m, _) = a { m } else { nil } })
-        switch rel {
-        case .before(let t), .after(let t):
-            #expect(t != k("s") && t != subject && !moving.contains(t))
-            #expect(["a", "b", "c"].map(k).contains(t))
-        default: Issue.record("expected a relation to a fresh in-place key")
-        }
-        #expect(final(p, o).filter { $0 != k("s") } == ["a", "c", "b"].map(k))
-    }
-
-    // Reviewer's case: bar U A B Z X, record U X Z A B, U stale. Every move names a fresh key that is in place when the move runs.
-    @Test func everyMoveNamesAFreshInPlaceNeighbourAndTheSequenceConverges() {
-        let o = ObservedOrder(onBar: ["U", "A", "B", "Z", "X"].map(k), parked: [], uncorroborated: [k("U")], staleOnBar: [k("U")])
-        let p = rec.plan(observed: o, layout: lay(v: ["U", "X", "Z", "A", "B"]), capabilities: free)
-        var bar = o
-        var moved = Set<ItemKey>()
-        for a in p.actions {
-            guard case .move(let subject, let rel) = a else { Issue.record("not a move"); continue }
-            #expect(subject != k("U"))
-            switch rel {
-            case .before(let t), .after(let t):
-                #expect(t != k("U"), "stale target")
-                #expect(!moved.contains(subject))
-                // in place = the neighbour has not been left waiting for its own move
-                let pending = Set(p.actions.compactMap { x -> ItemKey? in if case .move(let m, _) = x { m } else { nil } }).subtracting(moved)
-                #expect(!pending.contains(t), "target \(t) is still waiting to be moved")
-            default: break
-            }
-            moved.insert(subject)
-            bar = PlanSimulator.apply(a, to: bar)
-        }
-        #expect(bar.onBar == ["U", "X", "Z", "A", "B"].map(k))
-        #expect(rec.plan(observed: ObservedOrder(onBar: bar.onBar, parked: [], uncorroborated: [k("U")], staleOnBar: [k("U")]),
-                         layout: lay(v: ["U", "X", "Z", "A", "B"]), capabilities: free).actions.isEmpty)
-    }
-
-    // A move whose only possible neighbours are stale is skipped, not spelled against a stale frame.
-    @Test func aMoveWithOnlyStaleNeighboursIsSkipped() {
-        let o = ObservedOrder(onBar: [k("s"), k("a")], parked: [], uncorroborated: [k("s")], staleOnBar: [k("s")])
-        let p = rec.plan(observed: o, layout: lay(v: ["a", "s"]), capabilities: free)
-        #expect(p.actions.isEmpty)
-        #expect(p.skipped.contains { $0.reason == Reconciler.staleFrameSkipReason })
-    }
-
-    // 9o9.2 finding: one uncorroborated key at the right end is not the "system block"; the others are still ordered.
-    @Test func anUncorroboratedKeyAtTheRightEndDoesNotMakeEveryoneUnplaceable() {
-        let o = ObservedOrder(onBar: [k("a"), k("b"), k("c")], parked: [], uncorroborated: [k("c")])
-        let p = rec.plan(observed: o, layout: lay(v: ["b", "a", "c"]), capabilities: free)
-        #expect(!p.skipped.contains { $0.reason.hasPrefix("cannot be placed right of the system items") })
-        #expect(final(p, o) == ["b", "a", "c"].map(k))
-    }
-
     @Test func aMembershipPassNeverOrders() {
         let p = rec.plan(observed: obs(["a", "b"], ["k"]), layout: lay(v: ["b", "a", "k"]), capabilities: free)
         #expect(p.phase == .membership && p.actions == [.show(k("k"))])
     }
 
-    @Test func overflowedAndChevronKeysAreNeverSubjectsOrTargets() {
-        let o = obs(["o", "chev", "a", "b", "k"], ovf: ["o"], chevron: "chev")
-        let p = rec.plan(observed: o, layout: lay(v: ["o", "k", "b", "a"]), capabilities: free)
-        #expect(Reconciler.overflowViolations(p.actions, forbidden: [k("o"), k("chev")], boundary: true).isEmpty)
-        #expect(final(p, o).suffix(3) == [k("k"), k("b"), k("a")])
-    }
 }
 
 struct LayoutRecordModelTests {
@@ -273,7 +132,7 @@ struct OrderObligationEngineTests {
         let sink = LogSink()
         let r = await engineRig(order: ["A", "B", "C", "D"], layout: Layout(visible: ["A", "C", "B", "D"].map(k)), sink: sink)
         let rep = await r.engine.reconcileOnce()
-        #expect(rep.outcome == .converged)
+        #expect(rep.outcome == .incomplete)   // sommelier-ejb.7, CHANGED: a pass that moved an item is `.incomplete`; the core judges the moved bar on the next pass
         #expect(await r.actuator.calls.count == 1)
         #expect(await r.actuator.order == ["A", "C", "B", "D"].map(k))
         #expect(sink.lines.contains { $0.contains("order: moving") })
@@ -325,116 +184,6 @@ struct TrustedVersusUntrustedTests {
         ObservedOrder(onBar: bar.map(k), parked: [], uncorroborated: Set(u.map(k)), staleOnBar: Set(u.map(k)))
     }
 
-    // The live case (2026-11-07 build 282): ControlCenter, Shield*, MCP observed; record ControlCenter, MCP, Shield*.
-    @Test func theLiveShieldMcpMaestroCase() {
-        let o = untrusted(["CC", "Sh", "MCP"], ["Sh"])
-        let layout = lay(v: ["CC", "MCP", "Sh"])
-        let p = rec.plan(observed: o, layout: layout, capabilities: free)
-        #expect(p.phase == .order)
-        #expect(p.actions == [.move(k("MCP"), .after(k("CC")))])
-        #expect(run(p, o) == ["CC", "MCP", "Sh"].map(k))
-        // the second pass is quiet
-        let q = rec.plan(observed: untrusted(["CC", "MCP", "Sh"], ["Sh"]), layout: layout, capabilities: free)
-        #expect(q.phase == .converged && q.actions.isEmpty)
-    }
-
-    // A S B observed, record B S A, S untrusted. No safe move spells B before / A after against a trusted in-place neighbour (the only
-    // neighbour of each is S or the other pending key; an edge drop would cross S unverified), so: no action, converged, and the
-    // untrusted S carries the "waiting" skip. The bar is left as observed; nothing is dragged against S.
-    @Test func swapAcrossAnUntrustedKeyWithNoTrustedNeighbourIsSkipped() {
-        let o = untrusted(["A", "S", "B"], ["S"])
-        let p = rec.plan(observed: o, layout: lay(v: ["B", "S", "A"]), capabilities: free)
-        #expect(p.actions.isEmpty && p.phase == .converged)
-        #expect(p.skipped.contains { $0.key == k("S") })
-        #expect(!p.skipped.contains { $0.key == k("A") || $0.key == k("B") })
-    }
-
-    // A trusted subject crosses an untrusted key when spelled against a trusted neighbour on the far side.
-    @Test func aTrustedSubjectMayCrossAnUntrustedKeyViaAFarNeighbour() {
-        let o = untrusted(["A", "S", "B", "C"], ["S"])
-        let p = rec.plan(observed: o, layout: lay(v: ["A", "B", "S", "C"]), capabilities: free)   // B must be left of S
-        #expect(p.actions == [.move(k("B"), .after(k("A")))])
-        #expect(run(p, o) == ["A", "B", "S", "C"].map(k))
-    }
-
-    // Oscillation guard: S's slot changed since the last settled observation, so nothing crosses it this pass.
-    @Test func noMoveCrossesAnUnsteadyUntrustedKey() {
-        let o = untrusted(["CC", "Sh", "MCP"], ["Sh"])
-        let layout = lay(v: ["CC", "MCP", "Sh"])
-        let p = rec.plan(observed: o, layout: layout, capabilities: free, unsteady: [k("Sh")])
-        #expect(p.actions.isEmpty && p.phase == .converged)
-        #expect(p.skipped.contains(SkippedAction(k("MCP"), Reconciler.movingNeighbourSkipReason(k("Sh")))))
-        #expect(Reconciler.movingNeighbourSkipReason(k("Sh")) == "neighbour \(k("Sh")) is moving")
-        // a move that does not cross the unsteady key is still planned
-        let p2 = rec.plan(observed: untrusted(["Sh", "A", "B"], ["Sh"]), layout: lay(v: ["Sh", "B", "A"]), capabilities: free, unsteady: [k("Sh")])
-        #expect(p2.actions.count == 1)
-    }
-
-    @Test func unsteadyKeysAreTheOnesWhoseSlotChanged() {
-        let prev = ["CC", "Sh", "MCP", "X"].map(k)
-        #expect(Reconciler.unsteadyKeys(previous: nil, current: prev, among: [k("Sh")]).isEmpty)
-        #expect(Reconciler.unsteadyKeys(previous: prev, current: prev, among: [k("Sh")]).isEmpty)
-        #expect(Reconciler.unsteadyKeys(previous: prev, current: ["CC", "MCP", "Sh", "X"].map(k), among: [k("Sh")]) == [k("Sh")])
-        // an unrelated key appearing or leaving is not a slot change
-        #expect(Reconciler.unsteadyKeys(previous: prev, current: ["CC", "Sh", "MCP"].map(k), among: [k("Sh")]).isEmpty)
-    }
-
-    // Random bars with a system block and 1-2 untrusted keys, one move per pass, `unsteady` computed the real way (the untrusted key's
-    // slot against the previous settled observation, advanced past the engine's own moves). For the first passes an untrusted key may
-    // also slip one slot by itself (the flip the guard exists for). Every seed reaches a fixed point (no action, no "moving" hold) within a
-    // bounded number of passes, no move names an untrusted key, the block stays last; with no skip at all the trusted keys are in record
-    // order among themselves AND on the record's side of every untrusted key.
-    @Test func trustedKeysConvergeRelativeToUntrustedKeys() {
-        var ordered = 0, held = 0
-        for seed in 1...400 {
-            var g = SplitMix64(seed: UInt64(seed))
-            let n = Int.random(in: 4...12, using: &g)
-            let keys = (0..<n).map { k("i\($0)") }
-            let stale = Set(keys.shuffled(using: &g).prefix(Int.random(in: 1...2, using: &g)))
-            let block = [Self.cc, Self.clock]
-            let layout = Layout(visible: keys.shuffled(using: &g) + block)
-            var o = ObservedOrder(onBar: keys.shuffled(using: &g) + block, parked: [], uncorroborated: stale, staleOnBar: stale)
-            var previous: [ItemKey]? = nil
-            var settled = false
-            for pass in 0..<(n * 4 + 10) {
-                if pass < 3, Bool.random(using: &g), let u = stale.sorted(by: { "\($0)" < "\($1)" }).first, let i = o.onBar.firstIndex(of: u), i + 1 < o.onBar.count - 2 {
-                    o.onBar.swapAt(i, i + 1)   // the untrusted key's slot flips by itself
-                }
-                let unsteady = Reconciler.unsteadyKeys(previous: previous, current: o.onBar, among: stale)
-                previous = o.onBar
-                let p = rec.plan(observed: o, layout: layout, capabilities: Self.sysCaps, unsteady: unsteady)
-                for case .move(let subject, let rel) in p.actions {
-                    #expect(!stale.contains(subject) && subject != Self.cc && subject != Self.clock, "seed \(seed)")
-                    switch rel {
-                    case .before(let t): #expect(!stale.contains(t) && t != Self.clock, "seed \(seed) target")
-                    case .after(let t): #expect(!stale.contains(t) && t != Self.cc && t != Self.clock, "seed \(seed) target")
-                    default: break
-                    }
-                }
-                let holding = p.skipped.contains { Reconciler.isMovingNeighbourSkip($0.reason) }
-                if p.actions.isEmpty && !holding { settled = true; if p.skipped.isEmpty { ordered += 1 }; break }
-                if holding { held += 1 }
-                if let first = p.actions.first { o = PlanSimulator.apply(first, to: o); previous = o.onBar }   // one move per pass; own move is not the untrusted key's
-            }
-            #expect(settled, "seed \(seed) did not reach a fixed point")
-            #expect(Array(o.onBar.suffix(2)) == block, "seed \(seed)")
-            let rank = Dictionary(uniqueKeysWithValues: layout.visible.enumerated().map { ($1, $0) })
-            let trusted = o.onBar.filter { !stale.contains($0) && !block.contains($0) }
-            // trusted keys are in record order among themselves unless some skip explains it
-            let p = rec.plan(observed: o, layout: layout, capabilities: Self.sysCaps)
-            if p.skipped.isEmpty {
-                #expect(zip(trusted, trusted.dropFirst()).allSatisfy { rank[$0]! < rank[$1]! }, "seed \(seed) trusted order")
-                // relative to untrusted keys: every trusted key is on the record's side of every untrusted key
-                for u in stale {
-                    let ui = o.onBar.firstIndex(of: u)!
-                    for t in trusted {
-                        #expect((o.onBar.firstIndex(of: t)! < ui) == (rank[t]! < rank[u]!), "seed \(seed) \(t) vs \(u)")
-                    }
-                }
-            }
-        }
-        #expect(ordered > 20 && held > 0)
-    }
 }
 
 // 9o9.9 corrective: the guard at engine level.

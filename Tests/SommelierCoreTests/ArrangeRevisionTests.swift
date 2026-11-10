@@ -181,13 +181,12 @@ private func rig(order: [ItemKey], layout: Layout, failOn: [(Int, ActuationError
         for _ in 0..<3 { _ = await r.engine.reconcileOnce() }   // struck out: failed until the layout changes or Retry
         let failed = r.state.perItem.filter { if case .failed = $0.value { return true }; return false }.keys
         #expect(!failed.isEmpty)
-        #expect(ArrangeSections.statusLine(perItem: r.state.perItem, lastError: r.state.lastError, isConverged: r.state.isConverged,
-                                           inFlight: false).contains("failed"))
+        var ctx = CoreStatusContext(); ctx.failedMembership = failed.count   // sommelier-ejb.7: the line is `CoreStatusText` (the same count of failed items)
+        #expect(CoreStatusText.render(.matches, ctx).contains("failed"))
         await r.actuator.displace(k("B"), toIndex: 0)           // something else fixed the bar
         _ = await r.engine.reconcileOnce()
         #expect(r.state.perItem.values.allSatisfy { $0 == .inPlace })
-        #expect(!ArrangeSections.statusLine(perItem: r.state.perItem, lastError: r.state.lastError, isConverged: r.state.isConverged,
-                                            inFlight: false).contains("failed"))
+        #expect(CoreStatusText.context(state: r.state, trusted: true, conflicting: nil).failedMembership == 0)
         #expect(r.state.isConverged)
         #expect(logs.all.contains { $0.contains("cleared failure for") && $0.contains("now in place") })
     }
