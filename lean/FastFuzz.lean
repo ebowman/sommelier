@@ -89,11 +89,13 @@ def genState36 (rec_ : List Key) (r : Read) : G State := do
   let st ← subset rec_ 5
   let hf ← subset rec_ 5
   let gn ← rnd 3
+  let vk ← coin 25
+  let vkk := rec_.getD (← rnd (rec_.length + 1)) 0
   pure { State.init rec_ with
          owedKeys := owed, foldRequest := fq, lastFreshPile := pile, hold := hold, provenNotFull := pnf,
          noChevronReads := ncr, moveCount := mc, restricted := rs, stripGrant := sg,
          editSessionUsed := esu, lastDrawn := r.drawn.take ld, givenUp := gu,
-         skipped := sk, strikes := st, holdFolded := hf, gen := gn, inFlight := ifa }
+         skipped := sk, strikes := st, holdFolded := hf, gen := gn, inFlight := ifa, verified := if vk then some vkk else none }
 
 def sh {α : Type} [Repr α] (x : α) : String := toString (repr x)
 

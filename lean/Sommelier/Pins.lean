@@ -2,6 +2,7 @@ import Sommelier.Safety
 import Sommelier.Gates
 import Sommelier.Honesty
 import Sommelier.Truth
+import Sommelier.Verified
 
 /-!
 # Statement pins
@@ -609,5 +610,20 @@ example : ∀ (s : State) (r : Read),
     (r.notFullProven = s.provenNotFull → shownVerdict s r = verdict s.record r) := @status_judges_view
 example : ∀ (s : State) (r : Read) (a : Action), decideMove s r = some a →
     (s.view r).usable ∧ (s.view r).consistent = true := @decideMove_gated
+
+-- ejb.17: a verified move the next read contradicts is a strike; the engine never repeats it more than three times
+example : ∀ (rec : List Key) (k : Key) (es : List Event), (∀ e ∈ es, isUserEvent e = false) → AllVerified k es →
+    AtReads (StillMisplacedAtGate k) (State.init rec) es → verDrags k (State.init rec) es ≤ 3 := @verified_revert_bounded
+example : ∀ (k : Key) (s : State) (es : List Event), VInv s → (∀ e ∈ es, isUserEvent e = false) → AllVerified k es →
+    AtReads (StillMisplacedAtGate k) s es → verDrags k s es ≤ 3 - strikeCount s k := @verified_revert_bounded_from
+example : ∀ (s : State) (a : Action), a.user = false → (result s a .verified true).verified = some a.subject := @res_verified_marks
+example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → s.inFlight = none → s.gate r = true →
+    stillMisplaced s r k = true →
+    (judge s r).strikes = k :: s.strikes ∧ (judge s r).verified = none ∧ (judge s r).hold = s.hold := @judge_contradicted_strikes
+example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → s.inFlight = none → s.gate r = true →
+    stillMisplaced s r k = true → 2 ≤ strikeCount s k → k ∈ (judge s r).givenUp := @judge_contradicted_giveup
+example : ∀ {s : State} {r : Read} {k : Key}, s.verified = some k → s.inFlight = none → s.gate r = true →
+    stillMisplaced s r k = false → (judge s r).verified = none ∧ (judge s r).strikes = s.strikes ∧ (judge s r).givenUp = s.givenUp ∧
+      (judge s r).hold = s.hold := @judge_confirmed_clears
 
 end Sommelier

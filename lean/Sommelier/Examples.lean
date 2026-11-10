@@ -53,11 +53,29 @@ def launchGood : List Event :=
 #eval (run (State.init [1, 2, 3, 4, 5]) launchGood).2
 example : (run (State.init [1, 2, 3, 4, 5]) launchGood).2 = [⟨1, .before 3, false, false⟩, ⟨2, .before 3, false, false⟩] := by decide
 
-/-- Six posted drags on a full bar that never converge: the engine stops after `capFull` = 3. -/
+/-- Four posted drags of DIFFERENT keys on a full bar, each working: the engine stops after `capFull` = 3. -/
 def budget : List Event :=
-  (List.replicate 6 [Event.read (mkRead .fresh [3, 2, 1, 4] [5]), ok 1]).flatten
-#eval (run (State.init [1, 2, 3, 4, 5]) budget).2.length   -- expected: 3
-example : (run (State.init [1, 2, 3, 4, 5]) budget).2.length = 3 := by decide
+  [ .read (mkRead .fresh [2, 1, 3, 4, 5, 6, 7, 8] []), ok 1,
+    .read (mkRead .fresh [1, 2, 4, 3, 5, 6, 7, 8] []), ok 3,
+    .read (mkRead .fresh [1, 2, 3, 4, 6, 5, 7, 8] []), ok 5,
+    .read (mkRead .fresh [1, 2, 3, 4, 5, 6, 8, 7] []) ]
+#eval (run (State.init [1, 2, 3, 4, 5, 6, 7, 8]) budget).2.length   -- expected: 3
+example : (run (State.init [1, 2, 3, 4, 5, 6, 7, 8]) budget).2.length = 3 := by decide
+
+/-- ejb.17.  A drag the actuator calls verified but the next read still shows undone (macOS reverted it) takes a strike for its key, on a full bar as on
+any other: the third strike gives the key up, so it is dragged exactly three times however many reads follow, and the bar is never held. -/
+def reverted : List Event :=
+  (List.replicate 12 [Event.read (mkRead .fresh [3, 2, 1, 4] [5]), ok 1]).flatten
+example : (run (State.init [1, 2, 3, 4, 5]) reverted).2.length = 3 := by decide
+example : (run (State.init [1, 2, 3, 4, 5]) reverted).1.hold = false := by decide
+example : (run (State.init [1, 2, 3, 4, 5]) reverted).1.strikes = [1, 1, 1] := by decide
+example : (run (State.init [1, 2, 3, 4, 5]) reverted).1.givenUp = [1] := by decide
+/-- A user event gives the key back: the strikes and the pending mark go with it. -/
+example : (run (State.init [1, 2, 3, 4, 5]) (reverted ++ [.retryKey 1])).1.strikes = [] := by decide
+example : (run (State.init [1, 2, 3, 4, 5]) ([.read (mkRead .fresh [3, 2, 1, 4] [5]), ok 1, .retryKey 1])).1.verified = none := by decide
+/-- A verified drag the next read confirms takes no strike. -/
+example : (run (State.init [1, 2]) [.read (mkRead .fresh [2, 1] []), ok 1, .read (mkRead .fresh [1, 2] [])]).1.strikes = [] := by decide
+example : (run (State.init [1, 2]) [.read (mkRead .fresh [2, 1] []), ok 1, .read (mkRead .fresh [1, 2] [])]).1.verified = none := by decide
 
 /-! 3. Resume after a chain.  The user drops folded Wifi (5) right of the fold line: one strip drag, which
 fails.  The chain ends; a later regular pass (Resume) makes no strip move and no other drag. -/
@@ -279,7 +297,13 @@ example : (run (State.init [1, 2]) (bad1 ++ [abs_, abs_, abs_, abs_])).1.hold = 
 example : (run (State.init [1, 2]) ([.read (mkRead .fresh [1, 2] [5])] ++ [abs_, abs_, abs_, abs_])).1.lastFreshPile = [] := by decide
 def proven : List Event := [abs_, abs_, abs_]
 def mism : Event := .read (mkRead .absent [2, 1] [])
-example : (run (State.init [1, 2]) (proven ++ (List.replicate 30 [mism, ok 1]).flatten)).2.length = 20 := by decide
+example : (run (State.init [1, 2]) (proven ++ (List.replicate 30 [mism, ok 1]).flatten)).2.length = 3 := by decide
+/-- On a bar proven not full the contradicted key takes strikes and is dragged exactly three times, however many reads follow. -/
+def revertedProven : List Event :=
+  [abs_, abs_, abs_] ++ (List.replicate 12 [Event.read (mkRead .absent [2, 1] []), ok 1]).flatten
+example : (run (State.init [1, 2]) revertedProven).2.length = 3 := by decide
+example : (run (State.init [1, 2]) revertedProven).1.strikes = [1, 1, 1] := by decide
+example : (run (State.init [1, 2]) revertedProven).1.givenUp = [1] := by decide
 example : (run (State.init [1, 2]) (proven ++ (List.replicate 3 [mism, ok 1]).flatten ++ [.read (mkRead .fresh [2, 1] [])])).2.length = 3 := by decide
 /-- Three strikes on a bar proven not full give a key up (a full bar gives it up at once). -/
 example : (run (State.init [1, 2]) (proven ++ (List.replicate 5 [mism, bad 1]).flatten)).2.length = 3 := by decide
@@ -292,12 +316,15 @@ example : (run (State.init [1, 2]) [.read (mkRead .fresh [9, 1, 2] [])]).2 = [] 
 example : (run (State.init [1, 2]) [.read (mkRead .fresh [1, 2] [3]), .read (mkRead .fresh [1, 2] [4])]).1.lastFreshPile = [4] := by decide
 example : (run (State.init [1, 2]) [.read (mkRead .fresh [1, 2] [3]), .read (mkRead .stale [1, 2] [4])]).1.lastFreshPile = [3, 4] := by decide
 /-- Budget, hold and session reset by user events. -/
-def spent : List Event := (List.replicate 3 [Event.read (mkRead .fresh [2, 1] [5]), ok 1]).flatten
-example : (run (State.init [1, 2]) spent).1.moveCount = 3 := by decide
-example : (run (State.init [1, 2]) (spent ++ [.userRetry])).1.moveCount = 0 := by decide
-example : (run (State.init [1, 2]) (spent ++ [.retryKey 1])).1.moveCount = 0 := by decide
-example : (run (State.init [1, 2]) (spent ++ [.userEdit [2, 1] [2]])).1.moveCount = 0 := by decide
-example : (run (State.init [1, 2]) (spent ++ [.userEdit [2, 1] []])).1.moveCount = 3 := by decide
+def spent : List Event :=
+  [ .read (mkRead .fresh [2, 1, 3, 4, 5, 6] []), ok 1,
+    .read (mkRead .fresh [1, 2, 4, 3, 5, 6] []), ok 3,
+    .read (mkRead .fresh [1, 2, 3, 4, 6, 5] []), ok 5 ]
+example : (run (State.init [1, 2, 3, 4, 5, 6]) spent).1.moveCount = 3 := by decide
+example : (run (State.init [1, 2, 3, 4, 5, 6]) (spent ++ [.userRetry])).1.moveCount = 0 := by decide
+example : (run (State.init [1, 2, 3, 4, 5, 6]) (spent ++ [.retryKey 1])).1.moveCount = 0 := by decide
+example : (run (State.init [1, 2, 3, 4, 5, 6]) (spent ++ [.userEdit [2, 1, 3, 4, 5, 6] [2]])).1.moveCount = 0 := by decide
+example : (run (State.init [1, 2, 3, 4, 5, 6]) (spent ++ [.userEdit [2, 1, 3, 4, 5, 6] []])).1.moveCount = 3 := by decide
 def pulled : List Event := [.read (mkRead .fresh [1, 2, 4] [5]), .userEdit [1, 5, 2, 4] [5], .read (mkRead .fresh [1, 2, 4] [5])]
 example : (run (State.init [1, 2, 4, 5]) pulled).1.editSessionUsed = true := by decide
 example : (run (State.init [1, 2, 4, 5]) (pulled ++ [.userRetry])).1.editSessionUsed = false := by decide

@@ -24,7 +24,7 @@ namespace Sommelier
 /-! ### Shape lemmas: where an action comes from -/
 
 theorem gate_step_acts {s : State} {e : Event} {a : Action} (h : a ∈ (step s e).2) :
-    ∃ r, e = .read r ∧ decideMove s r = some a ∧ step s e = (emit (noteRead s r) a, [a]) := by
+    ∃ r, e = .read r ∧ decideMove s r = some a ∧ step s e = (emit (noteRead (judge s r) r) a, [a]) := by
   cases e with
   | read r =>
     refine ⟨r, rfl, ?_⟩
@@ -43,12 +43,12 @@ theorem gate_step_acts {s : State} {e : Event} {a : Action} (h : a ∈ (step s e
   | passBoundary => simp [step] at h
 
 /-- `decideMove` answers either an owed user move (the fold request first, then the rest), or a gated engine move. -/
-theorem gate_decide_cases {s : State} {r : Read} {a : Action} (h : decideMove s r = some a) :
+theorem gate_decide_cases0 {s : State} {r : Read} {a : Action} (h : decideMove0 s r = some a) :
     s.inFlight = none ∧
     ((∃ k, (k ∈ s.foldRequest.toList ∨ k ∈ s.owedKeys) ∧ userMove s r k = some a ∧ userAllowed s r a = true) ∨
      (engineAllowed s r = true ∧ ∃ b, planOrderMoves s r = some b ∧
         ((b.strip = false ∧ a = b) ∨ (b.strip = true ∧ s.stripGrant = true ∧ a = { b with user := true })))) := by
-  simp only [decideMove] at h
+  simp only [decideMove0] at h
   split at h
   · simp at h
   · rename_i hc
@@ -108,6 +108,13 @@ theorem gate_userMove_user {s : State} {r : Read} {k : Key} {a : Action} (h : us
         exact ⟨(anchorMove_basic ha').1, (anchorMove_basic ha').2.1⟩
       · exact ⟨(fallbackMove_basic h).1, (fallbackMove_basic h).2.1⟩
     · simp at h
+
+theorem gate_decide_cases {s : State} {r : Read} {a : Action} (h : decideMove s r = some a) :
+    s.inFlight = none ∧
+    ((∃ k, (k ∈ s.foldRequest.toList ∨ k ∈ s.owedKeys) ∧ userMove s r k = some a ∧ userAllowed s r a = true) ∨
+     (engineAllowed s r = true ∧ ∃ b, planOrderMoves s r = some b ∧
+        ((b.strip = false ∧ a = b) ∨ (b.strip = true ∧ s.stripGrant = true ∧ a = { b with user := true })))) :=
+  gate_decide_cases0 (decide_judge h)
 
 /-- Every engine (non-user) action is the planner's, on an allowed read. -/
 theorem gate_engine_action {s : State} {r : Read} {a : Action} (h : a ∈ (step s (.read r)).2)
@@ -210,7 +217,8 @@ theorem plan_on_good_read {s : State} {r : Read} {a : Action} (h : a ∈ (step s
     r.kind = .pass ∧ r.settled = true ∧ r.level ≠ .incomplete ∧ s.inFlight = none := by
   obtain ⟨r', he, hd, _⟩ := gate_step_acts h
   cases he
-  simp only [decideMove] at hd
+  replace hd := decide_judge hd
+  simp only [decideMove0] at hd
   split at hd
   · simp at hd
   · rename_i hc
@@ -277,45 +285,45 @@ theorem pile_absent_keeps (s : State) (r : Read) (hc : r.chevron = .absent)
 
 theorem res_count_exact (s : State) (a : Action) (o : Outcome) (p : Bool) :
     (result s a o p).moveCount = s.moveCount + (if p = true ∧ a.user = false then 1 else 0) := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 /-- A failed POSTED drag on a bar not proven not-full holds the bar ... -/
 theorem res_failed_holds (s : State) (a : Action) (hp : s.provenNotFull = false) :
     (result s a .failed true).hold = true ∧ (result s a .failed true).holdFolded = s.lastFreshPile := by
-  unfold result; simp [hp]
+  unfold result markFail markStrike; simp [hp]
 
 /-- ... and gives its key up, without a strike. -/
 theorem res_failed_gives_up (s : State) (a : Action) (hp : s.provenNotFull = false) :
     a.subject ∈ (result s a .failed true).givenUp := by
-  unfold result; simp [hp]; grind
+  unfold result markFail markStrike; simp [hp]; grind
 
 theorem res_failed_no_strike (s : State) (a : Action) (hp : s.provenNotFull = false) :
     (result s a .failed true).strikes = s.strikes := by
-  unfold result; simp [hp]
+  unfold result markFail markStrike; simp [hp]
 
 /-- On a bar proven not full a failed posted drag takes a strike and does NOT hold. -/
 theorem res_proven_no_hold (s : State) (a : Action) (hp : s.provenNotFull = true) :
     (result s a .failed true).hold = s.hold := by
-  unfold result; simp [hp]
+  unfold result markFail markStrike; simp [hp]
 
 theorem res_proven_strike (s : State) (a : Action) (hp : s.provenNotFull = true) :
     (result s a .failed true).strikes = a.subject :: s.strikes := by
-  unfold result; simp [hp]
+  unfold result markFail markStrike; simp [hp]
 
 /-- ... and gives the key up exactly at the third strike. -/
 theorem res_proven_giveup (s : State) (a : Action) (hp : s.provenNotFull = true) :
     a.subject ∈ (result s a .failed true).givenUp ↔
       a.subject ∈ s.givenUp ∨ 2 ≤ (s.strikes.filter (fun x => x == a.subject)).length := by
-  unfold result; simp [hp]; grind
+  unfold result markFail markStrike; simp [hp]; grind
 
 theorem res_proven_giveup_other (s : State) (a : Action) (hp : s.provenNotFull = true) (j : Key)
     (hj : j ≠ a.subject) : j ∈ (result s a .failed true).givenUp ↔ j ∈ s.givenUp := by
-  unfold result; simp [hp]; grind
+  unfold result markFail markStrike; simp [hp]; grind
 
 /-- Anything else that ends a drag changes none of hold, strikes, given-up keys. -/
 theorem res_other_keeps (s : State) (a : Action) (o : Outcome) (p : Bool) (h : p = false ∨ o ≠ .failed) :
     (result s a o p).hold = s.hold ∧ (result s a o p).strikes = s.strikes ∧ (result s a o p).givenUp = s.givenUp := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 /-- User events.  `userEdit` with moved keys: the budget is reset, the engine is restricted, a new strip session. -/
 theorem edit_budget_reset (s : State) (rec moved : List Key) (hm : moved ≠ []) :
@@ -412,13 +420,26 @@ theorem noteRead_keeps (s : State) (r : Read) :
     (noteRead s r).strikes = s.strikes := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> (unfold noteRead; grind)
 
+/-- The same facts for the state a read leaves after `judge` (ejb.17): `judge` only rewrites hold, holdFolded, givenUp, strikes, verified. -/
+theorem noteRead_keeps_j (s : State) (r : Read) :
+    (noteRead (judge s r) r).owedKeys = s.owedKeys ∧ (noteRead (judge s r) r).foldRequest = s.foldRequest ∧
+    (noteRead (judge s r) r).record = s.record ∧ (noteRead (judge s r) r).inFlight = s.inFlight ∧
+    (noteRead (judge s r) r).flightReq = s.flightReq ∧ (noteRead (judge s r) r).flightOwed = s.flightOwed ∧
+    (noteRead (judge s r) r).gen = s.gen ∧ (noteRead (judge s r) r).restricted = s.restricted ∧
+    (noteRead (judge s r) r).moveCount = s.moveCount ∧ (noteRead (judge s r) r).givenUp = (judge s r).givenUp ∧
+    (noteRead (judge s r) r).skipped = s.skipped ∧ (noteRead (judge s r) r).editSessionUsed = s.editSessionUsed ∧
+    (noteRead (judge s r) r).stripGrant = s.stripGrant ∧ (noteRead (judge s r) r).holdFolded = (judge s r).holdFolded ∧
+    (noteRead (judge s r) r).strikes = (judge s r).strikes := by
+  have h := noteRead_keeps (judge s r) r
+  simpa using h
+
 theorem result_owed_cases (s : State) (a : Action) (o : Outcome) (p : Bool) :
     (result s a o p).owedKeys = s.owedKeys ∨ (result s a o p).owedKeys = (a.subject :: s.owedKeys).eraseDups := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 theorem result_req_cases (s : State) (a : Action) (o : Outcome) (p : Bool) :
     (result s a o p).foldRequest = s.foldRequest ∨ (result s a o p).foldRequest = some a.subject := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 /-- Owed keys are listed once. -/
 theorem owed_nodup_step {s : State} (h : s.owedKeys.Nodup) (e : Event) : (step s e).1.owedKeys.Nodup := by
@@ -429,7 +450,7 @@ theorem owed_nodup_step {s : State} (h : s.owedKeys.Nodup) (e : Event) : (step s
     cases hd : decideMove s r with
     | none => simp [nk.1, h]
     | some a =>
-      simp only [emit, nk.1]
+      simp only [emit, nk.1, noteRead_judge_owedKeys]
       exact List.Nodup.erase _ h
   | userEdit rec moved =>
     simp only [step]
@@ -466,11 +487,11 @@ theorem emit_consumes {s : State} {r : Read} {a : Action} (hn : s.owedKeys.Nodup
   rw [hs]
   have nk := noteRead_keeps s r
   refine ⟨?_, ?_⟩
-  · simp only [emit, nk.1]
+  · simp only [emit, nk.1, noteRead_judge_owedKeys]
     intro hm
     have := (List.Nodup.mem_erase_iff hn).1 hm
     exact this.1 rfl
-  · simp only [emit, nk.2.1]
+  · simp only [emit, nk.2.1, noteRead_judge_foldRequest, noteRead_judge_owedKeys]
     split <;> simp_all
 
 /-- The move that leaves records whether its subject was owed by the current chain, and whether it was the fold request. -/
@@ -489,7 +510,7 @@ def Rearm (s : State) (a : Action) (o : Outcome) (p : Bool) : Prop :=
 
 theorem rearm_iff (s : State) (a : Action) (o : Outcome) (p : Bool) (j : Key) :
     j ∈ (result s a o p).owedKeys ↔ j ∈ s.owedKeys ∨ (j = a.subject ∧ Rearm s a o p) := by
-  unfold result Rearm
+  unfold result markFail markStrike Rearm
   by_cases hp : p = true
   · simp [hp]; grind
   · have hp' : p = false := by simpa using hp
@@ -508,7 +529,7 @@ open Classical in
 theorem rearm_request (s : State) (a : Action) (o : Outcome) (p : Bool) :
     (result s a o p).foldRequest =
       if Rearm s a o p ∧ s.flightReq = true ∧ s.foldRequest = none then some a.subject else s.foldRequest := by
-  unfold result Rearm
+  unfold result markFail markStrike Rearm
   by_cases hp : p = true
   · cases o <;> simp [hp] <;> split <;> simp
   · have hp' : p = false := by simpa using hp
@@ -1069,9 +1090,9 @@ theorem subjInRec_step {s : State} (h : SubjInRec s) (e : Event) : SubjInRec (st
     have nk := noteRead_keeps s r
     simp only [step]
     cases hd : decideMove s r with
-    | none => simp only [SubjInRec, nk.1, nk.2.1, nk.2.2.1]; exact ⟨h1, h2⟩
+    | none => simp only [SubjInRec, nk.1, nk.2.1, nk.2.2.1, noteRead_judge_owedKeys, noteRead_judge_foldRequest, noteRead_judge_record]; exact ⟨h1, h2⟩
     | some a =>
-      simp only [SubjInRec, emit, nk.1, nk.2.1, nk.2.2.1]
+      simp only [SubjInRec, emit, nk.1, nk.2.1, nk.2.2.1, noteRead_judge_owedKeys, noteRead_judge_foldRequest, noteRead_judge_record]
       refine ⟨fun k hk => h1 k (List.mem_of_mem_erase hk), fun k hk => ?_⟩
       split at hk
       · simp at hk
@@ -1095,7 +1116,7 @@ theorem subjInRec_step {s : State} (h : SubjInRec s) (e : Event) : SubjInRec (st
     split
     · rename_i a ha
       split
-      · have hrec : (result s a o p).record = s.record := by unfold result; grind
+      · have hrec : (result s a o p).record = s.record := by unfold result markFail markStrike; grind
         simp only [SubjInRec, hrec]
         refine ⟨fun j hj => ?_, fun j hj => ?_⟩
         · rcases (rearm_iff s a o p j).1 hj with h | h
@@ -1190,7 +1211,7 @@ def FullFlagOK (s : State) (f : Bool) : Prop :=
   ∀ a, s.inFlight = some a → a.user = false → f = true → s.moveCount < 3
 
 theorem res_inflight (s : State) (a : Action) (o : Outcome) (p : Bool) : (result s a o p).inFlight = none := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 theorem edit_empty_frame (s : State) (rec : List Key) :
     (step s (.userEdit rec [])).1.moveCount = s.moveCount ∧ (step s (.userEdit rec [])).1.inFlight = s.inFlight := by
@@ -1209,26 +1230,26 @@ theorem postedFull_le {s : State} {f : Bool} (h : FullFlagOK s f) (es : List Eve
     simp only [postedFull]
     cases e with
     | read r =>
-      have nk := noteRead_keeps s r
+      have nk := noteRead_keeps (judge s r) r
       simp only [fullFlag]
       cases hd : decideMove s r with
       | none =>
-        have hs : step s (.read r) = (noteRead s r, []) := by simp [step, hd]
+        have hs : step s (.read r) = (noteRead (judge s r) r, []) := by simp [step, hd]
         rw [hs]
         simp only [Nat.zero_add]
-        have := ih (s := noteRead s r) (f := f) (fun a ha hu hf => by
-          rw [nk.2.2.2.1] at ha
+        have := ih (s := noteRead (judge s r) r) (f := f) (fun a ha hu hf => by
+          rw [nk.2.2.2.1, judge_inFlight] at ha
           have := h a ha hu hf
-          rw [nk.2.2.2.2.2.2.2.2.1]; exact this) hn'
-        rw [nk.2.2.2.2.2.2.2.2.1] at this
+          rw [nk.2.2.2.2.2.2.2.2.1, judge_frame_moveCount]; exact this) hn'
+        rw [nk.2.2.2.2.2.2.2.2.1, judge_frame_moveCount] at this
         simpa [hs] using this
       | some a =>
-        have hs : step s (.read r) = (emit (noteRead s r) a, [a]) := by simp [step, hd]
+        have hs : step s (.read r) = (emit (noteRead (judge s r) r) a, [a]) := by simp [step, hd]
         have hact : a ∈ (step s (.read r)).2 := by simp [hs]
-        have hmc : (emit (noteRead s r) a).moveCount = s.moveCount := by simp [emit, nk.2.2.2.2.2.2.2.2.1]
+        have hmc : (emit (noteRead (judge s r) r) a).moveCount = s.moveCount := by simp [emit, nk.2.2.2.2.2.2.2.2.1]
         simp only [hs]
         simp only [Nat.zero_add]
-        have := ih (s := emit (noteRead s r) a) (f := if a.user = false then fullBar s r else f) (fun b hb hu hf => by
+        have := ih (s := emit (noteRead (judge s r) r) a) (f := if a.user = false then fullBar s r else f) (fun b hb hu hf => by
           have hb2 : b = a := by simpa [emit] using hb.symm
           rw [hb2] at hu
           rw [hmc]

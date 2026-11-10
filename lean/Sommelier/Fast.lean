@@ -457,7 +457,7 @@ theorem userPickF_eq (s : State) (r : Read) : userPickF s r = userPick s r := by
   simp only [userMove2F_eq]
   rfl
 
-def decideMoveF (s : State) (r : Read) : Option Action :=
+def decideMove0F (s : State) (r : Read) : Option Action :=
   if r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gateF r then none
   else
     match userPickF s r with
@@ -471,14 +471,35 @@ def decideMoveF (s : State) (r : Read) : Option Action :=
             else some a
         | none => none
 
-theorem decideMoveF_eq (s : State) (r : Read) : decideMoveF s r = decideMove s r := by
-  unfold decideMoveF decideMove
+theorem decideMove0F_eq (s : State) (r : Read) : decideMove0F s r = decideMove0 s r := by
+  unfold decideMove0F decideMove0
   simp only [gateF_eq, userPickF_eq]
   rfl
 
+/-- `judge` with the fast gate. -/
+def judgeF (s : State) (r : Read) : State :=
+  match s.verified with
+  | none => s
+  | some k =>
+      if s.inFlight.isNone && s.gateF r then
+        (if stillMisplaced s r k then markStrike { s with verified := none } k else { s with verified := none })
+      else s
+
+theorem judgeF_eq (s : State) (r : Read) : judgeF s r = judge s r := by
+  unfold judgeF judge
+  cases hv : s.verified with
+  | none => rfl
+  | some k => simp only [gateF_eq]
+
+def decideMoveF (s : State) (r : Read) : Option Action := decideMove0F (judgeF s r) r
+
+theorem decideMoveF_eq (s : State) (r : Read) : decideMoveF s r = decideMove s r := by
+  unfold decideMoveF decideMove
+  rw [judgeF_eq, decideMove0F_eq]
+
 def stepF (s : State) : Event → State × List Action
   | .read r =>
-      let s' := noteRead s r
+      let s' := noteRead (judgeF s r) r
       match decideMoveF s r with
       | none => (s', [])
       | some a => (emit s' a, [a])
@@ -486,7 +507,7 @@ def stepF (s : State) : Event → State × List Action
 
 theorem stepF_eq (s : State) (e : Event) : stepF s e = step s e := by
   cases e with
-  | read r => simp only [stepF, step, decideMoveF_eq]; rfl
+  | read r => simp only [stepF, step, decideMoveF_eq, judgeF_eq]; rfl
   | userEdit rec moved => rfl
   | userRetry => rfl
   | retryKey k => rfl

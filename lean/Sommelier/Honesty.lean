@@ -56,7 +56,15 @@ def Idle (s : State) : Prop := s.inFlight = none ∧ s.owedKeys = [] ∧ s.foldR
 
 theorem decide_none_idle {s : State} {r : Read} (hi : Idle s) (hc : engineAllowed s r = false) :
     decideMove s r = none := by
-  simp only [decideMove, userPick, hi.2.1, hi.2.2, hc]
+  have hi' : Idle (judge s r) := by
+    obtain ⟨h1, h2, h3⟩ := hi
+    exact ⟨by simpa using h1, by simpa using h2, by simpa using h3⟩
+  have hc' : engineAllowed (judge s r) r = false := by
+    cases h : engineAllowed (judge s r) r
+    · rfl
+    · exact absurd (judge_engineAllowed h) (by simp [hc])
+  unfold decideMove
+  simp only [decideMove0, userPick, hi'.2.1, hi'.2.2, hc']
   simp
 
 theorem idle_step {s : State} (hi : Idle s) {e : Event} (hn : userEv e = false)
@@ -64,7 +72,7 @@ theorem idle_step {s : State} (hi : Idle s) {e : Event} (hn : userEv e = false)
   obtain ⟨h1, h2, h3⟩ := hi
   cases e with
   | read r =>
-    have nk := noteRead_keeps s r
+    have nk := noteRead_keeps_j s r
     have hd := decide_none_idle ⟨h1, h2, h3⟩ (hc r rfl)
     simp only [step, hd]
     exact ⟨⟨by rw [nk.2.2.2.1]; exact h1, by rw [nk.1]; exact h2, by rw [nk.2.1]; exact h3⟩, by simp⟩
@@ -94,7 +102,7 @@ theorem idle_run : ∀ (es : List Event) (s : State), Idle s → (∀ e ∈ es, 
 theorem moveCount_mono (s : State) {e : Event} (hn : userEv e = false) : s.moveCount ≤ (step s e).1.moveCount := by
   cases e with
   | read r =>
-    have nk := noteRead_keeps s r
+    have nk := noteRead_keeps_j s r
     simp only [step]
     cases hd : decideMove s r with
     | none => simp [nk.2.2.2.2.2.2.2.2.1]
@@ -146,11 +154,11 @@ theorem hold_keeps {s : State} (h : s.hold = true) {e : Event} (hn : userEv e = 
     (hg : ∀ r, e = .read r → ¬ Gain s r) : (step s e).1.hold = true := by
   cases e with
   | read r =>
-    have nk := noteRead_keeps s r
-    have hh : (noteRead s r).hold = true := by
-      cases hh : (noteRead s r).hold with
+    have nk := noteRead_keeps_j s r
+    have hh : (noteRead (judge s r) r).hold = true := by
+      cases hh : (noteRead (judge s r) r).hold with
       | true => rfl
-      | false => exact absurd (noteRead_hold_gain s r h hh) (hg r rfl)
+      | false => exact absurd (noteRead_hold_gain (judge s r) r (judge_hold_true r h) hh) (by simpa [Gain] using hg r rfl)
     simp only [step]
     cases hd : decideMove s r with
     | none => simpa using hh
@@ -165,7 +173,7 @@ theorem hold_keeps {s : State} (h : s.hold = true) {e : Event} (hn : userEv e = 
     simp only [step]
     split
     · split
-      · unfold result; grind
+      · unfold result markFail markStrike; grind
       · exact h
     · exact h
   | passBoundary => simp [step, h]
@@ -276,8 +284,10 @@ theorem decide_head {s : State} {r : Read} {k : Key} {a : Action} (hi : s.inFlig
   obtain ⟨hpass, hset, hinc, _⟩ := gate_facts hg
   have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
     simp [hpass, hset, hinc, hi, hg]
-  simp only [decideMove]
-  rw [if_neg hc, userPick_head1 hfirst hum hal]
+  have hp := userPick_head1 hfirst hum hal
+  refine decide_of_pick hp ?_
+  simp only [decideMove0]
+  rw [if_neg hc, hp]
 
 /-- After the drop, `k` heads the queue when nothing else was owed or requested (the usual case), and in general when the hypothesis says so. -/
 theorem edited_first_of_idle (s : State) (rec : List Key) (k : Key) (hk : k ∈ rec) (ho : s.owedKeys = []) (hq : s.foldRequest = none) :
@@ -324,7 +334,7 @@ theorem userAlwaysAnswered_drawn (s : State) (rec : List Key) (k : Key) (r : Rea
   have hdm : decideMove (edited s rec k) r = some a := decide_head (by rw [F.1]; exact hi) hg hfirst ha1 hallowed
   obtain ⟨hu, hsub⟩ := gate_userMove_user ha
   refine ⟨a, ?_, hsub, hu, ha⟩
-  simp [step, hdm]
+  simp [step, decide_head (by rw [F.1]; exact hi) hg hfirst ha1 hallowed]
 
 /-- No move is due (`userMove` is none): nothing leaves, when nothing else is owed or requested; the engine is restricted by the edit. -/
 theorem userAlwaysAnswered_none (s : State) (rec : List Key) (k : Key) (r : Read)
@@ -493,7 +503,7 @@ theorem owed_unanswered_reason (s : State) (r : Read) (k : Key) (hi : s.inFlight
   | some b =>
     -- another queued key's move is the decision
     obtain ⟨j, hjq, hj⟩ := userPick_exists hb
-    have hdb : decideMove s r = some b := by simp only [decideMove]; rw [if_neg hc, hb]
+    have hdb : decideMove s r = some b := decide_user_pick hc hb
     have hstep : (step s (.read r)).2 = [b] := by simp [step, hdb]
     cases hu : userMove s r j with
     | none => simp [hu] at hj
@@ -558,8 +568,7 @@ theorem request_first {s : State} {r : Read} {q : Key} {a : Action} (hq : s.fold
     (hum : userMove1 s r q = some a) (hal : userAllowed s r a = true) : decideMove s r = some a := by
   have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
     simp [hpass, hset, hinc, hi, hg]
-  simp only [decideMove]
-  rw [if_neg hc, userPick_head1 (by simp [hq]) hum hal]
+  exact decide_user_pick hc (userPick_head1 (by simp [hq]) hum hal)
 
 /-! ### 6. No needless drag -/
 
@@ -1274,7 +1283,7 @@ theorem pileInv_noteRead {s : State} (h : PileInv s) (r : Read) : PileInv (noteR
 
 theorem pileInv_result {s : State} (h : PileInv s) (a : Action) (o : Outcome) (p : Bool) : PileInv (result s a o p) := by
   unfold PileInv at *
-  unfold result
+  unfold result markFail markStrike
   grind
 
 theorem pileInv_emit {s : State} (h : PileInv s) (a : Action) : PileInv (emit s a) := by
@@ -1283,7 +1292,7 @@ theorem pileInv_emit {s : State} (h : PileInv s) (a : Action) : PileInv (emit s 
 theorem pileInv_step {s : State} (h : PileInv s) (e : Event) : PileInv (step s e).1 := by
   cases e with
   | read r =>
-    have := pileInv_noteRead h r
+    have := pileInv_noteRead (s := judge s r) (by unfold PileInv at *; simpa using h) r
     simp only [step]
     cases hd : decideMove s r with
     | none => simpa using this
@@ -1535,7 +1544,7 @@ theorem queue_move_decides {s : State} {r : Read} {j : Key} {a : Action} (hi : s
   have hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true := by
     simp [hpass, hset, hinc, hi, hg]
   cases hb : userPick s r with
-  | some b => exact ⟨b, by simp only [decideMove]; rw [if_neg hc, hb]⟩
+  | some b => exact ⟨b, decide_user_pick hc hb⟩
   | none =>
     have := userPick_none hb j hq
     simp [hum, Option.filter, hal] at this
@@ -1760,18 +1769,18 @@ theorem potential_emit_other (S : State) (a : Action) (hi : S.inFlight = none)
 theorem result_fields (s : State) (a : Action) (o : Outcome) (p : Bool) :
     (result s a o p).inFlight = none ∧ (result s a o p).gen = s.gen ∧ (result s a o p).flightOwed = s.flightOwed ∧
     (result s a o p).stripGrant = s.stripGrant := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 theorem result_skipped_mono (s : State) (a : Action) (o : Outcome) (p : Bool) (j : Key)
     (h : s.skipped.contains j = true) : (result s a o p).skipped.contains j = true := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 theorem result_shape (s : State) (a : Action) (o : Outcome) (p : Bool) :
     ((result s a o p).owedKeys = s.owedKeys ∧ (result s a o p).foldRequest = s.foldRequest) ∨
     ((result s a o p).owedKeys = (a.subject :: s.owedKeys).eraseDups ∧ s.flightOwed = some s.gen ∧
       s.skipped.contains a.subject = false ∧ (result s a o p).skipped.contains a.subject = true ∧
       ((result s a o p).foldRequest = s.foldRequest ∨ (result s a o p).foldRequest = some a.subject)) := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 
 theorem skipW_true (sk : List Key) (j : Key) (h : sk.contains j = true) : skipW sk j = 1 := by
@@ -1863,26 +1872,33 @@ theorem decide_user_queue {s : State} {r : Read} {a : Action} (hd : decideMove s
 theorem emit_stripGrant (S : State) (a : Action) (h : S.stripGrant = false) : (emit S a).stripGrant = false := by
   unfold emit; split <;> simp [h]
 
+theorem potential_judge (s : State) (r : Read) : potential (judge s r) = potential s := by
+  unfold potential reqExtra flightPot
+  simp
+
+theorem potential_noteRead_j (s : State) (r : Read) : potential (noteRead (judge s r) r) = potential s := by
+  rw [potential_noteRead, potential_judge]
+
 theorem potential_read (s : State) (r : Read) (hgr : s.stripGrant = false) :
     potential (step s (.read r)).1 + ((step s (.read r)).2.filter (fun a => a.user)).length ≤ potential s ∧
     (step s (.read r)).1.stripGrant = false := by
-  have nk := noteRead_keeps s r
+  have nk := noteRead_keeps_j s r
   cases hd : decideMove s r with
   | none =>
     simp only [step, hd]
     refine ⟨?_, by rw [nk.2.2.2.2.2.2.2.2.2.2.2.2.1]; exact hgr⟩
-    simp [potential_noteRead]
+    simp [potential_noteRead_j]
   | some a =>
     have hi := (gate_decide_cases hd).1
-    have hSi : (noteRead s r).inFlight = none := by rw [nk.2.2.2.1]; exact hi
-    have hq : (noteRead s r).owedKeys = s.owedKeys := nk.1
-    have hqf : (noteRead s r).foldRequest = s.foldRequest := nk.2.1
-    have hgS : (noteRead s r).stripGrant = false := by rw [nk.2.2.2.2.2.2.2.2.2.2.2.2.1]; exact hgr
+    have hSi : (noteRead (judge s r) r).inFlight = none := by rw [nk.2.2.2.1]; exact hi
+    have hq : (noteRead (judge s r) r).owedKeys = s.owedKeys := nk.1
+    have hqf : (noteRead (judge s r) r).foldRequest = s.foldRequest := nk.2.1
+    have hgS : (noteRead (judge s r) r).stripGrant = false := by rw [nk.2.2.2.2.2.2.2.2.2.2.2.2.1]; exact hgr
     simp only [step, hd]
     refine ⟨?_, emit_stripGrant _ _ hgS⟩
-    by_cases hqm : (noteRead s r).owedKeys.contains a.subject = true ∨ (noteRead s r).foldRequest = some a.subject
-    · have := potential_emit_queue (noteRead s r) a hSi hqm
-      rw [potential_noteRead] at this
+    by_cases hqm : (noteRead (judge s r) r).owedKeys.contains a.subject = true ∨ (noteRead (judge s r) r).foldRequest = some a.subject
+    · have := potential_emit_queue (noteRead (judge s r) r) a hSi hqm
+      rw [potential_noteRead_j] at this
       have hl : ([a].filter (fun a => a.user)).length ≤ 1 := by
         have := List.length_filter_le (fun a : Action => a.user) [a]
         simpa using this
@@ -1891,14 +1907,14 @@ theorem potential_read (s : State) (r : Read) (hgr : s.stripGrant = false) :
         cases hu : a.user
         · rfl
         · exfalso; apply hqm; rw [hq, hqf]; exact decide_user_queue hd hu hgr
-      have hq2 : (noteRead s r).owedKeys.contains a.subject = false ∧ (noteRead s r).foldRequest ≠ some a.subject := by
+      have hq2 : (noteRead (judge s r) r).owedKeys.contains a.subject = false ∧ (noteRead (judge s r) r).foldRequest ≠ some a.subject := by
         constructor
-        · cases hc : (noteRead s r).owedKeys.contains a.subject
+        · cases hc : (noteRead (judge s r) r).owedKeys.contains a.subject
           · rfl
           · exact absurd (Or.inl hc) hqm
         · intro h; exact hqm (Or.inr h)
-      have := potential_emit_other (noteRead s r) a hSi hq2
-      rw [potential_noteRead] at this
+      have := potential_emit_other (noteRead (judge s r) r) a hSi hq2
+      rw [potential_noteRead_j] at this
       simp [hu]
       exact this
 

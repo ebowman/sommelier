@@ -103,8 +103,8 @@ M=[
 ('res_never_count',"moveCount := s.moveCount + (if posted && !a.user then 1 else 0)","moveCount := s.moveCount"),
 ('res_no_hold',"{ s0 with hold := true, holdFolded := s0.lastFreshPile,","{ s0 with holdFolded := s0.lastFreshPile,"),
 ('res_holdFolded_empty',"{ s0 with hold := true, holdFolded := s0.lastFreshPile,","{ s0 with hold := true,"),
-('res_no_giveup_full',"givenUp := if s0.givenUp.contains a.subject then s0.givenUp else a.subject :: s0.givenUp }","givenUp := s0.givenUp }"),
-('res_hold_when_proven','if s0.provenNotFull then\n            let n','if false then\n            let n'),
+('res_no_giveup_full',"givenUp := if s0.givenUp.contains k then s0.givenUp else k :: s0.givenUp }","givenUp := s0.givenUp }"),
+('res_hold_when_proven','if s0.provenNotFull then\n    markStrike','if false then\n    markStrike'),
 ('res_strikes_1',"if n >= 3 && !s0.givenUp","if n >= 1 && !s0.givenUp"),
 ('res_strikes_never',"if n >= 3 && !s0.givenUp","if n >= 99 && !s0.givenUp"),
 ('res_no_session_return',"editSessionUsed := if a.strip then false else s0.editSessionUsed,","editSessionUsed := s0.editSessionUsed,"),
@@ -337,10 +337,20 @@ M=[
 ('fast_status_never_moving',"def statusLineF (s : State) (r : Read) : Status :=\n  if pendingF s r then .moving","def statusLineF (s : State) (r : Read) : Status :=\n  if false then .moving"),
 ('fast_row_never_moving',"def rowLineF (s : State) (r : Read) (k : Key) : RowLine :=\n  if movingKeyF s r k then .moving","def rowLineF (s : State) (r : Read) (k : Key) : RowLine :=\n  if false then .moving"),
 ('fast_free_movable_inverted',"&& !hv.contains x && !(fresh && fs.contains x))","&& hv.contains x && !(fresh && fs.contains x))"),
+# ejb.17: a verified move the next read contradicts is a strike
+('ver_no_strike',"(if stillMisplaced s r k then markStrike { s with verified := none } k else { s with verified := none })","{ s with verified := none }"),
+('ver_never_marked',"verified := if posted && !a.user && o == .verified then some a.subject else none }","verified := none }"),
+('ver_mark_user_drags',"if posted && !a.user && o == .verified then","if posted && o == .verified then"),
+('ver_judge_ungated',"if s.inFlight.isNone && s.gate r then\n        (if stillMisplaced","if s.inFlight.isNone then\n        (if stillMisplaced"),
+('ver_confirm_keeps_mark',"else { s with verified := none })\n      else s","else s)\n      else s"),
+('ver_misplaced_not_checked',"(movable s r).contains k && s.record.contains k && misplaced s r k","(movable s r).contains k && s.record.contains k"),
+('ver_retry_keeps_mark',"({ s with\n            verified := none,\n            moveCount := 0, hold := false, givenUp := [], strikes","({ s with\n            moveCount := 0, hold := false, givenUp := [], strikes"),
+('ver_edit_keeps_mark',"            verified := s.verified.filter (fun k => !moved.contains k),   -- ejb.17: the key's mark goes with its strikes\n",""),
+('ver_rk_keeps_mark',"            verified := s.verified.filter (fun x => x != k),\n",""),
 ]
 
 
-PROOF_MUST_KILL_ANY = {'own_whole_drawn_only', 'own_whole_unlisted_fails', 'own_whole_unread_fresh', 'free_ignores_unlisted', 'free_ignores_unread', 'free_ignores_movable', 'free_ignores_fold',
+PROOF_MUST_KILL_ANY = {'ver_no_strike', 'ver_never_marked', 'ver_confirm_keeps_mark', 'ver_judge_ungated', 'own_whole_drawn_only', 'own_whole_unlisted_fails', 'own_whole_unread_fresh', 'free_ignores_unlisted', 'free_ignores_unread', 'free_ignores_movable', 'free_ignores_fold',
   'free_fold_any_chevron', 'engine_grant_bypasses_budget', 'needsStrip_false', 'postedEngine_skips_case', 'F1_label_user',
   'proof_counts_unsettled', 'proof_unobserved_counts', 'proof_pass_flips_early', 'proof_poll_flips_late'}  # some theorem or pin (Safety.lean or Gates/Truth/Honesty)
 PROOF_MUST_KILL = {  # a Gates.lean/Truth.lean/Honesty.lean theorem must fail
@@ -461,6 +471,7 @@ def run(m, w):
     tf = failing_theorems(d, 'Truth')
     hf = failing_theorems(d, 'Honesty') if (gf is None and tf is None) else None
     ff = failing_theorems(d, 'Fast') if (gf is None and tf is None and hf is None) else None
+    vf = failing_theorems(d, 'Verified') if (gf is None and tf is None and hf is None) else None   # ejb.17: the verified-revert bound
     pf = subprocess.run(['lake', 'build', 'Sommelier.Pins'], cwd=d, capture_output=True, text=True).returncode != 0
     e = subprocess.run(['lake', 'build', 'Sommelier.Examples'], cwd=d, capture_output=True, text=True)
     ex = sorted(set(int(x) for x in re.findall(r'error: Sommelier/Examples.lean:(\d+)', e.stdout + e.stderr)))
@@ -481,8 +492,9 @@ def run(m, w):
     if hf: kills['honesty'] = hf
     if tf: kills['truth'] = tf
     if ff: kills['fast'] = ff
-    if pf and not (eq or sf or gf or hf or tf or ff): kills['pins'] = ['<pin>']
-    if sf or gf or hf or pf or eq or tf or ff: kills['theorems'] = 1
+    if vf: kills['verified'] = vf
+    if pf and not (eq or sf or gf or hf or tf or ff or vf): kills['pins'] = ['<pin>']
+    if sf or gf or hf or pf or eq or tf or ff or vf: kills['theorems'] = 1
     return name, 'OK', ex, kills
 
 if __name__ == '__main__':
@@ -521,14 +533,14 @@ if __name__ == '__main__':
     for n in only_ef: print('  examples/fuzz-only:', n)
     # does a HEADLINE theorem (the named statements of scripts/check-lean-axioms.sh) fail, or only a helper / specification lemma?
     hl = set(re.search(r'HEADLINE="(.*?)"', open(os.path.join(LEAN, '..', 'scripts', 'check-lean-axioms.sh')).read(), re.S).group(1).split())
-    def failing(k): return set(sum([k[t] for t in ('eqns', 'safety', 'gates', 'truth', 'honesty', 'fast') if t in k], []))
+    def failing(k): return set(sum([k[t] for t in ('eqns', 'safety', 'gates', 'truth', 'honesty', 'fast', 'verified') if t in k], []))
     by_head = [n for n, ex, k in ok if failing(k) & hl]
     by_helper = [n for n, ex, k in ok if 'theorems' in k and not (failing(k) & hl)]
     print(f'of the theorem kills, {len(by_head)} fail a named headline theorem (a theorem about the property) and {len(by_helper)} fail only a '
           f'helper/specification lemma or a pin (a break that may be incidental):')
     # semantic detection: an example (a concrete trace) or the fuzz harness (counterexample against a random honest bar) notices the
     # mutant; a mutant noticed ONLY by a broken proof script may be an incidental (positional) break, not a falsified property
-    MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems', 'fast'}
+    MODK = {'eqns', 'safety', 'gates', 'truth', 'honesty', 'pins', 'theorems', 'fast', 'verified'}
     sem = [n for n, ex, k in ok if ex or any(t not in MODK for t in k)]
     proof_only = [n for n, ex, k in ok if n not in sem]
     print(f'{len(sem)} killed mutants are also noticed semantically (a failing example or a fuzz counterexample); {len(proof_only)} die only to a broken proof/pin:')

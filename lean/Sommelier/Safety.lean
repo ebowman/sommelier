@@ -114,7 +114,8 @@ theorem decideMove_spec {s : State} {r : Read} {a : Action} (h : decideMove s r 
     ((∃ k, (k ∈ s.foldRequest.toList ∨ k ∈ s.owedKeys) ∧ userMove s r k = some a ∧ userAllowed s r a = true) ∨
      (engineAllowed s r = true ∧ ∃ b, planOrderMoves s r = some b ∧
         ((b.strip = false ∧ a = b) ∨ (b.strip = true ∧ s.stripGrant = true ∧ a = { b with user := true })))) := by
-  simp only [decideMove] at h
+  replace h := decide_judge h
+  simp only [decideMove0] at h
   split at h
   · simp at h
   · rename_i hc
@@ -225,11 +226,11 @@ theorem run_action_split (s : State) (es : List Event) (a : Action) (h : a ∈ (
 
 theorem step_read (s : State) (r : Read) :
     step s (.read r) = match decideMove s r with
-      | none => (noteRead s r, [])
-      | some a => (emit (noteRead s r) a, [a]) := rfl
+      | none => (noteRead (judge s r) r, [])
+      | some a => (emit (noteRead (judge s r) r) a, [a]) := rfl
 
 theorem step_acts {s : State} {e : Event} {a : Action} (h : a ∈ (step s e).2) :
-    ∃ r, e = .read r ∧ decideMove s r = some a ∧ step s e = (emit (noteRead s r) a, [a]) := by
+    ∃ r, e = .read r ∧ decideMove s r = some a ∧ step s e = (emit (noteRead (judge s r) r) a, [a]) := by
   cases e with
   | read r =>
     refine ⟨r, rfl, ?_⟩
@@ -308,9 +309,12 @@ theorem holdRelease (s : State) (e : Event) (h1 : s.hold = true) (h2 : (step s e
   cases e with
   | read r =>
     right
-    have := noteRead_hold s r h1 (by
+    have jh : (judge s r).hold = true := by
+      obtain ⟨_, _, _, _, _, hj, h1', _⟩ := judge_shape s r; rw [hj]; exact h1' h1
+    have := noteRead_hold (judge s r) r jh (by
       rw [step_read] at h2
       cases hd : decideMove s r <;> simp [hd, emit] at h2 <;> exact h2)
+    simp only [judge_frame_provenNotFull, noteRead_judge_provenNotFull] at this
     rw [step_read]
     cases hd : decideMove s r with
     | none => simp [hd]; exact ⟨this.2, this.1⟩
@@ -328,7 +332,7 @@ theorem holdRelease (s : State) (e : Event) (h1 : s.hold = true) (h2 : (step s e
     split at h2
     · rename_i a ha
       split at h2
-      · simp [result] at h2
+      · simp [result, markFail, markStrike] at h2
         split at h2 <;> (try split at h2) <;> (try split at h2) <;> simp_all
       · simp_all
     · simp_all
@@ -349,7 +353,7 @@ theorem result_spec (s : State) (a : Action) (o : Outcome) (p : Bool) :
     (p = false → a.subject ∉ s.skipped → (result s a o p).skipped = a.subject :: s.skipped) ∧
     (s.flightOwed ≠ some s.gen → (result s a o p).owedKeys = s.owedKeys ∧ (result s a o p).foldRequest = s.foldRequest) ∧
     (p = true → (result s a o p).owedKeys = s.owedKeys ∧ (result s a o p).foldRequest = s.foldRequest) := by
-  unfold result
+  unfold result markFail markStrike
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> grind
 
 
@@ -373,7 +377,8 @@ theorem Inv.init (rec : List Key) : Inv (State.init rec) false := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> simp [State.init]
 
 theorem inv_read {s : State} {g : Bool} (h : Inv s g) (r : Read) : Inv (step s (.read r)).1 g := by
-  have nf := noteRead_frame s r
+  have nf := noteRead_frame (judge s r) r
+  have jf := judge_frame s r
   rw [step_read]
   cases hd : decideMove s r with
   | none =>
@@ -542,7 +547,8 @@ theorem session_step {s : State} {g : Bool} (h : Inv s g) {e : Event} (hn : isUs
     stripCount (step s e).2 + sess s ≤ unpostedStripStep s e + sess (step s e).1 := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r with
     | none => simp [stripCount, sess, unpostedStripStep, nf.2.2.2.2.2.2.1]
@@ -624,7 +630,8 @@ theorem expired_step {s : State} {g : Bool} (h : Inv s g) (hx : Expired s) {e : 
   obtain ⟨hx1, hx2, hx3⟩ := hx
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r with
     | none => simp only; refine ⟨?_, ?_, ?_⟩ <;> grind
@@ -701,7 +708,8 @@ theorem calm_step {s : State} {g : Bool} (h : Inv s g) (hc : Calm s) {e : Event}
   refine ⟨expired_step h hc.ex hn, ?_⟩
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r <;> simp [emit, nf.2.2.2.2.1, hc.grant]
   | userEdit rec moved =>
@@ -791,7 +799,8 @@ theorem nu_step {s : State} (h : NU s) {e : Event} (hn : isUserEvent e = false) 
   obtain ⟨h1, h2, h3, h4, h5, h6, h7⟩ := h
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     have hh : NU s := ⟨h1, h2, h3, h4, h5, h6, h7⟩
     rw [step_read]
     cases hd : decideMove s r with
@@ -846,7 +855,8 @@ theorem moveCount_step {s : State} {e : Event} (hn : isUserEvent e = false) :
     (step s e).1.moveCount = s.moveCount + postedStep s e := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r <;> simp [postedStep, emit, nf.2.1]
   | userEdit rec moved =>
@@ -910,7 +920,8 @@ theorem budget_step (C : Nat) {s : State} (h : NU s) {e : Event} (hn : isUserEve
     (hb : s.moveCount + pend s ≤ C) : (step s e).1.moveCount + pend (step s e).1 ≤ C := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     simp only [capEv] at hc
     rw [step_read]
     simp only [pend] at hb
@@ -975,7 +986,8 @@ theorem action_step {s : State} (h : NU s) {e : Event} (hn : isUserEvent e = fal
       postedStep s e + pend (step s e).1 + (step s e).1.skipped.length := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r with
     | none => simp only [pend, postedStep]; grind
@@ -1139,7 +1151,7 @@ theorem step_nonread_fields (s : State) (e : Event) (hr : ∀ r, e ≠ .read r) 
     simp only [step]
     split
     · split
-      · simp only [result]; grind
+      · simp only [result, markFail, markStrike]; grind
       · simp
     · simp
   | passBoundary => simp [step]
@@ -1288,20 +1300,21 @@ theorem seg_step (C : Nat) (s : State) (e : Event) (hn : isUserEvent e = false) 
     (step s e).1.moveCount + pendEng (step s e).1 ≤ max C (s.moveCount + pendEng s) := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     simp only [capEv] at hc
     rw [step_read]
     cases hd : decideMove s r with
     | none =>
-      simp only [pendEng, nf.2.1, nf.2.2.2.2.2.2.2.2.2.2.2.1]; omega
+      simp only [pendEng, nf.2.1, nf.2.2.2.2.2.2.2.2.2.2.2.1, judge_frame_moveCount, judge_inFlight]; omega
     | some a =>
       have spec := decideMove_spec hd
-      simp only [pendEng, emit, nf.2.1, spec.1]
+      simp only [pendEng, emit, nf.2.1, spec.1, judge_frame_moveCount, judge_inFlight]
       rcases spec.2 with ⟨k, _, hu, _⟩ | ⟨hea, b, hb, hh⟩
       · simp [(userMove_spec hu).1]; omega
       · rcases hh with ⟨_, rfl⟩ | ⟨_, _, rfl⟩
         · have hu := (planOrderMoves_spec hb).1
-          simp only [engineAllowed, Bool.and_eq_true, decide_eq_true_eq] at hea
+          simp only [engineAllowed, Bool.and_eq_true, decide_eq_true_eq, judge_fullBar, judge_frame_moveCount] at hea
           simp [hu]; omega
         · simp; omega
   | userEdit rec moved =>
@@ -1376,10 +1389,11 @@ theorem kEng_user_event {s : State} {e : Event} (hu : isUserEvent e = true) : KE
 theorem kEng_step {s : State} (h : KEng s) {e : Event} (hn : isUserEvent e = false) : KEng (step s e).1 := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r with
-    | none => intro a ha hu; simp only at ha ⊢; exact (by rw [nf.2.2.2.2.2.2.2.1]; exact h a (by rw [← nf.2.2.2.2.2.2.2.2.2.2.2.1]; exact ha) hu)
+    | none => intro a ha hu; simp only at ha ⊢; exact (by rw [nf.2.2.2.2.2.2.2.1, judge_frame_skipped]; exact h a (by rw [← judge_inFlight s r, ← nf.2.2.2.2.2.2.2.2.2.2.2.1]; exact ha) hu)
     | some a =>
       intro b hb hu
       simp only [emit] at hb ⊢
@@ -1389,7 +1403,7 @@ theorem kEng_step {s : State} (h : KEng s) {e : Event} (hn : isUserEvent e = fal
       · simp [(userMove_spec hk).1] at hu
       · have hp := planOrderMoves_spec hc
         rcases hh with ⟨_, rfl⟩ | ⟨_, _, rfl⟩
-        · rw [nf.2.2.2.2.2.2.2.1]; simpa using hp.2.2.2.1
+        · rw [nf.2.2.2.2.2.2.2.1, judge_frame_skipped]; simpa using hp.2.2.2.1
         · simp at hu
   | userEdit rec moved =>
     have hm : moved.isEmpty = true := by simpa [isUserEvent] using hn
@@ -1411,20 +1425,21 @@ theorem engAction_step {s : State} (h : KEng s) {e : Event} (hn : isUserEvent e 
       postedStep s e + pendEng (step s e).1 + (step s e).1.skipped.length := by
   cases e with
   | read r =>
-    have nf := noteRead_frame s r
+    have nf := noteRead_frame (judge s r) r
+    have jf := judge_frame s r
     rw [step_read]
     cases hd : decideMove s r with
     | none => simp only [pendEng]; rw [nf.2.2.2.2.2.2.2.1, nf.2.2.2.2.2.2.2.2.2.2.2.1]; simp [postedStep]
     | some a =>
       have spec := decideMove_spec hd
-      have hnone := spec.1
+      have hnone : s.inFlight = none := by simpa using spec.1
       rcases spec.2 with ⟨k, _, hk, _⟩ | ⟨_, c, hc, hh⟩
       · have := (userMove_spec hk).1
-        simp [pendEng, emit, hnone, this, postedStep, nf.2.2.2.2.2.2.2.1]
+        simp [pendEng, emit, hnone, this, postedStep, nf.2.2.2.2.2.2.2.1, judge_frame_skipped, judge_inFlight]
       · have hp := planOrderMoves_spec hc
         rcases hh with ⟨_, rfl⟩ | ⟨_, _, rfl⟩
-        · simp [pendEng, emit, hnone, hp.1, postedStep, nf.2.2.2.2.2.2.2.1]
-        · simp [pendEng, emit, hnone, postedStep, nf.2.2.2.2.2.2.2.1]
+        · simp [pendEng, emit, hnone, hp.1, postedStep, nf.2.2.2.2.2.2.2.1, judge_frame_skipped, judge_inFlight]
+        · simp [pendEng, emit, hnone, postedStep, nf.2.2.2.2.2.2.2.1, judge_frame_skipped, judge_inFlight]
   | userEdit rec moved =>
     have hm : moved.isEmpty = true := by simpa [isUserEvent] using hn
     simp [step, hm, pendEng, postedStep]

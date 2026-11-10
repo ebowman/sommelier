@@ -117,7 +117,9 @@ def stepChecks (s : State) (e : Event) : List (String × Bool) :=
           [("holdRelease", isUserEvent e || (s'.provenNotFull && !s.provenNotFull))] else [])
     ++ (if !s.hold && s'.hold then
           [("holdSetOnlyByFailedPostedDrag",
-            (match e with | .moveResult _ .failed true => !s.provenNotFull && s.inFlight.isSome | _ => false))] else [])
+            (match e with
+              | .moveResult _ .failed true => !s.provenNotFull && s.inFlight.isSome
+              | _ => false))] else [])
     ++ (if !s.restricted && s.owedKeys.isEmpty && s.foldRequest.isNone && !isUserEvent e && noEdit e then
           [("owedStaysExpired", s'.owedKeys.isEmpty && s'.foldRequest.isNone)] else [])
     ++ (match e with
@@ -410,8 +412,12 @@ def budgetTrace (fresh : Bool) (prove : Bool) (n : Nat) : G (Nat × Nat) := do
       let r ← goodReadG false rec_
       s := (step s (.read { r with kind := .poll })).1
   let s0 := s
-  for _ in List.range n do
-    let r ← goodReadG fresh rec_
+  for i in List.range n do
+    -- ejb.17: the bar is the record with ONE adjacent pair swapped, a different pair on every read.  A random reshuffle would leave the key just moved misplaced
+    -- on the next read, and a verified drag the next read contradicts is a strike (3 give the key up), which would stop the engine before its budget.
+    let p := i % (rec_.length - 1)
+    let dr := (rec_.take p) ++ (rec_.getD (p + 1) 0) :: (rec_.getD p 0) :: (rec_.drop (p + 2))
+    let r : Read := { kind := .pass, chevron := if fresh then .fresh else .absent, level := .complete, settled := true, stripOpen := false, drawn := dr, pile := [], folded := [], trusted := dr, nearFold := [] }
     let e := Event.read r
     let (s1, acts) := step s e
     evs := evs ++ [e]; s := s1
@@ -419,6 +425,27 @@ def budgetTrace (fresh : Bool) (prove : Bool) (n : Nat) : G (Nat × Nat) := do
       let e2 := Event.moveResult a.subject .verified true
       evs := evs ++ [e2]; s := (step s e2).1
   pure (postedEngine s0 evs, s.moveCount)
+
+/-- ejb.17.  A bar macOS never changes: every drag is answered `verified` but every later read shows the same inversions.  No key is dragged more
+than three times (`verified_revert_bounded`), on a full bar and on a bar proven not full alike. -/
+def revertTrace (fresh prove : Bool) : G (List (String × Bool)) := do
+  let rec_ := allKeys
+  let bar ← shuffle rec_
+  let rd : Read := { kind := .pass, chevron := if fresh then .fresh else .absent, level := .complete, settled := true, stripOpen := false,
+                     drawn := bar, pile := [], folded := [], trusted := bar, nearFold := [] }
+  let mut s := State.init rec_
+  if prove then
+    for _ in List.range 3 do
+      s := (step s (.read { rd with kind := .poll })).1
+  let mut moves : List Key := []
+  for _ in List.range 40 do
+    let (s1, acts) := step s (.read rd)
+    s := s1
+    for a in acts do
+      if !a.user then moves := a.subject :: moves
+      s := (step s (.moveResult a.subject .verified true)).1
+  let worst := allKeys.foldl (fun m k => max m (moves.filter (· == k)).length) 0
+  pure ([("revert_bound", decide (worst ≤ 3))] ++ (if worst == 3 then [("revert_hit3", true)] else []))
 
 /-- Budget and strip invariants over a trace from the initial state with no user event. -/
 def pureChecks (t : Trace) : List (String × Bool) :=
@@ -610,6 +637,10 @@ def fuzz (mixed pure_ seed : Nat) : List Tally × Nat × Nat :=
       for (st, e) in sts.zip evs do
         ts := addAll ts (honestChecks st e.1 e.2) desc
         steps := steps + 1
+    for _ in List.range (pure_ / 5) do
+      let fresh ← coin 50
+      let prove ← coin 50
+      ts := addAll ts (← revertTrace fresh (prove && !fresh)) (fun _ => s!"revertTrace {fresh} {prove}")
     for _ in List.range pure_ do
       let t ← genTrace 30 false
       ts := addAll ts (pureChecks t) (fun _ => toString (repr (t.record, t.evs)))

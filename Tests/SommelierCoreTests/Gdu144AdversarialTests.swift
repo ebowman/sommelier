@@ -46,6 +46,26 @@ private actor AdvChaos: MenuBarActuator {
     /// every move answers `.userBusy`; `busyTouchedMouse` says whether a mouse event was posted before it (decision D6)
     var busy = false; var busyTouchedMouse = false
     var touchedLast = false
+    /// ejb.17: how the world answers a drag. `.chaos` (the default): the bar is reshuffled at random, so the record is never realised and a key the core moved is
+    /// usually still misplaced on the next read (the core strikes such a key out after 3 drags). `.faithful`: the drag lands where it was told. `.rotate`: it lands,
+    /// then the world swaps ONE other adjacent pair (a different pair each time), so there is always a mismatch but never the same key twice running.
+    enum Behaviour { case chaos, faithful, rotate }
+    var behaviour: Behaviour = .chaos; var turn = 0
+    func setBehaviour(_ b: Behaviour) { behaviour = b }
+    private func name(_ key: ItemKey) -> String { String(key.description.split(separator: ":").last ?? "?") }
+    private func land(_ key: ItemKey, _ relation: Relation) {
+        var d = w.drawn; let n = name(key)
+        guard let from = d.firstIndex(of: n) else { return }
+        d.remove(at: from)
+        switch relation {
+        case .before(let t): if let i = d.firstIndex(of: name(t)) { d.insert(n, at: i) } else { d.insert(n, at: from) }
+        case .after(let t): if let i = d.firstIndex(of: name(t)) { d.insert(n, at: i + 1) } else { d.insert(n, at: from) }
+        case .leftmost: d.insert(n, at: 0)
+        case .rightmost: d.append(n)
+        }
+        if behaviour == .rotate, d.count > 1 { let p = turn % (d.count - 1); turn += 1; d.swapAt(p, p + 1) }
+        w.drawn = d
+    }
     /// every move fails BEFORE any mouse event (notFound): the engine's counter must not count it (decision: it counts actual drags)
     var preDrag = false; var dispatches = 0
     func setPreDrag(_ on: Bool) { preDrag = on }
@@ -65,7 +85,7 @@ private actor AdvChaos: MenuBarActuator {
         drags.append((key.description, flag))
         if busy { return .failed(.userBusy, w.snap()) }
         physicalDrags += (single || r <= 1) ? 1 : 2
-        w.drawn = w.drawn.shuffled(using: &rng)
+        if behaviour == .chaos { w.drawn = w.drawn.shuffled(using: &rng) } else { land(key, relation) }
         return r <= 1 ? .verified(w.snap()) : .failed(.mechanismFailed("the drag did not land"), w.snap())
     }
     func setHidden(_ key: ItemKey, _ hidden: Bool) async -> ActuationResult { hideCalls += 1; return .verified(w.snap()) }
@@ -174,6 +194,10 @@ private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool =
     @Test func threeChevronlessReadsProveTheBarNotFullAndAnyChevronMakesItFullAgain() async {
         let w = AdvWorld(pile: [], drawn: advD.reversed()); w.mode = .absent
         let (e, a, _) = await advRig(w: w, record: advD, mix: false)
+        // ejb.17, CHANGED: the drags land (`.faithful`) instead of reshuffling the bar. A reshuffled bar leaves the key the core just moved misplaced, and a verified drag the
+        // next read contradicts is a strike (3 strikes give the key up), which would stop this test at 3 drags for a reason other than the bar being full. A reversed
+        // bar of six keys needs five landing drags: more than the 3 of a full bar, within the 20 of a bar proven not full.
+        await a.setBehaviour(.faithful)
         for _ in 0..<12 { _ = await e.reconcileOnce() }
         let free = await a.count()
         #expect(free > 3 && free <= 20, "not-full bar moved \(free) times")
@@ -227,11 +251,16 @@ private func advRig(w: AdvWorld, record: [String], seed: UInt64 = 1, mix: Bool =
         let e = LayoutEngine(observer: AdvObs(w: w), actuator: a, store: InMemoryLayoutStore(Layout.placedAll(visible: advD.map(k))), capabilities: AdvCaps(), state: st,
                              resolveSnapshot: advRes, sleep: { _ in }, log: { _ in }, config: c)
         await e.start()
+        // ejb.17, CHANGED: the world is `.rotate` (the drag lands, then a different adjacent pair is swapped each time) instead of a random reshuffle: the same key is never
+        // left misplaced twice running, so no key is struck out and the combined counter of 20 is the only bound, as this test means to show.
+        await a.setBehaviour(.rotate)
         for _ in 0..<80 { _ = await e.reconcileOnce() }
         #expect(await a.count() == 20)
         #expect(await a.notEngineInitiated() == 0)
-        // and a user edit gives it back
-        await e.setLayout(Layout.placedAll(visible: advD.map(k)), moved: [k("D1")])
+        // and a user edit gives it back (ejb.17, CHANGED: the user drops the key the bar now misplaces, so the user's own drag ends its pass; a drop of D1 where the
+        // record already has it, as before, makes no move now that the world keeps D1 in place)
+        let misplaced = zip(w.drawn, advD).first { $0 != $1 }?.1 ?? "D1"
+        await e.setLayout(Layout.placedAll(visible: advD.map(k)), moved: [k(misplaced)])
         for _ in 0..<80 { _ = await e.reconcileOnce() }
         #expect(await a.count() > 20)
     }

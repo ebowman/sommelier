@@ -1018,7 +1018,9 @@ private struct RvFakeObserver: MenuBarObserver {
     @Test func tryAgainOnARowGivesTheEngineAFreshBudget() async {
         let (w, e, _, c, spent) = await spentBar()
         let n0 = w.drags.count
-        await e.retry(key: k("D3")); await rvSettle(e, ms: 300)
+        // ejb.17, CHANGED because a verified drag the next read contradicts is a strike: the key the scramble keeps undoing (D4, the first inversion of `rvSwapped`) is
+        // struck out after 3 drags, so the user's "Try again" must be on THAT row (a retry of D3 resets the budget but cannot free D4).
+        await e.retry(key: k("D4")); await rvSettle(e, ms: 300)
         for _ in 0..<10 { await scrambledPass(w, e, c) }
         let made = w.drags.count - n0
         #expect(made >= 3, "drags after Try again: \(made)")
@@ -1029,7 +1031,8 @@ private struct RvFakeObserver: MenuBarObserver {
         // ejb.15 (Wiring 3), CHANGED because the core decides: the user drops D2 where the record already has it. The old edit (D2 before D1) put the first inversion on
         // the churn zone, which the core's first-inversion planner then cannot leave (it withholds strip moves), so no engine drag could follow; the budget semantics
         // are unchanged: a user edit gives the engine a fresh budget of 3 for the swapped pair.
-        await e.setLayout(Layout.placedAll(visible: (rvP + rvD).map(k)), moved: [k("D2")]); await rvSettle(e, ms: 300)
+        // ejb.17, CHANGED: the dropped key is D4 (the key the scramble undoes and the core struck out), not D2: a user edit gives back the strikes of the keys it moves.
+        await e.setLayout(Layout.placedAll(visible: (rvP + rvD).map(k)), moved: [k("D4")]); await rvSettle(e, ms: 300)
         for _ in 0..<10 { await scrambledPass(w, e, c) }
         let made = w.drags.count - n0
         #expect(made >= 3, "drags after the edit: \(made)")

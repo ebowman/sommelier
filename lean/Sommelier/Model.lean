@@ -143,6 +143,10 @@ structure State where
   flightReq : Bool
   /-- the drag in flight (at most one); only its `moveResult` clears it -/
   inFlight : Option Action
+  /-- the subject of the last POSTED ENGINE drag that was answered `verified` and has not yet been judged by a usable read (ejb.17).  The next
+  usable settled read judges it: if the key is still misplaced the move did not take (macOS reverted it), and the key takes a strike exactly like
+  a failed drag.  Cleared by that read, by every other result, and by the user events that reset the key's strikes. -/
+  verified : Option Key := none
   deriving Repr
 
 def State.init (record : List Key) : State where
@@ -166,6 +170,7 @@ def State.init (record : List Key) : State where
   flightOwed := none
   flightReq := false
   inFlight := none
+  verified := none
 
 /-- Engine-initiated drags allowed per user event on a full bar. -/
 def capFull : Nat := 3

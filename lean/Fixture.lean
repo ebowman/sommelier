@@ -58,14 +58,16 @@ def r12 : List Key := [1, 2]
 def r123 : List Key := [1, 2, 3]
 def r12345 : List Key := [1, 2, 3, 4, 5]
 def r1245 : List Key := [1, 2, 4, 5]
+def r123456 : List Key := [1, 2, 3, 4, 5, 6]
 
 /-- The named example traces (initial record, events).  Same inputs as the `example`s of Examples.lean, whose expected values are checked there by `decide`. -/
 def namedCases : List (String × List Key × List Event) :=
   [ ("tm", r12345, tm), ("tmMismatch", r12345, tmMismatch), ("launch", [3, 1, 2, 4, 5], launch), ("launchGood", r12345, launchGood),
-    ("budget", r12345, budget), ("resume", r1245, resume), ("resumeUnserved", r1245, resumeUnserved),
+    ("budget", [1, 2, 3, 4, 5, 6, 7, 8], budget), ("resume", r1245, resume), ("resumeUnserved", r1245, resumeUnserved),
     ("refusedLoop", r123, refusedLoop), ("kReads", r123, kReads), ("bad1", r12, bad1), ("proven", r12, proven),
     ("provenBudget20", r12, proven ++ (List.replicate 30 [mism, ok 1]).flatten),
-    ("spentRetry", r12, spent ++ [.userRetry]), ("spentEdit", r12, spent ++ [.userEdit [2, 1] [2]]),
+    ("spentRetry", r123456, spent ++ [.userRetry]), ("spentEdit", r123456, spent ++ [.userEdit [2, 1, 3, 4, 5, 6] [2]]),
+    ("reverted", r12345, reverted), ("revertedProven", r12, revertedProven), ("revertedRetryKey", r12345, reverted ++ [.retryKey 1, .read (mkRead .fresh [3, 2, 1, 4] [5])]),
     ("pulled", r1245, pulled), ("pulledBusy", r1245, pulled ++ [.moveResult 5 .busy false]),
     ("failedPlusRetryKey", [1, 2, 3, 4], failedPlus ++ [.retryKey 1]), ("strikeOne", r12, strikeOne),
     ("t4", [1, 2, 5, 6], t4), ("t5", [1, 2, 5, 6, 9], t5), ("t6", [7, 5], t6),

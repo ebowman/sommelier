@@ -41,7 +41,8 @@ on a device, the theorems that use it say nothing about that device.
 | `needsStrip`, `Action.strip` | `gateEngineMoves.needsStrip`: subject or target in `foldedAll` (on a usable fresh-chevron read exactly this read's pile and folded keys, which supersede the memory; on any other read this read's pile and folded keys plus `lastFreshPile`) or `Read.nearFold` (the churn zone, supplied by the adapter). |
 | `movable` | gdu.144 rule 3: drawn, trusted, not in `foldedAll`: the only keys a planned move names. |
 | `lastFreshPile` | `lastFreshChevronObs` pile: REPLACED only by a settled, non-`incomplete`, strip-closed read with a fresh chevron; any other chevron read (stale, unsettled, incomplete, strip open) adds to it (a SETTLED, closed, readable fresh poll replaces it, like a pass read); kept through chevronless reads until the proof. |
-| `givenUp`, `strikes` | `cannotPlace`/`orderAttempts`/`revertWatch`/strikes. On a bar not proven not-full the first failed posted drag gives a key up; once proven not-full, 3 failed posted drags. Cleared by user events: `userEdit` clears only the MOVED keys' entries, `userRetry` all, `retryKey` that key. There is no `appsChanged` release (dropped: only user events clear given-up keys). |
+| `givenUp`, `strikes` | `cannotPlace`/`orderAttempts`/`revertWatch`/strikes. On a bar not proven not-full the first failed posted drag gives a key up; once proven not-full, 3 failed posted drags. On ANY bar, a verified engine drag the next usable read finds undone is a strike (3 give the key up): see `verified` and the ejb.17 section. Cleared by user events: `userEdit` clears only the MOVED keys' entries, `userRetry` all, `retryKey` that key. There is no `appsChanged` release (dropped: only user events clear given-up keys). |
+| `verified` | `lastVerifiedOrderMove`/`unverifiedStrikes` (ejb.17): the subject of the last POSTED ENGINE drag answered `verified`, until a usable read judges it. Set by `result` (a user's drag, a failed, refused or interrupted one, a drag with no mouse event leave none); judged and cleared by the next read with the gate true and nothing in flight (`judge`); cleared by `userRetry`, and for the moved keys of a `userEdit` and the key of a `retryKey` (the same events that clear the key's strikes). |
 | `skipped` | a key whose drag was refused/busy/failed without a mouse event: no engine move of it until a user event (so a refused key cannot loop). |
 | `inFlight`, `gen`, `flightOwed` | the serial actuator call; only its `moveResult` clears it. `gen` is bumped by `passBoundary` and `userRetry`; `flightOwed` records at emit time whether the drag's subject was owed by the CURRENT chain (never true for a granted move), which is the only case a user `busy` without a mouse event is re-armed. |
 | `planOrderMoves` | `Reconciler.plan` order phase (stub). An engine move that needs the strip is withheld (not emitted, not counted) unless `stripGrant`. |
@@ -284,6 +285,33 @@ lower a verdict toward "except" or "can't tell"). (4) Parked items with a nil Co
 needs a USABLE read to do anything: a drop (and a retry) waits for the gate (D2), so with a stale chevron or an unproven chevronless bar it stays pending (row `waiting`), then expires at the pass boundary and the row reads "can't tell".
 (c) A key remembered as folded (pile memory) but absent from the current read gets no pull-out on that read; its row says "not on the bar" (listed nowhere) or "can't tell" (unread).
 (d) A1, A2, A3 (and its soak), A4, A5, A6, A7, `Bar.WF` and leftmost folding are ASSUMPTIONS, not checked by the proofs (see the trust boundary above). (e) T9 says a move is never made when the shown verdict of the read is "can't tell"; it is NOT "exactly when", and it is not about rows: a move can coexist with a "can't tell" row for another key.
+
+## A verified move the next read contradicts is a strike (ejb.17: `lean/Sommelier/Verified.lean`)
+
+The actuator may call a posted drag `verified` while macOS has reverted it, or the drag did not take: the NEXT read still shows the key out of place. Before ejb.17 the core
+planned the same drag again on every such read, bounded only by the budget (3 on a full bar, 20 on a bar proven not full) with no per-key limit; the old Swift engine stopped
+after 3 (`unverifiedStrikes`, `revertWatch`). The rule now:
+
+* `result` records the subject of a posted ENGINE drag answered `verified` in `State.verified` (`res_verified_marks`); nothing else leaves a mark (`res_unverified_no_mark`).
+* The next read that the gate accepts (`State.gate`: usable and consistent) with nothing in flight JUDGES the mark (`judge`, run BEFORE the read decides: `decideMove s r = decideMove0 (judge s r) r`,
+  so the repeat is never planned from the read that struck the key). If the key is still `stillMisplaced` (movable, in the record, and some movable record key stands on the wrong
+  side of it: `misplaced`) it takes a STRIKE (`markStrike`, the strike of a failed drag on a proven bar: given up at the third) and the mark is cleared
+  (`judge_contradicted_strikes`, `judge_contradicted_giveup`); otherwise the mark is just cleared, no strike (`judge_confirmed_clears`). A read that cannot judge (unsettled, strip open, a poll, unusable, a drag in flight)
+  leaves the mark (`judge_unusable_keeps`).
+* Choice, on a bar NOT proven not full: the contradicted move takes the same strike (no hold, no immediate give-up). A failed posted drag on such a bar holds the bar because a failure says the
+  bar's reading is unreliable; a verified drag the read contradicts says only that this key did not move, so the key's three strikes (which agree with the full bar's budget of 3) are the limit and
+  the rest of the bar keeps working.
+* User events reset the mark with the key's strikes: `userRetry` all (`retry_clears_verified`), `userEdit` the moved keys (`edit_clears_verified`), `retryKey` that key (`rk_clears_verified`).
+  Given-up keys are skipped by the planner, so a stuck key stops the whole order phase until the user acts (as a failed key always did).
+
+Headline: `verified_revert_bounded`: from `State.init rec`, over any event list with no user event (`isUserEvent`), in which every drag of `k` is answered `verified` (posted)
+(`AllVerified k es`) and every read the gate accepts still shows `k` misplaced (`AtReads (StillMisplacedAtGate k)`), `verDrags k (State.init rec) es <= 3`: at most three posted engine
+drags of `k`, on a full bar and on a proven one alike, whatever the hold, the pile or the other keys do. `verified_revert_bounded_from` states it from any state satisfying `VInv` as
+`<= 3 - strikes of k`. Proof: a potential `pot k s` (none once `k` is given up; else 3 less its strikes, less 1 while its verified drag awaits judgement) never rises (`pot_step`, `pot_judge`) and
+each posted drag of `k` lowers it by one (`verDrags_le_pot`); the invariant `VInv` (a mark exists only with nothing in flight; three strikes imply given up; an engine drag in flight is not of a given-up key)
+is preserved by every non-user event (`vinv_step`). `lake exe fuzz` checks it on random bars that macOS never changes (`revert_bound`, `revert_hit3`); `mutants.py` has the `ver_*` mutants.
+The Swift suite: `RecordOrderEngineTests.aVerifiedMoveThatTheReadStillPlansIsStruckNotRepeated` (3 drags, plain config), `...OnABarAssumedFull`, `aKeyMacOSKeepsRevertingIsDraggedAtMostThreeTimesNoMatterHowManyPassesRun`.
+(The R1 review caveat of ejb.15, "the core repeats a verified-but-undone drag until its budget", no longer holds.)
 
 ## Fuzz harness
 

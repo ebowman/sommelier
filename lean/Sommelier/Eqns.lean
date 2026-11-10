@@ -13,7 +13,7 @@ proof cannot mask a theorem in `Gates.lean`).
 namespace Sommelier
 
 theorem eqns_result (s : State) (a : Action) (o : Outcome) (p : Bool) : (result s a o p).inFlight = none := by
-  unfold result; grind
+  unfold result markFail markStrike; grind
 
 theorem eqns_noteRead (s : State) (r : Read) : (noteRead s r).record = s.record := by
   unfold noteRead; grind
@@ -329,5 +329,310 @@ theorem penalty_wholeBar {s : State} {r : Read} (h : wholeBar s r = true) (k : K
 
 theorem worstCount_wholeBar {s : State} {r : Read} (h : wholeBar s r = true) (k : Key) (rel : Rel) : worstCount s r k rel = afterCount s r k rel := by
   unfold worstCount; rw [penalty_wholeBar h]; rfl
+
+/-! ### ejb.17: what `judge` changes
+
+`judge` (Step.lean) overwrites only `hold`, `holdFolded`, `givenUp`, `strikes` and `verified`; it can only ADD to the hold and the given-up keys. -/
+
+theorem judge_shape (s : State) (r : Read) :
+    ∃ h hf g st v, judge s r = { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } ∧
+      (s.hold = true → h = true) ∧ (∀ x, x ∈ s.givenUp → x ∈ g) := by
+  unfold judge
+  cases hv : s.verified with
+  | none => exact ⟨s.hold, s.holdFolded, s.givenUp, s.strikes, none, by cases s; simp_all, fun h => h, fun x hx => hx⟩
+  | some k =>
+    simp only
+    split
+    · split
+      · unfold markStrike
+        exact ⟨s.hold, s.holdFolded, _, _, none, rfl, fun h => h, by intro x hx; simp; grind⟩
+      · exact ⟨s.hold, s.holdFolded, s.givenUp, s.strikes, none, rfl, fun h => h, fun x hx => hx⟩
+    · exact ⟨s.hold, s.holdFolded, s.givenUp, s.strikes, s.verified, by cases s; simp_all, fun h => h, fun x hx => hx⟩
+
+@[simp] theorem judge_inFlight (s : State) (r : Read) : (judge s r).inFlight = s.inFlight := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_stripGrant (s : State) (r : Read) : (judge s r).stripGrant = s.stripGrant := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+theorem judge_gate (s : State) (r : Read) : (judge s r).gate r = s.gate r := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; rfl
+
+theorem judge_userPick (s : State) (r : Read) : userPick (judge s r) r = userPick s r := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; rfl
+
+theorem judge_engineAllowed {s : State} {r : Read} (h : engineAllowed (judge s r) r = true) : engineAllowed s r = true := by
+  obtain ⟨hh, _, _, _, _, hj, h1, _⟩ := judge_shape s r
+  rw [hj] at h
+  simp only [engineAllowed, fullBar, cap, Bool.and_eq_true, Bool.not_eq_true'] at h ⊢
+  grind
+
+theorem judge_plan {s : State} {r : Read} {a : Action} (h : planOrderMoves (judge s r) r = some a) : planOrderMoves s r = some a := by
+  obtain ⟨_, _, g, _, _, hj, _, h2⟩ := judge_shape s r
+  have hm : movable (judge s r) r = movable s r := by rw [hj]; rfl
+  have hn : ∀ w rel, needsStrip (judge s r) r w rel = needsStrip s r w rel := by intro w rel; rw [hj]; rfl
+  have hr : (judge s r).record = s.record := by rw [hj]
+  have hsk : (judge s r).skipped = s.skipped := by rw [hj]
+  have hg : (judge s r).givenUp = g := by rw [hj]
+  unfold planOrderMoves at h ⊢
+  simp only [hm, hn, hr, hsk, hg] at h
+  have h2' : ∀ x, s.givenUp.contains x = true → g.contains x = true := by
+    intro x hx; simpa using h2 x (by simpa using hx)
+  grind
+
+/-- The judged state decides no move the unjudged one would not: `judge` only closes the engine's gates.  So whatever `decideMove` decides,
+`decideMove0` (the decision on the state as it is) decides too. -/
+theorem decide_judge {s : State} {r : Read} {a : Action} (h : decideMove s r = some a) : decideMove0 s r = some a := by
+  unfold decideMove at h
+  unfold decideMove0 at h ⊢
+  rw [judge_inFlight, judge_gate, judge_userPick, judge_stripGrant] at h
+  generalize hU : userPick s r = U at h ⊢
+  cases U with
+  | some b => simpa using h
+  | none =>
+    simp only at h ⊢
+    split at h
+    · simp at h
+    · rename_i hn
+      simp only [hn] at ⊢
+      split at h
+      · simp at h
+      · rename_i hea
+        have e1 : engineAllowed s r = true := judge_engineAllowed (by simpa using hea)
+        simp only [e1]
+        simp only [Bool.not_true, Bool.false_eq_true, if_false]
+        revert h
+        cases hp : planOrderMoves (judge s r) r with
+        | none => simp
+        | some b => simp [judge_plan hp]
+
+/-! `noteRead` after `judge` agrees with `noteRead` alone on every field `judge` leaves alone. -/
+theorem noteRead_patch_record (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).record = (noteRead s r).record := by
+  unfold noteRead
+  simp only [apply_ite State.record]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_record (s : State) (r : Read) : (noteRead (judge s r) r).record = (noteRead s r).record := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_record _ _ _ _ _ _ _
+
+theorem noteRead_patch_moveCount (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).moveCount = (noteRead s r).moveCount := by
+  unfold noteRead
+  simp only [apply_ite State.moveCount]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_moveCount (s : State) (r : Read) : (noteRead (judge s r) r).moveCount = (noteRead s r).moveCount := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_moveCount _ _ _ _ _ _ _
+
+theorem noteRead_patch_owedKeys (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).owedKeys = (noteRead s r).owedKeys := by
+  unfold noteRead
+  simp only [apply_ite State.owedKeys]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_owedKeys (s : State) (r : Read) : (noteRead (judge s r) r).owedKeys = (noteRead s r).owedKeys := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_owedKeys _ _ _ _ _ _ _
+
+theorem noteRead_patch_foldRequest (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).foldRequest = (noteRead s r).foldRequest := by
+  unfold noteRead
+  simp only [apply_ite State.foldRequest]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_foldRequest (s : State) (r : Read) : (noteRead (judge s r) r).foldRequest = (noteRead s r).foldRequest := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_foldRequest _ _ _ _ _ _ _
+
+theorem noteRead_patch_stripGrant (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).stripGrant = (noteRead s r).stripGrant := by
+  unfold noteRead
+  simp only [apply_ite State.stripGrant]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_stripGrant (s : State) (r : Read) : (noteRead (judge s r) r).stripGrant = (noteRead s r).stripGrant := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_stripGrant _ _ _ _ _ _ _
+
+theorem noteRead_patch_restricted (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).restricted = (noteRead s r).restricted := by
+  unfold noteRead
+  simp only [apply_ite State.restricted]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_restricted (s : State) (r : Read) : (noteRead (judge s r) r).restricted = (noteRead s r).restricted := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_restricted _ _ _ _ _ _ _
+
+theorem noteRead_patch_editSessionUsed (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).editSessionUsed = (noteRead s r).editSessionUsed := by
+  unfold noteRead
+  simp only [apply_ite State.editSessionUsed]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_editSessionUsed (s : State) (r : Read) : (noteRead (judge s r) r).editSessionUsed = (noteRead s r).editSessionUsed := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_editSessionUsed _ _ _ _ _ _ _
+
+theorem noteRead_patch_skipped (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).skipped = (noteRead s r).skipped := by
+  unfold noteRead
+  simp only [apply_ite State.skipped]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_skipped (s : State) (r : Read) : (noteRead (judge s r) r).skipped = (noteRead s r).skipped := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_skipped _ _ _ _ _ _ _
+
+theorem noteRead_patch_gen (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).gen = (noteRead s r).gen := by
+  unfold noteRead
+  simp only [apply_ite State.gen]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_gen (s : State) (r : Read) : (noteRead (judge s r) r).gen = (noteRead s r).gen := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_gen _ _ _ _ _ _ _
+
+theorem noteRead_patch_flightOwed (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).flightOwed = (noteRead s r).flightOwed := by
+  unfold noteRead
+  simp only [apply_ite State.flightOwed]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_flightOwed (s : State) (r : Read) : (noteRead (judge s r) r).flightOwed = (noteRead s r).flightOwed := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_flightOwed _ _ _ _ _ _ _
+
+theorem noteRead_patch_flightReq (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).flightReq = (noteRead s r).flightReq := by
+  unfold noteRead
+  simp only [apply_ite State.flightReq]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_flightReq (s : State) (r : Read) : (noteRead (judge s r) r).flightReq = (noteRead s r).flightReq := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_flightReq _ _ _ _ _ _ _
+
+theorem noteRead_patch_inFlight (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).inFlight = (noteRead s r).inFlight := by
+  unfold noteRead
+  simp only [apply_ite State.inFlight]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_inFlight (s : State) (r : Read) : (noteRead (judge s r) r).inFlight = (noteRead s r).inFlight := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_inFlight _ _ _ _ _ _ _
+
+theorem noteRead_patch_provenNotFull (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).provenNotFull = (noteRead s r).provenNotFull := by
+  unfold noteRead
+  simp only [apply_ite State.provenNotFull]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_provenNotFull (s : State) (r : Read) : (noteRead (judge s r) r).provenNotFull = (noteRead s r).provenNotFull := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_provenNotFull _ _ _ _ _ _ _
+
+theorem noteRead_patch_noChevronReads (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).noChevronReads = (noteRead s r).noChevronReads := by
+  unfold noteRead
+  simp only [apply_ite State.noChevronReads]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_noChevronReads (s : State) (r : Read) : (noteRead (judge s r) r).noChevronReads = (noteRead s r).noChevronReads := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_noChevronReads _ _ _ _ _ _ _
+
+theorem noteRead_patch_lastFreshPile (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).lastFreshPile = (noteRead s r).lastFreshPile := by
+  unfold noteRead
+  simp only [apply_ite State.lastFreshPile]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_lastFreshPile (s : State) (r : Read) : (noteRead (judge s r) r).lastFreshPile = (noteRead s r).lastFreshPile := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_lastFreshPile _ _ _ _ _ _ _
+
+theorem noteRead_patch_lastDrawn (s : State) (r : Read) (h hf g st v) :
+    (noteRead { s with hold := h, holdFolded := hf, givenUp := g, strikes := st, verified := v } r).lastDrawn = (noteRead s r).lastDrawn := by
+  unfold noteRead
+  simp only [apply_ite State.lastDrawn]
+  split <;> (repeat' split) <;> simp_all
+
+@[simp] theorem noteRead_judge_lastDrawn (s : State) (r : Read) : (noteRead (judge s r) r).lastDrawn = (noteRead s r).lastDrawn := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; exact noteRead_patch_lastDrawn _ _ _ _ _ _ _
+
+@[simp] theorem judge_frame_record (s : State) (r : Read) : (judge s r).record = s.record := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_moveCount (s : State) (r : Read) : (judge s r).moveCount = s.moveCount := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_owedKeys (s : State) (r : Read) : (judge s r).owedKeys = s.owedKeys := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_foldRequest (s : State) (r : Read) : (judge s r).foldRequest = s.foldRequest := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_stripGrant (s : State) (r : Read) : (judge s r).stripGrant = s.stripGrant := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_restricted (s : State) (r : Read) : (judge s r).restricted = s.restricted := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_editSessionUsed (s : State) (r : Read) : (judge s r).editSessionUsed = s.editSessionUsed := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_skipped (s : State) (r : Read) : (judge s r).skipped = s.skipped := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_gen (s : State) (r : Read) : (judge s r).gen = s.gen := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_flightOwed (s : State) (r : Read) : (judge s r).flightOwed = s.flightOwed := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_flightReq (s : State) (r : Read) : (judge s r).flightReq = s.flightReq := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_provenNotFull (s : State) (r : Read) : (judge s r).provenNotFull = s.provenNotFull := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_noChevronReads (s : State) (r : Read) : (judge s r).noChevronReads = s.noChevronReads := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_lastFreshPile (s : State) (r : Read) : (judge s r).lastFreshPile = s.lastFreshPile := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+@[simp] theorem judge_frame_lastDrawn (s : State) (r : Read) : (judge s r).lastDrawn = s.lastDrawn := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]
+
+theorem judge_frame (s : State) (r : Read) :
+    (judge s r).record = s.record ∧ (judge s r).moveCount = s.moveCount ∧ (judge s r).owedKeys = s.owedKeys ∧ (judge s r).foldRequest = s.foldRequest ∧ (judge s r).stripGrant = s.stripGrant ∧ (judge s r).restricted = s.restricted ∧ (judge s r).editSessionUsed = s.editSessionUsed ∧ (judge s r).skipped = s.skipped ∧ (judge s r).gen = s.gen ∧ (judge s r).flightOwed = s.flightOwed ∧ (judge s r).flightReq = s.flightReq ∧ (judge s r).inFlight = s.inFlight ∧ (judge s r).provenNotFull = s.provenNotFull ∧ (judge s r).noChevronReads = s.noChevronReads ∧ (judge s r).lastFreshPile = s.lastFreshPile ∧ (judge s r).lastDrawn = s.lastDrawn := by
+  exact ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩
+
+@[simp] theorem judge_fullBar (s : State) (r : Read) : fullBar (judge s r) r = fullBar s r := by
+  simp [fullBar]
+
+theorem judge_hold_true {s : State} (r : Read) (h : s.hold = true) : (judge s r).hold = true := by
+  obtain ⟨_, _, _, _, _, hj, h1, _⟩ := judge_shape s r; rw [hj]; exact h1 h
+
+theorem judge_givenUp_mem {s : State} (r : Read) {x : Key} (h : x ∈ s.givenUp) : x ∈ (judge s r).givenUp := by
+  obtain ⟨_, _, g, _, _, hj, _, h2⟩ := judge_shape s r; rw [hj]; exact h2 x h
+
+theorem judge_userMove1 (s : State) (r : Read) (k : Key) : userMove1 (judge s r) r k = userMove1 s r k := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; rfl
+
+theorem judge_userMove2 (s : State) (r : Read) (k : Key) : userMove2 (judge s r) r k = userMove2 s r k := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; rfl
+
+theorem judge_userMove (s : State) (r : Read) (k : Key) : userMove (judge s r) r k = userMove s r k := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; rfl
+
+theorem judge_userAllowed (s : State) (r : Read) (a : Action) : userAllowed (judge s r) r a = userAllowed s r a := by
+  obtain ⟨_, _, _, _, _, hj, _, _⟩ := judge_shape s r; rw [hj]; rfl
+
+/-- A decision made by the user's queue is the same on the judged state. -/
+theorem decide_of_pick {s : State} {r : Read} {a : Action} (hp : userPick s r = some a) (hd : decideMove0 s r = some a) :
+    decideMove s r = some a := by
+  unfold decideMove0 at hd
+  unfold decideMove decideMove0
+  rw [judge_inFlight, judge_gate, judge_userPick, hp]
+  rw [hp] at hd
+  exact hd
+
+theorem decide_user_pick {s : State} {r : Read} {a : Action}
+    (hc : ¬ (r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r) = true)
+    (hp : userPick s r = some a) : decideMove s r = some a :=
+  decide_of_pick hp (by unfold decideMove0; rw [if_neg hc, hp])
 
 end Sommelier

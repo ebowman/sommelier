@@ -1905,7 +1905,8 @@ theorem view_of_agree (s : State) (r : Read) (h : r.notFullProven = s.provenNotF
 included). -/
 theorem decideMove_gated (s : State) (r : Read) (a : Action) (h : decideMove s r = some a) :
     (s.view r).usable ∧ (s.view r).consistent = true := by
-  unfold decideMove at h
+  replace h := decide_judge h
+  unfold decideMove0 at h
   by_cases hg : s.gate r = true
   · unfold State.gate at hg
     simpa [Bool.and_eq_true] using hg
@@ -1925,7 +1926,8 @@ theorem step_read_decide (s s' : State) (r : Read) (a : Action) (hs : step s (.r
 theorem decide_anatomy (s : State) (r : Read) (a : Action) (h : decideMove s r = some a) :
     (∃ k, userMove s r k = some a) ∨
     (∃ a0, planOrderMoves s r = some a0 ∧ (a = a0 ∨ a = { a0 with user := true })) := by
-  unfold decideMove at h
+  replace h := decide_judge h
+  unfold decideMove0 at h
   split at h
   · simp at h
   · split at h

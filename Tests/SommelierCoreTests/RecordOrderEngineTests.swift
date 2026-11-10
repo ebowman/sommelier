@@ -112,20 +112,45 @@ private final class SteerableBox: @unchecked Sendable {
     }
 
     // A move the actuator verified but the next read still plans is struck, not repeated (default config: one move per pass).
+    // ejb.17: the core remembers the last verified engine move and the next usable read that still finds its key misplaced takes a strike for it (given up at the third),
+    // as the old engine's `unverifiedStrikes` did: at most 3 drags of that key however many passes follow. (ejb.15 had relaxed this to the budget, 20 on a bar known not full.)
     @Test func aVerifiedMoveThatTheReadStillPlansIsStruckNotRepeated() async {
         let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "C", "B"].map(k)),
                           observerFor: { _ in FrozenObserver(order: ["A", "B", "C"].map(k)) })
         _ = await r.engine.reconcileOnce()
         #expect(await r.actuator.calls.count == 1)
         _ = await r.engine.reconcileOnce()
-        // ejb.15 (Wiring 3), CHANGED because the core decides: the Swift strike on "verified but planned again" (`lastVerifiedOrderMove`, `unverifiedStrikes`: at most
-        // 3 identical drags) is the old planner's. The core has no such detection: it moves the first inversion again on every read that still shows it, and
-        // is bounded by its BUDGET only (20 engine drags on a bar known not full, 3 on a full one). The safety bound kept here is that budget, exactly.
         for _ in 0..<30 { _ = await r.engine.reconcileOnce() }
         let settled = await r.actuator.calls.count
-        #expect(settled == 20)
+        #expect(settled == 3, "drags of the reverted key: \(settled)")   // plain config: bar known not full, so three strikes, not the budget of 20
         for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
-        #expect(await r.actuator.calls.count == settled)   // the budget is spent: no further drags until the user's intent
+        #expect(await r.actuator.calls.count == settled)   // the key is given up: no further drags until the user's intent
+    }
+
+    // The same on a bar assumed full (the production default at launch): the strike rule is the same, and the budget of 3 agrees with it.
+    @Test func aVerifiedMoveThatTheReadStillPlansIsStruckNotRepeatedOnABarAssumedFull() async {
+        var cfg = LayoutEngine.Config.plain(); cfg.assumeFullBarAtLaunch = true
+        let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "C", "B"].map(k)), config: cfg,
+                          observerFor: { _ in FrozenObserver(order: ["A", "B", "C"].map(k)) })
+        for _ in 0..<40 { _ = await r.engine.reconcileOnce() }
+        let settled = await r.actuator.calls.count
+        #expect(settled >= 1 && settled <= 3, "drags of the reverted key on a full bar: \(settled)")
+        for _ in 0..<8 { _ = await r.engine.reconcileOnce() }
+        #expect(await r.actuator.calls.count == settled)
+    }
+
+    // The intent of the old per-minute cap: a key macOS keeps reverting is dragged at most 3 times in all, however many passes run (here 200 passes), and a user's
+    // "Try again" on that key gives it exactly one fresh round of at most 3.
+    @Test func aKeyMacOSKeepsRevertingIsDraggedAtMostThreeTimesNoMatterHowManyPassesRun() async {
+        let r = await rig(order: ["A", "B", "C"], layout: Layout(visible: ["A", "C", "B"].map(k)),
+                          observerFor: { _ in FrozenObserver(order: ["A", "B", "C"].map(k)) })
+        for _ in 0..<200 { _ = await r.engine.reconcileOnce() }
+        let first = await r.actuator.calls.count
+        #expect(first <= 3, "drags: \(first)")
+        await r.engine.retry(key: k("C"))
+        for _ in 0..<200 { _ = await r.engine.reconcileOnce() }
+        let second = await r.actuator.calls.count
+        #expect(second > first && second <= first + 1 + 3, "after Try again: \(second) (before: \(first))")
     }
 
     @Test func aLayoutEqualToTheBarDoesNothing() async {

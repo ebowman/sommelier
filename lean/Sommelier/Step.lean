@@ -275,10 +275,41 @@ def userPick (s : State) (r : Read) : Option Action :=
   | some a => some a
   | none => (s.foldRequest.toList ++ s.owedKeys).findSome? (fun k => (userMove2 s r k).filter (userAllowed s r))
 
+/-- One strike for `k` (given up at the third).  The strike of a failed drag on a bar proven not full, and of a verified drag the next read finds undone (ejb.17). -/
+def markStrike (s0 : State) (k : Key) : State :=
+  let n := (s0.strikes.filter (fun x => x == k)).length + 1
+  { s0 with strikes := k :: s0.strikes,
+            givenUp := if n >= 3 && !s0.givenUp.contains k then k :: s0.givenUp else s0.givenUp }
+
+def markFail (s0 : State) (k : Key) : State :=
+  -- a failed posted drag on a bar not proven not-full holds the bar and gives the key up
+  if s0.provenNotFull then
+    markStrike s0 k
+  else
+    { s0 with hold := true, holdFolded := s0.lastFreshPile,
+              givenUp := if s0.givenUp.contains k then s0.givenUp else k :: s0.givenUp }
+
+/-- ejb.17.  The key `k` is STILL OUT OF PLACE on this read: movable (drawn, trusted, not folded), in the record, and some movable record key stands on the
+wrong side of it (`misplaced`).  A correctly executed engine move of `k` puts it right among every movable record key, so this is exactly "the move did not take". -/
+def stillMisplaced (s : State) (r : Read) (k : Key) : Bool :=
+  (movable s r).contains k && s.record.contains k && misplaced s r k
+
+/-- ejb.17.  THE READ JUDGES THE LAST VERIFIED ENGINE MOVE.  Applies only to a usable, consistent read (`gate`) with no drag in flight.  If the pending key is still
+misplaced, it takes a strike (`markStrike`: given up at the third, on ANY bar: a verified drag the read contradicts is not evidence that the bar is full, so it
+never holds the bar, unlike a failed drag on a bar not proven not full); otherwise the pending marker is simply cleared.  It runs BEFORE the read decides, so a repeat of the contradicted drag is never planned from a read that already struck out the key.
+Other reads (unsettled, strip open, polls, unusable) leave the marker. -/
+def judge (s : State) (r : Read) : State :=
+  match s.verified with
+  | none => s
+  | some k =>
+      if s.inFlight.isNone && s.gate r then
+        (if stillMisplaced s r k then markStrike { s with verified := none } k else { s with verified := none })
+      else s
+
 /-- The one decision per read: at most one move.  Only a settled pass read with a readable tree may plan.
 Owed user moves first (the fold request, then the rest), then the engine's; an engine move that needs the
 strip is withheld unless Re-apply granted a session. -/
-def decideMove (s : State) (r : Read) : Option Action :=
+def decideMove0 (s : State) (r : Read) : Option Action :=
   if r.kind != .pass || !r.settled || r.level == .incomplete || s.inFlight.isSome || !s.gate r then none
   else
     match userPick s r with
@@ -291,6 +322,9 @@ def decideMove (s : State) (r : Read) : Option Action :=
               (if s.stripGrant then some { a with user := true } else none)
             else some a
         | none => none
+
+/-- THE DECISION OF A READ (ejb.17): the read first judges the last verified engine move (`judge`), then decides on the judged state. -/
+def decideMove (s : State) (r : Read) : Option Action := decideMove0 (judge s r) r
 
 /-- Bookkeeping for a move that leaves now.  (The budget is counted at the result, when the drag is known posted.) -/
 def emit (s : State) (a : Action) : State :=
@@ -309,19 +343,13 @@ decreases).  A drag with no mouse event is not an attempt: its key is `skipped` 
 user event), the strip session is returned, and a user's interrupted drag (`busy`) is re-armed ONCE.
 -/
 def result (s : State) (a : Action) (o : Outcome) (posted : Bool) : State :=
-  let s0 := { s with inFlight := none, moveCount := s.moveCount + (if posted && !a.user then 1 else 0) }
+  let s0 := { s with inFlight := none, moveCount := s.moveCount + (if posted && !a.user then 1 else 0),
+                     -- ejb.17: a verified posted ENGINE drag is judged by the next usable read; every other result leaves nothing to judge
+                     verified := if posted && !a.user && o == .verified then some a.subject else none }
   let core : State :=
     if posted then
       match o with
-      | .failed =>
-          -- a failed posted drag on a bar not proven not-full holds the bar and gives the key up
-          if s0.provenNotFull then
-            let n := (s0.strikes.filter (fun x => x == a.subject)).length + 1
-            { s0 with strikes := a.subject :: s0.strikes,
-                      givenUp := if n >= 3 && !s0.givenUp.contains a.subject then a.subject :: s0.givenUp else s0.givenUp }
-          else
-            { s0 with hold := true, holdFolded := s0.lastFreshPile,
-                      givenUp := if s0.givenUp.contains a.subject then s0.givenUp else a.subject :: s0.givenUp }
+      | .failed => markFail s0 a.subject
       | _ => s0
     else
       -- no mouse event (even a "verified" one): not an attempt, never re-planned by the engine until a user event
@@ -337,7 +365,7 @@ def result (s : State) (a : Action) (o : Outcome) (posted : Bool) : State :=
 
 def step (s : State) : Event → State × List Action
   | .read r =>
-      let s' := noteRead s r
+      let s' := noteRead (judge s r) r
       match decideMove s r with
       | none => (s', [])
       | some a => (emit s' a, [a])
@@ -357,6 +385,7 @@ def step (s : State) : Event → State × List Action
                                  && (rec.takeWhile (fun x => x != k)).any (fun x => s.lastDrawn.contains x))
         let release := moved.any (fun k => s.holdFolded.contains k || s.lastFreshPile.contains k)
         ({ s with
+            verified := s.verified.filter (fun k => !moved.contains k),   -- ejb.17: the key's mark goes with its strikes
             record := rec, moveCount := 0, restricted := true, editSessionUsed := false,
             owedKeys := owed,
             foldRequest := match pull with
@@ -369,6 +398,7 @@ def step (s : State) : Event → State × List Action
             givenUp := s.givenUp.filter (fun k => !moved.contains k) }, [])
   | .userRetry =>
       ({ s with
+            verified := none,
             moveCount := 0, hold := false, givenUp := [], strikes := [], skipped := [],
             restricted := false, owedKeys := [], foldRequest := none, stripGrant := true, gen := s.gen + 1,
             editSessionUsed := false }, [])
@@ -376,6 +406,7 @@ def step (s : State) : Event → State × List Action
       -- (a priority hint only, as in `userEdit`: not needed for the answer)
       let pull := s.record.contains k && s.lastFreshPile.contains k && (s.record.takeWhile (fun x => x != k)).any (fun x => s.lastDrawn.contains x)
       ({ s with
+            verified := s.verified.filter (fun x => x != k),
             moveCount := 0, hold := false, givenUp := s.givenUp.erase k,
             strikes := s.strikes.filter (fun x => x != k), skipped := [], restricted := true,
             editSessionUsed := false,
